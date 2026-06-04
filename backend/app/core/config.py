@@ -45,6 +45,19 @@ class Settings(BaseSettings):
     jwt_expire_minutes: int = 1440
     encryption_key: str = DEFAULT_DEV_ENCRYPTION_KEY
 
+    auth_provider: str = "local"
+    allow_register: bool = True
+    require_email_verification: bool = True
+    allowed_email_domains: str = "company.com"
+    password_min_length: int = 8
+    login_max_failed_attempts: int = 5
+    login_lock_minutes: int = 15
+    email_verification_expire_hours: int = 24
+    password_reset_expire_minutes: int = 30
+    auth_register_rate_limit_per_hour: int = 5
+    auth_password_reset_rate_limit_per_hour: int = 3
+    auth_resend_verification_rate_limit_per_hour: int = 3
+
     ai_analysis_enabled: bool = True
     ragflow_base_url: str = "http://ragflow:9380"
     ragflow_api_key: str = ""
