@@ -93,7 +93,7 @@ x-backend-service: &backend-service
 
 services:
   nginx:
-    image: nginx:1.27-alpine
+    image: nginx:1.25-alpine
     depends_on:
       frontend:
         condition: service_started

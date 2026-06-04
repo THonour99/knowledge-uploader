@@ -19,3 +19,5 @@ celery_app.conf.task_routes = {
     "statistics.*": {"queue": "statistics_queue"},
     "notification.*": {"queue": "notification_queue"},
 }
+
+app = celery_app
