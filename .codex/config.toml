@@ -1,0 +1,6 @@
+[shell_environment_policy]
+inherit = "core"
+
+[shell_environment_policy.set]
+PYTHONUTF8 = "1"
+PYTHONDONTWRITEBYTECODE = "1"
