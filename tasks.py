@@ -2,7 +2,8 @@
 
 from __future__ import annotations
 
-from invoke import Context, task
+from invoke.context import Context
+from invoke.tasks import task
 
 
 def _compose(c: Context, args: str) -> None:
@@ -43,7 +44,7 @@ def test(c: Context, k: str = "") -> None:
     if k:
         pytest_cmd += f' -k "{k}"'
     _compose(c, f"run --rm backend-api {pytest_cmd}")
-    _compose(c, "run --rm frontend npm test -- --run")
+    c.run("npm --prefix frontend test -- --run", pty=False)
 
 
 @task
@@ -51,14 +52,14 @@ def lint(c: Context) -> None:
     """运行 ruff、mypy 和前端 lint。"""
     _compose(c, "run --rm backend-api ruff check app")
     _compose(c, "run --rm backend-api mypy app")
-    _compose(c, "run --rm frontend npm run lint")
+    c.run("npm --prefix frontend run lint", pty=False)
 
 
 @task
 def fmt(c: Context) -> None:
     """格式化后端和前端代码。"""
     _compose(c, "run --rm backend-api ruff format app")
-    _compose(c, "run --rm frontend npm run format")
+    c.run("npm --prefix frontend run format", pty=False)
 
 
 @task(name="check-arm64")

@@ -45,6 +45,8 @@ jobs:
           fi
           if [ -d backend/app ]; then
             python -m compileall backend/app
+            python -m ruff check backend/app scripts tasks.py
+            python -m mypy backend/app scripts tasks.py
           fi
           if [ -d backend/app/tests ]; then
             python -m pytest backend/app/tests

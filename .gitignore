@@ -235,9 +235,9 @@ logs/
 *.sqlite3-journal
 
 # 本机上传的临时文件（开发期）
-uploads/
-data/
-storage/
+/uploads/
+/data/
+/storage/
 
 # 数据库 dump
 *.sql.gz

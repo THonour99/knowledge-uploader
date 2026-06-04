@@ -1,7 +1,7 @@
 [tool.ruff]
 line-length = 100
 target-version = "py311"
-src = ["backend", "scripts"]
+src = ["app"]
 
 [tool.ruff.lint]
 select = [
@@ -47,21 +47,16 @@ line-ending = "lf"
 
 [tool.pytest.ini_options]
 asyncio_mode = "auto"
-testpaths = ["backend/app/tests"]
-pythonpath = ["backend"]
+testpaths = ["app/tests"]
+pythonpath = ["."]
 
 [tool.mypy]
 python_version = "3.11"
 strict = true
-mypy_path = ["backend"]
 plugins = ["pydantic.mypy"]
-files = ["backend/app", "scripts"]
+files = ["app"]
 warn_unused_configs = true
 
 [[tool.mypy.overrides]]
 module = ["celery", "celery.*"]
 ignore_missing_imports = true
-
-[tool.coverage.run]
-branch = true
-source = ["backend/app"]
