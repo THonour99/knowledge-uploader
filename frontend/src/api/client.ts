@@ -55,7 +55,12 @@ apiClient.interceptors.response.use(
 );
 
 function unwrapResponse<T>(payload: ApiEnvelope<T> | T): T {
-  if (typeof payload === "object" && payload !== null && "success" in payload && "data" in payload) {
+  if (
+    typeof payload === "object" &&
+    payload !== null &&
+    "success" in payload &&
+    "data" in payload
+  ) {
     const envelope = payload as ApiEnvelope<T>;
 
     if (!envelope.success) {

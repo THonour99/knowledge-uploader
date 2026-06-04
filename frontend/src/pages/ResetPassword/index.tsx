@@ -23,7 +23,11 @@ export default function ResetPasswordPage() {
             </Typography.Paragraph>
           </div>
 
-          <Form<ResetPasswordFormValues> layout="vertical" requiredMark={false} disabled={!hasToken}>
+          <Form<ResetPasswordFormValues>
+            layout="vertical"
+            requiredMark={false}
+            disabled={!hasToken}
+          >
             <Form.Item
               label="新密码"
               name="password"
