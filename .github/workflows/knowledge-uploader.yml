@@ -133,8 +133,8 @@ jobs:
 
       - name: Backend lint and tests
         run: |
-          python -m venv /tmp/knowledge-uploader-ci-venv
-          . /tmp/knowledge-uploader-ci-venv/bin/activate
+          python -m venv "$RUNNER_TEMP/knowledge-uploader-ci-venv"
+          . "$RUNNER_TEMP/knowledge-uploader-ci-venv/bin/activate"
           python -m pip install --upgrade pip
           python -m pip install -r backend/requirements.txt -r backend/requirements-dev.txt
           python -m compileall backend/app

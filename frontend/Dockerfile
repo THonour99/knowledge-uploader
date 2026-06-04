@@ -15,7 +15,7 @@ RUN if [ -f package-lock.json ]; then npm ci; else npm install; fi
 COPY . .
 RUN npm run build
 
-FROM ${NGINX_IMAGE} AS runtime
+FROM --platform=$BUILDPLATFORM ${NGINX_IMAGE} AS runtime
 
 ARG NGINX_IMAGE
 
