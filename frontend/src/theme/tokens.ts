@@ -18,6 +18,20 @@ export const colors = {
   dangerDeep: "#9D174D",
 } as const;
 
+export const statusTagColors = {
+  default: colors.textDisabled,
+  info: colors.info,
+  primary: colors.primary,
+  queued: colors.warning,
+  success: colors.success,
+  warning: colors.warning,
+  danger: colors.danger,
+  dangerDeep: colors.dangerDeep,
+  ai: colors.purple,
+  orange: colors.orange,
+  cyan: colors.cyan,
+} as const;
+
 export const radius = {
   card: 12,
   control: 8,
