@@ -1,4 +1,3 @@
-# syntax=docker/dockerfile:1.6
 FROM --platform=$BUILDPLATFORM node:20-alpine AS builder
 
 ARG TARGETPLATFORM
