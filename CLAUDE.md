@@ -142,11 +142,6 @@ test(ai): 补全 Prompt 模板渲染单测
 - 一个提交一个原子变更（小到能独立 review 和回滚）
 - DB schema 变更必须含 Alembic 迁移
 - 新增 Python 依赖必须 `invoke check-arm64` 通过
-- 提交信息末尾追加 trailer：
-
-```text
-Co-Authored-By: Claude Opus 4.7 (1M context) <noreply@anthropic.com>
-```
 
 ### 不允许
 
@@ -155,6 +150,7 @@ Co-Authored-By: Claude Opus 4.7 (1M context) <noreply@anthropic.com>
 - ❌ 模糊 type（如 `update / improve / change`）
 - ❌ 句末有句号
 - ❌ 多个原子变更塞一个 commit
+- ❌ 任何 trailer（`Co-Authored-By:` / `Signed-off-by:` / `Reviewed-by:` 等都不要带）
 
 ## 13. 阶段化开发（不可跳）
 
