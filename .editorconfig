@@ -1,0 +1,81 @@
+# ============================================================================
+# Knowledge Uploader — .editorconfig
+# 统一编辑器：UTF-8 / LF / 缩进 / 末尾换行
+# 多数编辑器内置支持；VS Code 装 "EditorConfig for VS Code" 扩展
+# 来源：补充 spec §2.4
+# ============================================================================
+root = true
+
+# ---------------------------------------------------------------------------
+# 默认：所有文件
+# ---------------------------------------------------------------------------
+[*]
+charset = utf-8
+end_of_line = lf
+insert_final_newline = true
+trim_trailing_whitespace = true
+indent_style = space
+indent_size = 4
+max_line_length = 100
+
+# ---------------------------------------------------------------------------
+# 前端 / Web：2 空格
+# ---------------------------------------------------------------------------
+[*.{ts,tsx,js,jsx,mjs,cjs}]
+indent_size = 2
+
+[*.{json,jsonc}]
+indent_size = 2
+
+[*.{yml,yaml}]
+indent_size = 2
+
+[*.{html,htm}]
+indent_size = 2
+
+[*.{css,scss,sass,less}]
+indent_size = 2
+
+[*.{md,markdown}]
+indent_size = 2
+# 保留行尾空格（Markdown 用作软换行）
+trim_trailing_whitespace = false
+max_line_length = off
+
+# ---------------------------------------------------------------------------
+# Windows 脚本：CRLF（与 .gitattributes 一致）
+# ---------------------------------------------------------------------------
+[*.{ps1,psm1,psd1,bat,cmd}]
+end_of_line = crlf
+
+# ---------------------------------------------------------------------------
+# Makefile / Tab 强制场景
+# ---------------------------------------------------------------------------
+[Makefile]
+indent_style = tab
+indent_size = 4
+
+[*.go]
+indent_style = tab
+indent_size = 4
+
+# ---------------------------------------------------------------------------
+# Python：100 行宽（与 ruff 一致）
+# ---------------------------------------------------------------------------
+[*.py]
+indent_size = 4
+max_line_length = 100
+
+# ---------------------------------------------------------------------------
+# 二进制 / 锁文件：不强制
+# ---------------------------------------------------------------------------
+[*.{png,jpg,jpeg,gif,ico,pdf,zip,woff,woff2}]
+charset = unset
+end_of_line = unset
+insert_final_newline = unset
+trim_trailing_whitespace = unset
+indent_style = unset
+
+[{package-lock.json,pnpm-lock.yaml,yarn.lock}]
+insert_final_newline = unset
+trim_trailing_whitespace = unset

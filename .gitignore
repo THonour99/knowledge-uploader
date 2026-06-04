@@ -1,0 +1,267 @@
+# ============================================================================
+# Knowledge Uploader — .gitignore
+# 强制：所有密钥、本机配置、构建产物、缓存均不进版本控制
+# 例外：保留 .env.example、.gitkeep 等模板/占位文件
+# ============================================================================
+
+# ---------------------------------------------------------------------------
+# 环境变量与密钥
+# ---------------------------------------------------------------------------
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+*.crt
+*.p12
+secrets/
+credentials/
+
+# ---------------------------------------------------------------------------
+# Python
+# ---------------------------------------------------------------------------
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+build/
+dist/
+develop-eggs/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+share/python-wheels/
+*.egg-info/
+.installed.cfg
+*.egg
+MANIFEST
+
+# Python 测试 / 类型 / lint 缓存
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.dmypy.json
+dmypy.json
+.coverage
+.coverage.*
+.cache
+nosetests.xml
+coverage.xml
+*.cover
+*.py,cover
+htmlcov/
+.hypothesis/
+.tox/
+.nox/
+
+# Python 虚拟环境
+.venv/
+venv/
+env/
+ENV/
+env.bak/
+venv.bak/
+.python-version
+
+# Python 工具配置（本机）
+.pdm.toml
+.pdm-python
+.pdm-build/
+__pypackages__/
+
+# ---------------------------------------------------------------------------
+# Node.js / 前端
+# ---------------------------------------------------------------------------
+node_modules/
+jspm_packages/
+.pnpm-store/
+.npm
+.yarn-integrity
+yarn-debug.log*
+yarn-error.log*
+npm-debug.log*
+pnpm-debug.log*
+lerna-debug.log*
+
+# 前端构建产物
+.vite/
+.next/
+out/
+.nuxt/
+.output/
+.cache/
+.parcel-cache/
+
+# 前端测试 / 类型缓存
+.tsbuildinfo
+*.tsbuildinfo
+coverage/
+.eslintcache
+.stylelintcache
+
+# ---------------------------------------------------------------------------
+# Docker
+# ---------------------------------------------------------------------------
+# 本机 compose 覆盖（开发者私有）
+docker-compose.override.yml
+docker-compose.override.yaml
+# 但保留示例
+!docker-compose.override.yml.example
+
+# Docker 构建缓存（本机）
+.docker/
+
+# ---------------------------------------------------------------------------
+# Claude Code
+# ---------------------------------------------------------------------------
+# 本机覆盖配置（settings.local.json 是个人私有）
+.claude/settings.local.json
+# Claude Code 本机交互历史 / 缓存
+.claude/cache/
+.claude/sessions/
+.claude/logs/
+
+# TDD 资产内容（仅保留目录结构 .gitkeep）
+.claude/artifacts/trace/*
+.claude/artifacts/coverage/*
+.claude/artifacts/skeleton/*
+!.claude/artifacts/trace/.gitkeep
+!.claude/artifacts/coverage/.gitkeep
+!.claude/artifacts/skeleton/.gitkeep
+
+# ---------------------------------------------------------------------------
+# 编辑器 / IDE
+# ---------------------------------------------------------------------------
+# VS Code（保留 launch.json 和 settings.json 的项目共享版本）
+.vscode/*
+!.vscode/settings.json
+!.vscode/tasks.json
+!.vscode/launch.json
+!.vscode/extensions.json
+*.code-workspace
+
+# JetBrains
+.idea/
+*.iml
+*.iws
+*.ipr
+
+# Sublime
+*.sublime-project
+*.sublime-workspace
+
+# Vim
+*.swp
+*.swo
+*.swn
+.netrwhist
+Session.vim
+
+# Emacs
+*~
+\#*\#
+.\#*
+
+# ---------------------------------------------------------------------------
+# 操作系统
+# ---------------------------------------------------------------------------
+# macOS
+.DS_Store
+.AppleDouble
+.LSOverride
+Icon
+._*
+.DocumentRevisions-V100
+.fseventsd
+.Spotlight-V100
+.TemporaryItems
+.Trashes
+.VolumeIcon.icns
+.com.apple.timemachine.donotpresent
+.AppleDB
+.AppleDesktop
+Network Trash Folder
+Temporary Items
+.apdisk
+
+# Windows
+Thumbs.db
+Thumbs.db:encryptable
+ehthumbs.db
+ehthumbs_vista.db
+*.stackdump
+[Dd]esktop.ini
+$RECYCLE.BIN/
+*.cab
+*.msi
+*.msix
+*.msm
+*.msp
+*.lnk
+
+# Linux
+*~
+.fuse_hidden*
+.directory
+.Trash-*
+.nfs*
+
+# ---------------------------------------------------------------------------
+# 日志 / 临时文件
+# ---------------------------------------------------------------------------
+*.log
+logs/
+*.tmp
+*.temp
+*.bak
+*.backup
+*.old
+*.orig
+
+# ---------------------------------------------------------------------------
+# 数据库 / 数据
+# ---------------------------------------------------------------------------
+*.db
+*.db-journal
+*.sqlite
+*.sqlite3
+*.sqlite3-journal
+
+# 本机上传的临时文件（开发期）
+uploads/
+data/
+storage/
+
+# 数据库 dump
+*.sql.gz
+*.dump
+*.backup.tar
+*.pgdump
+
+# ---------------------------------------------------------------------------
+# 构建 / 编译产物
+# ---------------------------------------------------------------------------
+*.exe
+*.out
+*.app
+*.dll
+*.dylib
+
+# ---------------------------------------------------------------------------
+# 项目特有
+# ---------------------------------------------------------------------------
+# 设计稿的压缩包（PNG 本身进版本控制）
+knowledge_platform_design_package.zip
+knowledge_uploader_docs.zip
+
+# 应急 dump
+emergency_dump_*.json
+audit_export_*.csv
+statistics_export_*.xlsx

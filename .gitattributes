@@ -1,0 +1,143 @@
+# ============================================================================
+# Knowledge Uploader — .gitattributes
+# 强制全仓库 LF 行尾；PowerShell 保留 CRLF（兼容 Windows ISE）
+# 二进制文件显式声明，避免 git 误判
+# 来源：补充 spec §2.4
+# ============================================================================
+
+# 默认：自动判定但统一 LF
+* text=auto eol=lf
+
+# ---------------------------------------------------------------------------
+# 文本：强制 LF
+# ---------------------------------------------------------------------------
+*.py        text eol=lf
+*.pyi       text eol=lf
+*.pyx       text eol=lf
+*.md        text eol=lf
+*.markdown  text eol=lf
+*.txt       text eol=lf
+*.rst       text eol=lf
+
+*.yml       text eol=lf
+*.yaml      text eol=lf
+*.json      text eol=lf
+*.jsonc     text eol=lf
+*.toml      text eol=lf
+*.ini       text eol=lf
+*.cfg       text eol=lf
+*.conf      text eol=lf
+
+*.sh        text eol=lf
+*.bash      text eol=lf
+*.zsh       text eol=lf
+*.fish      text eol=lf
+
+*.ts        text eol=lf
+*.tsx       text eol=lf
+*.js        text eol=lf
+*.jsx       text eol=lf
+*.mjs       text eol=lf
+*.cjs       text eol=lf
+
+*.css       text eol=lf
+*.scss      text eol=lf
+*.sass      text eol=lf
+*.less      text eol=lf
+*.html      text eol=lf
+*.svg       text eol=lf
+
+*.sql       text eol=lf
+*.dockerfile text eol=lf
+Dockerfile  text eol=lf
+Dockerfile.* text eol=lf
+.gitignore  text eol=lf
+.gitattributes text eol=lf
+.editorconfig text eol=lf
+.dockerignore text eol=lf
+.env.example text eol=lf
+
+# ---------------------------------------------------------------------------
+# Windows 脚本：保留 CRLF
+# ---------------------------------------------------------------------------
+*.ps1       text eol=crlf
+*.psm1      text eol=crlf
+*.psd1      text eol=crlf
+*.bat       text eol=crlf
+*.cmd       text eol=crlf
+
+# ---------------------------------------------------------------------------
+# 二进制：显式标记
+# ---------------------------------------------------------------------------
+*.png       binary
+*.jpg       binary
+*.jpeg      binary
+*.gif       binary
+*.webp      binary
+*.bmp       binary
+*.tiff      binary
+*.tif       binary
+*.ico       binary
+
+*.pdf       binary
+*.zip       binary
+*.tar       binary
+*.gz        binary
+*.bz2       binary
+*.xz        binary
+*.7z        binary
+
+*.woff      binary
+*.woff2     binary
+*.ttf       binary
+*.eot       binary
+*.otf       binary
+
+*.mp3       binary
+*.mp4       binary
+*.wav       binary
+*.webm      binary
+*.mov       binary
+
+# 文档（二进制格式）
+*.docx      binary
+*.xlsx      binary
+*.pptx      binary
+*.doc       binary
+*.xls       binary
+*.ppt       binary
+
+# 数据库
+*.db        binary
+*.sqlite    binary
+*.sqlite3   binary
+
+# 编译产物
+*.pyc       binary
+*.pyo       binary
+*.so        binary
+*.dll       binary
+*.dylib     binary
+*.exe       binary
+
+# ---------------------------------------------------------------------------
+# 语言识别（GitHub linguist hint）
+# ---------------------------------------------------------------------------
+*.ipynb       linguist-language=Python
+Dockerfile.*  linguist-language=Dockerfile
+
+# ---------------------------------------------------------------------------
+# 不进 diff（无意义的文件类型）
+# ---------------------------------------------------------------------------
+*.lock      -diff
+package-lock.json -diff
+pnpm-lock.yaml -diff
+yarn.lock -diff
+
+# ---------------------------------------------------------------------------
+# 导出时排除（git archive 不带）
+# ---------------------------------------------------------------------------
+.gitattributes export-ignore
+.gitignore     export-ignore
+.github/       export-ignore
+docs/          export-ignore
