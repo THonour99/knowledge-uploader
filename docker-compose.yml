@@ -1,0 +1,365 @@
+name: knowledge-uploader
+
+x-backend-build: &backend-build
+  context: ./backend
+  dockerfile: Dockerfile
+  args:
+    PYTHON_IMAGE: "${PYTHON_IMAGE:-python:3.11-slim-bookworm}"
+
+x-app-environment: &app-environment
+  APP_NAME: "${APP_NAME:-knowledge-uploader}"
+  APP_ENV: "${APP_ENV:-development}"
+  APP_BASE_URL: "${APP_BASE_URL:-http://localhost}"
+  JWT_SECRET: "${JWT_SECRET:-change-me-change-me-change-me-change-me}"
+  ENCRYPTION_KEY: "${ENCRYPTION_KEY:-RZ1Sw_27VrN9c5Cfsq01qiwViwT6y7jDCuXYn7tgGJY=}"
+  PYTHONUTF8: "${PYTHONUTF8:-1}"
+  POSTGRES_HOST: "${POSTGRES_HOST:-postgres}"
+  POSTGRES_PORT: "${POSTGRES_PORT:-5432}"
+  POSTGRES_DB: "${POSTGRES_DB:-knowledge_uploader}"
+  POSTGRES_USER: "${POSTGRES_USER:-knowledge}"
+  POSTGRES_PASSWORD: "${POSTGRES_PASSWORD:-knowledge_password}"
+  DATABASE_URL: "${DATABASE_URL:-postgresql+asyncpg://knowledge:knowledge_password@postgres:5432/knowledge_uploader}"
+  ALEMBIC_DATABASE_URL: "${ALEMBIC_DATABASE_URL:-postgresql+psycopg://knowledge:knowledge_password@postgres:5432/knowledge_uploader}"
+  RABBITMQ_HOST: "${RABBITMQ_HOST:-rabbitmq}"
+  RABBITMQ_PORT: "${RABBITMQ_PORT:-5672}"
+  RABBITMQ_USER: "${RABBITMQ_USER:-knowledge}"
+  RABBITMQ_PASSWORD: "${RABBITMQ_PASSWORD:-knowledge_password}"
+  CELERY_BROKER_URL: "${CELERY_BROKER_URL:-amqp://knowledge:knowledge_password@rabbitmq:5672//}"
+  REDIS_HOST: "${REDIS_HOST:-redis}"
+  REDIS_PORT: "${REDIS_PORT:-6379}"
+  REDIS_PASSWORD: "${REDIS_PASSWORD:-}"
+  CELERY_RESULT_BACKEND: "${CELERY_RESULT_BACKEND:-redis://redis:6379/0}"
+  CACHE_REDIS_URL: "${CACHE_REDIS_URL:-redis://redis:6379/1}"
+  MINIO_ENDPOINT: "${MINIO_ENDPOINT:-minio:9000}"
+  MINIO_ACCESS_KEY: "${MINIO_ACCESS_KEY:-knowledge}"
+  MINIO_SECRET_KEY: "${MINIO_SECRET_KEY:-knowledge_password}"
+  MINIO_BUCKET: "${MINIO_BUCKET:-knowledge-files}"
+  MINIO_SECURE: "${MINIO_SECURE:-false}"
+  RAGFLOW_BASE_URL: "${RAGFLOW_BASE_URL:-http://ragflow:9380}"
+  RAGFLOW_API_KEY: "${RAGFLOW_API_KEY:-}"
+  DEFAULT_DATASET_ID: "${DEFAULT_DATASET_ID:-}"
+  RAGFLOW_REQUEST_TIMEOUT: "${RAGFLOW_REQUEST_TIMEOUT:-300}"
+  RAGFLOW_MAX_RETRY_COUNT: "${RAGFLOW_MAX_RETRY_COUNT:-3}"
+  AUTH_PROVIDER: "${AUTH_PROVIDER:-local}"
+  ALLOW_REGISTER: "${ALLOW_REGISTER:-true}"
+  REQUIRE_EMAIL_VERIFICATION: "${REQUIRE_EMAIL_VERIFICATION:-true}"
+  ALLOWED_EMAIL_DOMAINS: "${ALLOWED_EMAIL_DOMAINS:-company.com,corp.company.com}"
+  PASSWORD_MIN_LENGTH: "${PASSWORD_MIN_LENGTH:-8}"
+  LOGIN_MAX_FAILED_ATTEMPTS: "${LOGIN_MAX_FAILED_ATTEMPTS:-5}"
+  LOGIN_LOCK_MINUTES: "${LOGIN_LOCK_MINUTES:-15}"
+  EMAIL_VERIFICATION_EXPIRE_HOURS: "${EMAIL_VERIFICATION_EXPIRE_HOURS:-24}"
+  PASSWORD_RESET_EXPIRE_MINUTES: "${PASSWORD_RESET_EXPIRE_MINUTES:-30}"
+  JWT_EXPIRE_MINUTES: "${JWT_EXPIRE_MINUTES:-1440}"
+  AI_ANALYSIS_ENABLED: "${AI_ANALYSIS_ENABLED:-true}"
+  ALLOW_EXTERNAL_LLM: "${ALLOW_EXTERNAL_LLM:-false}"
+  LLM_PROVIDER: "${LLM_PROVIDER:-openai_compatible}"
+  LLM_BASE_URL: "${LLM_BASE_URL:-}"
+  LLM_API_KEY: "${LLM_API_KEY:-}"
+  LLM_MODEL: "${LLM_MODEL:-}"
+  EMBEDDING_PROVIDER: "${EMBEDDING_PROVIDER:-openai_compatible}"
+  EMBEDDING_BASE_URL: "${EMBEDDING_BASE_URL:-}"
+  EMBEDDING_API_KEY: "${EMBEDDING_API_KEY:-}"
+  EMBEDDING_MODEL: "${EMBEDDING_MODEL:-}"
+  AI_REQUEST_TIMEOUT: "${AI_REQUEST_TIMEOUT:-120}"
+  AI_MAX_RETRY_COUNT: "${AI_MAX_RETRY_COUNT:-3}"
+  SMTP_HOST: "${SMTP_HOST:-}"
+  SMTP_PORT: "${SMTP_PORT:-587}"
+  SMTP_USER: "${SMTP_USER:-}"
+  SMTP_PASSWORD: "${SMTP_PASSWORD:-}"
+  SMTP_FROM: "${SMTP_FROM:-}"
+  SMTP_TLS: "${SMTP_TLS:-true}"
+  DOCUMENT_QUEUE: "document_queue"
+  AI_QUEUE: "ai_queue"
+  RAGFLOW_QUEUE: "ragflow_queue"
+  STATISTICS_QUEUE: "statistics_queue"
+  NOTIFICATION_QUEUE: "notification_queue"
+
+x-backend-depends: &backend-depends
+  postgres:
+    condition: service_healthy
+  rabbitmq:
+    condition: service_healthy
+  redis:
+    condition: service_healthy
+  minio:
+    condition: service_healthy
+
+x-backend-service: &backend-service
+  image: knowledge-uploader-backend:dev
+  build: *backend-build
+  environment: *app-environment
+  depends_on: *backend-depends
+  networks:
+    - knowledge-uploader
+  restart: unless-stopped
+
+services:
+  nginx:
+    image: nginx:1.25-alpine
+    depends_on:
+      frontend:
+        condition: service_started
+      backend-api:
+        condition: service_started
+    ports:
+      - "${NGINX_HTTP_PORT:-80}:80"
+    volumes:
+      - ./nginx/nginx.conf:/etc/nginx/nginx.conf:ro
+      - ./nginx/default.conf:/etc/nginx/conf.d/default.conf:ro
+    networks:
+      - knowledge-uploader
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD-SHELL", "wget -q --spider http://127.0.0.1/nginx-health || exit 1"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
+
+  frontend:
+    image: knowledge-uploader-frontend:dev
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile
+      args:
+        NODE_IMAGE: "${NODE_IMAGE:-node:20-alpine}"
+        NGINX_IMAGE: "${NGINX_IMAGE:-nginx:1.25-alpine}"
+        VITE_API_BASE_URL: "${VITE_API_BASE_URL:-/api}"
+    environment:
+      VITE_API_BASE_URL: "${VITE_API_BASE_URL:-/api}"
+    expose:
+      - "80"
+    networks:
+      - knowledge-uploader
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD-SHELL", "wget -q --spider http://127.0.0.1/ || exit 1"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 20s
+
+  backend-api:
+    <<: *backend-service
+    command:
+      - uvicorn
+      - app.main:app
+      - --host
+      - 0.0.0.0
+      - --port
+      - "8000"
+    ports:
+      - "${BACKEND_API_PORT:-8000}:8000"
+    healthcheck:
+      test: ["CMD-SHELL", "python -c \"import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/api/system/health', timeout=5).read()\""]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 30s
+
+  outbox-dispatcher:
+    <<: *backend-service
+    command:
+      - python
+      - -m
+      - app.workers.outbox_dispatcher
+    healthcheck:
+      test: ["CMD-SHELL", "python -c \"import app\""]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 20s
+
+  worker-document:
+    <<: *backend-service
+    command:
+      - celery
+      - -A
+      - app.workers.celery_app
+      - worker
+      - --loglevel=info
+      - --queues=document_queue
+      - --hostname=worker-document@%h
+    healthcheck:
+      test: ["CMD-SHELL", "celery -A app.workers.celery_app inspect ping --timeout=10 | grep -q worker-document@"]
+      interval: 30s
+      timeout: 15s
+      retries: 5
+      start_period: 40s
+
+  worker-ai:
+    <<: *backend-service
+    command:
+      - celery
+      - -A
+      - app.workers.celery_app
+      - worker
+      - --loglevel=info
+      - --queues=ai_queue
+      - --hostname=worker-ai@%h
+    healthcheck:
+      test: ["CMD-SHELL", "celery -A app.workers.celery_app inspect ping --timeout=10 | grep -q worker-ai@"]
+      interval: 30s
+      timeout: 15s
+      retries: 5
+      start_period: 40s
+
+  worker-ragflow:
+    <<: *backend-service
+    command:
+      - celery
+      - -A
+      - app.workers.celery_app
+      - worker
+      - --loglevel=info
+      - --queues=ragflow_queue
+      - --hostname=worker-ragflow@%h
+    healthcheck:
+      test: ["CMD-SHELL", "celery -A app.workers.celery_app inspect ping --timeout=10 | grep -q worker-ragflow@"]
+      interval: 30s
+      timeout: 15s
+      retries: 5
+      start_period: 40s
+
+  worker-statistics:
+    <<: *backend-service
+    command:
+      - celery
+      - -A
+      - app.workers.celery_app
+      - worker
+      - --loglevel=info
+      - --queues=statistics_queue
+      - --hostname=worker-statistics@%h
+    healthcheck:
+      test: ["CMD-SHELL", "celery -A app.workers.celery_app inspect ping --timeout=10 | grep -q worker-statistics@"]
+      interval: 30s
+      timeout: 15s
+      retries: 5
+      start_period: 40s
+
+  worker-notification:
+    <<: *backend-service
+    command:
+      - celery
+      - -A
+      - app.workers.celery_app
+      - worker
+      - --loglevel=info
+      - --queues=notification_queue
+      - --hostname=worker-notification@%h
+    healthcheck:
+      test: ["CMD-SHELL", "celery -A app.workers.celery_app inspect ping --timeout=10 | grep -q worker-notification@"]
+      interval: 30s
+      timeout: 15s
+      retries: 5
+      start_period: 40s
+
+  scheduler:
+    <<: *backend-service
+    command:
+      - celery
+      - -A
+      - app.workers.celery_app
+      - beat
+      - --loglevel=info
+    healthcheck:
+      test: ["CMD-SHELL", "python -c \"import app.workers.celery_app\""]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 20s
+
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_DB: "${POSTGRES_DB:-knowledge_uploader}"
+      POSTGRES_USER: "${POSTGRES_USER:-knowledge}"
+      POSTGRES_PASSWORD: "${POSTGRES_PASSWORD:-knowledge_password}"
+      POSTGRES_INITDB_ARGS: "--encoding=UTF8"
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+    networks:
+      - knowledge-uploader
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U \"$${POSTGRES_USER}\" -d \"$${POSTGRES_DB}\""]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 20s
+
+  rabbitmq:
+    image: rabbitmq:3.13-management-alpine
+    environment:
+      RABBITMQ_DEFAULT_USER: "${RABBITMQ_USER:-knowledge}"
+      RABBITMQ_DEFAULT_PASS: "${RABBITMQ_PASSWORD:-knowledge_password}"
+      RABBITMQ_DEFAULT_VHOST: "/"
+    volumes:
+      - rabbitmq-data:/var/lib/rabbitmq
+    networks:
+      - knowledge-uploader
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD-SHELL", "rabbitmq-diagnostics -q ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 30s
+
+  redis:
+    image: redis:7.2-alpine
+    environment:
+      REDIS_PASSWORD: "${REDIS_PASSWORD:-}"
+    command:
+      - sh
+      - -c
+      - |
+        if [ -n "$${REDIS_PASSWORD}" ]; then
+          redis-server --appendonly yes --requirepass "$${REDIS_PASSWORD}"
+        else
+          redis-server --appendonly yes
+        fi
+    volumes:
+      - redis-data:/data
+    networks:
+      - knowledge-uploader
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD-SHELL", "if [ -n \"$${REDIS_PASSWORD}\" ]; then redis-cli -a \"$${REDIS_PASSWORD}\" ping | grep -q PONG; else redis-cli ping | grep -q PONG; fi"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 10s
+
+  minio:
+    image: minio/minio:RELEASE.2024-04-18T19-09-19Z
+    environment:
+      MINIO_ROOT_USER: "${MINIO_ACCESS_KEY:-knowledge}"
+      MINIO_ROOT_PASSWORD: "${MINIO_SECRET_KEY:-knowledge_password}"
+    command:
+      - server
+      - /data
+      - --console-address
+      - ":9001"
+    volumes:
+      - minio-data:/data
+    networks:
+      - knowledge-uploader
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD-SHELL", "curl -f http://127.0.0.1:9000/minio/health/live || exit 1"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 20s
+
+networks:
+  knowledge-uploader:
+    driver: bridge
+
+volumes:
+  postgres-data:
+  rabbitmq-data:
+  redis-data:
+  minio-data:

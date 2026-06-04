@@ -1,0 +1,44 @@
+# Web
+fastapi==0.110.1
+uvicorn[standard]==0.29.0
+python-multipart==0.0.9
+
+# ORM / migrations
+sqlalchemy[asyncio]==2.0.30
+asyncpg==0.29.0
+psycopg[binary]==3.1.18
+alembic==1.13.1
+
+# Queue / cache
+celery==5.3.6
+kombu==5.3.7
+redis==5.0.4
+
+# Validation / config
+pydantic==2.7.1
+pydantic-settings==2.2.1
+email-validator==2.1.1
+
+# Security
+argon2-cffi==23.1.0
+PyJWT[crypto]==2.8.0
+cryptography==42.0.5
+
+# HTTP / external calls
+httpx[http2]==0.27.0
+tenacity==8.2.3
+
+# Files
+minio==7.2.5
+filetype==1.2.0
+
+# AI
+tiktoken==0.7.0
+
+# Logging / rate limiting
+structlog==24.1.0
+slowapi==0.1.9
+
+# Utilities
+python-dateutil==2.9.0.post0
+invoke==2.2.0

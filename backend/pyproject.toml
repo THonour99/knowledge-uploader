@@ -1,0 +1,62 @@
+[tool.ruff]
+line-length = 100
+target-version = "py311"
+src = ["app"]
+
+[tool.ruff.lint]
+select = [
+  "E",
+  "F",
+  "I",
+  "B",
+  "UP",
+  "ASYNC",
+  "PTH",
+  "RUF",
+]
+ignore = []
+
+[tool.ruff.lint.flake8-tidy-imports.banned-api]
+"app.modules.auth.service".msg = "跨模块禁止直接导入 service；使用事件总线、Celery task 或共享 schemas。"
+"app.modules.user.service".msg = "跨模块禁止直接导入 service；使用事件总线、Celery task 或共享 schemas。"
+"app.modules.document.service".msg = "跨模块禁止直接导入 service；使用事件总线、Celery task 或共享 schemas。"
+"app.modules.review.service".msg = "跨模块禁止直接导入 service；使用事件总线、Celery task 或共享 schemas。"
+"app.modules.ragflow.service".msg = "跨模块禁止直接导入 service；使用事件总线、Celery task 或共享 schemas。"
+"app.modules.ai.service".msg = "跨模块禁止直接导入 service；使用事件总线、Celery task 或共享 schemas。"
+"app.modules.statistics.service".msg = "跨模块禁止直接导入 service；使用事件总线、Celery task 或共享 schemas。"
+"app.modules.notification.service".msg = "跨模块禁止直接导入 service；使用事件总线、Celery task 或共享 schemas。"
+"app.modules.config.service".msg = "跨模块禁止直接导入 service；使用事件总线、Celery task 或共享 schemas。"
+"app.modules.audit.service".msg = "跨模块禁止直接导入 service；使用事件总线、Celery task 或共享 schemas。"
+"app.modules.auth.repository".msg = "跨模块禁止直接导入 repository；使用事件总线、Celery task 或共享 schemas。"
+"app.modules.user.repository".msg = "跨模块禁止直接导入 repository；使用事件总线、Celery task 或共享 schemas。"
+"app.modules.document.repository".msg = "跨模块禁止直接导入 repository；使用事件总线、Celery task 或共享 schemas。"
+"app.modules.review.repository".msg = "跨模块禁止直接导入 repository；使用事件总线、Celery task 或共享 schemas。"
+"app.modules.ragflow.repository".msg = "跨模块禁止直接导入 repository；使用事件总线、Celery task 或共享 schemas。"
+"app.modules.ai.repository".msg = "跨模块禁止直接导入 repository；使用事件总线、Celery task 或共享 schemas。"
+"app.modules.statistics.repository".msg = "跨模块禁止直接导入 repository；使用事件总线、Celery task 或共享 schemas。"
+"app.modules.notification.repository".msg = "跨模块禁止直接导入 repository；使用事件总线、Celery task 或共享 schemas。"
+"app.modules.config.repository".msg = "跨模块禁止直接导入 repository；使用事件总线、Celery task 或共享 schemas。"
+"app.modules.audit.repository".msg = "跨模块禁止直接导入 repository；使用事件总线、Celery task 或共享 schemas。"
+
+[tool.ruff.lint.isort]
+known-first-party = ["app"]
+
+[tool.ruff.format]
+quote-style = "double"
+line-ending = "lf"
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+testpaths = ["app/tests"]
+pythonpath = ["."]
+
+[tool.mypy]
+python_version = "3.11"
+strict = true
+plugins = ["pydantic.mypy"]
+files = ["app"]
+warn_unused_configs = true
+
+[[tool.mypy.overrides]]
+module = ["celery", "celery.*"]
+ignore_missing_imports = true
