@@ -1,5 +1,7 @@
-FROM --platform=$BUILDPLATFORM python:3.11-slim-bookworm AS builder
+ARG PYTHON_IMAGE=python:3.11-slim-bookworm
+FROM --platform=$BUILDPLATFORM ${PYTHON_IMAGE} AS builder
 
+ARG PYTHON_IMAGE
 ARG TARGETPLATFORM
 ARG BUILDPLATFORM
 
@@ -14,7 +16,9 @@ WORKDIR /build
 COPY requirements.txt requirements-dev.txt ./
 RUN pip install --user --no-cache-dir -r requirements-dev.txt
 
-FROM python:3.11-slim-bookworm AS runtime
+FROM ${PYTHON_IMAGE} AS runtime
+
+ARG PYTHON_IMAGE
 
 ENV PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1 \

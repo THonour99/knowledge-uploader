@@ -3,6 +3,8 @@ name: knowledge-uploader
 x-backend-build: &backend-build
   context: ./backend
   dockerfile: Dockerfile
+  args:
+    PYTHON_IMAGE: "${PYTHON_IMAGE:-python:3.11-slim-bookworm}"
 
 x-app-environment: &app-environment
   APP_NAME: "${APP_NAME:-knowledge-uploader}"
@@ -120,6 +122,8 @@ services:
       context: ./frontend
       dockerfile: Dockerfile
       args:
+        NODE_IMAGE: "${NODE_IMAGE:-node:20-alpine}"
+        NGINX_IMAGE: "${NGINX_IMAGE:-nginx:1.25-alpine}"
         VITE_API_BASE_URL: "${VITE_API_BASE_URL:-/api}"
     environment:
       VITE_API_BASE_URL: "${VITE_API_BASE_URL:-/api}"
