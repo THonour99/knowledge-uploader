@@ -11,7 +11,7 @@ x-app-environment: &app-environment
   APP_ENV: "${APP_ENV:-development}"
   APP_BASE_URL: "${APP_BASE_URL:-http://localhost}"
   JWT_SECRET: "${JWT_SECRET:-change-me-change-me-change-me-change-me}"
-  ENCRYPTION_KEY: "${ENCRYPTION_KEY:-change-me-fernet-key}"
+  ENCRYPTION_KEY: "${ENCRYPTION_KEY:-RZ1Sw_27VrN9c5Cfsq01qiwViwT6y7jDCuXYn7tgGJY=}"
   PYTHONUTF8: "${PYTHONUTF8:-1}"
   POSTGRES_HOST: "${POSTGRES_HOST:-postgres}"
   POSTGRES_PORT: "${POSTGRES_PORT:-5432}"

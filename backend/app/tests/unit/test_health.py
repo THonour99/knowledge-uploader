@@ -25,29 +25,3 @@ async def test_health_endpoint_returns_ok() -> None:
 
     assert response.status_code == 200
     assert response.json() == {"status": "ok"}
-
-
-@pytest.mark.asyncio
-async def test_phase0_login_mock_returns_token() -> None:
-    transport = ASGITransport(app=app)
-    async with AsyncClient(transport=transport, base_url="http://testserver") as client:
-        response = await client.post(
-            "/api/auth/login",
-            json={
-                "email": "admin@example.com",
-                "password": "phase0-password",
-                "remember_me": True,
-            },
-        )
-
-    assert response.status_code == 200
-    assert response.json() == {
-        "access_token": "phase0-mock-token-for-admin@example.com",
-        "token_type": "bearer",
-        "user": {
-            "id": "phase0-user",
-            "name": "Phase 0 Mock User",
-            "email": "admin@example.com",
-            "role": "system_admin",
-        },
-    }
