@@ -1,0 +1,29 @@
+services:
+  nginx:
+    platform: linux/arm64
+  frontend:
+    platform: linux/arm64
+  backend-api:
+    platform: linux/arm64
+  outbox-dispatcher:
+    platform: linux/arm64
+  worker-document:
+    platform: linux/arm64
+  worker-ai:
+    platform: linux/arm64
+  worker-ragflow:
+    platform: linux/arm64
+  worker-statistics:
+    platform: linux/arm64
+  worker-notification:
+    platform: linux/arm64
+  scheduler:
+    platform: linux/arm64
+  postgres:
+    platform: linux/arm64
+  rabbitmq:
+    platform: linux/arm64
+  redis:
+    platform: linux/arm64
+  minio:
+    platform: linux/arm64

@@ -1,0 +1,81 @@
+name: Knowledge Uploader CI
+
+on:
+  push:
+    branches:
+      - main
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  lint-test-arm64:
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Set up Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+
+      - name: Check Docker Compose syntax
+        run: docker compose config
+
+      - name: Check ARM64 Python dependency allowlist
+        run: |
+          if [ -f backend/requirements.txt ] && [ -f backend/requirements-dev.txt ]; then
+            python scripts/check_arm64_wheels.py backend/requirements.txt backend/requirements-dev.txt
+          else
+            echo "Skipping ARM64 dependency check until backend requirements are created."
+          fi
+
+      - name: Backend lint and tests
+        run: |
+          if [ -f backend/requirements.txt ] && [ -f backend/requirements-dev.txt ]; then
+            python -m pip install --upgrade pip
+            python -m pip install -r backend/requirements.txt -r backend/requirements-dev.txt
+          fi
+          if [ -d backend/app ]; then
+            python -m compileall backend/app
+          fi
+          if [ -d backend/app/tests ]; then
+            python -m pytest backend/app/tests
+          fi
+
+      - name: Frontend lint and tests
+        run: |
+          if [ -f frontend/package.json ]; then
+            npm ci --prefix frontend
+            npm run lint --prefix frontend
+            npm test --prefix frontend -- --run
+            npm run build --prefix frontend
+          else
+            echo "Skipping frontend checks until frontend/package.json is created."
+          fi
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Build backend linux/amd64 image
+        run: |
+          if [ -f backend/Dockerfile ]; then
+            docker buildx build --platform linux/amd64 -f backend/Dockerfile backend --load
+          else
+            echo "Skipping backend image build until backend/Dockerfile is created."
+          fi
+
+      - name: Build frontend linux/amd64 image
+        run: |
+          if [ -f frontend/Dockerfile ]; then
+            docker buildx build --platform linux/amd64 -f frontend/Dockerfile frontend --load
+          else
+            echo "Skipping frontend image build until frontend/Dockerfile is created."
+          fi
