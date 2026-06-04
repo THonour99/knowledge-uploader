@@ -45,6 +45,10 @@ plugins = ["pydantic.mypy"]
 files = ["backend/app", "scripts"]
 warn_unused_configs = true
 
+[[tool.mypy.overrides]]
+module = ["celery", "celery.*"]
+ignore_missing_imports = true
+
 [tool.coverage.run]
 branch = true
 source = ["backend/app"]
