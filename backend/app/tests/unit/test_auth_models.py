@@ -19,6 +19,7 @@ def test_phase1_auth_user_tables_are_registered_in_metadata() -> None:
         "users",
         "email_verification_tokens",
         "password_reset_tokens",
+        "event_outbox",
     }
 
     assert expected_tables <= set(metadata.tables)
@@ -43,6 +44,7 @@ def test_users_table_has_auth_constraints_and_indexes() -> None:
         "ck_users_email_lowercase",
         "ck_users_email_domain_lowercase",
         "ck_users_failed_login_count_non_negative",
+        "ck_users_session_version_non_negative",
     } <= constraint_names
 
 
@@ -60,3 +62,24 @@ def test_auth_token_tables_store_hashes_not_plain_tokens() -> None:
         assert f"ck_{table_name}_token_hash_sha256_hex" in {
             constraint.name for constraint in table.constraints
         }
+
+
+def test_event_outbox_table_matches_dispatcher_contract() -> None:
+    import_module("app.core.outbox")
+    metadata = _current_metadata()
+
+    table = metadata.tables["event_outbox"]
+
+    assert {
+        "id",
+        "event_type",
+        "aggregate_type",
+        "aggregate_id",
+        "payload",
+        "occurred_at",
+        "published_at",
+        "publish_attempts",
+        "last_error",
+        "trace_id",
+    } <= set(table.columns.keys())
+    assert any(index.name == "idx_outbox_pending" for index in table.indexes)

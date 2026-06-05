@@ -11,23 +11,27 @@ import jwt
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.config import Settings
+from app.core.identity import NULL_VALUE, UserIdentityStore
+from app.core.outbox import OutboxRepository
 from app.core.ratelimit import (
     blacklist_jwt,
     email_verification_rate_limit_key,
     is_within_rate_limit,
+    login_ip_rate_limit_key,
+    login_rate_limit_key,
     password_reset_rate_limit_key,
     register_rate_limit_key,
 )
 from app.core.security import (
     create_jwt,
     decode_jwt,
+    encrypt_secret,
     hash_password,
     password_fingerprint,
     verify_password,
 )
-from app.modules.auth import exceptions
+from app.modules.auth import events, exceptions
 from app.modules.auth.exceptions import AuthError
-from app.modules.auth.repository import AuthRepository
 from app.modules.auth.schemas import (
     ChangePasswordRequest,
     ForgotPasswordRequest,
@@ -35,19 +39,40 @@ from app.modules.auth.schemas import (
     ResetPasswordRequest,
     TokenRequest,
 )
-from app.modules.user.models import User
+from app.modules.user.schemas import AuthUserRecord
+
+from .repository import AuthRepository
+
+DUMMY_PASSWORD_HASH = (
+    "$argon2id$v=19$m=65536,t=3,p=4$BwCmlBBM/kQX9HTdYlyFfA"
+    "$rsYt6WMtudEz8Vt9y34tothMNtzC4iEySJLI/E/UXCI"
+)
+__all__ = [
+    "DUMMY_PASSWORD_HASH",
+    "AuthService",
+    "LoginResult",
+    "RegistrationResult",
+    "auth_error_detail",
+    "hash_token",
+    "verify_password",
+]
 
 
 @dataclass(frozen=True)
 class RegistrationResult:
-    user: User
-    verification_token: str | None
+    accepted: bool
 
 
 @dataclass(frozen=True)
 class LoginResult:
-    user: User
+    user: AuthUserRecord
     access_token: str
+
+
+@dataclass(frozen=True)
+class IssuedToken:
+    raw_token: str
+    expires_at: datetime
 
 
 class AuthService:
@@ -56,10 +81,12 @@ class AuthService:
         *,
         session: AsyncSession,
         repository: AuthRepository,
+        user_store: UserIdentityStore,
         settings: Settings,
     ) -> None:
         self._session = session
         self._repository = repository
+        self._user_store = user_store
         self._settings = settings
 
     async def register(
@@ -71,6 +98,7 @@ class AuthService:
         department: str | None,
         phone: str | None,
         client_ip: str,
+        trace_id: str | None = None,
     ) -> RegistrationResult:
         await self._enforce_rate_limit(
             key=register_rate_limit_key(client_ip),
@@ -85,13 +113,13 @@ class AuthService:
             raise exceptions.email_domain_not_allowed()
 
         ensure_password_strength(password, self._settings)
-        existing_user = await self._repository.get_user_by_email(normalized_email)
+        existing_user = await self._user_store.get_by_email(normalized_email)
         if existing_user is not None:
-            raise exceptions.email_already_registered()
+            return RegistrationResult(accepted=True)
 
         email_verified = not self._settings.require_email_verification
         status = "active" if email_verified else "pending_email_verification"
-        user = await self._repository.create_user(
+        user = await self._user_store.create_user(
             name=name.strip(),
             email=normalized_email,
             email_domain=email_domain,
@@ -101,66 +129,115 @@ class AuthService:
             status=status,
             email_verified=email_verified,
         )
-        verification_token = None
         if self._settings.require_email_verification:
-            verification_token = await self._create_email_verification_token(user)
+            token = await self._create_email_verification_token(user)
+            await self._append_email_event(
+                event_type=events.AUTH_USER_REGISTERED,
+                user=user,
+                token=token,
+                token_payload_key="verification_token_encrypted",
+                trace_id=trace_id,
+            )
         await self._session.commit()
-        return RegistrationResult(user=user, verification_token=verification_token)
+        return RegistrationResult(accepted=True)
 
-    async def verify_email(self, request: TokenRequest) -> User:
+    async def verify_email(self, request: TokenRequest) -> AuthUserRecord:
         token = await self._repository.get_email_verification_token(hash_token(request.token))
         now = datetime.now(UTC)
         if token is None or token.used_at is not None or token.expires_at < now:
             raise exceptions.invalid_token()
 
-        user = await self._repository.get_user_by_id(token.user_id)
+        user = await self._user_store.get_by_id(token.user_id)
         if user is None:
             raise exceptions.invalid_token()
         if user.status == "disabled":
             raise exceptions.user_disabled()
 
-        user.email_verified = True
-        user.status = "active"
+        user = await self._user_store.mark_email_verified(user.id)
         token.used_at = now
+        await OutboxRepository(self._session).append(
+            event_type=events.AUTH_USER_VERIFIED,
+            aggregate_type="user",
+            aggregate_id=str(user.id),
+            payload={
+                "user_id": str(user.id),
+                "email": user.email,
+                "name": user.name,
+                "verified_at": now.isoformat(),
+            },
+        )
         await self._session.commit()
         return user
 
-    async def resend_verification(self, request: ForgotPasswordRequest) -> None:
+    async def resend_verification(
+        self,
+        request: ForgotPasswordRequest,
+        trace_id: str | None = None,
+    ) -> None:
         normalized_email = normalize_email(request.email)
         await self._enforce_rate_limit(
             key=email_verification_rate_limit_key(normalized_email),
             limit=self._settings.auth_resend_verification_rate_limit_per_hour,
         )
-        user = await self._repository.get_user_by_email(normalized_email)
+        user = await self._user_store.get_by_email(normalized_email)
         if user is None or user.email_verified or user.status == "disabled":
             return
-        await self._create_email_verification_token(user)
+        token = await self._create_email_verification_token(user)
+        await self._append_email_event(
+            event_type=events.AUTH_USER_VERIFICATION_RESENT,
+            user=user,
+            token=token,
+            token_payload_key="verification_token_encrypted",
+            trace_id=trace_id,
+        )
         await self._session.commit()
 
     async def login(self, request: LoginRequest, client_ip: str | None) -> LoginResult:
-        user = await self._repository.get_user_by_email(normalize_email(request.email))
+        normalized_email = normalize_email(request.email)
+        await self._enforce_rate_limit(
+            key=login_rate_limit_key(normalized_email),
+            limit=self._settings.auth_login_rate_limit_per_hour,
+        )
+        await self._enforce_rate_limit(
+            key=login_ip_rate_limit_key(client_ip or "unknown"),
+            limit=self._settings.auth_login_rate_limit_per_hour,
+        )
+
+        user = await self._user_store.get_by_email(normalized_email)
         if user is None:
+            verify_password(request.password, DUMMY_PASSWORD_HASH)
             raise exceptions.authentication_failed()
 
         now = datetime.now(UTC)
+        locked = is_user_locked(user, now)
+
+        if not verify_password(request.password, user.password_hash):
+            if user.status != "disabled" and not locked:
+                await self._record_failed_login(user, now)
+            raise exceptions.authentication_failed()
+
         if user.status == "disabled":
             raise exceptions.user_disabled()
-        if is_user_locked(user, now):
+        if locked:
             raise exceptions.user_locked()
         if user.status == "locked":
-            unlock_user(user)
+            user = await self._user_store.record_verification_state(
+                user_id=user.id,
+                status="active",
+                locked_until=NULL_VALUE,
+                failed_login_count=0,
+            )
         if not user.email_verified or user.status == "pending_email_verification":
             raise exceptions.email_not_verified()
 
-        if not verify_password(request.password, user.password_hash):
-            await self._record_failed_login(user, now)
-            raise exceptions.authentication_failed()
-
-        user.failed_login_count = 0
-        user.locked_until = None
-        user.last_login_at = now
-        user.last_login_ip = client_ip
-        user.status = "active"
+        user = await self._user_store.record_verification_state(
+            user_id=user.id,
+            status="active",
+            failed_login_count=0,
+            locked_until=NULL_VALUE,
+            last_login_at=now,
+            last_login_ip=client_ip if client_ip is not None else NULL_VALUE,
+        )
         await self._session.commit()
         access_token = create_jwt(
             {
@@ -168,55 +245,72 @@ class AuthService:
                 "email": user.email,
                 "role": user.role,
                 "pwd": password_fingerprint(user.password_hash, self._settings.jwt_secret),
+                "sv": user.session_version,
             },
             self._settings.jwt_secret,
             self._settings.jwt_expire_minutes,
         )
         return LoginResult(user=user, access_token=access_token)
 
-    async def forgot_password(self, request: ForgotPasswordRequest) -> None:
+    async def forgot_password(
+        self,
+        request: ForgotPasswordRequest,
+        trace_id: str | None = None,
+    ) -> None:
         normalized_email = normalize_email(request.email)
         await self._enforce_rate_limit(
             key=password_reset_rate_limit_key(normalized_email),
             limit=self._settings.auth_password_reset_rate_limit_per_hour,
         )
-        user = await self._repository.get_user_by_email(normalized_email)
+        user = await self._user_store.get_by_email(normalized_email)
         if user is None or user.status == "disabled":
             return
-        await self._create_password_reset_token(user)
+        token = await self._create_password_reset_token(user)
+        await self._append_email_event(
+            event_type=events.AUTH_PASSWORD_RESET_REQUESTED,
+            user=user,
+            token=token,
+            token_payload_key="password_reset_token_encrypted",
+            trace_id=trace_id,
+        )
         await self._session.commit()
 
-    async def reset_password(self, request: ResetPasswordRequest) -> User:
+    async def reset_password(self, request: ResetPasswordRequest) -> AuthUserRecord:
         ensure_password_strength(request.new_password, self._settings)
         token = await self._repository.get_password_reset_token(hash_token(request.token))
         now = datetime.now(UTC)
         if token is None or token.used_at is not None or token.expires_at < now:
             raise exceptions.invalid_token()
 
-        user = await self._repository.get_user_by_id(token.user_id)
+        user = await self._user_store.get_by_id(token.user_id)
         if user is None:
             raise exceptions.invalid_token()
         if user.status == "disabled":
             raise exceptions.user_disabled()
 
-        user.password_hash = hash_password(request.new_password)
-        user.failed_login_count = 0
-        user.locked_until = None
-        if user.email_verified:
-            user.status = "active"
+        user = await self._user_store.record_verification_state(
+            user_id=user.id,
+            password_hash=hash_password(request.new_password),
+            failed_login_count=0,
+            locked_until=NULL_VALUE,
+            status="active" if user.email_verified else None,
+        )
         token.used_at = now
         await self._session.commit()
         return user
 
-    async def change_password(self, request: ChangePasswordRequest, user: User) -> None:
+    async def change_password(self, request: ChangePasswordRequest, user: AuthUserRecord) -> None:
         ensure_password_strength(request.new_password, self._settings)
         if not verify_password(request.current_password, user.password_hash):
             raise exceptions.authentication_failed()
-        user.password_hash = hash_password(request.new_password)
+        await self._user_store.record_verification_state(
+            user_id=user.id,
+            password_hash=hash_password(request.new_password),
+        )
         await self._session.commit()
 
-    async def get_user_by_id(self, user_id: uuid.UUID) -> User | None:
-        return await self._repository.get_user_by_id(user_id)
+    async def get_user_by_id(self, user_id: uuid.UUID) -> AuthUserRecord | None:
+        return await self._user_store.get_by_id(user_id)
 
     async def logout(self, token: str) -> None:
         try:
@@ -232,31 +326,69 @@ class AuthService:
             ttl_seconds=jwt_ttl_seconds(payload),
         )
 
-    async def _create_email_verification_token(self, user: User) -> str:
+    async def _create_email_verification_token(self, user: AuthUserRecord) -> IssuedToken:
         raw_token = secrets.token_urlsafe(32)
+        expires_at = datetime.now(UTC) + timedelta(
+            hours=self._settings.email_verification_expire_hours
+        )
         await self._repository.create_email_verification_token(
             user_id=user.id,
             token_hash=hash_token(raw_token),
-            expires_at=datetime.now(UTC)
-            + timedelta(hours=self._settings.email_verification_expire_hours),
+            expires_at=expires_at,
         )
-        return raw_token
+        return IssuedToken(raw_token=raw_token, expires_at=expires_at)
 
-    async def _create_password_reset_token(self, user: User) -> str:
+    async def _create_password_reset_token(self, user: AuthUserRecord) -> IssuedToken:
         raw_token = secrets.token_urlsafe(32)
+        expires_at = datetime.now(UTC) + timedelta(
+            minutes=self._settings.password_reset_expire_minutes
+        )
         await self._repository.create_password_reset_token(
             user_id=user.id,
             token_hash=hash_token(raw_token),
-            expires_at=datetime.now(UTC)
-            + timedelta(minutes=self._settings.password_reset_expire_minutes),
+            expires_at=expires_at,
         )
-        return raw_token
+        return IssuedToken(raw_token=raw_token, expires_at=expires_at)
 
-    async def _record_failed_login(self, user: User, now: datetime) -> None:
-        user.failed_login_count += 1
-        if user.failed_login_count >= self._settings.login_max_failed_attempts:
-            user.status = "locked"
-            user.locked_until = now + timedelta(minutes=self._settings.login_lock_minutes)
+    async def _append_email_event(
+        self,
+        *,
+        event_type: str,
+        user: AuthUserRecord,
+        token: IssuedToken,
+        token_payload_key: str,
+        trace_id: str | None,
+    ) -> None:
+        await OutboxRepository(self._session).append(
+            event_type=event_type,
+            aggregate_type="user",
+            aggregate_id=str(user.id),
+            payload={
+                "user_id": str(user.id),
+                "email": user.email,
+                "name": user.name,
+                token_payload_key: encrypt_secret(token.raw_token, self._settings.encryption_key),
+                "token_expires_at": token.expires_at.isoformat(),
+            },
+            trace_id=trace_id,
+        )
+
+    async def _record_failed_login(self, user: AuthUserRecord, now: datetime) -> None:
+        failed_login_count = user.failed_login_count + 1
+        if failed_login_count >= self._settings.login_max_failed_attempts:
+            await self._user_store.record_verification_state(
+                user_id=user.id,
+                failed_login_count=failed_login_count,
+                status="locked",
+                locked_until=now + timedelta(minutes=self._settings.login_lock_minutes),
+                increment_session_version=True,
+            )
+            await self._session.commit()
+            return
+        await self._user_store.record_verification_state(
+            user_id=user.id,
+            failed_login_count=failed_login_count,
+        )
         await self._session.commit()
 
     async def _enforce_rate_limit(self, *, key: str, limit: int) -> None:
@@ -295,14 +427,8 @@ def hash_token(token: str) -> str:
     return sha256(token.encode("utf-8")).hexdigest()
 
 
-def is_user_locked(user: User, now: datetime) -> bool:
+def is_user_locked(user: AuthUserRecord, now: datetime) -> bool:
     return user.status == "locked" and (user.locked_until is None or user.locked_until > now)
-
-
-def unlock_user(user: User) -> None:
-    user.status = "active"
-    user.locked_until = None
-    user.failed_login_count = 0
 
 
 def auth_error_detail(error: AuthError) -> dict[str, str]:

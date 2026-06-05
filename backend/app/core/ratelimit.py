@@ -8,6 +8,10 @@ def login_rate_limit_key(email: str) -> str:
     return f"ratelimit:login:{normalized}"
 
 
+def login_ip_rate_limit_key(client_ip: str) -> str:
+    return f"ratelimit:login-ip:{client_ip}"
+
+
 def register_rate_limit_key(client_ip: str) -> str:
     return f"ratelimit:auth:register:{client_ip}"
 

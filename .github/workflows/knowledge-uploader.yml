@@ -91,6 +91,7 @@ jobs:
           if [ -d backend/app ]; then
             python -m compileall backend/app
             python -m ruff check backend/app scripts tasks.py
+            python scripts/check_module_boundaries.py
             python -m mypy backend/app scripts tasks.py
           fi
           if [ -d backend/app/tests ]; then
@@ -165,6 +166,7 @@ jobs:
           python -m pip install -r backend/requirements.txt -r backend/requirements-dev.txt
           python -m compileall backend/app
           python -m ruff check backend/app scripts tasks.py
+          python scripts/check_module_boundaries.py
           python -m mypy backend/app scripts tasks.py
           python -m pytest backend/app/tests
 

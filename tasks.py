@@ -51,6 +51,7 @@ def test(c: Context, k: str = "") -> None:
 def lint(c: Context) -> None:
     """运行 ruff、mypy 和前端 lint。"""
     _compose(c, "run --rm backend-api ruff check app")
+    c.run("python scripts/check_module_boundaries.py", pty=False)
     _compose(c, "run --rm backend-api mypy app")
     c.run("npm --prefix frontend run lint", pty=False)
 

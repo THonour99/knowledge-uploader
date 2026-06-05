@@ -10,7 +10,6 @@ from app.core.database import get_session
 from app.core.deps import BearerCredentialsDep, get_app_settings, get_current_user
 from app.core.responses import success_response
 from app.modules.auth.exceptions import AuthError
-from app.modules.auth.repository import AuthRepository
 from app.modules.auth.schemas import (
     ChangePasswordRequest,
     ForgotPasswordRequest,
@@ -21,24 +20,28 @@ from app.modules.auth.schemas import (
     TokenRequest,
     UserProfile,
 )
-from app.modules.auth.service import AuthService, auth_error_detail
-from app.modules.user.models import User
+from app.modules.user.identity import SqlUserIdentityStore
+from app.modules.user.schemas import AuthUserRecord
+
+from .repository import AuthRepository
+from .service import AuthService, auth_error_detail
 
 router = APIRouter(prefix="/api/auth", tags=["auth"])
 SessionDep = Annotated[AsyncSession, Depends(get_session)]
 SettingsDep = Annotated[Settings, Depends(get_app_settings)]
-CurrentUserDep = Annotated[User, Depends(get_current_user)]
+CurrentUserDep = Annotated[AuthUserRecord, Depends(get_current_user)]
 
 
 def _service(session: AsyncSession, settings: Settings) -> AuthService:
     return AuthService(
         session=session,
         repository=AuthRepository(session),
+        user_store=SqlUserIdentityStore(session),
         settings=settings,
     )
 
 
-def _profile(user: User) -> UserProfile:
+def _profile(user: AuthUserRecord) -> UserProfile:
     return UserProfile(
         id=user.id,
         name=user.name,
@@ -53,6 +56,11 @@ def _profile(user: User) -> UserProfile:
 
 def _raise_auth_error(error: AuthError) -> NoReturn:
     raise HTTPException(status_code=error.status_code, detail=auth_error_detail(error))
+
+
+def _request_id(request: Request) -> str | None:
+    request_id = getattr(request.state, "request_id", None)
+    return request_id if isinstance(request_id, str) else None
 
 
 @router.post("/register", status_code=status.HTTP_201_CREATED)
@@ -71,10 +79,11 @@ async def register(
             department=payload.department,
             phone=payload.phone,
             client_ip=client_ip,
+            trace_id=_request_id(request),
         )
     except AuthError as error:
         _raise_auth_error(error)
-    return success_response(_profile(result.user).model_dump(mode="json"), request)
+    return success_response({"accepted": result.accepted}, request)
 
 
 @router.post("/login")
@@ -132,7 +141,13 @@ async def resend_verification(
     session: SessionDep,
     settings: SettingsDep,
 ) -> dict[str, object]:
-    await _service(session, settings).resend_verification(payload)
+    try:
+        await _service(session, settings).resend_verification(
+            payload,
+            trace_id=_request_id(request),
+        )
+    except AuthError as error:
+        _raise_auth_error(error)
     return success_response({}, request)
 
 
@@ -143,7 +158,10 @@ async def forgot_password(
     session: SessionDep,
     settings: SettingsDep,
 ) -> dict[str, object]:
-    await _service(session, settings).forgot_password(payload)
+    try:
+        await _service(session, settings).forgot_password(payload, trace_id=_request_id(request))
+    except AuthError as error:
+        _raise_auth_error(error)
     return success_response({}, request)
 
 

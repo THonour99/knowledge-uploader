@@ -1,10 +1,11 @@
 from __future__ import annotations
 
 import os
-from collections.abc import AsyncGenerator
+from collections.abc import AsyncGenerator, Callable
 from datetime import UTC, datetime, timedelta
 from hashlib import sha256
 from importlib import import_module
+from typing import Protocol, cast
 from uuid import UUID
 
 import pytest
@@ -13,6 +14,11 @@ from redis.asyncio import from_url
 from sqlalchemy.ext.asyncio import AsyncSession
 
 pytestmark = pytest.mark.asyncio
+
+
+class AuthServiceModule(Protocol):
+    DUMMY_PASSWORD_HASH: str
+    verify_password: Callable[[str, str], bool]
 
 
 async def _reset_database() -> None:
@@ -61,9 +67,36 @@ async def client() -> AsyncGenerator[AsyncClient, None]:
         jwt_secret="test-jwt-secret-with-more-than-32-bytes",
         cache_redis_url=os.environ["CACHE_REDIS_URL"],
         require_email_verification=False,
+        auth_login_rate_limit_per_hour=3,
         auth_register_rate_limit_per_hour=2,
         auth_password_reset_rate_limit_per_hour=2,
         auth_resend_verification_rate_limit_per_hour=2,
+    )
+
+    async def override_session() -> AsyncGenerator[AsyncSession, None]:
+        async with AsyncSessionFactory() as session:
+            yield session
+
+    app.dependency_overrides[get_app_settings] = lambda: settings
+    app.dependency_overrides[get_session] = override_session
+    transport = ASGITransport(app=app)  # type: ignore[arg-type]
+    async with AsyncClient(transport=transport, base_url="http://testserver") as test_client:
+        yield test_client
+    app.dependency_overrides.clear()
+
+
+@pytest.fixture
+async def verification_client() -> AsyncGenerator[AsyncClient, None]:
+    from app.core.config import Settings
+    from app.core.database import AsyncSessionFactory, get_session
+    from app.core.deps import get_app_settings
+    from app.main import app
+
+    settings = Settings(
+        allowed_email_domains="company.com",
+        jwt_secret="test-jwt-secret-with-more-than-32-bytes",
+        cache_redis_url=os.environ["CACHE_REDIS_URL"],
+        require_email_verification=True,
     )
 
     async def override_session() -> AsyncGenerator[AsyncSession, None]:
@@ -146,8 +179,7 @@ async def test_register_accepts_allowed_domain_and_rejects_other_domain(
     assert response.status_code == 201
     body = response.json()
     assert body["success"] is True
-    assert body["data"]["email"] == "alice@company.com"
-    assert body["data"]["status"] == "active"
+    assert body["data"] == {"accepted": True}
 
     rejected = await client.post(
         "/api/auth/register",
@@ -156,6 +188,63 @@ async def test_register_accepts_allowed_domain_and_rejects_other_domain(
 
     assert rejected.status_code == 400
     assert rejected.json()["error_code"] == "EMAIL_DOMAIN_NOT_ALLOWED"
+
+
+async def test_register_existing_email_returns_generic_success(client: AsyncClient) -> None:
+    from sqlalchemy import func, select
+
+    from app.core.database import AsyncSessionFactory
+    from app.modules.user.models import User
+
+    payload = {"name": "Alice", "email": "alice@company.com", "password": "password123"}
+    first = await client.post("/api/auth/register", json=payload)
+    duplicate = await client.post("/api/auth/register", json=payload)
+
+    assert first.status_code == 201
+    assert duplicate.status_code == 201
+    assert duplicate.json()["data"] == {"accepted": True}
+
+    async with AsyncSessionFactory() as session:
+        result = await session.execute(select(func.count()).select_from(User))
+        assert result.scalar_one() == 1
+
+
+async def test_register_writes_verification_outbox_with_encrypted_token(
+    verification_client: AsyncClient,
+) -> None:
+    from sqlalchemy import select
+
+    from app.core.database import AsyncSessionFactory
+    from app.core.outbox import EventOutbox
+    from app.core.security import decrypt_secret
+    from app.modules.auth import events
+    from app.modules.auth.models import EmailVerificationToken
+
+    response = await verification_client.post(
+        "/api/auth/register",
+        json={"name": "Verify", "email": "verify@company.com", "password": "password123"},
+    )
+
+    assert response.status_code == 201
+    assert response.json()["data"] == {"accepted": True}
+
+    async with AsyncSessionFactory() as session:
+        token = (
+            await session.execute(select(EmailVerificationToken))
+        ).scalar_one()
+        outbox = (
+            await session.execute(
+                select(EventOutbox).where(EventOutbox.event_type == events.AUTH_USER_REGISTERED)
+            )
+        ).scalar_one()
+
+    encrypted_token = outbox.payload["verification_token_encrypted"]
+    assert isinstance(encrypted_token, str)
+    assert "verification_token" not in outbox.payload
+    raw_token = decrypt_secret(encrypted_token, "RZ1Sw_27VrN9c5Cfsq01qiwViwT6y7jDCuXYn7tgGJY=")
+    assert token.token_hash == sha256(raw_token.encode("utf-8")).hexdigest()
+    assert raw_token not in response.text
+    assert outbox.trace_id is not None
 
 
 async def test_login_issues_jwt_and_me_returns_current_user(client: AsyncClient) -> None:
@@ -238,6 +327,41 @@ async def test_reset_password_allows_login_with_new_password(client: AsyncClient
     assert new_login.status_code == 200
 
 
+async def test_forgot_password_writes_reset_outbox_with_encrypted_token(
+    client: AsyncClient,
+) -> None:
+    from sqlalchemy import select
+
+    from app.core.database import AsyncSessionFactory
+    from app.core.outbox import EventOutbox
+    from app.core.security import decrypt_secret
+    from app.modules.auth import events
+    from app.modules.auth.models import PasswordResetToken
+
+    await _create_user(email="forgot@company.com", password="password123")
+
+    response = await client.post("/api/auth/forgot-password", json={"email": "forgot@company.com"})
+
+    assert response.status_code == 200
+
+    async with AsyncSessionFactory() as session:
+        token = (await session.execute(select(PasswordResetToken))).scalar_one()
+        outbox = (
+            await session.execute(
+                select(EventOutbox).where(
+                    EventOutbox.event_type == events.AUTH_PASSWORD_RESET_REQUESTED
+                )
+            )
+        ).scalar_one()
+
+    encrypted_token = outbox.payload["password_reset_token_encrypted"]
+    assert isinstance(encrypted_token, str)
+    assert "password_reset_token" not in outbox.payload
+    raw_token = decrypt_secret(encrypted_token, "RZ1Sw_27VrN9c5Cfsq01qiwViwT6y7jDCuXYn7tgGJY=")
+    assert token.token_hash == sha256(raw_token.encode("utf-8")).hexdigest()
+    assert raw_token not in response.text
+
+
 async def test_reset_password_invalidates_existing_jwt(client: AsyncClient) -> None:
     user_id = await _create_user(email="token-reset@company.com", password="oldpassword123")
     login = await client.post(
@@ -255,6 +379,126 @@ async def test_reset_password_invalidates_existing_jwt(client: AsyncClient) -> N
 
     me = await client.get("/api/auth/me", headers={"Authorization": f"Bearer {token}"})
     assert me.status_code == 401
+
+
+async def test_locked_user_existing_jwt_is_rejected(client: AsyncClient) -> None:
+    from app.core.database import AsyncSessionFactory
+    from app.modules.user.models import User
+
+    user_id = await _create_user(email="locked-token@company.com", password="password123")
+    login = await client.post(
+        "/api/auth/login",
+        json={"email": "locked-token@company.com", "password": "password123"},
+    )
+    token = login.json()["data"]["access_token"]
+
+    async with AsyncSessionFactory() as session:
+        user = await session.get(User, user_id)
+        assert user is not None
+        user.status = "locked"
+        user.locked_until = datetime.now(UTC) + timedelta(minutes=15)
+        user.session_version += 1
+        await session.commit()
+
+    me = await client.get("/api/auth/me", headers={"Authorization": f"Bearer {token}"})
+
+    assert me.status_code == 403
+    assert me.json()["error_code"] == "USER_LOCKED"
+
+
+async def test_expired_lock_does_not_reactivate_old_jwt(client: AsyncClient) -> None:
+    from app.core.database import AsyncSessionFactory
+    from app.modules.user.models import User
+
+    user_id = await _create_user(email="expired-lock@company.com", password="password123")
+    login = await client.post(
+        "/api/auth/login",
+        json={"email": "expired-lock@company.com", "password": "password123"},
+    )
+    old_token = login.json()["data"]["access_token"]
+
+    async with AsyncSessionFactory() as session:
+        user = await session.get(User, user_id)
+        assert user is not None
+        user.status = "locked"
+        user.locked_until = datetime.now(UTC) - timedelta(minutes=1)
+        user.session_version += 1
+        await session.commit()
+
+    wrong_login = await client.post(
+        "/api/auth/login",
+        json={"email": "expired-lock@company.com", "password": "wrong-password"},
+    )
+    assert wrong_login.status_code == 401
+
+    old_me = await client.get("/api/auth/me", headers={"Authorization": f"Bearer {old_token}"})
+    assert old_me.status_code == 403
+
+    new_login = await client.post(
+        "/api/auth/login",
+        json={"email": "expired-lock@company.com", "password": "password123"},
+    )
+    assert new_login.status_code == 200
+    new_token = new_login.json()["data"]["access_token"]
+
+    old_me_after_relogin = await client.get(
+        "/api/auth/me",
+        headers={"Authorization": f"Bearer {old_token}"},
+    )
+    new_me = await client.get("/api/auth/me", headers={"Authorization": f"Bearer {new_token}"})
+
+    assert old_me_after_relogin.status_code == 401
+    assert new_me.status_code == 200
+
+
+async def test_expired_lock_wrong_password_counts_failed_login(client: AsyncClient) -> None:
+    from app.core.database import AsyncSessionFactory
+    from app.modules.user.models import User
+
+    user_id = await _create_user(email="expired-lock-wrong@company.com", password="password123")
+    async with AsyncSessionFactory() as session:
+        user = await session.get(User, user_id)
+        assert user is not None
+        user.status = "locked"
+        user.locked_until = datetime.now(UTC) - timedelta(minutes=1)
+        user.failed_login_count = 0
+        user.session_version += 1
+        await session.commit()
+
+    wrong_login = await client.post(
+        "/api/auth/login",
+        json={"email": "expired-lock-wrong@company.com", "password": "wrong-password"},
+    )
+
+    assert wrong_login.status_code == 401
+    async with AsyncSessionFactory() as session:
+        user = await session.get(User, user_id)
+        assert user is not None
+        assert user.failed_login_count == 1
+
+
+async def test_unknown_email_login_runs_dummy_password_verification(
+    client: AsyncClient,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    auth_service = cast(AuthServiceModule, import_module("app.modules.auth.service"))
+
+    calls: list[str] = []
+    original_verify_password = auth_service.verify_password
+
+    def tracked_verify_password(password: str, password_hash: str) -> bool:
+        calls.append(password_hash)
+        return original_verify_password(password, password_hash)
+
+    monkeypatch.setattr(auth_service, "verify_password", tracked_verify_password)
+
+    response = await client.post(
+        "/api/auth/login",
+        json={"email": "missing@company.com", "password": "password123"},
+    )
+
+    assert response.status_code == 401
+    assert calls == [auth_service.DUMMY_PASSWORD_HASH]
 
 
 async def test_register_is_rate_limited_by_client_ip(client: AsyncClient) -> None:
@@ -297,6 +541,13 @@ async def test_validation_error_does_not_echo_password_or_token(client: AsyncCli
 async def test_disabled_user_cannot_login(client: AsyncClient) -> None:
     await _create_user(email="disabled@company.com", password="password123", status="disabled")
 
+    wrong_password = await client.post(
+        "/api/auth/login",
+        json={"email": "disabled@company.com", "password": "wrong-password"},
+    )
+    assert wrong_password.status_code == 401
+    assert wrong_password.json()["error_code"] == "AUTHENTICATION_FAILED"
+
     response = await client.post(
         "/api/auth/login",
         json={"email": "disabled@company.com", "password": "password123"},
@@ -304,3 +555,37 @@ async def test_disabled_user_cannot_login(client: AsyncClient) -> None:
 
     assert response.status_code == 403
     assert response.json()["error_code"] == "USER_DISABLED"
+
+
+async def test_login_is_rate_limited_for_unknown_email(client: AsyncClient) -> None:
+    for _ in range(3):
+        response = await client.post(
+            "/api/auth/login",
+            json={"email": "unknown@company.com", "password": "password123"},
+        )
+        assert response.status_code == 401
+
+    limited = await client.post(
+        "/api/auth/login",
+        json={"email": "unknown@company.com", "password": "password123"},
+    )
+
+    assert limited.status_code == 429
+    assert limited.json()["error_code"] == "RATE_LIMITED"
+
+
+async def test_forgot_password_rate_limit_returns_429(client: AsyncClient) -> None:
+    for _ in range(2):
+        response = await client.post(
+            "/api/auth/forgot-password",
+            json={"email": "rate-forgot@company.com"},
+        )
+        assert response.status_code == 200
+
+    limited = await client.post(
+        "/api/auth/forgot-password",
+        json={"email": "rate-forgot@company.com"},
+    )
+
+    assert limited.status_code == 429
+    assert limited.json()["error_code"] == "RATE_LIMITED"

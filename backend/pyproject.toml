@@ -11,6 +11,7 @@ select = [
   "B",
   "UP",
   "ASYNC",
+  "TID",
   "PTH",
   "RUF",
 ]
@@ -41,6 +42,13 @@ ignore = []
 [tool.ruff.lint.isort]
 known-first-party = ["app"]
 
+[tool.ruff.lint.per-file-ignores]
+"app/modules/audit/service.py" = ["TID251"]
+"app/modules/auth/api.py" = ["TID251"]
+"app/modules/auth/service.py" = ["TID251"]
+"app/modules/user/api.py" = ["TID251"]
+"app/modules/user/service.py" = ["TID251"]
+
 [tool.ruff.format]
 quote-style = "double"
 line-ending = "lf"
@@ -58,5 +66,5 @@ files = ["app"]
 warn_unused_configs = true
 
 [[tool.mypy.overrides]]
-module = ["celery", "celery.*"]
+module = ["celery", "celery.*", "kombu", "kombu.*"]
 ignore_missing_imports = true

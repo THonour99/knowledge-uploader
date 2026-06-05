@@ -102,10 +102,14 @@ async def _login(client: AsyncClient, *, email: str, password: str) -> str:
     return str(response.json()["data"]["access_token"])
 
 
-async def test_employee_cannot_disable_users(client: AsyncClient) -> None:
-    actor_id = await _create_user(email="employee@company.com", password="password123")
+async def test_knowledge_admin_cannot_disable_users(client: AsyncClient) -> None:
+    actor_id = await _create_user(
+        email="knowledge-admin@company.com",
+        password="password123",
+        role="knowledge_admin",
+    )
     target_id = await _create_user(email="target@company.com", password="password123")
-    token = await _login(client, email="employee@company.com", password="password123")
+    token = await _login(client, email="knowledge-admin@company.com", password="password123")
 
     response = await client.post(
         f"/api/users/{target_id}/disable",
@@ -116,14 +120,48 @@ async def test_employee_cannot_disable_users(client: AsyncClient) -> None:
     assert actor_id != target_id
 
 
-async def test_admin_can_disable_and_enable_user_with_audit_log(client: AsyncClient) -> None:
+async def test_system_admin_list_and_get_users_write_audit_logs(client: AsyncClient) -> None:
+    from app.core.database import AsyncSessionFactory
+    from app.modules.audit.models import AuditLog
+
+    admin_id = await _create_user(
+        email="audit-admin@company.com",
+        password="password123",
+        role="system_admin",
+    )
+    target_id = await _create_user(email="audit-worker@company.com", password="password123")
+    token = await _login(client, email="audit-admin@company.com", password="password123")
+
+    listed = await client.get("/api/users", headers={"Authorization": f"Bearer {token}"})
+    viewed = await client.get(
+        f"/api/users/{target_id}",
+        headers={"Authorization": f"Bearer {token}"},
+    )
+
+    assert listed.status_code == 200
+    assert viewed.status_code == 200
+
+    async with AsyncSessionFactory() as session:
+        result = await session.execute(select(AuditLog).order_by(AuditLog.created_at))
+        logs = list(result.scalars())
+
+    assert [log.action for log in logs] == ["user.list", "user.view"]
+    assert [log.target_id for log in logs] == [admin_id, target_id]
+    assert all(log.actor_id == admin_id for log in logs)
+    assert all(log.ip_address for log in logs)
+    assert all(log.user_agent for log in logs)
+
+
+async def test_system_admin_can_disable_and_enable_user_with_audit_log(
+    client: AsyncClient,
+) -> None:
     from app.core.database import AsyncSessionFactory
     from app.modules.audit.models import AuditLog
 
     admin_id = await _create_user(
         email="admin@company.com",
         password="password123",
-        role="knowledge_admin",
+        role="system_admin",
     )
     target_id = await _create_user(email="worker@company.com", password="password123")
     token = await _login(client, email="admin@company.com", password="password123")
@@ -159,3 +197,31 @@ async def test_admin_can_disable_and_enable_user_with_audit_log(client: AsyncCli
     assert all(log.target_id == target_id for log in logs)
     assert all(log.ip_address for log in logs)
     assert all(log.user_agent for log in logs)
+
+
+async def test_system_admin_cannot_disable_self_or_peer_admin(client: AsyncClient) -> None:
+    admin_id = await _create_user(
+        email="root@company.com",
+        password="password123",
+        role="system_admin",
+    )
+    peer_id = await _create_user(
+        email="peer@company.com",
+        password="password123",
+        role="system_admin",
+    )
+    token = await _login(client, email="root@company.com", password="password123")
+
+    self_disable = await client.post(
+        f"/api/users/{admin_id}/disable",
+        headers={"Authorization": f"Bearer {token}"},
+    )
+    peer_disable = await client.post(
+        f"/api/users/{peer_id}/disable",
+        headers={"Authorization": f"Bearer {token}"},
+    )
+
+    assert self_disable.status_code == 403
+    assert self_disable.json()["error_code"] == "PERMISSION_DENIED"
+    assert peer_disable.status_code == 403
+    assert peer_disable.json()["error_code"] == "PERMISSION_DENIED"
