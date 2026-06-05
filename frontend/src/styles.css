@@ -160,6 +160,30 @@ a {
   border-radius: var(--ku-radius-card);
 }
 
+.document-workspace {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  gap: var(--ku-spacing-section);
+}
+
+.document-panel {
+  border-color: var(--ku-border);
+  border-radius: var(--ku-radius-card);
+}
+
+.document-result {
+  width: 100%;
+}
+
+.document-link-button {
+  width: fit-content;
+  padding-inline: 0;
+}
+
+.document-panel .ant-table-cell {
+  vertical-align: middle;
+}
+
 .status-tag {
   font-weight: 500;
 }
