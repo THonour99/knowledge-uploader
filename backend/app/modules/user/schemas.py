@@ -1,7 +1,23 @@
 from __future__ import annotations
 
+from uuid import UUID
+
 from pydantic import BaseModel
 
 
-class UserModuleStatus(BaseModel):
-    name: str = "user"
+class UserProfile(BaseModel):
+    id: UUID
+    name: str
+    email: str
+    role: str
+    status: str
+    email_verified: bool
+    department: str | None
+    phone: str | None
+
+
+class UpdateUserRequest(BaseModel):
+    name: str | None = None
+    department: str | None = None
+    phone: str | None = None
+    role: str | None = None

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import os
 from collections.abc import AsyncGenerator
 from datetime import UTC, datetime, timedelta
 from hashlib import sha256
@@ -26,7 +27,7 @@ async def _reset_database() -> None:
     await engine.dispose()
 
     redis_client = from_url(  # type: ignore[no-untyped-call]
-        "redis://redis:6379/1",
+        os.environ["CACHE_REDIS_URL"],
         encoding="utf-8",
         decode_responses=True,
     )
@@ -40,7 +41,12 @@ async def _reset_database() -> None:
 async def clean_database() -> AsyncGenerator[None, None]:
     await _reset_database()
     yield
-    await _reset_database()
+    from app.core.database import engine
+    from app.db.base import Base
+
+    async with engine.begin() as connection:
+        await connection.run_sync(Base.metadata.drop_all)
+    await engine.dispose()
 
 
 @pytest.fixture
@@ -53,6 +59,7 @@ async def client() -> AsyncGenerator[AsyncClient, None]:
     settings = Settings(
         allowed_email_domains="company.com",
         jwt_secret="test-jwt-secret-with-more-than-32-bytes",
+        cache_redis_url=os.environ["CACHE_REDIS_URL"],
         require_email_verification=False,
         auth_register_rate_limit_per_hour=2,
         auth_password_reset_rate_limit_per_hour=2,
