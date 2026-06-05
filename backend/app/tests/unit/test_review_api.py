@@ -571,7 +571,7 @@ async def test_knowledge_admin_reviews_file_and_audit_log_is_written(
 
     assert approve_response.status_code == 200
     approved = approve_response.json()["data"]
-    assert approved["status"] == "approved"
+    assert approved["status"] == "queued"
     assert approved["review_status"] == "approved"
     assert approved["category_id"] == category["id"]
     assert approved["dataset_mapping_id"] == dataset["id"]
@@ -580,7 +580,7 @@ async def test_knowledge_admin_reviews_file_and_audit_log_is_written(
     async with AsyncSessionFactory() as session:
         saved_file = await session.get(File, file_id)
         assert saved_file is not None
-        assert saved_file.status == "approved"
+        assert saved_file.status == "queued"
         assert saved_file.review_status == "approved"
         assert saved_file.category_id == UUID(category["id"])
         assert saved_file.dataset_mapping_id == UUID(dataset["id"])
@@ -606,6 +606,77 @@ async def test_knowledge_admin_reviews_file_and_audit_log_is_written(
     ]
     assert outbox_events[-1].payload["file_id"] == str(file_id)
     assert outbox_events[-1].payload["ragflow_dataset_id"] == "ragflow-policy"
+
+
+async def test_review_approval_returns_conflict_when_ragflow_sync_lock_is_busy(
+    review_client: AsyncClient,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from app.modules.ragflow import tasks as ragflow_tasks
+
+    uploader_id = await _create_user(email="busy-uploader@company.com", password="password123")
+    await _create_user(
+        email="busy-reviewer@company.com",
+        password="password123",
+        role="knowledge_admin",
+    )
+    await _create_user(
+        email="busy-system@company.com",
+        password="password123",
+        role="system_admin",
+    )
+    reviewer_token = await _login(
+        review_client,
+        email="busy-reviewer@company.com",
+        password="password123",
+    )
+    system_token = await _login(
+        review_client,
+        email="busy-system@company.com",
+        password="password123",
+    )
+    file_id = await _create_file(uploader_id=uploader_id, status_value="pending_review")
+    category = (
+        await review_client.post(
+            "/api/categories",
+            headers={"Authorization": f"Bearer {system_token}"},
+            json={"name": "锁忙分类", "code": "busy-category"},
+        )
+    ).json()["data"]
+    dataset = (
+        await review_client.post(
+            "/api/datasets",
+            headers={"Authorization": f"Bearer {system_token}"},
+            json={
+                "name": "锁忙 Dataset",
+                "category_id": category["id"],
+                "ragflow_dataset_id": "busy-ragflow-dataset",
+                "ragflow_dataset_name": "锁忙库",
+                "enabled": True,
+            },
+        )
+    ).json()["data"]
+    redis_client = from_url(  # type: ignore[no-untyped-call]
+        os.environ["CACHE_REDIS_URL"],
+        encoding="utf-8",
+        decode_responses=True,
+    )
+    lock_key = f"lock:sync:{file_id}"
+    await redis_client.set(lock_key, "busy", ex=30)
+    monkeypatch.setattr(ragflow_tasks, "SYNC_LOCK_WAIT_SECONDS", 0.0)
+
+    try:
+        response = await review_client.post(
+            f"/api/files/{file_id}/approve",
+            headers={"Authorization": f"Bearer {reviewer_token}"},
+            json={"category_id": category["id"], "dataset_mapping_id": dataset["id"]},
+        )
+    finally:
+        await redis_client.delete(lock_key)
+        await redis_client.aclose()
+
+    assert response.status_code == 409
+    assert response.json()["error_code"] == "VALIDATION_ERROR"
 
 
 async def test_review_rejects_invalid_file_state_and_dataset_category_mismatch(

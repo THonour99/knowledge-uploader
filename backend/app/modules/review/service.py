@@ -8,7 +8,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.core.audit import record_admin_audit_log
 from app.core.document_state import DocumentStateError, DocumentStateMachine
 from app.core.outbox import OutboxRepository
-from app.modules.ragflow.tasks import create_ragflow_upload_sync_task
+from app.modules.ragflow.tasks import RagflowSyncLockBusy, create_ragflow_upload_sync_task
 from app.modules.user.schemas import AuthUserRecord
 
 from . import events, exceptions
@@ -374,9 +374,14 @@ class ReviewService:
                 "ragflow_dataset_id": file.ragflow_dataset_id,
             },
         )
+        if file.ragflow_dataset_id is not None:
+            self._transition_file(file, "queued")
         file = await self._repository.update_file(file)
         if file.ragflow_dataset_id is not None:
-            await create_ragflow_upload_sync_task(session=self._session, file_id=file.id)
+            try:
+                await create_ragflow_upload_sync_task(session=self._session, file_id=file.id)
+            except RagflowSyncLockBusy as exc:
+                raise exceptions.sync_task_busy() from exc
         await self._session.commit()
         return file
 

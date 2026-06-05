@@ -19,6 +19,7 @@ class DocumentStateMachine:
         ("sensitive_review_required", "pending_review"),
         ("pending_review", "approved"),
         ("pending_review", "rejected"),
+        ("approved", "queued"),
     }
 
     @classmethod

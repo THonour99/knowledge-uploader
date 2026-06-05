@@ -7,9 +7,10 @@ from datetime import UTC, datetime
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.audit import record_admin_audit_log
+from app.core.outbox import OutboxRepository
 from app.modules.user.schemas import AuthUserRecord
 
-from . import exceptions
+from . import events, exceptions
 from .models import SyncTask, SyncTaskLog
 from .repository import RagflowTaskRepository  # noqa: TID251 - same-module repository dependency
 
@@ -62,6 +63,7 @@ class RagflowTaskService:
             status=task.status,
             message="ragflow upload task queued",
         )
+        await self._append_task_queued_event(task)
         return task
 
     async def list_tasks(
@@ -76,6 +78,7 @@ class RagflowTaskService:
         await self._record_admin_audit(
             current_user=current_user,
             action="task.list",
+            target_type="task_collection",
             target_id=current_user.id,
             context=context,
             metadata_json={"result_count": len(tasks)},
@@ -96,6 +99,7 @@ class RagflowTaskService:
         await self._record_admin_audit(
             current_user=current_user,
             action="task.get",
+            target_type="task",
             target_id=task.id,
             context=context,
         )
@@ -124,9 +128,11 @@ class RagflowTaskService:
             status=task.status,
             message=f"task manually retried, attempt {task.retry_count}",
         )
+        await self._append_task_queued_event(task)
         await self._record_admin_audit(
             current_user=current_user,
             action="task.retry",
+            target_type="task",
             target_id=task.id,
             context=context,
             metadata_json={"retry_count": task.retry_count},
@@ -157,6 +163,7 @@ class RagflowTaskService:
         await self._record_admin_audit(
             current_user=current_user,
             action="task.cancel",
+            target_type="task",
             target_id=task.id,
             context=context,
         )
@@ -164,10 +171,10 @@ class RagflowTaskService:
         await self._session.refresh(task)
         return await self._bundle(task)
 
-    async def mark_running(self, task_id: uuid.UUID) -> SyncTask:
+    async def claim_running(self, task_id: uuid.UUID) -> bool:
         task = await self._get_task_for_update_or_raise(task_id)
-        if task.status == "canceled":
-            return task
+        if task.status != "queued":
+            return False
         task.status = "running"
         task.started_at = datetime.now(UTC)
         task.finished_at = None
@@ -178,11 +185,13 @@ class RagflowTaskService:
             message="ragflow upload task started",
         )
         await self._session.commit()
-        return task
+        return True
 
     async def mark_succeeded(self, task_id: uuid.UUID) -> SyncTask:
         task = await self._get_task_for_update_or_raise(task_id)
-        if task.status == "canceled":
+        if task.status in {"canceled", "failed", "succeeded"}:
+            return task
+        if task.status != "running":
             return task
         task.status = "succeeded"
         task.finished_at = datetime.now(UTC)
@@ -197,6 +206,8 @@ class RagflowTaskService:
 
     async def mark_failed(self, task_id: uuid.UUID, error_message: str) -> SyncTask:
         task = await self._get_task_for_update_or_raise(task_id)
+        if task.status in {"canceled", "succeeded"}:
+            return task
         task.status = "failed"
         task.finished_at = datetime.now(UTC)
         task.error_message = error_message[:MAX_ERROR_MESSAGE_LENGTH]
@@ -228,6 +239,7 @@ class RagflowTaskService:
         *,
         current_user: AuthUserRecord,
         action: str,
+        target_type: str,
         target_id: uuid.UUID,
         context: RequestContext,
         metadata_json: dict[str, object] | None = None,
@@ -236,7 +248,7 @@ class RagflowTaskService:
             self._session,
             actor_id=current_user.id,
             action=action,
-            target_type="task",
+            target_type=target_type,
             target_id=target_id,
             ip_address=context.ip_address,
             user_agent=context.user_agent,
@@ -246,3 +258,16 @@ class RagflowTaskService:
     def _require_admin(self, current_user: AuthUserRecord) -> None:
         if current_user.role not in ADMIN_ROLES:
             raise exceptions.permission_denied()
+
+    async def _append_task_queued_event(self, task: SyncTask) -> None:
+        await OutboxRepository(self._session).append(
+            event_type=events.RAGFLOW_SYNC_TASK_QUEUED,
+            aggregate_type="sync_task",
+            aggregate_id=str(task.id),
+            payload={
+                "sync_task_id": str(task.id),
+                "file_id": str(task.file_id),
+                "task_type": task.task_type,
+                "status": task.status,
+            },
+        )

@@ -3,7 +3,7 @@ from __future__ import annotations
 from datetime import datetime
 from uuid import UUID
 
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 
 class RagflowModuleStatus(BaseModel):
@@ -30,7 +30,7 @@ class SyncTaskResponse(BaseModel):
     finished_at: datetime | None
     created_at: datetime
     updated_at: datetime
-    logs: list[SyncTaskLogResponse] = []
+    logs: list[SyncTaskLogResponse] = Field(default_factory=list)
 
 
 class SyncTaskListResponse(BaseModel):
