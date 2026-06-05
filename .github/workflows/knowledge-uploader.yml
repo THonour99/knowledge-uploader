@@ -92,7 +92,7 @@ jobs:
             python -m compileall backend/app
             python -m ruff check backend/app scripts tasks.py
             python scripts/check_module_boundaries.py
-            python -m mypy backend/app scripts tasks.py
+            (cd backend && python -m mypy app)
           fi
           if [ -d backend/app/tests ]; then
             python -m pytest backend/app/tests
@@ -167,7 +167,7 @@ jobs:
           python -m compileall backend/app
           python -m ruff check backend/app scripts tasks.py
           python scripts/check_module_boundaries.py
-          python -m mypy backend/app scripts tasks.py
+          (cd backend && python -m mypy app)
           python -m pytest backend/app/tests
 
       - name: Frontend lint and tests

@@ -35,6 +35,10 @@ x-app-environment: &app-environment
   MINIO_SECRET_KEY: "${MINIO_SECRET_KEY:-knowledge_password}"
   MINIO_BUCKET: "${MINIO_BUCKET:-knowledge-files}"
   MINIO_SECURE: "${MINIO_SECURE:-false}"
+  UPLOAD_MAX_FILE_SIZE_BYTES: "${UPLOAD_MAX_FILE_SIZE_BYTES:-52428800}"
+  UPLOAD_RATE_LIMIT_PER_MINUTE: "${UPLOAD_RATE_LIMIT_PER_MINUTE:-10}"
+  UPLOAD_ALLOWED_EXTENSIONS: "${UPLOAD_ALLOWED_EXTENSIONS:-pdf,docx,xlsx,pptx,txt,md,csv}"
+  UPLOAD_ALLOWED_MIME_TYPES: "${UPLOAD_ALLOWED_MIME_TYPES:-application/pdf,application/vnd.openxmlformats-officedocument.wordprocessingml.document,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet,application/vnd.openxmlformats-officedocument.presentationml.presentation,text/plain,text/markdown,text/csv}"
   RAGFLOW_BASE_URL: "${RAGFLOW_BASE_URL:-http://ragflow:9380}"
   RAGFLOW_API_KEY: "${RAGFLOW_API_KEY:-}"
   DEFAULT_DATASET_ID: "${DEFAULT_DATASET_ID:-}"
@@ -149,7 +153,7 @@ services:
       - --port
       - "8000"
     ports:
-      - "${BACKEND_API_PORT:-8000}:8000"
+      - "${BACKEND_API_HOST:-127.0.0.1}:${BACKEND_API_PORT:-18000}:8000"
     healthcheck:
       test: ["CMD-SHELL", "python -c \"import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/api/system/health', timeout=5).read()\""]
       interval: 30s

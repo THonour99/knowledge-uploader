@@ -11,12 +11,14 @@ from app.core.logging import configure_logging
 from app.core.middlewares import request_id_middleware
 from app.core.responses import error_response
 from app.modules.auth.api import router as auth_router
+from app.modules.document.api import router as document_router
 from app.modules.user.api import router as user_router
 
 configure_logging()
 app = FastAPI(title="Knowledge Uploader", version="0.1.0")
 app.middleware("http")(request_id_middleware)
 app.include_router(auth_router)
+app.include_router(document_router)
 app.include_router(user_router)
 
 

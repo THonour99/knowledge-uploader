@@ -46,6 +46,8 @@ known-first-party = ["app"]
 "app/modules/audit/service.py" = ["TID251"]
 "app/modules/auth/api.py" = ["TID251"]
 "app/modules/auth/service.py" = ["TID251"]
+"app/modules/document/api.py" = ["TID251"]
+"app/modules/document/service.py" = ["TID251"]
 "app/modules/user/api.py" = ["TID251"]
 "app/modules/user/service.py" = ["TID251"]
 
@@ -66,5 +68,5 @@ files = ["app"]
 warn_unused_configs = true
 
 [[tool.mypy.overrides]]
-module = ["celery", "celery.*", "kombu", "kombu.*"]
+module = ["celery", "celery.*", "filetype", "kombu", "kombu.*"]
 ignore_missing_imports = true

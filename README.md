@@ -35,7 +35,7 @@ invoke check-arm64
 
 1. 复制 `.env.example` 为 `.env` 并按需修改密钥。
 2. 执行 `invoke up`。
-3. 访问后端健康检查：`http://localhost:8000/api/system/health`。
+3. 访问后端健康检查：`http://localhost:18000/api/system/health`。
 4. 访问前端：`http://localhost:5173`，或经 Nginx 访问 `http://localhost`。
 
 ## 关键约束
