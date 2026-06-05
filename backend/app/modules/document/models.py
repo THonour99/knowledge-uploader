@@ -48,6 +48,8 @@ class File(Base):
         Index("idx_files_hash", "hash"),
         Index("idx_files_status", "status"),
         Index("idx_files_review_status", "review_status"),
+        Index("idx_files_category_id", "category_id"),
+        Index("idx_files_dataset_mapping_id", "dataset_mapping_id"),
         Index("idx_files_object_key", "object_key"),
     )
 
@@ -66,8 +68,12 @@ class File(Base):
         nullable=False,
     )
     department: Mapped[str | None] = mapped_column(String(100))
-    category_id: Mapped[uuid.UUID | None] = mapped_column(nullable=True)
-    dataset_mapping_id: Mapped[uuid.UUID | None] = mapped_column(nullable=True)
+    category_id: Mapped[uuid.UUID | None] = mapped_column(
+        ForeignKey("categories.id", ondelete="SET NULL"),
+    )
+    dataset_mapping_id: Mapped[uuid.UUID | None] = mapped_column(
+        ForeignKey("dataset_mappings.id", ondelete="SET NULL"),
+    )
     visibility: Mapped[str] = mapped_column(String(20), nullable=False, server_default="private")
     description: Mapped[str | None] = mapped_column(Text)
     tags: Mapped[list[str]] = mapped_column(
