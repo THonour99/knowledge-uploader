@@ -157,3 +157,5 @@ async def test_admin_can_disable_and_enable_user_with_audit_log(client: AsyncCli
     assert [log.action for log in logs] == ["user.disable", "user.enable"]
     assert all(log.actor_id == admin_id for log in logs)
     assert all(log.target_id == target_id for log in logs)
+    assert all(log.ip_address for log in logs)
+    assert all(log.user_agent for log in logs)

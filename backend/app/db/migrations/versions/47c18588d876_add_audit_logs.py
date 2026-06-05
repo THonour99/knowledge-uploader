@@ -24,11 +24,12 @@ def upgrade() -> None:
     op.create_table(
         "audit_logs",
         sa.Column("id", sa.Uuid(), nullable=False),
-        sa.Column("actor_id", sa.Uuid(), nullable=True),
+        sa.Column("actor_id", sa.Uuid(), nullable=False),
         sa.Column("action", sa.String(length=120), nullable=False),
         sa.Column("target_type", sa.String(length=80), nullable=False),
-        sa.Column("target_id", sa.Uuid(), nullable=True),
-        sa.Column("ip_address", sa.String(length=45), nullable=True),
+        sa.Column("target_id", sa.Uuid(), nullable=False),
+        sa.Column("ip_address", sa.String(length=45), nullable=False),
+        sa.Column("user_agent", sa.String(length=512), nullable=False),
         sa.Column(
             "metadata_json",
             postgresql.JSONB(astext_type=sa.Text()),  # type: ignore[no-untyped-call]

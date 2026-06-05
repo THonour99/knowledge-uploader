@@ -14,7 +14,8 @@ async def record_admin_audit_log(
     action: str,
     target_type: str,
     target_id: uuid.UUID,
-    ip_address: str | None,
+    ip_address: str,
+    user_agent: str,
     metadata_json: dict[str, object] | None = None,
     reason: str | None = None,
 ) -> None:
@@ -25,6 +26,7 @@ async def record_admin_audit_log(
             target_type=target_type,
             target_id=target_id,
             ip_address=ip_address,
+            user_agent=user_agent,
             metadata_json=metadata_json or {},
             reason=reason,
         )

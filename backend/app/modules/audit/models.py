@@ -20,11 +20,12 @@ class AuditLog(Base):
     )
 
     id: Mapped[uuid.UUID] = mapped_column(primary_key=True, default=uuid.uuid4)
-    actor_id: Mapped[uuid.UUID | None] = mapped_column(nullable=True)
+    actor_id: Mapped[uuid.UUID] = mapped_column(nullable=False)
     action: Mapped[str] = mapped_column(String(120), nullable=False)
     target_type: Mapped[str] = mapped_column(String(80), nullable=False)
-    target_id: Mapped[uuid.UUID | None] = mapped_column(nullable=True)
-    ip_address: Mapped[str | None] = mapped_column(String(45))
+    target_id: Mapped[uuid.UUID] = mapped_column(nullable=False)
+    ip_address: Mapped[str] = mapped_column(String(45), nullable=False)
+    user_agent: Mapped[str] = mapped_column(String(512), nullable=False)
     metadata_json: Mapped[dict[str, object]] = mapped_column(JSONB, nullable=False, default=dict)
     reason: Mapped[str | None] = mapped_column(Text)
     created_at: Mapped[datetime] = mapped_column(

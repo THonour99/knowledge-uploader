@@ -48,6 +48,14 @@ def _not_found() -> HTTPException:
     )
 
 
+def _client_ip(request: Request) -> str:
+    return request.client.host if request.client is not None else "unknown"
+
+
+def _user_agent(request: Request) -> str:
+    return request.headers.get("user-agent", "unknown")[:512]
+
+
 @router.get("")
 async def list_users(
     request: Request,
@@ -82,12 +90,12 @@ async def disable_user(
     session: SessionDep,
 ) -> dict[str, object]:
     _ensure_admin(current_user)
-    client_ip = request.client.host if request.client is not None else None
     try:
         user = await UserService.from_session(session).disable_user(
             actor=current_user,
             target_id=user_id,
-            ip_address=client_ip,
+            ip_address=_client_ip(request),
+            user_agent=_user_agent(request),
         )
     except UserNotFoundError as exc:
         raise _not_found() from exc
@@ -102,12 +110,12 @@ async def enable_user(
     session: SessionDep,
 ) -> dict[str, object]:
     _ensure_admin(current_user)
-    client_ip = request.client.host if request.client is not None else None
     try:
         user = await UserService.from_session(session).enable_user(
             actor=current_user,
             target_id=user_id,
-            ip_address=client_ip,
+            ip_address=_client_ip(request),
+            user_agent=_user_agent(request),
         )
     except UserNotFoundError as exc:
         raise _not_found() from exc

@@ -44,7 +44,8 @@ class UserService:
         *,
         actor: User,
         target_id: uuid.UUID,
-        ip_address: str | None,
+        ip_address: str,
+        user_agent: str,
     ) -> User:
         target = await self.get_user(target_id)
         target.status = "disabled"
@@ -55,6 +56,7 @@ class UserService:
             target_type="user",
             target_id=target.id,
             ip_address=ip_address,
+            user_agent=user_agent,
             metadata_json={"target_email": target.email},
         )
         await self._session.commit()
@@ -65,7 +67,8 @@ class UserService:
         *,
         actor: User,
         target_id: uuid.UUID,
-        ip_address: str | None,
+        ip_address: str,
+        user_agent: str,
     ) -> User:
         target = await self.get_user(target_id)
         target.status = "active" if target.email_verified else "pending_email_verification"
@@ -76,6 +79,7 @@ class UserService:
             target_type="user",
             target_id=target.id,
             ip_address=ip_address,
+            user_agent=user_agent,
             metadata_json={"target_email": target.email},
         )
         await self._session.commit()
