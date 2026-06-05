@@ -10,6 +10,29 @@ on:
 jobs:
   lint-test-arm64:
     runs-on: ubuntu-24.04
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_DB: knowledge_uploader
+          POSTGRES_USER: knowledge
+          POSTGRES_PASSWORD: knowledge_password
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U knowledge -d knowledge_uploader"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+      redis:
+        image: redis:7.2-alpine
+        ports:
+          - 6379:6379
+        options: >-
+          --health-cmd "redis-cli ping"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
     steps:
       - name: Checkout
         if: ${{ !env.ACT }}
@@ -57,6 +80,9 @@ jobs:
           fi
 
       - name: Backend lint and tests
+        env:
+          TEST_POSTGRES_HOST: 127.0.0.1
+          TEST_REDIS_HOST: 127.0.0.1
         run: |
           if [ -f backend/requirements.txt ] && [ -f backend/requirements-dev.txt ]; then
             python -m pip install --upgrade pip
