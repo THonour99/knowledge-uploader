@@ -180,12 +180,11 @@ async def _create_admin_token(client: AsyncClient) -> str:
     return await _login(client, email="phase4-system@company.com", password="password123")
 
 
-async def test_approving_file_creates_one_ragflow_upload_task(
+async def test_approving_file_queues_ragflow_creation_event(
     task_client: AsyncClient,
 ) -> None:
     from app.core.database import AsyncSessionFactory
     from app.core.outbox import EventOutbox
-    from app.modules.ragflow.models import SyncTask
 
     token = await _create_admin_token(task_client)
     uploader_id = await _create_user(email="phase4-uploader@company.com", password="password123")
@@ -201,19 +200,14 @@ async def test_approving_file_creates_one_ragflow_upload_task(
     assert response.status_code == 200
     assert response.json()["data"]["status"] == "queued"
     async with AsyncSessionFactory() as session:
-        result = await session.execute(select(SyncTask).where(SyncTask.file_id == file_id))
-        tasks = list(result.scalars())
         event_result = await session.execute(
-            select(EventOutbox).where(EventOutbox.event_type == "ragflow.sync_task.queued")
+            select(EventOutbox).where(EventOutbox.event_type == "review.file.approved")
         )
-        outbox_events = list(event_result.scalars())
+        outbox_event = event_result.scalar_one()
 
-    assert len(tasks) == 1
-    assert tasks[0].task_type == "ragflow_upload"
-    assert tasks[0].status == "queued"
-    assert tasks[0].retry_count == 0
-    assert len(outbox_events) == 1
-    assert outbox_events[0].payload["sync_task_id"] == str(tasks[0].id)
+    assert outbox_event.payload["file_id"] == str(file_id)
+    assert outbox_event.payload["status"] == "queued"
+    assert outbox_event.payload["ragflow_dataset_id"] == "ragflow-phase4"
 
 
 async def test_create_ragflow_upload_task_is_idempotent(
@@ -234,14 +228,49 @@ async def test_create_ragflow_upload_task_is_idempotent(
     assert first_task_id == second_task_id
 
 
+async def test_ragflow_create_upload_worker_creates_task_and_queue_event(
+    task_client: AsyncClient,
+) -> None:
+    from app.core.database import AsyncSessionFactory
+    from app.core.outbox import EventOutbox
+    from app.modules.ragflow.models import SyncTask
+    from app.modules.ragflow.tasks import run_create_ragflow_upload_task_async
+
+    await _create_admin_token(task_client)
+    uploader_id = await _create_user(
+        email="phase4-create-worker@company.com",
+        password="password123",
+    )
+    file_id = await _create_file(uploader_id=uploader_id)
+
+    task_id = await run_create_ragflow_upload_task_async(str(file_id))
+
+    async with AsyncSessionFactory() as session:
+        task = await session.get(SyncTask, UUID(task_id))
+        event_result = await session.execute(
+            select(EventOutbox).where(
+                EventOutbox.event_type == "ragflow.sync_task.queued",
+                EventOutbox.aggregate_id == task_id,
+            )
+        )
+        outbox_event = event_result.scalar_one()
+
+    assert task is not None
+    assert task.file_id == file_id
+    assert task.task_type == "ragflow_upload"
+    assert task.status == "queued"
+    assert outbox_event.payload["sync_task_id"] == task_id
+
+
 async def test_create_ragflow_upload_task_uses_redis_sync_lock(
     task_client: AsyncClient,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     from app.core.database import AsyncSessionFactory
-    from app.modules.ragflow import tasks as ragflow_tasks
+    from app.modules.ragflow import sync_locks
     from app.modules.ragflow.models import SyncTask
-    from app.modules.ragflow.tasks import RagflowSyncLockBusy, create_ragflow_upload_sync_task
+    from app.modules.ragflow.sync_locks import RagflowSyncLockBusy
+    from app.modules.ragflow.tasks import create_ragflow_upload_sync_task
 
     await _create_admin_token(task_client)
     uploader_id = await _create_user(email="phase4-lock@company.com", password="password123")
@@ -253,7 +282,7 @@ async def test_create_ragflow_upload_task_uses_redis_sync_lock(
         decode_responses=True,
     )
     await redis_client.set(lock_key, "busy", ex=30)
-    monkeypatch.setattr(ragflow_tasks, "SYNC_LOCK_WAIT_SECONDS", 0.0)
+    monkeypatch.setattr(sync_locks, "SYNC_LOCK_WAIT_SECONDS", 0.0)
 
     try:
         async with AsyncSessionFactory() as session:
@@ -429,6 +458,91 @@ async def test_failed_task_can_be_retried(task_client: AsyncClient) -> None:
             )
         )
         assert event_result.scalar_one().payload["sync_task_id"] == str(task_id)
+
+
+async def test_retry_returns_conflict_when_sync_lock_is_busy(task_client: AsyncClient) -> None:
+    from app.core.database import AsyncSessionFactory
+    from app.modules.ragflow.models import SyncTask
+
+    token = await _create_admin_token(task_client)
+    uploader_id = await _create_user(
+        email="phase4-retry-lock@company.com",
+        password="password123",
+    )
+    file_id = await _create_file(uploader_id=uploader_id)
+    async with AsyncSessionFactory() as session:
+        task = SyncTask(
+            file_id=file_id,
+            task_type="ragflow_upload",
+            status="failed",
+            retry_count=0,
+            max_retry_count=3,
+            error_message="network timeout",
+        )
+        session.add(task)
+        await session.commit()
+        await session.refresh(task)
+        task_id = task.id
+
+    redis_client = from_url(  # type: ignore[no-untyped-call]
+        os.environ["CACHE_REDIS_URL"],
+        encoding="utf-8",
+        decode_responses=True,
+    )
+    await redis_client.set(f"lock:sync:{file_id}", "busy", ex=30)
+    try:
+        response = await task_client.post(
+            f"/api/tasks/{task_id}/retry",
+            headers={"Authorization": f"Bearer {token}"},
+        )
+    finally:
+        await redis_client.delete(f"lock:sync:{file_id}")
+        await redis_client.aclose()
+
+    assert response.status_code == 409
+    assert response.json()["error_code"] == "VALIDATION_ERROR"
+
+
+async def test_retry_returns_conflict_when_file_has_active_upload_task(
+    task_client: AsyncClient,
+) -> None:
+    from app.core.database import AsyncSessionFactory
+    from app.modules.ragflow.models import SyncTask
+
+    token = await _create_admin_token(task_client)
+    uploader_id = await _create_user(
+        email="phase4-retry-active@company.com",
+        password="password123",
+    )
+    file_id = await _create_file(uploader_id=uploader_id)
+    async with AsyncSessionFactory() as session:
+        failed_task = SyncTask(
+            file_id=file_id,
+            task_type="ragflow_upload",
+            status="failed",
+            retry_count=0,
+            max_retry_count=3,
+            error_message="network timeout",
+        )
+        active_task = SyncTask(
+            file_id=file_id,
+            task_type="ragflow_upload",
+            status="queued",
+            retry_count=0,
+            max_retry_count=3,
+        )
+        session.add_all([failed_task, active_task])
+        await session.commit()
+        await session.refresh(failed_task)
+        failed_task_id = failed_task.id
+
+    response = await task_client.post(
+        f"/api/tasks/{failed_task_id}/retry",
+        headers={"Authorization": f"Bearer {token}"},
+    )
+
+    assert response.status_code == 409
+    assert response.json()["error_code"] == "VALIDATION_ERROR"
 
 
 async def test_task_admin_operations_write_audit_logs(task_client: AsyncClient) -> None:

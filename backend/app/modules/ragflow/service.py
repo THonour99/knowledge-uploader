@@ -7,12 +7,14 @@ from datetime import UTC, datetime
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.audit import record_admin_audit_log
+from app.core.config import get_settings
 from app.core.outbox import OutboxRepository
 from app.modules.user.schemas import AuthUserRecord
 
 from . import events, exceptions
 from .models import SyncTask, SyncTaskLog
 from .repository import RagflowTaskRepository  # noqa: TID251 - same-module repository dependency
+from .sync_locks import acquire_sync_lock, release_sync_lock, release_sync_lock_after_transaction
 
 ADMIN_ROLES = {"knowledge_admin", "system_admin"}
 RAGFLOW_UPLOAD_TASK = "ragflow_upload"
@@ -118,28 +120,59 @@ class RagflowTaskService:
         if task.status != "failed" or task.retry_count >= task.max_retry_count:
             raise exceptions.task_not_retryable()
 
-        task.status = "queued"
-        task.retry_count += 1
-        task.error_message = None
-        task.started_at = None
-        task.finished_at = None
-        await self._repository.add_log(
-            task_id=task.id,
-            status=task.status,
-            message=f"task manually retried, attempt {task.retry_count}",
+        settings = get_settings()
+        lock_token = uuid.uuid4().hex
+        lock_acquired = await acquire_sync_lock(
+            redis_url=settings.cache_redis_url,
+            file_id=task.file_id,
+            token=lock_token,
         )
-        await self._append_task_queued_event(task)
-        await self._record_admin_audit(
-            current_user=current_user,
-            action="task.retry",
-            target_type="task",
-            target_id=task.id,
-            context=context,
-            metadata_json={"retry_count": task.retry_count},
+        if not lock_acquired:
+            raise exceptions.task_lock_busy()
+
+        release_sync_lock_after_transaction(
+            session=self._session,
+            redis_url=settings.cache_redis_url,
+            file_id=task.file_id,
+            token=lock_token,
         )
-        await self._session.commit()
-        await self._session.refresh(task)
-        return await self._bundle(task)
+        try:
+            active_task = await self._repository.get_active_task(
+                file_id=task.file_id,
+                task_type=RAGFLOW_UPLOAD_TASK,
+            )
+            if active_task is not None and active_task.id != task.id:
+                raise exceptions.task_conflict()
+
+            task.status = "queued"
+            task.retry_count += 1
+            task.error_message = None
+            task.started_at = None
+            task.finished_at = None
+            await self._repository.add_log(
+                task_id=task.id,
+                status=task.status,
+                message=f"task manually retried, attempt {task.retry_count}",
+            )
+            await self._append_task_queued_event(task)
+            await self._record_admin_audit(
+                current_user=current_user,
+                action="task.retry",
+                target_type="task",
+                target_id=task.id,
+                context=context,
+                metadata_json={"retry_count": task.retry_count},
+            )
+            await self._session.commit()
+            await self._session.refresh(task)
+            return await self._bundle(task)
+        except Exception:
+            await release_sync_lock(
+                redis_url=settings.cache_redis_url,
+                file_id=task.file_id,
+                token=lock_token,
+            )
+            raise
 
     async def cancel_task(
         self,

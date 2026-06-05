@@ -170,3 +170,45 @@ async def test_ragflow_sync_task_outbox_event_requires_task_id() -> None:
 
     with pytest.raises(RuntimeError, match="missing sync_task_id"):
         dispatch_celery_task_for_event(event, sender=FakeCelerySender())
+
+
+async def test_review_approved_event_with_dataset_dispatches_ragflow_task_creation() -> None:
+    event = EventOutbox(
+        event_type="review.file.approved",
+        aggregate_type="file",
+        aggregate_id="file-1",
+        payload={"file_id": "file-1", "ragflow_dataset_id": "dataset-1"},
+    )
+    sender = FakeCelerySender()
+
+    dispatch_celery_task_for_event(event, sender=sender)
+
+    assert sender.sent == [
+        {"name": "ragflow.create_upload_task", "args": ["file-1"], "queue": "ragflow_queue"}
+    ]
+
+
+async def test_review_approved_event_without_dataset_does_not_dispatch_ragflow_task() -> None:
+    event = EventOutbox(
+        event_type="review.file.approved",
+        aggregate_type="file",
+        aggregate_id="file-1",
+        payload={"file_id": "file-1", "ragflow_dataset_id": None},
+    )
+    sender = FakeCelerySender()
+
+    dispatch_celery_task_for_event(event, sender=sender)
+
+    assert sender.sent == []
+
+
+async def test_review_approved_event_with_dataset_requires_file_id() -> None:
+    event = EventOutbox(
+        event_type="review.file.approved",
+        aggregate_type="file",
+        aggregate_id="file-1",
+        payload={"ragflow_dataset_id": "dataset-1"},
+    )
+
+    with pytest.raises(RuntimeError, match="missing file_id"):
+        dispatch_celery_task_for_event(event, sender=FakeCelerySender())

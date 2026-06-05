@@ -38,6 +38,22 @@ def task_not_retryable() -> RagflowTaskError:
     )
 
 
+def task_conflict() -> RagflowTaskError:
+    return RagflowTaskError(
+        ErrorCode.VALIDATION_ERROR,
+        "another active ragflow upload task exists",
+        status.HTTP_409_CONFLICT,
+    )
+
+
+def task_lock_busy() -> RagflowTaskError:
+    return RagflowTaskError(
+        ErrorCode.VALIDATION_ERROR,
+        "ragflow sync task is busy",
+        status.HTTP_409_CONFLICT,
+    )
+
+
 def task_not_cancelable() -> RagflowTaskError:
     return RagflowTaskError(
         ErrorCode.VALIDATION_ERROR,

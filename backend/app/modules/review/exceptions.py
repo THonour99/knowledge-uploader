@@ -56,11 +56,3 @@ def invalid_visibility() -> ReviewError:
         "invalid category visibility",
         status.HTTP_400_BAD_REQUEST,
     )
-
-
-def sync_task_busy() -> ReviewError:
-    return ReviewError(
-        ErrorCode.VALIDATION_ERROR,
-        "ragflow sync task is busy",
-        status.HTTP_409_CONFLICT,
-    )
