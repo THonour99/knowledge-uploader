@@ -26,6 +26,10 @@ def email_verification_rate_limit_key(email: str) -> str:
     return f"ratelimit:auth:email-verification:{normalized}"
 
 
+def upload_rate_limit_key(user_id: str) -> str:
+    return f"ratelimit:upload:{user_id}"
+
+
 def jwt_blacklist_key(jti: str) -> str:
     return f"jwt:blacklist:{jti}"
 

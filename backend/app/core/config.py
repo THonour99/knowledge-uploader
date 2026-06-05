@@ -40,6 +40,18 @@ class Settings(BaseSettings):
     minio_secret_key: str = "knowledge_password"
     minio_bucket: str = "knowledge-files"
     minio_secure: bool = False
+    upload_max_file_size_bytes: int = 50 * 1024 * 1024
+    upload_rate_limit_per_minute: int = 10
+    upload_allowed_extensions: str = "pdf,docx,xlsx,pptx,txt,md,csv"
+    upload_allowed_mime_types: str = (
+        "application/pdf,"
+        "application/vnd.openxmlformats-officedocument.wordprocessingml.document,"
+        "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet,"
+        "application/vnd.openxmlformats-officedocument.presentationml.presentation,"
+        "text/plain,"
+        "text/markdown,"
+        "text/csv"
+    )
 
     jwt_secret: str = "change-me-change-me-change-me-change-me"
     jwt_expire_minutes: int = 1440
@@ -74,6 +86,9 @@ class Settings(BaseSettings):
 
         if self.encryption_key in PLACEHOLDER_SECRETS:
             msg = "ENCRYPTION_KEY must be a non-placeholder Fernet key"
+            raise ValueError(msg)
+        if not self.minio_secure:
+            msg = "MINIO_SECURE must be true in protected environments"
             raise ValueError(msg)
 
         try:
