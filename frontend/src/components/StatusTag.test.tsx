@@ -15,4 +15,10 @@ describe("StatusTag", () => {
 
     expect(screen.getByText("unknown_status")).toBeInTheDocument();
   });
+
+  it("renders dataset status labels", () => {
+    render(<StatusTag kind="dataset" value="unbound" />);
+
+    expect(screen.getByText("未绑定 Dataset")).toBeInTheDocument();
+  });
 });
