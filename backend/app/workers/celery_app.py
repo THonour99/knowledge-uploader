@@ -21,5 +21,6 @@ celery_app.conf.task_routes = {
     "statistics.*": {"queue": "statistics_queue"},
     "notification.*": {"queue": "notification_queue"},
 }
+celery_app.conf.imports = ("app.modules.ragflow.tasks",)
 
 app = celery_app

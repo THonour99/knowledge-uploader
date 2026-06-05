@@ -2,37 +2,39 @@ import { Tag } from "antd";
 
 import { statusTagColors } from "../theme/tokens";
 
-export type StatusKind = "file" | "review" | "sync" | "risk" | "user";
-type StatusTone = keyof typeof statusTagColors | "processing";
+export type StatusKind = "file" | "review" | "sync" | "risk" | "user" | "dataset";
+type StatusTone = keyof typeof statusTagColors;
 
 export interface StatusTagProps {
   kind: StatusKind;
   value: string;
   processing?: boolean;
+  variant?: "tag" | "dot";
 }
 
 interface StatusMeta {
   label: string;
   color: StatusTone;
   italic?: boolean;
+  processing?: boolean;
 }
 
 const statusMap: Record<StatusKind, Record<string, StatusMeta>> = {
   file: {
-    uploaded: { label: "已上传", color: "info" },
+    uploaded: { label: "已上传", color: "primary" },
     extracting_text: { label: "文本抽取中", color: "ai" },
-    analysis_queued: { label: "等待分析", color: "primary" },
+    analysis_queued: { label: "等待分析", color: "geekblue" },
     analyzing: { label: "AI 分析中", color: "ai" },
     analysis_failed: { label: "分析失败", color: "orange" },
     analyzed: { label: "分析完成", color: "cyan" },
     pending_review: { label: "待审核", color: "queued" },
     sensitive_review_required: { label: "敏感审核", color: "danger" },
     approved: { label: "已审核", color: "success" },
-    rejected: { label: "已拒绝", color: "danger" },
+    rejected: { label: "已拒绝", color: "volcano" },
     queued: { label: "等待同步", color: "default" },
-    syncing: { label: "同步中", color: "processing" },
+    syncing: { label: "同步中", color: "processing", processing: true },
     uploaded_to_ragflow: { label: "已上传至 RAGFlow", color: "cyan" },
-    parsing: { label: "解析中", color: "processing" },
+    parsing: { label: "解析中", color: "processing", processing: true },
     parsed: { label: "解析完成", color: "success" },
     failed: { label: "失败", color: "danger" },
     disabled: { label: "已禁用", color: "default" },
@@ -40,14 +42,14 @@ const statusMap: Record<StatusKind, Record<string, StatusMeta>> = {
   },
   review: {
     pending: { label: "待审核", color: "queued" },
-    in_review: { label: "审核中", color: "info" },
+    in_review: { label: "审核中", color: "primary" },
     approved: { label: "已通过", color: "success" },
     rejected: { label: "未通过", color: "danger" },
   },
   sync: {
     not_synced: { label: "未同步", color: "default" },
-    queued: { label: "待同步", color: "info" },
-    syncing: { label: "同步中", color: "processing" },
+    queued: { label: "待同步", color: "primary" },
+    syncing: { label: "同步中", color: "processing", processing: true },
     synced: { label: "已同步", color: "success" },
     failed: { label: "同步失败", color: "danger" },
   },
@@ -63,15 +65,40 @@ const statusMap: Record<StatusKind, Record<string, StatusMeta>> = {
     disabled: { label: "已禁用", color: "default" },
     locked: { label: "锁定中", color: "danger" },
   },
+  dataset: {
+    enabled: { label: "已启用", color: "success" },
+    pending: { label: "待完善", color: "warning" },
+    disabled: { label: "已禁用", color: "default" },
+    required: { label: "是", color: "success" },
+    skipped: { label: "否", color: "default" },
+    unbound: { label: "未绑定 Dataset", color: "danger" },
+  },
 };
 
-export function StatusTag({ kind, value, processing = false }: StatusTagProps) {
+export function StatusTag({ kind, value, processing = false, variant = "tag" }: StatusTagProps) {
   const meta = statusMap[kind][value] ?? { label: value, color: "default" };
-  const color =
-    processing || meta.color === "processing" ? "processing" : statusTagColors[meta.color];
+  const color = statusTagColors[meta.color];
+  const isProcessing = processing || meta.processing === true;
+
+  if (variant === "dot") {
+    return (
+      <span className={`status-tag-dot status-tag-dot--${meta.color}`}>
+        {meta.label}
+      </span>
+    );
+  }
 
   return (
-    <Tag color={color} className={meta.italic ? "status-tag status-tag--italic" : "status-tag"}>
+    <Tag
+      color={color}
+      className={[
+        "status-tag",
+        meta.italic ? "status-tag--italic" : "",
+        isProcessing ? "status-tag--processing" : "",
+      ]
+        .filter(Boolean)
+        .join(" ")}
+    >
       {meta.label}
     </Tag>
   );

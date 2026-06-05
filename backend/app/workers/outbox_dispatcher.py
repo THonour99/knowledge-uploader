@@ -11,6 +11,9 @@ from app.core.config import get_settings
 from app.core.database import AsyncSessionFactory
 from app.core.logging import configure_logging, get_logger
 from app.core.outbox import EventOutbox, OutboxRepository
+from app.modules.ragflow.events import RAGFLOW_SYNC_TASK_QUEUED
+from app.modules.review.events import REVIEW_FILE_APPROVED
+from app.workers.celery_app import celery_app
 
 _running = True
 logger = get_logger(__name__)
@@ -23,6 +26,36 @@ DEFAULT_POLL_INTERVAL_SECONDS = 0.5
 class EventPublisher(Protocol):
     def publish(self, event: EventOutbox) -> None:
         pass
+
+
+class CeleryTaskSender(Protocol):
+    def send_task(self, name: str, args: list[str], queue: str) -> object:
+        pass
+
+
+def dispatch_celery_task_for_event(
+    event: EventOutbox,
+    *,
+    sender: CeleryTaskSender = celery_app,
+) -> None:
+    if event.event_type != RAGFLOW_SYNC_TASK_QUEUED:
+        if event.event_type != REVIEW_FILE_APPROVED:
+            return
+        ragflow_dataset_id = event.payload.get("ragflow_dataset_id")
+        if not isinstance(ragflow_dataset_id, str) or not ragflow_dataset_id:
+            return
+        file_id = event.payload.get("file_id")
+        if not isinstance(file_id, str) or not file_id:
+            msg = "file approved event missing file_id"
+            raise RuntimeError(msg)
+        sender.send_task("ragflow.create_upload_task", args=[file_id], queue="ragflow_queue")
+        return
+
+    sync_task_id = event.payload.get("sync_task_id")
+    if not isinstance(sync_task_id, str) or not sync_task_id:
+        msg = "sync task event missing sync_task_id"
+        raise RuntimeError(msg)
+    sender.send_task("ragflow.upload", args=[sync_task_id], queue="ragflow_queue")
 
 
 class KombuEventPublisher:
@@ -63,6 +96,7 @@ class KombuEventPublisher:
                 "aggregate_id": event.aggregate_id,
             },
         )
+        dispatch_celery_task_for_event(event)
 
 
 def _stop(_signum: int, _frame: object) -> None:
