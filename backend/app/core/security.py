@@ -47,9 +47,17 @@ def password_fingerprint(password_hash: str, secret: str) -> str:
     ).hexdigest()
 
 
-def decrypt_api_key(encrypted_value: str, key: str) -> str:
+def decrypt_secret(encrypted_value: str, key: str) -> str:
     return Fernet(key.encode("utf-8")).decrypt(encrypted_value.encode("utf-8")).decode("utf-8")
 
 
-def encrypt_api_key(value: str, key: str) -> str:
+def encrypt_secret(value: str, key: str) -> str:
     return Fernet(key.encode("utf-8")).encrypt(value.encode("utf-8")).decode("utf-8")
+
+
+def decrypt_api_key(encrypted_value: str, key: str) -> str:
+    return decrypt_secret(encrypted_value, key)
+
+
+def encrypt_api_key(value: str, key: str) -> str:
+    return encrypt_secret(value, key)

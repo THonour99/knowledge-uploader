@@ -32,6 +32,10 @@ class User(Base):
             "failed_login_count >= 0",
             name="ck_users_failed_login_count_non_negative",
         ),
+        CheckConstraint(
+            "session_version >= 0",
+            name="ck_users_session_version_non_negative",
+        ),
         Index("uq_users_email", "email", unique=True),
         Index("idx_users_email_domain", "email_domain"),
         Index("idx_users_role_status", "role", "status"),
@@ -57,6 +61,7 @@ class User(Base):
     ding_user_id: Mapped[str | None] = mapped_column(String(120))
     employee_no: Mapped[str | None] = mapped_column(String(80))
     failed_login_count: Mapped[int] = mapped_column(Integer, nullable=False, server_default="0")
+    session_version: Mapped[int] = mapped_column(Integer, nullable=False, server_default="0")
     locked_until: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     last_login_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     last_login_ip: Mapped[str | None] = mapped_column(String(45))

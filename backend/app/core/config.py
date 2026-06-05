@@ -52,6 +52,7 @@ class Settings(BaseSettings):
     password_min_length: int = 8
     login_max_failed_attempts: int = 5
     login_lock_minutes: int = 15
+    auth_login_rate_limit_per_hour: int = 20
     email_verification_expire_hours: int = 24
     password_reset_expire_minutes: int = 30
     auth_register_rate_limit_per_hour: int = 5

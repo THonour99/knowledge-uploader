@@ -58,6 +58,7 @@ modules/<module>/
 - ❌ 禁止跨模块 `from app.modules.X.service import ...`
 - ❌ 禁止跨模块 `from app.modules.X.repository import ...`
 - ✅ 允许跨模块 `from app.modules.X.schemas import ...`
+- ✅ `auth` / `user` 共享 `users` 主表的同步认证特例：`auth` 只能依赖 `app.core.identity.UserIdentityStore` 协议；具体 ORM 实现只能放在 `user` 模块内；禁止在 `auth` / `core` 直接导入 `user.models` / `user.repository` / `user.service`
 - ✅ 模块间通信只走：(1) 事件总线 (2) Celery task (3) 共享 schemas
 - `ruff` 配置中已 ban 跨模块 service import，违规 CI 阻塞
 

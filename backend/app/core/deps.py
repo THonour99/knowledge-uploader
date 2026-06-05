@@ -14,8 +14,8 @@ from app.core.database import get_session
 from app.core.exceptions import ErrorCode
 from app.core.ratelimit import is_jwt_blacklisted
 from app.core.security import decode_jwt, password_fingerprint
-from app.modules.auth.repository import AuthRepository
-from app.modules.user.models import User
+from app.modules.user.identity import SqlUserIdentityStore
+from app.modules.user.schemas import AuthUserRecord
 
 bearer_scheme = HTTPBearer(auto_error=False)
 
@@ -40,7 +40,7 @@ async def get_current_user(
     credentials: BearerCredentialsDep,
     session: SessionDep,
     settings: SettingsDep,
-) -> User:
+) -> AuthUserRecord:
     if credentials is None:
         raise http_error(
             ErrorCode.AUTHENTICATION_FAILED,
@@ -52,6 +52,7 @@ async def get_current_user(
         payload = decode_jwt(credentials.credentials, settings.jwt_secret)
         user_id = UUID(str(payload.get("sub")))
         jti = str(payload.get("jti"))
+        session_version = int(payload.get("sv", -1))
     except (ValueError, jwt.InvalidTokenError) as exc:
         raise http_error(
             ErrorCode.AUTHENTICATION_FAILED,
@@ -66,7 +67,7 @@ async def get_current_user(
             status.HTTP_401_UNAUTHORIZED,
         )
 
-    user = await AuthRepository(session).get_user_by_id(user_id)
+    user = await SqlUserIdentityStore(session).get_by_id(user_id)
     if user is None:
         raise http_error(
             ErrorCode.AUTHENTICATION_FAILED,
@@ -75,7 +76,19 @@ async def get_current_user(
         )
     if user.status == "disabled":
         raise http_error(ErrorCode.USER_DISABLED, "user is disabled", status.HTTP_403_FORBIDDEN)
+    if user.status == "locked":
+        raise http_error(
+            ErrorCode.USER_LOCKED,
+            "user is temporarily locked",
+            status.HTTP_403_FORBIDDEN,
+        )
     if payload.get("pwd") != password_fingerprint(user.password_hash, settings.jwt_secret):
+        raise http_error(
+            ErrorCode.AUTHENTICATION_FAILED,
+            "invalid bearer token",
+            status.HTTP_401_UNAUTHORIZED,
+        )
+    if session_version != user.session_version:
         raise http_error(
             ErrorCode.AUTHENTICATION_FAILED,
             "invalid bearer token",

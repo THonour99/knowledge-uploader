@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from datetime import datetime
 from uuid import UUID
 
 from pydantic import BaseModel
@@ -14,6 +15,14 @@ class UserProfile(BaseModel):
     email_verified: bool
     department: str | None
     phone: str | None
+
+
+class AuthUserRecord(UserProfile):
+    email_domain: str
+    password_hash: str
+    failed_login_count: int
+    locked_until: datetime | None
+    session_version: int
 
 
 class UpdateUserRequest(BaseModel):

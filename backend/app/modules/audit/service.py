@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import uuid
 
-from app.modules.audit.repository import AuditRepository
+from .repository import AuditRepository
 
 
 class AuditService:
