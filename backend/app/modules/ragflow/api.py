@@ -7,9 +7,8 @@ from fastapi import APIRouter, Depends, HTTPException, Request
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.database import get_session
-from app.core.deps import get_current_user
+from app.core.permissions import AdminUserDep
 from app.core.responses import success_response
-from app.modules.user.schemas import AuthUserRecord
 
 from .exceptions import RagflowTaskError
 from .repository import RagflowTaskRepository  # noqa: TID251 - same-module repository dependency
@@ -22,7 +21,6 @@ from .service import (  # noqa: TID251 - same-module service dependency
 
 router = APIRouter(tags=["ragflow"])
 SessionDep = Annotated[AsyncSession, Depends(get_session)]
-CurrentUserDep = Annotated[AuthUserRecord, Depends(get_current_user)]
 
 
 def _service(session: AsyncSession) -> RagflowTaskService:
@@ -73,7 +71,7 @@ def _task_response(bundle: SyncTaskBundle) -> SyncTaskResponse:
 @router.get("/api/tasks")
 async def list_tasks(
     request: Request,
-    current_user: CurrentUserDep,
+    current_user: AdminUserDep,
     session: SessionDep,
 ) -> dict[str, object]:
     try:
@@ -94,7 +92,7 @@ async def list_tasks(
 async def get_task(
     task_id: UUID,
     request: Request,
-    current_user: CurrentUserDep,
+    current_user: AdminUserDep,
     session: SessionDep,
 ) -> dict[str, object]:
     try:
@@ -112,7 +110,7 @@ async def get_task(
 async def retry_task(
     task_id: UUID,
     request: Request,
-    current_user: CurrentUserDep,
+    current_user: AdminUserDep,
     session: SessionDep,
 ) -> dict[str, object]:
     try:
@@ -130,7 +128,7 @@ async def retry_task(
 async def cancel_task(
     task_id: UUID,
     request: Request,
-    current_user: CurrentUserDep,
+    current_user: AdminUserDep,
     session: SessionDep,
 ) -> dict[str, object]:
     try:

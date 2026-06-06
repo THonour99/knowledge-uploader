@@ -120,6 +120,182 @@ export interface DatasetMappingPayload {
   enabled: boolean;
 }
 
+export interface AiGlobalConfig {
+  ai_analysis_enabled: boolean;
+  allow_external_llm: boolean;
+  allow_sync_when_analysis_failed: boolean;
+}
+
+export interface AiFeatureConfig {
+  key: string;
+  name: string;
+  description?: string;
+  enabled: boolean;
+}
+
+export interface AiProviderConfig {
+  id: string;
+  name: string;
+  provider_type: string;
+  base_url?: string | null;
+  chat_model?: string | null;
+  embedding_model?: string | null;
+  enabled: boolean;
+  priority: number;
+  api_key_masked?: string | null;
+  last_test_status?: string | null;
+  last_test_latency_ms?: number | null;
+  last_tested_at?: string | null;
+}
+
+export interface AiPromptTemplate {
+  id: string;
+  template_key: string;
+  name: string;
+  description?: string | null;
+  enabled: boolean;
+  is_default: boolean;
+  version: number;
+  updated_at?: string | null;
+}
+
+export interface AiSensitiveRule {
+  id: string;
+  name: string;
+  rule_type: string;
+  risk_level: string;
+  action: string;
+  enabled: boolean;
+  hit_count: number;
+  updated_at?: string | null;
+}
+
+export interface AiConfigResponse {
+  global: AiGlobalConfig;
+  features: AiFeatureConfig[];
+  providers: AiProviderConfig[];
+  prompt_templates: AiPromptTemplate[];
+  sensitive_rules: AiSensitiveRule[];
+}
+
+export interface StatisticsQueryParams {
+  start_date?: string;
+  end_date?: string;
+  department?: string;
+  user_id?: string;
+  category_id?: string;
+  status?: string;
+  review_status?: string;
+  sync_status?: string;
+  group_by?: "day" | "week" | "month";
+  page?: number;
+  page_size?: number;
+  sort_by?: string;
+  sort_order?: "asc" | "desc";
+}
+
+export interface StatisticsOverviewResponse {
+  total_files: number;
+  active_uploaders: number;
+  synced_files: number;
+  pending_review_files: number;
+  failed_files: number;
+  failed_tasks: number;
+  rejected_files: number;
+  sensitive_files: number;
+  total_file_size: number;
+  sync_success_rate: number;
+}
+
+export interface StatisticsUserRow {
+  rank: number;
+  user_id: string;
+  user_name: string;
+  department: string | null;
+  total_files: number;
+  approved_files: number;
+  synced_files: number;
+  failed_files: number;
+  pending_review_files: number;
+  rejected_files: number;
+  sensitive_files: number;
+  total_file_size: number;
+  last_upload_at: string | null;
+  last_success_sync_at: string | null;
+}
+
+export interface StatisticsUserListResponse {
+  items: StatisticsUserRow[];
+  total: number;
+  page: number;
+  page_size: number;
+}
+
+export interface StatisticsDepartmentRow {
+  department: string;
+  total_files: number;
+  active_uploaders: number;
+  synced_files: number;
+  failed_files: number;
+  pending_review_files: number;
+  total_file_size: number;
+}
+
+export interface StatisticsDepartmentListResponse {
+  items: StatisticsDepartmentRow[];
+  total: number;
+}
+
+export interface StatisticsCategoryRow {
+  category_id: string | null;
+  category_name: string;
+  total_files: number;
+  synced_files: number;
+  failed_files: number;
+  pending_review_files: number;
+  total_file_size: number;
+}
+
+export interface StatisticsCategoryListResponse {
+  items: StatisticsCategoryRow[];
+  total: number;
+}
+
+export interface StatisticsTrendPoint {
+  period: string;
+  total_files: number;
+  synced_files: number;
+  failed_files: number;
+  pending_review_files: number;
+}
+
+export interface StatisticsTrendResponse {
+  group_by: "day" | "week" | "month";
+  items: StatisticsTrendPoint[];
+}
+
+export interface StatisticsFailureRow {
+  reason: string;
+  failed_tasks: number;
+  failed_files: number;
+}
+
+export interface StatisticsFailureListResponse {
+  items: StatisticsFailureRow[];
+  total: number;
+}
+
+export interface UpdateAiFeaturePayload {
+  enabled: boolean;
+}
+
+export interface AiProviderTestResult {
+  provider_id: string;
+  status: "success" | "failed";
+  latency_ms?: number | null;
+  message?: string | null;
+}
+
 export interface ReviewDecisionPayload {
   category_id?: string | null;
   dataset_mapping_id?: string | null;
@@ -290,6 +466,104 @@ export async function updateDatasetMapping(
 
 export async function disableDatasetMapping(id: string): Promise<void> {
   await apiClient.delete(`/datasets/${id}`);
+}
+
+export async function getAiConfig(): Promise<AiConfigResponse> {
+  const response = await apiClient.get<ApiEnvelope<AiConfigResponse> | AiConfigResponse>(
+    "/admin/ai/config",
+  );
+
+  return unwrapResponse(response.data);
+}
+
+export async function getStatisticsOverview(
+  params: StatisticsQueryParams = {},
+): Promise<StatisticsOverviewResponse> {
+  const response = await apiClient.get<
+    ApiEnvelope<StatisticsOverviewResponse> | StatisticsOverviewResponse
+  >("/admin/statistics/overview", { params });
+
+  return unwrapResponse(response.data);
+}
+
+export async function getStatisticsUsers(
+  params: StatisticsQueryParams = {},
+): Promise<StatisticsUserListResponse> {
+  const response = await apiClient.get<
+    ApiEnvelope<StatisticsUserListResponse> | StatisticsUserListResponse
+  >("/admin/statistics/users", { params });
+
+  return unwrapResponse(response.data);
+}
+
+export async function getStatisticsDepartments(
+  params: StatisticsQueryParams = {},
+): Promise<StatisticsDepartmentListResponse> {
+  const response = await apiClient.get<
+    ApiEnvelope<StatisticsDepartmentListResponse> | StatisticsDepartmentListResponse
+  >("/admin/statistics/departments", { params });
+
+  return unwrapResponse(response.data);
+}
+
+export async function getStatisticsCategories(
+  params: StatisticsQueryParams = {},
+): Promise<StatisticsCategoryListResponse> {
+  const response = await apiClient.get<
+    ApiEnvelope<StatisticsCategoryListResponse> | StatisticsCategoryListResponse
+  >("/admin/statistics/categories", { params });
+
+  return unwrapResponse(response.data);
+}
+
+export async function getStatisticsTrends(
+  params: StatisticsQueryParams = {},
+): Promise<StatisticsTrendResponse> {
+  const response = await apiClient.get<ApiEnvelope<StatisticsTrendResponse> | StatisticsTrendResponse>(
+    "/admin/statistics/trends",
+    { params },
+  );
+
+  return unwrapResponse(response.data);
+}
+
+export async function getStatisticsFailures(
+  params: StatisticsQueryParams = {},
+): Promise<StatisticsFailureListResponse> {
+  const response = await apiClient.get<
+    ApiEnvelope<StatisticsFailureListResponse> | StatisticsFailureListResponse
+  >("/admin/statistics/failures", { params });
+
+  return unwrapResponse(response.data);
+}
+
+export async function exportStatistics(params: StatisticsQueryParams = {}): Promise<Blob> {
+  const response = await apiClient.get<Blob>("/admin/statistics/export", {
+    params,
+    responseType: "blob",
+  });
+
+  return response.data;
+}
+
+export async function updateAiFeature(
+  featureKey: string,
+  payload: UpdateAiFeaturePayload,
+): Promise<AiFeatureConfig> {
+  const response = await apiClient.patch<ApiEnvelope<AiFeatureConfig> | AiFeatureConfig>(
+    `/admin/ai/features/${featureKey}`,
+    payload,
+  );
+
+  return unwrapResponse(response.data);
+}
+
+export async function testAiProvider(providerId: string): Promise<AiProviderTestResult> {
+  const response = await apiClient.post<ApiEnvelope<AiProviderTestResult> | AiProviderTestResult>(
+    `/admin/ai/providers/${providerId}/test`,
+  );
+
+  return unwrapResponse(response.data);
 }
 
 export async function listReviewFiles(): Promise<FileListResponse> {

@@ -802,9 +802,7 @@ async def test_ragflow_upload_worker_uploads_minio_object_and_parses_document(
         result = await session.execute(select(SyncTask).where(SyncTask.id == task_id))
         task = result.scalar_one()
         log_result = await session.execute(
-            select(SyncTaskLog)
-            .where(SyncTaskLog.task_id == task_id)
-            .order_by(SyncTaskLog.id.asc())
+            select(SyncTaskLog).where(SyncTaskLog.task_id == task_id).order_by(SyncTaskLog.id.asc())
         )
         logs = list(log_result.scalars())
         file = await session.get(File, file_id)
@@ -818,9 +816,7 @@ async def test_ragflow_upload_worker_uploads_minio_object_and_parses_document(
     assert file.ragflow_parse_status == "DONE"
     assert file.ragflow_error_message is None
     assert file.last_sync_at is not None
-    assert storage.reads == [
-        ("knowledge-files", f"uploads/{uploader_id}/file-phase4-handbook.pdf")
-    ]
+    assert storage.reads == [("knowledge-files", f"uploads/{uploader_id}/file-phase4-handbook.pdf")]
     assert client.uploads == [
         {
             "dataset_id": "ragflow-phase5",
@@ -1060,6 +1056,72 @@ async def test_ragflow_upload_worker_requires_approved_file_before_external_call
         ragflow_dataset_id="ragflow-phase5",
     )
     async with AsyncSessionFactory() as session:
+        task_id = await create_ragflow_upload_sync_task(session=session, file_id=file_id)
+        await session.commit()
+
+    storage = _FakeReadableStorage(b"must not be read")
+    client = _FakeRagflowClient()
+    monkeypatch.setattr(tasks, "build_document_storage", lambda _settings: storage)
+    monkeypatch.setattr(tasks, "build_ragflow_client", lambda _settings: client)
+
+    with pytest.raises(RuntimeError, match="RagflowSyncPreconditionError"):
+        await tasks.run_ragflow_upload_task_async(str(task_id))
+
+    async with AsyncSessionFactory() as session:
+        result = await session.execute(select(SyncTask).where(SyncTask.id == task_id))
+        task = result.scalar_one()
+
+    assert task.status == "failed"
+    assert task.error_message == "RagflowSyncPreconditionError"
+    assert storage.reads == []
+    assert client.uploads == []
+    assert client.metadata_updates == []
+    assert client.parse_requests == []
+
+
+async def test_ragflow_upload_worker_blocks_critical_sensitive_file_before_external_calls(
+    task_client: AsyncClient,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from app.core.database import AsyncSessionFactory
+    from app.modules.ai.models import DocumentAnalysis
+    from app.modules.ragflow import tasks
+    from app.modules.ragflow.models import SyncTask
+    from app.modules.ragflow.tasks import create_ragflow_upload_sync_task
+
+    token = await _create_admin_token(task_client)
+    uploader_id = await _create_user(
+        email="phase6-critical-worker@company.com",
+        password="password123",
+    )
+    _, mapping_id = await _create_category_and_mapping(
+        task_client,
+        token,
+        ragflow_dataset_id="ragflow-phase6-critical",
+        ragflow_dataset_name="阶段六敏感知识库",
+    )
+    file_id = await _create_file(
+        uploader_id=uploader_id,
+        status_value="queued",
+        review_status="approved",
+        dataset_mapping_id=UUID(mapping_id),
+        ragflow_dataset_id="ragflow-phase6-critical",
+    )
+    async with AsyncSessionFactory() as session:
+        session.add(
+            DocumentAnalysis(
+                file_id=file_id,
+                status="succeeded",
+                sensitive_risk_level="critical",
+                sensitive_hits=[
+                    {
+                        "rule_name": "生产环境凭据",
+                        "risk_level": "critical",
+                        "action": "block_sync",
+                    }
+                ],
+            )
+        )
         task_id = await create_ragflow_upload_sync_task(session=session, file_id=file_id)
         await session.commit()
 

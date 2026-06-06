@@ -53,6 +53,21 @@ FILES = Table(
 
 FILE_COLUMNS = tuple(FILES.c)
 
+DOCUMENT_ANALYSIS = Table(
+    "document_analysis",
+    MetaData(),
+    Column("file_id", UUID(as_uuid=True), primary_key=True),
+    Column("status", String(30), nullable=False),
+    Column("sensitive_risk_level", String(20), nullable=False),
+)
+
+AI_FEATURE_CONFIGS = Table(
+    "ai_feature_configs",
+    MetaData(),
+    Column("feature_name", String(80), nullable=False),
+    Column("enabled", Boolean, nullable=False),
+)
+
 
 class ReviewRepository:
     def __init__(self, session: AsyncSession) -> None:
@@ -116,6 +131,28 @@ class ReviewRepository:
             .returning(*FILE_COLUMNS)
         )
         return file_record_from_row(result.mappings().one())
+
+    async def get_file_sensitive_risk_level(self, file_id: uuid.UUID) -> str | None:
+        result = await self._session.execute(
+            select(DOCUMENT_ANALYSIS.c.sensitive_risk_level).where(
+                DOCUMENT_ANALYSIS.c.file_id == file_id
+            )
+        )
+        return cast(str | None, result.scalar_one_or_none())
+
+    async def get_file_analysis_status(self, file_id: uuid.UUID) -> str | None:
+        result = await self._session.execute(
+            select(DOCUMENT_ANALYSIS.c.status).where(DOCUMENT_ANALYSIS.c.file_id == file_id)
+        )
+        return cast(str | None, result.scalar_one_or_none())
+
+    async def get_ai_feature_enabled(self, feature_name: str) -> bool | None:
+        result = await self._session.execute(
+            select(AI_FEATURE_CONFIGS.c.enabled).where(
+                AI_FEATURE_CONFIGS.c.feature_name == feature_name
+            )
+        )
+        return cast(bool | None, result.scalar_one_or_none())
 
 
 def file_record_from_row(row: RowMapping) -> ReviewFileRecord:

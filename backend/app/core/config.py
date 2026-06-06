@@ -72,6 +72,26 @@ class Settings(BaseSettings):
     auth_resend_verification_rate_limit_per_hour: int = 3
 
     ai_analysis_enabled: bool = True
+    allow_external_llm: bool = False
+    llm_provider: str = "disabled"
+    llm_base_url: str = ""
+    llm_api_key: str = ""
+    llm_model: str = ""
+    embedding_provider: str = "disabled"
+    embedding_base_url: str = ""
+    embedding_api_key: str = ""
+    embedding_model: str = ""
+    ai_request_timeout: float = 60.0
+    ai_max_retry_count: int = 2
+    ai_allow_sync_when_analysis_failed: bool = True
+    enable_summary: bool = True
+    enable_auto_category: bool = True
+    enable_tag_generation: bool = True
+    enable_sensitive_detection: bool = True
+    enable_quality_score: bool = False
+    enable_ocr: bool = False
+    enable_similarity_detection: bool = False
+
     ragflow_base_url: str = "http://ragflow:9380"
     ragflow_api_key: str = ""
     ragflow_allowed_dataset_ids: str = ""

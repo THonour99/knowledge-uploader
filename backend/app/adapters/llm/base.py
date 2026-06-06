@@ -4,4 +4,14 @@ from typing import Protocol
 
 
 class BaseLLMProvider(Protocol):
-    async def complete(self, prompt: str) -> str: ...
+    async def complete(
+        self,
+        prompt: str,
+        *,
+        model: str | None = None,
+        temperature: float | None = None,
+    ) -> str: ...
+
+
+class LLMProviderError(Exception):
+    pass

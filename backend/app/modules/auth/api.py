@@ -63,6 +63,14 @@ def _request_id(request: Request) -> str | None:
     return request_id if isinstance(request_id, str) else None
 
 
+def _client_ip(request: Request) -> str | None:
+    return request.client.host if request.client is not None else None
+
+
+def _user_agent(request: Request) -> str:
+    return request.headers.get("user-agent", "unknown")[:512] or "unknown"
+
+
 @router.post("/register", status_code=status.HTTP_201_CREATED)
 async def register(
     payload: RegisterRequest,
@@ -71,14 +79,13 @@ async def register(
     settings: SettingsDep,
 ) -> dict[str, object]:
     try:
-        client_ip = request.client.host if request.client is not None else "unknown"
         result = await _service(session, settings).register(
             name=payload.name,
             email=str(payload.email),
             password=payload.password,
             department=payload.department,
             phone=payload.phone,
-            client_ip=client_ip,
+            client_ip=_client_ip(request) or "unknown",
             trace_id=_request_id(request),
         )
     except AuthError as error:
@@ -93,9 +100,12 @@ async def login(
     session: SessionDep,
     settings: SettingsDep,
 ) -> dict[str, object]:
-    client_ip = request.client.host if request.client is not None else None
     try:
-        result = await _service(session, settings).login(payload, client_ip)
+        result = await _service(session, settings).login(
+            payload,
+            client_ip=_client_ip(request),
+            user_agent=_user_agent(request),
+        )
     except AuthError as error:
         _raise_auth_error(error)
     response = LoginResponse(access_token=result.access_token, user=_profile(result.user))

@@ -54,8 +54,11 @@ sys.path.insert(0, str(BACKEND_ROOT))
 os.environ["DATABASE_URL"] = TEST_ASYNC_DATABASE_URL
 os.environ["ALEMBIC_DATABASE_URL"] = TEST_ALEMBIC_DATABASE_URL
 os.environ["CACHE_REDIS_URL"] = TEST_CACHE_REDIS_URL
+os.environ["APP_ENV"] = "test"
 _ensure_test_database()
 
 for module_name in list(sys.modules):
-    if module_name == "app" or module_name.startswith("app."):
+    if module_name == "app" or module_name == "app.tests" or module_name.startswith("app.tests."):
+        continue
+    if module_name.startswith("app."):
         del sys.modules[module_name]

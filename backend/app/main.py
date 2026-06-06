@@ -10,19 +10,23 @@ from app.core.exceptions import ErrorCode
 from app.core.logging import configure_logging
 from app.core.middlewares import request_id_middleware
 from app.core.responses import error_response
+from app.modules.ai.api import router as ai_router
 from app.modules.auth.api import router as auth_router
 from app.modules.document.api import router as document_router
 from app.modules.ragflow.api import router as ragflow_router
 from app.modules.review.api import router as review_router
+from app.modules.statistics.api import router as statistics_router
 from app.modules.user.api import router as user_router
 
 configure_logging()
 app = FastAPI(title="Knowledge Uploader", version="0.1.0")
 app.middleware("http")(request_id_middleware)
+app.include_router(ai_router)
 app.include_router(auth_router)
 app.include_router(document_router)
 app.include_router(ragflow_router)
 app.include_router(review_router)
+app.include_router(statistics_router)
 app.include_router(user_router)
 
 

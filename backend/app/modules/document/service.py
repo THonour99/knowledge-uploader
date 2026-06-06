@@ -13,6 +13,7 @@ from typing import Protocol
 import filetype
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.core.audit import record_audit_log
 from app.core.config import Settings
 from app.core.outbox import OutboxRepository
 from app.modules.user.schemas import AuthUserRecord
@@ -96,6 +97,8 @@ class DocumentService:
         data: bytes,
         description: str | None,
         visibility: str,
+        client_ip: str,
+        user_agent: str,
     ) -> UploadedFileResult:
         self._validate_size(len(data))
         sanitized_name, extension = sanitize_filename(original_filename)
@@ -158,6 +161,13 @@ class DocumentService:
         try:
             await self._repository.add(file)
             await self._append_file_uploaded_event(file)
+            await self._record_upload_audit(
+                file=file,
+                current_user=current_user,
+                duplicate_file_id=duplicate_file_id,
+                client_ip=client_ip,
+                user_agent=user_agent,
+            )
             await self._session.commit()
         except Exception:
             if duplicate is None:
@@ -166,6 +176,37 @@ class DocumentService:
             raise
         await self._session.refresh(file)
         return UploadedFileResult(file=file, duplicate_file_id=duplicate_file_id)
+
+    async def _record_upload_audit(
+        self,
+        *,
+        file: File,
+        current_user: AuthUserRecord,
+        duplicate_file_id: uuid.UUID | None,
+        client_ip: str,
+        user_agent: str,
+    ) -> None:
+        await record_audit_log(
+            self._session,
+            actor_id=current_user.id,
+            action="file.upload",
+            target_type="file",
+            target_id=file.id,
+            ip_address=client_ip,
+            user_agent=user_agent[:512] or "unknown",
+            metadata_json={
+                "original_name": file.original_name,
+                "extension": file.extension,
+                "mime_type": file.mime_type,
+                "size": file.size,
+                "visibility": file.visibility,
+                "duplicate": duplicate_file_id is not None,
+                "duplicate_file_id": (
+                    str(duplicate_file_id) if duplicate_file_id is not None else None
+                ),
+                "ai_analysis_enabled_at_upload": file.ai_analysis_enabled_at_upload,
+            },
+        )
 
     async def list_my_files(self, current_user: AuthUserRecord) -> list[File]:
         return await self._repository.list_for_uploader(current_user.id)
@@ -228,6 +269,7 @@ class DocumentService:
                 "bucket": file.bucket,
                 "object_key": file.object_key,
                 "status": file.status,
+                "ai_analysis_enabled_at_upload": file.ai_analysis_enabled_at_upload,
             },
         )
 

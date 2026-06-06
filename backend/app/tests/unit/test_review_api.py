@@ -220,25 +220,108 @@ async def test_system_admin_creates_category_and_dataset_mapping(
 
     assert disable_response.status_code == 204
 
-    async with AsyncSessionFactory() as session:
-        result = await session.execute(select(AuditLog))
-        audit_logs = list(result.scalars())
-
-    assert {log.action for log in audit_logs} == {
+    expected_actions = {
         "category.create",
         "dataset_mapping.create",
         "category.update",
         "dataset_mapping.update",
         "dataset_mapping.disable",
     }
+    async with AsyncSessionFactory() as session:
+        result = await session.execute(
+            select(AuditLog).where(AuditLog.action.in_(expected_actions))
+        )
+        audit_logs = list(result.scalars())
+
+    assert {log.action for log in audit_logs} == expected_actions
     category_create_log = next(log for log in audit_logs if log.action == "category.create")
-    dataset_create_log = next(
-        log for log in audit_logs if log.action == "dataset_mapping.create"
-    )
+    dataset_create_log = next(log for log in audit_logs if log.action == "dataset_mapping.create")
     assert category_create_log.target_type == "category"
     assert category_create_log.target_id == UUID(category["id"])
     assert dataset_create_log.target_type == "dataset_mapping"
     assert dataset_create_log.target_id == UUID(dataset["id"])
+
+
+async def test_dataset_mapping_requires_allowed_ragflow_dataset_id(
+    review_client: AsyncClient,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from app.core.config import get_settings
+    from app.core.database import AsyncSessionFactory
+    from app.modules.audit.models import AuditLog
+
+    monkeypatch.setenv("RAGFLOW_ALLOWED_DATASET_IDS", "allowed-dataset,allowed-updated")
+    get_settings.cache_clear()
+    await _create_user(
+        email="allowlist-admin@company.com",
+        password="password123",
+        role="system_admin",
+    )
+    token = await _login(review_client, email="allowlist-admin@company.com", password="password123")
+    category = (
+        await review_client.post(
+            "/api/categories",
+            headers={"Authorization": f"Bearer {token}"},
+            json={"name": "Allowlist", "code": "allowlist"},
+        )
+    ).json()["data"]
+
+    rejected_response = await review_client.post(
+        "/api/datasets",
+        headers={"Authorization": f"Bearer {token}"},
+        json={
+            "name": "Blocked Dataset",
+            "category_id": category["id"],
+            "ragflow_dataset_id": "blocked-dataset",
+            "ragflow_dataset_name": "Blocked",
+            "enabled": True,
+        },
+    )
+    allowed_response = await review_client.post(
+        "/api/datasets",
+        headers={"Authorization": f"Bearer {token}"},
+        json={
+            "name": "Allowed Dataset",
+            "category_id": category["id"],
+            "ragflow_dataset_id": "allowed-dataset",
+            "ragflow_dataset_name": "Allowed",
+            "enabled": True,
+        },
+    )
+    dataset = allowed_response.json()["data"]
+    rejected_update_response = await review_client.patch(
+        f"/api/datasets/{dataset['id']}",
+        headers={"Authorization": f"Bearer {token}"},
+        json={"name": "Should Not Persist", "ragflow_dataset_id": "blocked-dataset"},
+    )
+    allowed_update_response = await review_client.patch(
+        f"/api/datasets/{dataset['id']}",
+        headers={"Authorization": f"Bearer {token}"},
+        json={"ragflow_dataset_id": "allowed-updated"},
+    )
+    get_settings.cache_clear()
+
+    assert rejected_response.status_code == 400
+    assert rejected_response.json()["error_code"] == "VALIDATION_ERROR"
+    assert rejected_response.json()["message"] == "ragflow dataset id is not allowed"
+    assert allowed_response.status_code == 201
+    assert rejected_update_response.status_code == 400
+    assert allowed_update_response.status_code == 200
+    assert allowed_update_response.json()["data"]["name"] == "Allowed Dataset"
+    assert allowed_update_response.json()["data"]["ragflow_dataset_id"] == "allowed-updated"
+
+    async with AsyncSessionFactory() as session:
+        result = await session.execute(
+            select(AuditLog)
+            .where(AuditLog.action == "dataset_mapping.ragflow_dataset_denied")
+            .order_by(AuditLog.created_at, AuditLog.id)
+        )
+        denied_logs = list(result.scalars())
+
+    assert [log.metadata_json["ragflow_dataset_id"] for log in denied_logs] == [
+        "blocked-dataset",
+        "blocked-dataset",
+    ]
 
 
 async def test_admin_read_operations_write_audit_logs(review_client: AsyncClient) -> None:
@@ -607,6 +690,328 @@ async def test_knowledge_admin_reviews_file_and_audit_log_is_written(
     assert outbox_events[-1].payload["file_id"] == str(file_id)
     assert outbox_events[-1].payload["status"] == "queued"
     assert outbox_events[-1].payload["ragflow_dataset_id"] == "ragflow-policy"
+
+
+async def test_review_rejects_dataset_mapping_removed_from_allowlist(
+    review_client: AsyncClient,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from app.core.config import get_settings
+    from app.core.database import AsyncSessionFactory
+    from app.modules.audit.models import AuditLog
+    from app.modules.document.models import File
+
+    monkeypatch.setenv("RAGFLOW_ALLOWED_DATASET_IDS", "legacy-dataset")
+    get_settings.cache_clear()
+    uploader_id = await _create_user(
+        email="allowlist-uploader@company.com",
+        password="password123",
+    )
+    await _create_user(
+        email="allowlist-system@company.com",
+        password="password123",
+        role="system_admin",
+    )
+    system_token = await _login(
+        review_client,
+        email="allowlist-system@company.com",
+        password="password123",
+    )
+    category = (
+        await review_client.post(
+            "/api/categories",
+            headers={"Authorization": f"Bearer {system_token}"},
+            json={"name": "历史映射", "code": "legacy-mapping"},
+        )
+    ).json()["data"]
+    dataset = (
+        await review_client.post(
+            "/api/datasets",
+            headers={"Authorization": f"Bearer {system_token}"},
+            json={
+                "name": "历史 Dataset",
+                "category_id": category["id"],
+                "ragflow_dataset_id": "legacy-dataset",
+                "ragflow_dataset_name": "历史知识库",
+                "enabled": True,
+            },
+        )
+    ).json()["data"]
+    review_file_id = await _create_file(
+        uploader_id=uploader_id,
+        status_value="pending_review",
+    )
+    classification_file_id = await _create_file(
+        uploader_id=uploader_id,
+        status_value="uploaded",
+    )
+
+    monkeypatch.setenv("RAGFLOW_ALLOWED_DATASET_IDS", "current-dataset")
+    get_settings.cache_clear()
+    approve_response = await review_client.post(
+        f"/api/files/{review_file_id}/approve",
+        headers={"Authorization": f"Bearer {system_token}"},
+        json={"category_id": category["id"], "dataset_mapping_id": dataset["id"]},
+    )
+    classification_response = await review_client.patch(
+        f"/api/files/{classification_file_id}",
+        headers={"Authorization": f"Bearer {system_token}"},
+        json={"category_id": category["id"], "dataset_mapping_id": dataset["id"]},
+    )
+    get_settings.cache_clear()
+
+    assert approve_response.status_code == 400
+    assert classification_response.status_code == 400
+    assert approve_response.json()["message"] == "ragflow dataset id is not allowed"
+    assert classification_response.json()["message"] == "ragflow dataset id is not allowed"
+    async with AsyncSessionFactory() as session:
+        review_file = await session.get(File, review_file_id)
+        classification_file = await session.get(File, classification_file_id)
+        audit_result = await session.execute(
+            select(AuditLog)
+            .where(AuditLog.action == "dataset_mapping.ragflow_dataset_denied")
+            .order_by(AuditLog.created_at, AuditLog.id)
+        )
+        denied_logs = list(audit_result.scalars())
+
+    assert review_file is not None
+    assert classification_file is not None
+    assert review_file.status == "pending_review"
+    assert review_file.review_status == "pending"
+    assert classification_file.status == "uploaded"
+    assert classification_file.dataset_mapping_id is None
+    assert [log.metadata_json["ragflow_dataset_id"] for log in denied_logs] == [
+        "legacy-dataset",
+        "legacy-dataset",
+    ]
+
+
+async def test_critical_sensitive_file_cannot_be_queued_for_ragflow(
+    review_client: AsyncClient,
+) -> None:
+    from app.core.database import AsyncSessionFactory
+    from app.modules.ai.models import DocumentAnalysis
+    from app.modules.document.models import File
+
+    uploader_id = await _create_user(email="critical-uploader@company.com", password="password123")
+    await _create_user(
+        email="critical-admin@company.com",
+        password="password123",
+        role="system_admin",
+    )
+    token = await _login(review_client, email="critical-admin@company.com", password="password123")
+    file_id = await _create_file(uploader_id=uploader_id, status_value="pending_review")
+    async with AsyncSessionFactory() as session:
+        session.add(
+            DocumentAnalysis(
+                file_id=file_id,
+                status="succeeded",
+                sensitive_risk_level="critical",
+                sensitive_hits=[
+                    {
+                        "rule_name": "生产环境凭据",
+                        "risk_level": "critical",
+                        "action": "block_sync",
+                    }
+                ],
+            )
+        )
+        await session.commit()
+
+    category = (
+        await review_client.post(
+            "/api/categories",
+            headers={"Authorization": f"Bearer {token}"},
+            json={"name": "安全", "code": "security"},
+        )
+    ).json()["data"]
+    dataset = (
+        await review_client.post(
+            "/api/datasets",
+            headers={"Authorization": f"Bearer {token}"},
+            json={
+                "name": "安全 Dataset",
+                "category_id": category["id"],
+                "ragflow_dataset_id": "ragflow-security",
+                "ragflow_dataset_name": "安全库",
+                "enabled": True,
+            },
+        )
+    ).json()["data"]
+
+    response = await review_client.post(
+        f"/api/files/{file_id}/approve",
+        headers={"Authorization": f"Bearer {token}"},
+        json={"category_id": category["id"], "dataset_mapping_id": dataset["id"]},
+    )
+
+    assert response.status_code == 400
+    classification_response = await review_client.patch(
+        f"/api/files/{file_id}",
+        headers={"Authorization": f"Bearer {token}"},
+        json={"category_id": category["id"], "dataset_mapping_id": dataset["id"]},
+    )
+    assert classification_response.status_code == 400
+    async with AsyncSessionFactory() as session:
+        file = await session.get(File, file_id)
+        assert file is not None
+        assert file.status == "pending_review"
+        assert file.review_status == "pending"
+
+
+async def test_critical_sensitive_file_with_existing_dataset_cannot_be_queued(
+    review_client: AsyncClient,
+) -> None:
+    from app.core.database import AsyncSessionFactory
+    from app.modules.ai.models import DocumentAnalysis
+    from app.modules.document.models import File
+
+    uploader_id = await _create_user(
+        email="critical-existing-uploader@company.com",
+        password="password123",
+    )
+    await _create_user(
+        email="critical-existing-admin@company.com",
+        password="password123",
+        role="system_admin",
+    )
+    token = await _login(
+        review_client,
+        email="critical-existing-admin@company.com",
+        password="password123",
+    )
+    file_id = await _create_file(uploader_id=uploader_id, status_value="pending_review")
+
+    category = (
+        await review_client.post(
+            "/api/categories",
+            headers={"Authorization": f"Bearer {token}"},
+            json={"name": "安全预绑定", "code": "security-existing"},
+        )
+    ).json()["data"]
+    dataset = (
+        await review_client.post(
+            "/api/datasets",
+            headers={"Authorization": f"Bearer {token}"},
+            json={
+                "name": "安全预绑定 Dataset",
+                "category_id": category["id"],
+                "ragflow_dataset_id": "ragflow-security-existing",
+                "ragflow_dataset_name": "安全预绑定库",
+                "enabled": True,
+            },
+        )
+    ).json()["data"]
+
+    async with AsyncSessionFactory() as session:
+        file = await session.get(File, file_id)
+        assert file is not None
+        file.category_id = UUID(category["id"])
+        file.dataset_mapping_id = UUID(dataset["id"])
+        file.ragflow_dataset_id = "ragflow-security-existing"
+        session.add(
+            DocumentAnalysis(
+                file_id=file_id,
+                status="succeeded",
+                sensitive_risk_level="critical",
+                sensitive_hits=[
+                    {
+                        "rule_name": "生产环境凭据",
+                        "risk_level": "critical",
+                        "action": "block_sync",
+                    }
+                ],
+            )
+        )
+        await session.commit()
+
+    response = await review_client.post(
+        f"/api/files/{file_id}/approve",
+        headers={"Authorization": f"Bearer {token}"},
+        json={},
+    )
+
+    assert response.status_code == 400
+    async with AsyncSessionFactory() as session:
+        file = await session.get(File, file_id)
+        assert file is not None
+        assert file.status == "pending_review"
+        assert file.review_status == "pending"
+
+
+async def test_analysis_failed_file_cannot_sync_when_feature_disabled(
+    review_client: AsyncClient,
+) -> None:
+    from app.core.database import AsyncSessionFactory
+    from app.modules.ai.models import AiFeatureConfig, DocumentAnalysis
+    from app.modules.document.models import File
+
+    uploader_id = await _create_user(
+        email="analysis-failed-uploader@company.com",
+        password="password123",
+    )
+    await _create_user(
+        email="analysis-failed-admin@company.com",
+        password="password123",
+        role="system_admin",
+    )
+    token = await _login(
+        review_client,
+        email="analysis-failed-admin@company.com",
+        password="password123",
+    )
+    file_id = await _create_file(uploader_id=uploader_id, status_value="pending_review")
+    async with AsyncSessionFactory() as session:
+        session.add(
+            DocumentAnalysis(
+                file_id=file_id,
+                status="failed",
+                sensitive_risk_level="none",
+                error_message="RuntimeError",
+            )
+        )
+        session.add(
+            AiFeatureConfig(
+                feature_name="allow_sync_when_analysis_failed",
+                enabled=False,
+                config_json={},
+            )
+        )
+        await session.commit()
+
+    category = (
+        await review_client.post(
+            "/api/categories",
+            headers={"Authorization": f"Bearer {token}"},
+            json={"name": "失败分析", "code": "analysis-failed"},
+        )
+    ).json()["data"]
+    dataset = (
+        await review_client.post(
+            "/api/datasets",
+            headers={"Authorization": f"Bearer {token}"},
+            json={
+                "name": "失败分析 Dataset",
+                "category_id": category["id"],
+                "ragflow_dataset_id": "ragflow-analysis-failed",
+                "ragflow_dataset_name": "失败分析库",
+                "enabled": True,
+            },
+        )
+    ).json()["data"]
+
+    response = await review_client.post(
+        f"/api/files/{file_id}/approve",
+        headers={"Authorization": f"Bearer {token}"},
+        json={"category_id": category["id"], "dataset_mapping_id": dataset["id"]},
+    )
+
+    assert response.status_code == 400
+    async with AsyncSessionFactory() as session:
+        file = await session.get(File, file_id)
+        assert file is not None
+        assert file.status == "pending_review"
+        assert file.review_status == "pending"
 
 
 async def test_review_rejects_invalid_file_state_and_dataset_category_mismatch(
