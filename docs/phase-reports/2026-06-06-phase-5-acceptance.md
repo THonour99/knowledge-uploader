@@ -149,5 +149,5 @@ Authenticated external upload was not run because the API key was provided in ch
 
 ## Commit And PR
 
-- Commit: pending.
-- PR: pending.
+- Implementation commit: `812f66c2e410ef1e16521c4eebf24c0273fc56bc`.
+- PR: https://github.com/THonour99/knowledge-uploader/pull/7
