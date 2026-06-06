@@ -8,9 +8,9 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.config import Settings
 from app.core.database import get_session
-from app.core.deps import SettingsDep, get_current_user
+from app.core.deps import SettingsDep
+from app.core.permissions import AdminUserDep
 from app.core.responses import success_response
-from app.modules.user.schemas import AuthUserRecord
 
 from . import exceptions
 from .repository import AiRepository  # noqa: TID251 - same-module repository dependency
@@ -26,7 +26,6 @@ from .service import (  # noqa: TID251 - same-module service dependency
 
 router = APIRouter(prefix="/api/admin/ai", tags=["ai"])
 SessionDep = Annotated[AsyncSession, Depends(get_session)]
-CurrentUserDep = Annotated[AuthUserRecord, Depends(get_current_user)]
 
 
 def _service(session: AsyncSession, settings: Settings) -> AiConfigService:
@@ -54,7 +53,7 @@ def _context_from(request: Request) -> RequestContext:
 @router.get("/config")
 async def get_ai_config(
     request: Request,
-    current_user: CurrentUserDep,
+    current_user: AdminUserDep,
     session: SessionDep,
     settings: SettingsDep,
 ) -> dict[str, object]:
@@ -73,7 +72,7 @@ async def update_ai_feature(
     feature_key: str,
     payload: AiFeatureUpdateRequest,
     request: Request,
-    current_user: CurrentUserDep,
+    current_user: AdminUserDep,
     session: SessionDep,
     settings: SettingsDep,
 ) -> dict[str, object]:
@@ -93,7 +92,7 @@ async def update_ai_feature(
 async def create_ai_provider(
     payload: AiProviderCreateRequest,
     request: Request,
-    current_user: CurrentUserDep,
+    current_user: AdminUserDep,
     session: SessionDep,
     settings: SettingsDep,
 ) -> dict[str, object]:
@@ -114,7 +113,7 @@ async def update_ai_provider(
     provider_id: UUID,
     payload: AiProviderUpdateRequest,
     request: Request,
-    current_user: CurrentUserDep,
+    current_user: AdminUserDep,
     session: SessionDep,
     settings: SettingsDep,
 ) -> dict[str, object]:
@@ -135,7 +134,7 @@ async def update_ai_provider(
 async def test_ai_provider(
     provider_id: UUID,
     request: Request,
-    current_user: CurrentUserDep,
+    current_user: AdminUserDep,
     session: SessionDep,
     settings: SettingsDep,
 ) -> dict[str, object]:

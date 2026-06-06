@@ -142,9 +142,12 @@ async def test_employee_cannot_read_ai_config(ai_client: AsyncClient) -> None:
 
 
 async def test_provider_key_is_encrypted_and_masked(ai_client: AsyncClient) -> None:
+    from sqlalchemy import select
+
     from app.core.database import AsyncSessionFactory
     from app.core.security import decrypt_api_key
     from app.modules.ai.models import AiProvider
+    from app.modules.audit.models import AuditLog
 
     await _create_user(email="provider@company.com", password="password123", role="system_admin")
     token = await _login(ai_client, email="provider@company.com", password="password123")
@@ -176,6 +179,13 @@ async def test_provider_key_is_encrypted_and_masked(ai_client: AsyncClient) -> N
             )
             == "sk-live-secret"
         )
+        result = await session.execute(
+            select(AuditLog).where(AuditLog.action == "ai.provider.create")
+        )
+        audit_log = result.scalar_one()
+        audit_metadata = str(audit_log.metadata_json)
+        assert "sk-live-secret" not in audit_metadata
+        assert "api_key" not in audit_metadata
 
 
 async def test_update_feature_writes_audit_log(ai_client: AsyncClient) -> None:

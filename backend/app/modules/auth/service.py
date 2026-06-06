@@ -10,6 +10,7 @@ from typing import Any
 import jwt
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.core.audit import record_audit_log
 from app.core.config import Settings
 from app.core.identity import NULL_VALUE, UserIdentityStore
 from app.core.outbox import OutboxRepository
@@ -47,6 +48,7 @@ DUMMY_PASSWORD_HASH = (
     "$argon2id$v=19$m=65536,t=3,p=4$BwCmlBBM/kQX9HTdYlyFfA"
     "$rsYt6WMtudEz8Vt9y34tothMNtzC4iEySJLI/E/UXCI"
 )
+ANONYMOUS_AUDIT_ID = uuid.UUID(int=0)
 __all__ = [
     "DUMMY_PASSWORD_HASH",
     "AuthService",
@@ -192,7 +194,13 @@ class AuthService:
         )
         await self._session.commit()
 
-    async def login(self, request: LoginRequest, client_ip: str | None) -> LoginResult:
+    async def login(
+        self,
+        request: LoginRequest,
+        *,
+        client_ip: str | None,
+        user_agent: str,
+    ) -> LoginResult:
         normalized_email = normalize_email(request.email)
         await self._enforce_rate_limit(
             key=login_rate_limit_key(normalized_email),
@@ -206,6 +214,15 @@ class AuthService:
         user = await self._user_store.get_by_email(normalized_email)
         if user is None:
             verify_password(request.password, DUMMY_PASSWORD_HASH)
+            await self._record_login_audit(
+                user=None,
+                email=normalized_email,
+                success=False,
+                failure_reason="unknown_user",
+                client_ip=client_ip,
+                user_agent=user_agent,
+                commit=True,
+            )
             raise exceptions.authentication_failed()
 
         now = datetime.now(UTC)
@@ -214,11 +231,38 @@ class AuthService:
         if not verify_password(request.password, user.password_hash):
             if user.status != "disabled" and not locked:
                 await self._record_failed_login(user, now)
+            await self._record_login_audit(
+                user=user,
+                email=normalized_email,
+                success=False,
+                failure_reason="invalid_password",
+                client_ip=client_ip,
+                user_agent=user_agent,
+                commit=True,
+            )
             raise exceptions.authentication_failed()
 
         if user.status == "disabled":
+            await self._record_login_audit(
+                user=user,
+                email=normalized_email,
+                success=False,
+                failure_reason="disabled",
+                client_ip=client_ip,
+                user_agent=user_agent,
+                commit=True,
+            )
             raise exceptions.user_disabled()
         if locked:
+            await self._record_login_audit(
+                user=user,
+                email=normalized_email,
+                success=False,
+                failure_reason="locked",
+                client_ip=client_ip,
+                user_agent=user_agent,
+                commit=True,
+            )
             raise exceptions.user_locked()
         if user.status == "locked":
             user = await self._user_store.record_verification_state(
@@ -228,6 +272,15 @@ class AuthService:
                 failed_login_count=0,
             )
         if not user.email_verified or user.status == "pending_email_verification":
+            await self._record_login_audit(
+                user=user,
+                email=normalized_email,
+                success=False,
+                failure_reason="email_not_verified",
+                client_ip=client_ip,
+                user_agent=user_agent,
+                commit=True,
+            )
             raise exceptions.email_not_verified()
 
         user = await self._user_store.record_verification_state(
@@ -237,6 +290,15 @@ class AuthService:
             locked_until=NULL_VALUE,
             last_login_at=now,
             last_login_ip=client_ip if client_ip is not None else NULL_VALUE,
+        )
+        await self._record_login_audit(
+            user=user,
+            email=normalized_email,
+            success=True,
+            failure_reason=None,
+            client_ip=client_ip,
+            user_agent=user_agent,
+            commit=False,
         )
         await self._session.commit()
         access_token = create_jwt(
@@ -383,13 +445,11 @@ class AuthService:
                 locked_until=now + timedelta(minutes=self._settings.login_lock_minutes),
                 increment_session_version=True,
             )
-            await self._session.commit()
             return
         await self._user_store.record_verification_state(
             user_id=user.id,
             failed_login_count=failed_login_count,
         )
-        await self._session.commit()
 
     async def _enforce_rate_limit(self, *, key: str, limit: int) -> None:
         allowed = await is_within_rate_limit(
@@ -400,6 +460,38 @@ class AuthService:
         )
         if not allowed:
             raise exceptions.rate_limited()
+
+    async def _record_login_audit(
+        self,
+        *,
+        user: AuthUserRecord | None,
+        email: str,
+        success: bool,
+        failure_reason: str | None,
+        client_ip: str | None,
+        user_agent: str,
+        commit: bool,
+    ) -> None:
+        actor_id = user.id if user is not None else ANONYMOUS_AUDIT_ID
+        await record_audit_log(
+            self._session,
+            actor_id=actor_id,
+            action="auth.login.success" if success else "auth.login.failed",
+            target_type="auth_login",
+            target_id=actor_id,
+            ip_address=client_ip or "unknown",
+            user_agent=user_agent[:512] or "unknown",
+            metadata_json={
+                "email": email,
+                "success": success,
+                "failure_reason": failure_reason,
+                "user_id": str(user.id) if user is not None else None,
+                "role": user.role if user is not None else None,
+                "status": user.status if user is not None else None,
+            },
+        )
+        if commit:
+            await self._session.commit()
 
 
 def normalize_email(email: str) -> str:

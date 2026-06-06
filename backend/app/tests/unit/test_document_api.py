@@ -169,6 +169,7 @@ async def test_upload_stores_file_metadata_and_minio_object(
     document_client: tuple[AsyncClient, FakeDocumentStorage],
 ) -> None:
     from app.core.database import AsyncSessionFactory
+    from app.modules.audit.models import AuditLog
     from app.modules.document.models import File
 
     client, storage = document_client
@@ -207,10 +208,20 @@ async def test_upload_stores_file_metadata_and_minio_object(
     async with AsyncSessionFactory() as session:
         result = await session.execute(select(File).where(File.id == UUID(data["id"])))
         saved_file = result.scalar_one()
+        audit_result = await session.execute(
+            select(AuditLog).where(AuditLog.action == "file.upload")
+        )
+        audit_log = audit_result.scalar_one()
 
     assert saved_file.object_key == storage.objects[0].object_key
     assert saved_file.hash
     assert saved_file.description == "员工手册"
+    assert audit_log.actor_id == user_id
+    assert audit_log.target_id == saved_file.id
+    assert audit_log.target_type == "file"
+    assert audit_log.metadata_json["original_name"] == "Handbook.pdf"
+    assert audit_log.metadata_json["size"] == len(PDF_BYTES)
+    assert audit_log.metadata_json["duplicate"] is False
 
 
 async def test_duplicate_upload_is_identified_without_reuploading_object(
@@ -505,8 +516,10 @@ async def test_upload_is_rate_limited_per_user(
     document_client: tuple[AsyncClient, FakeDocumentStorage],
 ) -> None:
     from app.core.config import Settings
+    from app.core.database import AsyncSessionFactory
     from app.core.deps import get_app_settings
     from app.main import app
+    from app.modules.audit.models import AuditLog
 
     client, storage = document_client
     existing_settings = app.dependency_overrides[get_app_settings]()
@@ -532,6 +545,12 @@ async def test_upload_is_rate_limited_per_user(
     assert second.status_code == 429
     assert second.json()["error_code"] == "RATE_LIMITED"
     assert len(storage.objects) == 1
+
+    async with AsyncSessionFactory() as session:
+        result = await session.execute(select(AuditLog).where(AuditLog.action == "file.upload"))
+        audit_logs = list(result.scalars())
+
+    assert len(audit_logs) == 1
 
 
 async def test_employee_lists_and_views_only_own_files(
