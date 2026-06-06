@@ -134,6 +134,7 @@ async def _create_file(
     uploaded_at: datetime,
     hash_value: str,
     last_sync_at: datetime | None = None,
+    ragflow_document_id: str | None = None,
 ) -> UUID:
     from app.core.database import AsyncSessionFactory
     from app.modules.document.models import File
@@ -156,6 +157,7 @@ async def _create_file(
         tags=[],
         status=status_value,
         review_status=review_status,
+        ragflow_document_id=ragflow_document_id,
         ai_analysis_enabled_at_upload=False,
         uploaded_at=uploaded_at,
         last_sync_at=last_sync_at,
@@ -427,3 +429,73 @@ async def test_statistics_failures_export_and_permission(
         audit_log = result.scalar_one()
         assert audit_log.target_type == "statistics"
         assert audit_log.metadata_json["department"] == "研发中心"
+
+
+async def test_statistics_rejects_invalid_sync_status_and_escapes_csv(
+    statistics_client: AsyncClient,
+) -> None:
+    from app.core.database import AsyncSessionFactory
+    from app.modules.user.models import User
+
+    ids = await _seed_statistics_fixture()
+    admin_token = await _login(
+        statistics_client,
+        email="stats-admin@company.com",
+        password="password123",
+    )
+    headers = {"Authorization": f"Bearer {admin_token}"}
+
+    async with AsyncSessionFactory() as session:
+        risky_user = User(
+            name="=cmd|' /C calc'!A0",
+            email="formula-user@company.com",
+            email_domain="company.com",
+            password_hash="$argon2id$v=19$m=65536,t=3,p=4$placeholder$placeholder",
+            role="employee",
+            department="+财务部",
+            status="active",
+            email_verified=True,
+        )
+        session.add(risky_user)
+        await session.commit()
+        await session.refresh(risky_user)
+        risky_user_id = risky_user.id
+
+    await _create_file(
+        uploader_id=risky_user_id,
+        category_id=ids["tech_id"],
+        department="+财务部",
+        status_value="uploaded_to_ragflow",
+        review_status="approved",
+        size=500,
+        uploaded_at=datetime(2026, 6, 5, 9, 0, tzinfo=UTC),
+        hash_value="5" * 64,
+        ragflow_document_id="ragflow-doc-but-not-parsed",
+    )
+
+    overview_response = await statistics_client.get(
+        "/api/admin/statistics/overview",
+        headers=headers,
+    )
+    invalid_response = await statistics_client.get(
+        "/api/admin/statistics/overview",
+        headers=headers,
+        params={"sync_status": "unexpected"},
+    )
+    export_response = await statistics_client.get(
+        "/api/admin/statistics/export",
+        headers=headers,
+        params={"department": "+财务部"},
+    )
+
+    assert overview_response.status_code == 200
+    overview = overview_response.json()["data"]
+    assert overview["total_files"] == 5
+    assert overview["synced_files"] == 1
+    assert overview["sync_success_rate"] == pytest.approx(0.5)
+
+    assert invalid_response.status_code == 400
+    assert invalid_response.json()["error_code"] == "VALIDATION_ERROR"
+
+    assert export_response.status_code == 200
+    assert "'=cmd|' /C calc'!A0,'+财务部,1" in export_response.text

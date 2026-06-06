@@ -210,10 +210,7 @@ class StatisticsRepository:
 
 def sync_status_predicate(sync_status: str) -> ColumnElement[bool]:
     if sync_status == "synced":
-        return cast(
-            ColumnElement[bool],
-            (FILES.c.ragflow_document_id.is_not(None)) | (FILES.c.status == "parsed"),
-        )
+        return FILES.c.status == "parsed"
     if sync_status == "failed":
         return cast(
             ColumnElement[bool],
@@ -232,7 +229,8 @@ def sync_status_predicate(sync_status: str) -> ColumnElement[bool]:
                 ("queued", "syncing", "uploaded_to_ragflow", "parsing", "parsed")
             ),
         )
-    return FILES.c.id.is_not(None)
+    msg = f"invalid sync_status: {sync_status}"
+    raise ValueError(msg)
 
 
 def file_row_from_mapping(row: RowMapping) -> StatisticsFileRow:

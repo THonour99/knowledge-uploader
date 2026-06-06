@@ -37,6 +37,7 @@ from .schemas import (
 
 ADMIN_ROLES = {"knowledge_admin", "system_admin"}
 VALID_GROUP_BY = {"day", "week", "month"}
+VALID_SYNC_STATUS = {"synced", "failed", "syncing", "not_synced"}
 VALID_SORT_FIELDS = {
     "total_files",
     "synced_files",
@@ -276,8 +277,8 @@ class StatisticsService:
         for row in rows:
             writer.writerow(
                 [
-                    row.user_name,
-                    row.department or "未设置",
+                    csv_safe(row.user_name),
+                    csv_safe(row.department or "未设置"),
                     row.total_files,
                     row.synced_files,
                     row.failed_files,
@@ -324,6 +325,8 @@ class StatisticsService:
 
 
 def to_filters(query: StatisticsQuery) -> StatisticsFilters:
+    if query.sync_status is not None and query.sync_status not in VALID_SYNC_STATUS:
+        raise exceptions.invalid_filter("invalid sync_status")
     return StatisticsFilters(
         start_at=datetime.combine(query.start_date, time.min, UTC)
         if query.start_date is not None
@@ -410,6 +413,12 @@ def numeric_user_sort_value(row: StatisticsUserRow, sort_by: str) -> int:
     if isinstance(value, int):
         return value
     return 0
+
+
+def csv_safe(value: str) -> str:
+    if value and value[0] in {"=", "+", "-", "@", "\t", "\r"}:
+        return f"'{value}"
+    return value
 
 
 def user_row_from_files(
@@ -549,7 +558,7 @@ def build_failure_rows(tasks: Iterable[StatisticsFailedTaskRow]) -> list[Statist
 
 
 def is_synced(file: StatisticsFileRow) -> bool:
-    return file.status == "parsed" or file.ragflow_document_id is not None
+    return file.status == "parsed"
 
 
 def is_failed_file(file: StatisticsFileRow) -> bool:

@@ -6,15 +6,18 @@ from uuid import UUID
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request, Response
 from sqlalchemy.ext.asyncio import AsyncSession
+from starlette import status
 
 from app.core.database import get_session
 from app.core.deps import get_current_user
+from app.core.exceptions import ErrorCode
 from app.core.responses import success_response
 from app.modules.user.schemas import AuthUserRecord
 
 from . import exceptions
 from .repository import StatisticsRepository  # noqa: TID251 - same-module repository dependency
 from .service import (  # noqa: TID251 - same-module service dependency
+    ADMIN_ROLES,
     RequestContext,
     StatisticsQuery,
     StatisticsService,
@@ -23,6 +26,18 @@ from .service import (  # noqa: TID251 - same-module service dependency
 router = APIRouter(prefix="/api/admin/statistics", tags=["statistics"])
 SessionDep = Annotated[AsyncSession, Depends(get_session)]
 CurrentUserDep = Annotated[AuthUserRecord, Depends(get_current_user)]
+
+
+def _require_admin_user(current_user: CurrentUserDep) -> AuthUserRecord:
+    if current_user.role not in ADMIN_ROLES:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail={"error_code": ErrorCode.PERMISSION_DENIED, "message": "permission denied"},
+        )
+    return current_user
+
+
+AdminUserDep = Annotated[AuthUserRecord, Depends(_require_admin_user)]
 
 
 def _service(session: AsyncSession) -> StatisticsService:
@@ -82,7 +97,7 @@ def _query_from(
 @router.get("/overview")
 async def get_statistics_overview(
     request: Request,
-    current_user: CurrentUserDep,
+    current_user: AdminUserDep,
     session: SessionDep,
     start_date: date | None = None,
     end_date: date | None = None,
@@ -116,7 +131,7 @@ async def get_statistics_overview(
 @router.get("/users")
 async def list_statistics_users(
     request: Request,
-    current_user: CurrentUserDep,
+    current_user: AdminUserDep,
     session: SessionDep,
     start_date: date | None = None,
     end_date: date | None = None,
@@ -159,7 +174,7 @@ async def list_statistics_users(
 async def get_statistics_user(
     user_id: UUID,
     request: Request,
-    current_user: CurrentUserDep,
+    current_user: AdminUserDep,
     session: SessionDep,
     start_date: date | None = None,
     end_date: date | None = None,
@@ -192,7 +207,7 @@ async def get_statistics_user(
 @router.get("/departments")
 async def list_statistics_departments(
     request: Request,
-    current_user: CurrentUserDep,
+    current_user: AdminUserDep,
     session: SessionDep,
     start_date: date | None = None,
     end_date: date | None = None,
@@ -226,7 +241,7 @@ async def list_statistics_departments(
 @router.get("/categories")
 async def list_statistics_categories(
     request: Request,
-    current_user: CurrentUserDep,
+    current_user: AdminUserDep,
     session: SessionDep,
     start_date: date | None = None,
     end_date: date | None = None,
@@ -260,7 +275,7 @@ async def list_statistics_categories(
 @router.get("/trends")
 async def list_statistics_trends(
     request: Request,
-    current_user: CurrentUserDep,
+    current_user: AdminUserDep,
     session: SessionDep,
     start_date: date | None = None,
     end_date: date | None = None,
@@ -296,7 +311,7 @@ async def list_statistics_trends(
 @router.get("/failures")
 async def list_statistics_failures(
     request: Request,
-    current_user: CurrentUserDep,
+    current_user: AdminUserDep,
     session: SessionDep,
     start_date: date | None = None,
     end_date: date | None = None,
@@ -330,7 +345,7 @@ async def list_statistics_failures(
 @router.get("/export")
 async def export_statistics(
     request: Request,
-    current_user: CurrentUserDep,
+    current_user: AdminUserDep,
     session: SessionDep,
     start_date: date | None = None,
     end_date: date | None = None,

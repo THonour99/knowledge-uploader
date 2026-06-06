@@ -149,11 +149,19 @@ function KpiCard({
   );
 }
 
+function cssVar(name: string, fallback = ""): string {
+  return getComputedStyle(document.documentElement).getPropertyValue(name).trim() || fallback;
+}
+
 function chartTextColor(): string {
-  return getComputedStyle(document.documentElement).getPropertyValue("--ku-text-secondary") || "#667085";
+  return cssVar("--ku-text-secondary", "#667085");
 }
 
 function buildTrendOption(points: StatisticsTrendPoint[]) {
+  const primaryColor = cssVar("--ku-color-primary");
+  const successColor = cssVar("--ku-color-success");
+  const borderColor = cssVar("--ku-border");
+
   return {
     grid: { top: 28, right: 18, bottom: 32, left: 46 },
     tooltip: { trigger: "axis" },
@@ -169,25 +177,27 @@ function buildTrendOption(points: StatisticsTrendPoint[]) {
       data: points.map((point) => point.period),
       axisLabel: { color: chartTextColor() },
     },
-    yAxis: { type: "value", axisLabel: { color: chartTextColor() }, splitLine: { lineStyle: { color: "#EEF2F7" } } },
+    yAxis: {
+      type: "value",
+      axisLabel: { color: chartTextColor() },
+      splitLine: { lineStyle: { color: borderColor } },
+    },
     series: [
       {
         name: "上传文件数",
         type: "line",
         smooth: true,
         data: points.map((point) => point.total_files),
-        lineStyle: { color: "#1677FF", width: 3 },
-        itemStyle: { color: "#1677FF" },
-        areaStyle: { color: "rgba(22, 119, 255, 0.08)" },
+        lineStyle: { color: primaryColor, width: 3 },
+        itemStyle: { color: primaryColor },
       },
       {
         name: "已同步数量",
         type: "line",
         smooth: true,
         data: points.map((point) => point.synced_files),
-        lineStyle: { color: "#10B981", width: 3 },
-        itemStyle: { color: "#10B981" },
-        areaStyle: { color: "rgba(16, 185, 129, 0.08)" },
+        lineStyle: { color: successColor, width: 3 },
+        itemStyle: { color: successColor },
       },
     ],
   };
@@ -195,10 +205,17 @@ function buildTrendOption(points: StatisticsTrendPoint[]) {
 
 function buildDepartmentOption(rows: StatisticsDepartmentRow[]) {
   const topRows = rows.slice(0, 8).reverse();
+  const primaryColor = cssVar("--ku-color-primary");
+  const borderColor = cssVar("--ku-border");
+
   return {
     grid: { top: 12, right: 28, bottom: 20, left: 72 },
     tooltip: { trigger: "axis", axisPointer: { type: "shadow" } },
-    xAxis: { type: "value", axisLabel: { color: chartTextColor() }, splitLine: { lineStyle: { color: "#EEF2F7" } } },
+    xAxis: {
+      type: "value",
+      axisLabel: { color: chartTextColor() },
+      splitLine: { lineStyle: { color: borderColor } },
+    },
     yAxis: {
       type: "category",
       data: topRows.map((row) => row.department),
@@ -209,7 +226,7 @@ function buildDepartmentOption(rows: StatisticsDepartmentRow[]) {
         type: "bar",
         data: topRows.map((row) => row.total_files),
         barWidth: 10,
-        itemStyle: { color: "#1677FF", borderRadius: [0, 6, 6, 0] },
+        itemStyle: { color: primaryColor, borderRadius: [0, 6, 6, 0] },
       },
     ],
   };
@@ -348,10 +365,9 @@ export default function StatisticsPage() {
   ];
   const categoryOptions = [
     { label: "分类：全部", value: "all" },
-    ...categories.map((item) => ({
-      label: item.category_name,
-      value: item.category_id ?? "uncategorized",
-    })),
+    ...categories.flatMap((item) =>
+      item.category_id ? [{ label: item.category_name, value: item.category_id }] : [],
+    ),
   ];
 
   const refreshStatistics = async () => {
