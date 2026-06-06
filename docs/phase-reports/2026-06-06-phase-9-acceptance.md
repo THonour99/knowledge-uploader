@@ -50,6 +50,7 @@ PR：https://github.com/THonour99/knowledge-uploader/pull/12
 - `ce7fedd docs(deploy): 完善阶段九联调部署文档`
 - `3317e7d docs(report): 添加阶段九验收报告`
 - `f492655 docs(report): 更新阶段九 PR 链接`
+- `c04d352 fix(security): 收紧RAGFlow映射与管理员恢复`
 
 ## 已完成验收
 
