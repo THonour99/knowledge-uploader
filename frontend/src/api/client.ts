@@ -120,6 +120,75 @@ export interface DatasetMappingPayload {
   enabled: boolean;
 }
 
+export interface AiGlobalConfig {
+  ai_analysis_enabled: boolean;
+  allow_external_llm: boolean;
+  allow_sync_when_analysis_failed: boolean;
+}
+
+export interface AiFeatureConfig {
+  key: string;
+  name: string;
+  description?: string;
+  enabled: boolean;
+}
+
+export interface AiProviderConfig {
+  id: string;
+  name: string;
+  provider_type: string;
+  base_url?: string | null;
+  chat_model?: string | null;
+  embedding_model?: string | null;
+  enabled: boolean;
+  priority: number;
+  api_key_masked?: string | null;
+  last_test_status?: string | null;
+  last_test_latency_ms?: number | null;
+  last_tested_at?: string | null;
+}
+
+export interface AiPromptTemplate {
+  id: string;
+  template_key: string;
+  name: string;
+  description?: string | null;
+  enabled: boolean;
+  is_default: boolean;
+  version: number;
+  updated_at?: string | null;
+}
+
+export interface AiSensitiveRule {
+  id: string;
+  name: string;
+  rule_type: string;
+  risk_level: string;
+  action: string;
+  enabled: boolean;
+  hit_count: number;
+  updated_at?: string | null;
+}
+
+export interface AiConfigResponse {
+  global: AiGlobalConfig;
+  features: AiFeatureConfig[];
+  providers: AiProviderConfig[];
+  prompt_templates: AiPromptTemplate[];
+  sensitive_rules: AiSensitiveRule[];
+}
+
+export interface UpdateAiFeaturePayload {
+  enabled: boolean;
+}
+
+export interface AiProviderTestResult {
+  provider_id: string;
+  status: "success" | "failed";
+  latency_ms?: number | null;
+  message?: string | null;
+}
+
 export interface ReviewDecisionPayload {
   category_id?: string | null;
   dataset_mapping_id?: string | null;
@@ -290,6 +359,34 @@ export async function updateDatasetMapping(
 
 export async function disableDatasetMapping(id: string): Promise<void> {
   await apiClient.delete(`/datasets/${id}`);
+}
+
+export async function getAiConfig(): Promise<AiConfigResponse> {
+  const response = await apiClient.get<ApiEnvelope<AiConfigResponse> | AiConfigResponse>(
+    "/admin/ai/config",
+  );
+
+  return unwrapResponse(response.data);
+}
+
+export async function updateAiFeature(
+  featureKey: string,
+  payload: UpdateAiFeaturePayload,
+): Promise<AiFeatureConfig> {
+  const response = await apiClient.patch<ApiEnvelope<AiFeatureConfig> | AiFeatureConfig>(
+    `/admin/ai/features/${featureKey}`,
+    payload,
+  );
+
+  return unwrapResponse(response.data);
+}
+
+export async function testAiProvider(providerId: string): Promise<AiProviderTestResult> {
+  const response = await apiClient.post<ApiEnvelope<AiProviderTestResult> | AiProviderTestResult>(
+    `/admin/ai/providers/${providerId}/test`,
+  );
+
+  return unwrapResponse(response.data);
 }
 
 export async function listReviewFiles(): Promise<FileListResponse> {
