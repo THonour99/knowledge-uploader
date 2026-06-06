@@ -110,4 +110,5 @@ desktop horizontal overflow: false
 ## Commit And PR
 
 - Implementation commit: `fd9c43e feat(security): 补全安全审计闭环`
-- PR: TBD
+- Acceptance report commit: `a8f4d05 docs(report): 添加阶段八验收报告`
+- PR: https://github.com/THonour99/knowledge-uploader/pull/11
