@@ -41,6 +41,7 @@ x-app-environment: &app-environment
   UPLOAD_ALLOWED_MIME_TYPES: "${UPLOAD_ALLOWED_MIME_TYPES:-application/pdf,application/vnd.openxmlformats-officedocument.wordprocessingml.document,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet,application/vnd.openxmlformats-officedocument.presentationml.presentation,text/plain,text/markdown,text/csv}"
   RAGFLOW_BASE_URL: "${RAGFLOW_BASE_URL:-http://ragflow:9380}"
   RAGFLOW_API_KEY: "${RAGFLOW_API_KEY:-}"
+  RAGFLOW_ALLOWED_DATASET_IDS: "${RAGFLOW_ALLOWED_DATASET_IDS:-}"
   DEFAULT_DATASET_ID: "${DEFAULT_DATASET_ID:-}"
   RAGFLOW_REQUEST_TIMEOUT: "${RAGFLOW_REQUEST_TIMEOUT:-300}"
   RAGFLOW_MAX_RETRY_COUNT: "${RAGFLOW_MAX_RETRY_COUNT:-3}"

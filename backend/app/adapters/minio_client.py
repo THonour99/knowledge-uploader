@@ -55,3 +55,14 @@ class MinioDocumentStorage:
 
     def _delete_object_sync(self, bucket: str, object_key: str) -> None:
         self._client.remove_object(bucket, object_key)
+
+    async def get_object(self, *, bucket: str, object_key: str) -> bytes:
+        return await anyio.to_thread.run_sync(self._get_object_sync, bucket, object_key)
+
+    def _get_object_sync(self, bucket: str, object_key: str) -> bytes:
+        response = self._client.get_object(bucket, object_key)
+        try:
+            return response.read()
+        finally:
+            response.close()
+            response.release_conn()
