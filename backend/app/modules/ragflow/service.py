@@ -403,6 +403,7 @@ class RagflowTaskService:
         dataset_id = self._require_dataset_id(file)
         if file.review_status != "approved" or file.status not in SYNC_READY_STATUSES:
             raise RagflowSyncPreconditionError
+        await self._ensure_ai_sync_policy_allows(file)
         if file.dataset_mapping_id is None:
             raise RagflowSyncPreconditionError
         mapping = await self._repository.get_dataset_mapping(file.dataset_mapping_id)
@@ -424,6 +425,20 @@ class RagflowTaskService:
         if file.ragflow_dataset_id is None or not file.ragflow_dataset_id.strip():
             raise RagflowSyncPreconditionError
         return file.ragflow_dataset_id
+
+    async def _ensure_ai_sync_policy_allows(self, file: RagflowSyncFileRecord) -> None:
+        if await self._repository.get_file_sensitive_risk_level(file.id) == "critical":
+            raise RagflowSyncPreconditionError
+        analysis_status = await self._repository.get_file_analysis_status(file.id)
+        if analysis_status != "failed":
+            return
+        allow_sync = await self._repository.get_ai_feature_enabled(
+            "allow_sync_when_analysis_failed"
+        )
+        if allow_sync is None:
+            allow_sync = get_settings().ai_allow_sync_when_analysis_failed
+        if not allow_sync:
+            raise RagflowSyncPreconditionError
 
     async def _ensure_file_parsing(
         self,

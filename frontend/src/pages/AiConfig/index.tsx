@@ -12,7 +12,6 @@ import {
 } from "antd";
 import {
   ApiOutlined,
-  CheckCircleOutlined,
   ClockCircleOutlined,
   ExperimentOutlined,
   FileTextOutlined,
@@ -42,6 +41,7 @@ const aiConfigQueryKey = ["ai-config"] as const;
 const globalSwitches = [
   {
     key: "ai_analysis_enabled",
+    featureKey: "ai_analysis",
     title: "AI 总开关",
     description: "开启后，系统将使用 AI 能力进行文档分析。",
     checkedText: "已开启",
@@ -49,6 +49,7 @@ const globalSwitches = [
   },
   {
     key: "allow_external_llm",
+    featureKey: "allow_external_llm",
     title: "是否允许外部模型",
     description: "允许使用第三方 OpenAI-compatible 模型供应商。",
     checkedText: "允许",
@@ -56,6 +57,7 @@ const globalSwitches = [
   },
   {
     key: "allow_sync_when_analysis_failed",
+    featureKey: "allow_sync_when_analysis_failed",
     title: "分析失败后是否允许同步",
     description: "AI 分析失败时仍允许文档继续同步到知识库。",
     checkedText: "允许同步",
@@ -64,6 +66,9 @@ const globalSwitches = [
 ] as const;
 
 const ruleActionLabels: Record<string, string> = {
+  flag: "标记",
+  require_review: "进入复核",
+  block_sync: "阻断同步",
   block: "阻断",
   warn: "阻断并告警",
   alert: "告警",
@@ -97,12 +102,16 @@ function GlobalSwitchCard({
   checked,
   checkedText,
   uncheckedText,
+  loading,
+  onChange,
 }: {
   title: string;
   description: string;
   checked: boolean;
   checkedText: string;
   uncheckedText: string;
+  loading?: boolean;
+  onChange: (enabled: boolean) => void;
 }) {
   return (
     <Card className="ai-config-switch-card">
@@ -115,7 +124,7 @@ function GlobalSwitchCard({
           <Typography.Text type="secondary">{description}</Typography.Text>
           <StatusTag kind="dataset" value={checked ? "enabled" : "disabled"} />
         </span>
-        <Switch checked={checked} disabled />
+        <Switch checked={checked} loading={loading} onChange={onChange} />
       </Space>
       <Typography.Text type="secondary" className="ai-config-switch-card__state">
         {checked ? checkedText : uncheckedText}
@@ -132,7 +141,7 @@ function FeaturesPanel({
 }: {
   features: AiFeatureConfig[];
   global: Record<(typeof globalSwitches)[number]["key"], boolean>;
-  onFeatureToggle: (feature: AiFeatureConfig, enabled: boolean) => void;
+  onFeatureToggle: (featureKey: string, enabled: boolean) => void;
   togglingKey?: string;
 }) {
   return (
@@ -147,6 +156,8 @@ function FeaturesPanel({
               checked={global[item.key]}
               checkedText={item.checkedText}
               uncheckedText={item.uncheckedText}
+              loading={togglingKey === item.featureKey}
+              onChange={(enabled) => onFeatureToggle(item.featureKey, enabled)}
             />
           ))}
         </div>
@@ -170,7 +181,7 @@ function FeaturesPanel({
                 <Switch
                   checked={feature.enabled}
                   loading={togglingKey === feature.key}
-                  onChange={(enabled) => onFeatureToggle(feature, enabled)}
+                  onChange={(enabled) => onFeatureToggle(feature.key, enabled)}
                 />
               </div>
             ))}
@@ -561,8 +572,8 @@ export default function AiConfigPage() {
                     togglingKey={
                       featureMutation.isPending ? featureMutation.variables?.featureKey : undefined
                     }
-                    onFeatureToggle={(feature, enabled) =>
-                      featureMutation.mutate({ featureKey: feature.key, enabled })
+                    onFeatureToggle={(featureKey, enabled) =>
+                      featureMutation.mutate({ featureKey, enabled })
                     }
                   />
                 ),

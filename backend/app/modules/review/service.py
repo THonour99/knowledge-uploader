@@ -6,6 +6,7 @@ from dataclasses import dataclass
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.audit import record_admin_audit_log
+from app.core.config import get_settings
 from app.core.document_state import DocumentStateError, DocumentStateMachine
 from app.core.outbox import OutboxRepository
 from app.modules.user.schemas import AuthUserRecord
@@ -349,6 +350,7 @@ class ReviewService:
             file.dataset_mapping_id = mapping.id
             file.ragflow_dataset_id = mapping.ragflow_dataset_id
         if file.ragflow_dataset_id is not None:
+            await self._ensure_ragflow_sync_allowed(file)
             self._transition_file(file, "queued")
         await self._record_audit(
             current_user=current_user,
@@ -430,6 +432,8 @@ class ReviewService:
         )
         if mapping is not None and category is not None and mapping.category_id != category.id:
             raise exceptions.dataset_mapping_not_found()
+        if mapping is not None:
+            await self._ensure_ragflow_sync_allowed(file)
         if category is not None:
             file.category_id = category.id
         elif mapping is not None:
@@ -480,6 +484,24 @@ class ReviewService:
         if file is None:
             raise exceptions.file_not_found()
         return file
+
+    async def _is_critical_sensitive_file(self, file_id: uuid.UUID) -> bool:
+        risk_level = await self._repository.get_file_sensitive_risk_level(file_id)
+        return risk_level == "critical"
+
+    async def _ensure_ragflow_sync_allowed(self, file: ReviewFileRecord) -> None:
+        if await self._is_critical_sensitive_file(file.id):
+            raise exceptions.invalid_state()
+        analysis_status = await self._repository.get_file_analysis_status(file.id)
+        if analysis_status != "failed":
+            return
+        allow_sync = await self._repository.get_ai_feature_enabled(
+            "allow_sync_when_analysis_failed"
+        )
+        if allow_sync is None:
+            allow_sync = get_settings().ai_allow_sync_when_analysis_failed
+        if not allow_sync:
+            raise exceptions.invalid_state()
 
     def _transition_file(self, file: ReviewFileRecord, to_status: str) -> None:
         try:

@@ -7,6 +7,7 @@ from typing import Any
 import pytest
 
 from app.core.outbox import EventOutbox
+from app.modules.document.events import DOCUMENT_FILE_UPLOADED
 from app.workers.outbox_dispatcher import dispatch_celery_task_for_event, dispatch_once
 
 pytestmark = pytest.mark.asyncio
@@ -155,9 +156,7 @@ async def test_ragflow_sync_task_outbox_event_dispatches_celery_task() -> None:
 
     dispatch_celery_task_for_event(event, sender=sender)
 
-    assert sender.sent == [
-        {"name": "ragflow.upload", "args": ["task-1"], "queue": "ragflow_queue"}
-    ]
+    assert sender.sent == [{"name": "ragflow.upload", "args": ["task-1"], "queue": "ragflow_queue"}]
 
 
 async def test_ragflow_sync_task_outbox_event_requires_task_id() -> None:
@@ -208,6 +207,46 @@ async def test_review_approved_event_with_dataset_requires_file_id() -> None:
         aggregate_type="file",
         aggregate_id="file-1",
         payload={"ragflow_dataset_id": "dataset-1"},
+    )
+
+    with pytest.raises(RuntimeError, match="missing file_id"):
+        dispatch_celery_task_for_event(event, sender=FakeCelerySender())
+
+
+async def test_file_uploaded_event_dispatches_ai_task_when_enabled() -> None:
+    event = EventOutbox(
+        event_type=DOCUMENT_FILE_UPLOADED,
+        aggregate_type="file",
+        aggregate_id="file-1",
+        payload={"file_id": "file-1", "ai_analysis_enabled_at_upload": True},
+    )
+    sender = FakeCelerySender()
+
+    dispatch_celery_task_for_event(event, sender=sender)
+
+    assert sender.sent == [{"name": "ai.analyze_file", "args": ["file-1"], "queue": "ai_queue"}]
+
+
+async def test_file_uploaded_event_does_not_dispatch_ai_task_when_upload_disabled() -> None:
+    event = EventOutbox(
+        event_type=DOCUMENT_FILE_UPLOADED,
+        aggregate_type="file",
+        aggregate_id="file-1",
+        payload={"file_id": "file-1", "ai_analysis_enabled_at_upload": False},
+    )
+    sender = FakeCelerySender()
+
+    dispatch_celery_task_for_event(event, sender=sender)
+
+    assert sender.sent == []
+
+
+async def test_file_uploaded_event_requires_file_id_when_ai_enabled() -> None:
+    event = EventOutbox(
+        event_type=DOCUMENT_FILE_UPLOADED,
+        aggregate_type="file",
+        aggregate_id="file-1",
+        payload={"ai_analysis_enabled_at_upload": True},
     )
 
     with pytest.raises(RuntimeError, match="missing file_id"):

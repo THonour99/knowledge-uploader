@@ -228,6 +228,7 @@ class DocumentService:
                 "bucket": file.bucket,
                 "object_key": file.object_key,
                 "status": file.status,
+                "ai_analysis_enabled_at_upload": file.ai_analysis_enabled_at_upload,
             },
         )
 

@@ -10,11 +10,12 @@ import {
   testAiProvider,
   updateAiFeature,
 } from "../../api/client";
+import type * as ApiClientModule from "../../api/client";
 import { themeCssVariables } from "../../theme/tokens";
 import AiConfigPage from "./index";
 
 vi.mock("../../api/client", async () => {
-  const actual = await vi.importActual<typeof import("../../api/client")>("../../api/client");
+  const actual = await vi.importActual<typeof ApiClientModule>("../../api/client");
 
   return {
     ...actual,
@@ -186,6 +187,29 @@ describe("AiConfigPage", () => {
 
     await waitFor(() => {
       expect(updateAiFeature).toHaveBeenCalledWith("sensitive_detection", { enabled: true });
+    });
+  });
+
+  it("updates global switches through the feature mutation", async () => {
+    vi.mocked(getAiConfig).mockResolvedValue(mockConfig);
+    vi.mocked(updateAiFeature).mockResolvedValue({
+      key: "ai_analysis",
+      name: "AI总开关",
+      description: "控制上传后是否创建 AI 分析任务",
+      enabled: false,
+    });
+
+    renderWithProviders(<AiConfigPage />);
+
+    const title = await screen.findByText("AI 总开关");
+    const globalCard = title.closest(".ai-config-switch-card");
+    expect(globalCard).not.toBeNull();
+
+    const switchControl = within(globalCard as HTMLElement).getByRole("switch");
+    fireEvent.click(switchControl);
+
+    await waitFor(() => {
+      expect(updateAiFeature).toHaveBeenCalledWith("ai_analysis", { enabled: false });
     });
   });
 });

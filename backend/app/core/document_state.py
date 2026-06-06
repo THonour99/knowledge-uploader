@@ -14,8 +14,17 @@ class DocumentStateError(Exception):
 
 class DocumentStateMachine:
     _allowed_transitions: ClassVar[set[tuple[str, str]]] = {
+        ("uploaded", "extracting_text"),
+        ("extracting_text", "analysis_queued"),
+        ("analysis_queued", "analyzing"),
+        ("extracting_text", "analysis_failed"),
+        ("analysis_queued", "analysis_failed"),
+        ("analyzing", "analysis_failed"),
+        ("analyzing", "analyzed"),
+        ("analyzing", "sensitive_review_required"),
         ("uploaded", "pending_review"),
         ("analyzed", "pending_review"),
+        ("analysis_failed", "pending_review"),
         ("sensitive_review_required", "pending_review"),
         ("pending_review", "approved"),
         ("pending_review", "rejected"),

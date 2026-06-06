@@ -11,6 +11,7 @@ from app.core.config import get_settings
 from app.core.database import AsyncSessionFactory
 from app.core.logging import configure_logging, get_logger
 from app.core.outbox import EventOutbox, OutboxRepository
+from app.modules.document.events import DOCUMENT_FILE_UPLOADED
 from app.modules.ragflow.events import RAGFLOW_SYNC_TASK_QUEUED
 from app.modules.review.events import REVIEW_FILE_APPROVED
 from app.workers.celery_app import celery_app
@@ -38,6 +39,17 @@ def dispatch_celery_task_for_event(
     *,
     sender: CeleryTaskSender = celery_app,
 ) -> None:
+    if event.event_type == DOCUMENT_FILE_UPLOADED:
+        ai_enabled = event.payload.get("ai_analysis_enabled_at_upload")
+        if ai_enabled is not True or not get_settings().ai_analysis_enabled:
+            return
+        file_id = event.payload.get("file_id")
+        if not isinstance(file_id, str) or not file_id:
+            msg = "file uploaded event missing file_id"
+            raise RuntimeError(msg)
+        sender.send_task("ai.analyze_file", args=[file_id], queue="ai_queue")
+        return
+
     if event.event_type != RAGFLOW_SYNC_TASK_QUEUED:
         if event.event_type != REVIEW_FILE_APPROVED:
             return
