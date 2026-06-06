@@ -13,6 +13,8 @@ from redis.asyncio import from_url
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.tests.safety import require_safe_test_database_reset, require_safe_test_redis_reset
+
 pytestmark = pytest.mark.asyncio
 
 TEXT_BYTES = b"handbook onboarding policy and employee benefits"
@@ -149,6 +151,8 @@ class FakeRagflowClient:
 
 
 async def _reset_database() -> None:
+    require_safe_test_database_reset()
+    require_safe_test_redis_reset()
     import_module("app.db.models")
 
     from app.core.database import engine
@@ -159,7 +163,7 @@ async def _reset_database() -> None:
         await connection.run_sync(Base.metadata.create_all)
     await engine.dispose()
 
-    redis_client = from_url(
+    redis_client = from_url(  # type: ignore[no-untyped-call]
         os.environ["CACHE_REDIS_URL"],
         encoding="utf-8",
         decode_responses=True,
@@ -422,7 +426,9 @@ async def test_full_pipeline_upload_analyze_approve_syncs_to_ragflow(
         )
         sync_task = sync_task_result.scalar_one()
         outbox_result = await session.execute(
-            select(EventOutbox).where(EventOutbox.aggregate_id == str(file_id))
+            select(EventOutbox)
+            .where(EventOutbox.aggregate_id == str(file_id))
+            .order_by(EventOutbox.id)
         )
         file_events = list(outbox_result.scalars())
         audit_result = await session.execute(

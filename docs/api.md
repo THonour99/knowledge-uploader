@@ -34,7 +34,7 @@ Authorization: Bearer <access_token>
 |---|---|
 | `employee` | 普通员工，可上传文件、查看自己的文件 |
 | `knowledge_admin` | 知识库管理员，可提交审核、审核文件、查看统计、管理 RAGFlow 任务 |
-| `system_admin` | 系统管理员，可管理 Dataset、AI 配置、用户、系统设置 |
+| `system_admin` | 系统管理员，可管理 Dataset、AI 配置、用户；系统设置页当前为前端占位 |
 
 ## 系统
 

@@ -100,13 +100,13 @@ docker compose exec -e SEED_ADMIN_PASSWORD backend-api python scripts/seed_admin
 Remove-Item Env:\SEED_ADMIN_PASSWORD
 ```
 
-脚本会创建或提升该用户为 `system_admin`，并写 `user.seed_system_admin` 审计日志。共享环境初始化后应立即登录修改密码。
+脚本默认只允许首次 bootstrap；系统内已存在 `system_admin` 时会拒绝执行。仅在明确恢复既有 `system_admin` 账号时追加 `--force-existing-system-admin`，脚本会重置目标账号并写 `user.seed_system_admin` 审计日志。共享环境初始化后应立即登录修改密码。
 
 ## 为什么普通用户访问 `/datasets` 或 `/ai-config` 会跳转？
 
 这些页面需要管理员角色：
 
-- `/datasets`、`/ai-config`、`/users`、`/settings` 需要 `system_admin`。
+- `/datasets`、`/ai-config`、`/users` 需要 `system_admin`；`/settings` 当前是系统设置占位页，也受 `system_admin` 前端路由保护。
 - `/dashboard`、`/files`、`/statistics` 需要 `knowledge_admin` 或 `system_admin`。
 - `/upload`、`/my-files` 对登录用户开放。
 

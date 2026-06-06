@@ -1,9 +1,9 @@
 # 阶段 9 验收报告：联调与文档
 
-日期：2026-06-06  
-分支：`codex/phase-9-integration-docs`  
-PR：https://github.com/THonour99/knowledge-uploader/pull/12  
-状态：待补 Docker 容器验收
+日期：2026-06-06
+分支：`codex/phase-9-integration-docs`
+PR：https://github.com/THonour99/knowledge-uploader/pull/12
+状态：通过
 
 ## 目标
 
@@ -38,83 +38,66 @@ PR：https://github.com/THonour99/knowledge-uploader/pull/12
 ### 测试与启动工具
 
 - 新增 `backend/app/tests/e2e/test_full_pipeline.py`：覆盖上传、AI mock 分析、提交审核、审核通过、outbox 派发、RAGFlow mock 上传解析。
-- 新增 `backend/scripts/seed_admin.py`：通过 `SEED_ADMIN_PASSWORD` 创建或提升首个 `system_admin`，校验 `ALLOWED_EMAIL_DOMAINS` 和 `PASSWORD_MIN_LENGTH`，并写入 `user.seed_system_admin` 审计日志。
+- 新增 `backend/scripts/seed_admin.py`：通过 `SEED_ADMIN_PASSWORD` 创建首个 `system_admin`，校验 `ALLOWED_EMAIL_DOMAINS` 和 `PASSWORD_MIN_LENGTH`，并写入 `user.seed_system_admin` 审计日志。系统内已存在 `system_admin` 时默认拒绝，只有显式 `--force-existing-system-admin` 才允许恢复既有 `system_admin` 账号。
+- `POST/PATCH /api/datasets` 已在保存映射前校验 `RAGFLOW_ALLOWED_DATASET_IDS`，文件审核通过和分类更新时也会重新校验既有映射，避免把不允许的 RAGFlow Dataset id 写入或排入同步。
+- E2E 清库逻辑增加测试环境 guard，要求 `APP_ENV=test`、数据库名以 `_test` 结尾、Redis DB 为 `15`。
+- 前端 Docker 镜像已把 `VITE_API_BASE_URL` 接入构建阶段，避免静态 Nginx runtime env 造成误导。
 
 ## 提交记录
 
 - `2f77dca test(ragflow): 补充上传审核同步全链路测试`
 - `5c1699d feat(auth): 添加首个系统管理员初始化脚本`
 - `ce7fedd docs(deploy): 完善阶段九联调部署文档`
+- `3317e7d docs(report): 添加阶段九验收报告`
+- `f492655 docs(report): 更新阶段九 PR 链接`
 
 ## 已完成验收
 
 | 命令 | 结果 |
 |---|---|
-| `docker compose run --rm backend-api pytest -q app/tests/e2e/test_full_pipeline.py` | 通过，`1 passed`。后续只调整了格式、类型断言和文档/seed 脚本 |
-| `ruff check app scripts --no-cache` | 通过 |
+| `docker compose build backend-api` | 通过 |
+| `docker compose run --rm backend-api ruff check app scripts --no-cache` | 通过 |
 | `python scripts/check_module_boundaries.py` | 通过 |
-| `python scripts/seed_admin.py --help` | 通过 |
-| `python scripts/seed_admin.py --email admin@company.com` | 预期失败：未设置 `SEED_ADMIN_PASSWORD` 时提前报错，不触库 |
-| `npm --prefix frontend test -- --run` | 通过，3 files / 9 tests |
-| `npm --prefix frontend run lint` | 通过 |
-| `npm --prefix frontend run build` | 通过；保留既有 Vite large chunk warning |
+| `docker compose run --rm backend-api mypy app` | 通过，`Success: no issues found in 194 source files` |
+| `docker compose run --rm backend-api pytest -q app/tests/unit/test_review_api.py::test_dataset_mapping_requires_allowed_ragflow_dataset_id app/tests/unit/test_review_api.py::test_review_rejects_dataset_mapping_removed_from_allowlist app/tests/unit/test_seed_admin_script.py app/tests/e2e/test_full_pipeline.py` | 通过，`6 passed` |
+| `docker compose run --rm backend-api pytest -q` | 通过，`127 passed, 1 skipped` |
+| `python -m py_compile backend/scripts/seed_admin.py` | 通过 |
+| `npm test -- --run`（工作目录 `frontend/`） | 通过，3 files / 9 tests |
+| `npm run lint`（工作目录 `frontend/`） | 通过 |
+| `npm run build`（工作目录 `frontend/`） | 通过；保留既有 Vite large chunk warning |
+| `docker compose up -d --build` | 通过，backend/frontend 镜像均重建并启动 |
+| `docker compose exec backend-api alembic upgrade head` | 通过 |
+| `curl.exe -s -S http://localhost:18000/api/system/health` | 通过，返回 `{"status":"ok"}` |
+| `docker compose ps` | 通过，14 个服务均 healthy |
 | `git diff --check` | 通过 |
 
-## 阻塞项
+## Codex 浏览器验收
 
-从 2026-06-06 阶段 9 验收中途开始，Docker Desktop Linux engine 持续返回 500：
+使用 Codex 内置浏览器访问 `http://localhost`，浏览器保持可见。验收范围：
+
+| 路由 | 桌面默认视口 | 移动视口 390x844 |
+|---|---|---|
+| `/login` | 有登录态时自动进入 `/dashboard`，页面非空，无 console error，无横向溢出 | 同左 |
+| `/datasets` | 页面非空，无 console error，无横向溢出 | 页面非空，无 console error，无横向溢出 |
+| `/statistics` | 页面非空，无 console error，无横向溢出 | 页面非空，无 console error，无横向溢出 |
+| `/settings` | 系统设置占位页非空，无 console error，无横向溢出 | 系统设置占位页非空，无 console error，无横向溢出 |
+
+重建后再次使用本地测试 `system_admin` 登录并访问 `http://localhost/datasets`，页面标题为 `Dataset 配置`，无 console error，无横向溢出。
+
+## 已解决阻塞
+
+阶段 9 验收中途 Docker Desktop Linux engine 曾返回 500 / EOF，随后定位到 E 盘可用空间耗尽：
 
 ```text
 request returned 500 Internal Server Error for API route and version
 http://%2F%2F.%2Fpipe%2FdockerDesktopLinuxEngine/v1.54/version
 ```
 
-受影响的命令：
-
-- `docker version`
-- `docker compose ps`
-- `docker compose build backend-api`
-- `docker compose run --rm backend-api ruff check app`
-- `docker compose run --rm backend-api mypy app`
-- `docker compose run --rm backend-api pytest -q`
-- `docker compose up -d --build`
-- `docker compose exec backend-api alembic upgrade head`
-- `curl http://localhost:18000/api/system/health`
-
-已尝试：
-
-- 等待 Docker 自恢复。
-- 重新唤起 Docker Desktop。
-- 再次查询 `docker version` 和 `docker compose ps`。
-
-未执行强制停止 Docker Desktop，因为审批器拒绝该操作，理由是会影响本机所有 Docker workload。
-
-## 待补验收
-
-Docker Desktop engine 恢复后必须补跑：
-
-```powershell
-docker compose build backend-api
-docker compose run --rm backend-api ruff check app
-python scripts/check_module_boundaries.py
-docker compose run --rm backend-api mypy app
-docker compose run --rm backend-api pytest -q
-docker compose up -d --build
-docker compose exec backend-api alembic upgrade head
-curl http://localhost:18000/api/system/health
-```
-
-并使用 Codex 浏览器复核：
-
-- `http://localhost/login`
-- `http://localhost/datasets`
-- `http://localhost/statistics`
-- `http://localhost/settings`
-
-检查页面非空、无控制台错误、桌面/移动视口无异常横向溢出。
+磁盘排查结果显示 `E:\DockerData` 约 71.14 GB、`E:\$RECYCLE.BIN` 约 18.83 GB，当前仓库仅约 0.52 GB。用户释放空间并恢复 Docker 后，所有 Docker Compose 验收命令已补跑通过。
 
 ## 风险与说明
 
 - `.codex/config.toml` 是既有未提交改动，未纳入任何阶段 9 提交。
 - 未操作 RAGFlow 服务器 `http://192.168.4.46:8092` 上的既有知识库；文档明确要求只创建新的测试 Dataset，并通过 `RAGFLOW_ALLOWED_DATASET_IDS` 限制。
-- 阶段 9 目前不能标记完成，必须等待 Docker Desktop 恢复后补齐容器验收与浏览器验收。
+- `npm --prefix frontend test -- --run` 和 `npm --prefix frontend run build` 曾在项目根目录触发本机 esbuild `spawn EPERM`；在 `frontend/` 工作目录直接执行 `npm test -- --run`、`npm run lint`、`npm run build` 均通过。
+- `.tmp/npm-cache` 是 Playwright CLI 临时缓存目录，删除时被系统拒绝；目录未出现在 git 状态中，不纳入提交。

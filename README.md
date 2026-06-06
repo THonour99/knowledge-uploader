@@ -78,7 +78,7 @@ curl http://localhost:18000/api/system/health
 
 ### 4. 初始化首个管理员
 
-迁移完成后创建或提升首个系统管理员：
+迁移完成后创建首个系统管理员：
 
 ```powershell
 $env:SEED_ADMIN_PASSWORD="<至少 8 位的初始密码>"
@@ -86,7 +86,7 @@ docker compose exec -e SEED_ADMIN_PASSWORD backend-api python scripts/seed_admin
 Remove-Item Env:\SEED_ADMIN_PASSWORD
 ```
 
-脚本会创建或更新该用户为 `system_admin`，状态设为 `active`，并写入一条 `user.seed_system_admin` 审计日志。
+脚本默认只允许首次 bootstrap。系统内已存在 `system_admin` 时会拒绝执行；仅在明确恢复既有 `system_admin` 账号时追加 `--force-existing-system-admin`，脚本会重置目标账号并写入一条 `user.seed_system_admin` 审计日志。
 
 ### 5. 访问前端
 
@@ -105,7 +105,7 @@ Remove-Item Env:\SEED_ADMIN_PASSWORD
 | `/ai-config` | 系统管理员 | AI 配置 |
 | `/statistics` | 知识库管理员、系统管理员 | 统计分析 |
 | `/users` | 系统管理员 | 用户管理 |
-| `/settings` | 系统管理员 | 系统设置 |
+| `/settings` | 系统管理员 | 系统设置占位页 |
 
 前端视觉以 `docs/design/design.md` 和 `docs/design/images/` 为权威参考。
 

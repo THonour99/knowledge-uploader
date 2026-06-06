@@ -91,7 +91,7 @@ RAGFLOW_ALLOWED_DATASET_IDS=<新建测试 Dataset id>
 
 ## 首个系统管理员
 
-迁移完成后创建或提升首个 `system_admin`：
+迁移完成后创建首个 `system_admin`：
 
 ```powershell
 $env:SEED_ADMIN_PASSWORD="<至少 8 位的初始密码>"
@@ -99,11 +99,11 @@ docker compose exec -e SEED_ADMIN_PASSWORD backend-api python scripts/seed_admin
 Remove-Item Env:\SEED_ADMIN_PASSWORD
 ```
 
-脚本会写入 `user.seed_system_admin` 审计日志。共享环境执行后应立即由管理员登录并修改密码。
+脚本默认只允许首次 bootstrap；系统内已存在 `system_admin` 时会拒绝执行。仅在明确恢复既有 `system_admin` 账号时追加 `--force-existing-system-admin`，脚本会重置目标账号并写入 `user.seed_system_admin` 审计日志。共享环境执行后应立即由管理员登录并修改密码。
 
 ## 前端 API 地址
 
-前端默认使用同域 `/api`，由 Nginx 转发到 `backend-api:8000`。当前生产镜像构建时不需要单独设置 `VITE_API_BASE_URL`；如需改为非同域 API，需要同步调整 `frontend/Dockerfile` 的构建参数和前端发布流程。
+前端默认使用同域 `/api`，由 Nginx 转发到 `backend-api:8000`。`VITE_API_BASE_URL` 是 Vite 构建期变量，Compose 会通过 frontend build arg 传入；静态 Nginx 镜像启动后的 runtime env 不会改变已构建 JS。
 
 ## AI Provider
 
