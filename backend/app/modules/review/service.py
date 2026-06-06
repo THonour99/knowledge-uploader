@@ -188,10 +188,18 @@ class ReviewService:
     ) -> DatasetMapping:
         self._require_system_admin(current_user)
         await self._get_category_or_raise(request.category_id)
+        ragflow_dataset_id = request.ragflow_dataset_id.strip()
+        await self._ensure_ragflow_dataset_allowed(
+            ragflow_dataset_id,
+            current_user=current_user,
+            context=context,
+            target_type="category",
+            target_id=request.category_id,
+        )
         mapping = DatasetMapping(
             name=request.name.strip(),
             category_id=request.category_id,
-            ragflow_dataset_id=request.ragflow_dataset_id.strip(),
+            ragflow_dataset_id=ragflow_dataset_id,
             ragflow_dataset_name=request.ragflow_dataset_name.strip(),
             enabled=request.enabled,
         )
@@ -222,13 +230,26 @@ class ReviewService:
     ) -> DatasetMapping:
         self._require_system_admin(current_user)
         mapping = await self._get_dataset_mapping_record_or_raise(mapping_id)
+        target_category_id = mapping.category_id
+        if request.category_id is not None:
+            await self._get_category_or_raise(request.category_id)
+            target_category_id = request.category_id
+        target_ragflow_dataset_id = mapping.ragflow_dataset_id
+        if request.ragflow_dataset_id is not None:
+            target_ragflow_dataset_id = request.ragflow_dataset_id.strip()
+            await self._ensure_ragflow_dataset_allowed(
+                target_ragflow_dataset_id,
+                current_user=current_user,
+                context=context,
+                target_type="dataset_mapping",
+                target_id=mapping.id,
+            )
         if request.name is not None:
             mapping.name = request.name.strip()
         if request.category_id is not None:
-            await self._get_category_or_raise(request.category_id)
-            mapping.category_id = request.category_id
+            mapping.category_id = target_category_id
         if request.ragflow_dataset_id is not None:
-            mapping.ragflow_dataset_id = request.ragflow_dataset_id.strip()
+            mapping.ragflow_dataset_id = target_ragflow_dataset_id
         if request.ragflow_dataset_name is not None:
             mapping.ragflow_dataset_name = request.ragflow_dataset_name.strip()
         if request.enabled is not None:
@@ -329,9 +350,7 @@ class ReviewService:
         self._require_admin(current_user)
         file = await self._get_file_or_raise(file_id)
         category = (
-            await self._get_category_or_raise(request.category_id)
-            if request.category_id
-            else None
+            await self._get_category_or_raise(request.category_id) if request.category_id else None
         )
         mapping = (
             await self._get_dataset_mapping_or_raise(request.dataset_mapping_id)
@@ -340,6 +359,14 @@ class ReviewService:
         )
         if mapping is not None and category is not None and mapping.category_id != category.id:
             raise exceptions.dataset_mapping_not_found()
+        if mapping is not None:
+            await self._ensure_ragflow_dataset_allowed(
+                mapping.ragflow_dataset_id,
+                current_user=current_user,
+                context=context,
+                target_type="file",
+                target_id=file.id,
+            )
         self._transition_file(file, "approved")
         file.review_status = "approved"
         if category is not None:
@@ -421,9 +448,7 @@ class ReviewService:
         self._require_admin(current_user)
         file = await self._get_file_or_raise(file_id)
         category = (
-            await self._get_category_or_raise(request.category_id)
-            if request.category_id
-            else None
+            await self._get_category_or_raise(request.category_id) if request.category_id else None
         )
         mapping = (
             await self._get_dataset_mapping_or_raise(request.dataset_mapping_id)
@@ -433,6 +458,13 @@ class ReviewService:
         if mapping is not None and category is not None and mapping.category_id != category.id:
             raise exceptions.dataset_mapping_not_found()
         if mapping is not None:
+            await self._ensure_ragflow_dataset_allowed(
+                mapping.ragflow_dataset_id,
+                current_user=current_user,
+                context=context,
+                target_type="file",
+                target_id=file.id,
+            )
             await self._ensure_ragflow_sync_allowed(file)
         if category is not None:
             file.category_id = category.id
@@ -586,9 +618,40 @@ class ReviewService:
         if visibility not in VALID_VISIBILITIES:
             raise exceptions.invalid_visibility()
 
+    async def _ensure_ragflow_dataset_allowed(
+        self,
+        dataset_id: str,
+        *,
+        current_user: AuthUserRecord,
+        context: RequestContext,
+        target_type: str,
+        target_id: uuid.UUID,
+    ) -> None:
+        allowed_dataset_ids = normalized_csv(get_settings().ragflow_allowed_dataset_ids)
+        if not allowed_dataset_ids or dataset_id in allowed_dataset_ids:
+            return
+        await self._session.rollback()
+        await self._record_admin_audit(
+            current_user=current_user,
+            action="dataset_mapping.ragflow_dataset_denied",
+            target_type=target_type,
+            target_id=target_id,
+            context=context,
+            metadata_json={
+                "ragflow_dataset_id": dataset_id,
+                "allowed_dataset_ids_count": len(allowed_dataset_ids),
+            },
+        )
+        await self._session.commit()
+        raise exceptions.dataset_not_allowed()
+
 
 def clean_optional_text(value: str | None) -> str | None:
     if value is None:
         return None
     cleaned = value.strip()
     return cleaned or None
+
+
+def normalized_csv(raw_value: str) -> set[str]:
+    return {item.strip() for item in raw_value.split(",") if item.strip()}

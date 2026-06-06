@@ -38,6 +38,14 @@ def dataset_mapping_not_found() -> ReviewError:
     )
 
 
+def dataset_not_allowed() -> ReviewError:
+    return ReviewError(
+        ErrorCode.VALIDATION_ERROR,
+        "ragflow dataset id is not allowed",
+        status.HTTP_400_BAD_REQUEST,
+    )
+
+
 def file_not_found() -> ReviewError:
     return ReviewError(ErrorCode.FILE_NOT_FOUND, "file not found", status.HTTP_404_NOT_FOUND)
 
