@@ -2,6 +2,7 @@
 
 日期：2026-06-06  
 分支：`codex/phase-9-integration-docs`  
+PR：https://github.com/THonour99/knowledge-uploader/pull/12  
 状态：待补 Docker 容器验收
 
 ## 目标
