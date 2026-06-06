@@ -8,6 +8,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.database import get_session
 from app.core.deps import get_current_user
+from app.core.permissions import AdminUserDep
 from app.core.responses import success_response
 from app.modules.document.schemas import FileListResponse, FileResponse
 from app.modules.user.schemas import AuthUserRecord
@@ -122,7 +123,7 @@ def _file_response(file: ReviewFileRecord) -> FileResponse:
 @router.get("/api/categories")
 async def list_categories(
     request: Request,
-    current_user: CurrentUserDep,
+    current_user: AdminUserDep,
     session: SessionDep,
 ) -> dict[str, object]:
     try:
@@ -143,7 +144,7 @@ async def list_categories(
 async def create_category(
     payload: CategoryCreateRequest,
     request: Request,
-    current_user: CurrentUserDep,
+    current_user: AdminUserDep,
     session: SessionDep,
 ) -> dict[str, object]:
     try:
@@ -162,7 +163,7 @@ async def update_category(
     category_id: UUID,
     payload: CategoryUpdateRequest,
     request: Request,
-    current_user: CurrentUserDep,
+    current_user: AdminUserDep,
     session: SessionDep,
 ) -> dict[str, object]:
     try:
@@ -180,7 +181,7 @@ async def update_category(
 @router.get("/api/datasets")
 async def list_dataset_mappings(
     request: Request,
-    current_user: CurrentUserDep,
+    current_user: AdminUserDep,
     session: SessionDep,
 ) -> dict[str, object]:
     try:
@@ -201,7 +202,7 @@ async def list_dataset_mappings(
 async def create_dataset_mapping(
     payload: DatasetMappingCreateRequest,
     request: Request,
-    current_user: CurrentUserDep,
+    current_user: AdminUserDep,
     session: SessionDep,
 ) -> dict[str, object]:
     try:
@@ -220,7 +221,7 @@ async def update_dataset_mapping(
     mapping_id: UUID,
     payload: DatasetMappingUpdateRequest,
     request: Request,
-    current_user: CurrentUserDep,
+    current_user: AdminUserDep,
     session: SessionDep,
 ) -> dict[str, object]:
     try:
@@ -239,7 +240,7 @@ async def update_dataset_mapping(
 async def delete_dataset_mapping(
     mapping_id: UUID,
     request: Request,
-    current_user: CurrentUserDep,
+    current_user: AdminUserDep,
     session: SessionDep,
 ) -> Response:
     try:
@@ -256,7 +257,7 @@ async def delete_dataset_mapping(
 @router.get("/api/review/files")
 async def list_review_files(
     request: Request,
-    current_user: CurrentUserDep,
+    current_user: AdminUserDep,
     session: SessionDep,
 ) -> dict[str, object]:
     try:
@@ -293,7 +294,7 @@ async def approve_file(
     file_id: UUID,
     payload: ReviewDecisionRequest,
     request: Request,
-    current_user: CurrentUserDep,
+    current_user: AdminUserDep,
     session: SessionDep,
 ) -> dict[str, object]:
     try:
@@ -313,7 +314,7 @@ async def reject_file(
     file_id: UUID,
     payload: RejectFileRequest,
     request: Request,
-    current_user: CurrentUserDep,
+    current_user: AdminUserDep,
     session: SessionDep,
 ) -> dict[str, object]:
     try:
@@ -333,7 +334,7 @@ async def update_file_classification(
     file_id: UUID,
     payload: UpdateFileClassificationRequest,
     request: Request,
-    current_user: CurrentUserDep,
+    current_user: AdminUserDep,
     session: SessionDep,
 ) -> dict[str, object]:
     try:

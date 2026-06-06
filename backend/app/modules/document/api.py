@@ -99,6 +99,14 @@ def _raise_rate_limited() -> NoReturn:
     )
 
 
+def _client_ip(request: Request) -> str:
+    return request.client.host if request.client is not None else "unknown"
+
+
+def _user_agent(request: Request) -> str:
+    return request.headers.get("user-agent", "unknown")[:512] or "unknown"
+
+
 async def _enforce_upload_rate_limit(user: AuthUserRecord, settings: Settings) -> None:
     allowed = await is_within_rate_limit(
         redis_url=settings.cache_redis_url,
@@ -166,6 +174,8 @@ async def upload_file(
             data=data,
             description=description,
             visibility=visibility,
+            client_ip=_client_ip(request),
+            user_agent=_user_agent(request),
         )
     except DocumentError as error:
         _raise_document_error(error)

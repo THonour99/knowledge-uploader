@@ -142,7 +142,11 @@ async def test_system_admin_list_and_get_users_write_audit_logs(client: AsyncCli
     assert viewed.status_code == 200
 
     async with AsyncSessionFactory() as session:
-        result = await session.execute(select(AuditLog).order_by(AuditLog.created_at))
+        result = await session.execute(
+            select(AuditLog)
+            .where(AuditLog.action.in_(("user.list", "user.view")))
+            .order_by(AuditLog.created_at)
+        )
         logs = list(result.scalars())
 
     assert [log.action for log in logs] == ["user.list", "user.view"]
@@ -189,7 +193,11 @@ async def test_system_admin_can_disable_and_enable_user_with_audit_log(
     assert enabled.json()["data"]["status"] == "active"
 
     async with AsyncSessionFactory() as session:
-        result = await session.execute(select(AuditLog).order_by(AuditLog.created_at))
+        result = await session.execute(
+            select(AuditLog)
+            .where(AuditLog.action.in_(("user.disable", "user.enable")))
+            .order_by(AuditLog.created_at)
+        )
         logs = list(result.scalars())
 
     assert [log.action for log in logs] == ["user.disable", "user.enable"]

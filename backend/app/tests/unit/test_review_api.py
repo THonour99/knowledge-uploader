@@ -220,17 +220,20 @@ async def test_system_admin_creates_category_and_dataset_mapping(
 
     assert disable_response.status_code == 204
 
-    async with AsyncSessionFactory() as session:
-        result = await session.execute(select(AuditLog))
-        audit_logs = list(result.scalars())
-
-    assert {log.action for log in audit_logs} == {
+    expected_actions = {
         "category.create",
         "dataset_mapping.create",
         "category.update",
         "dataset_mapping.update",
         "dataset_mapping.disable",
     }
+    async with AsyncSessionFactory() as session:
+        result = await session.execute(
+            select(AuditLog).where(AuditLog.action.in_(expected_actions))
+        )
+        audit_logs = list(result.scalars())
+
+    assert {log.action for log in audit_logs} == expected_actions
     category_create_log = next(log for log in audit_logs if log.action == "category.create")
     dataset_create_log = next(log for log in audit_logs if log.action == "dataset_mapping.create")
     assert category_create_log.target_type == "category"

@@ -8,17 +8,16 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from starlette import status
 
 from app.core.database import get_session
-from app.core.deps import get_current_user
 from app.core.exceptions import ErrorCode
+from app.core.permissions import SystemAdminDep
 from app.core.responses import success_response
 from app.modules.user.models import User
-from app.modules.user.schemas import AuthUserRecord, UserProfile
+from app.modules.user.schemas import UserProfile
 
 from .service import UserNotFoundError, UserPermissionError, UserService
 
 router = APIRouter(prefix="/api/users", tags=["users"])
 SessionDep = Annotated[AsyncSession, Depends(get_session)]
-CurrentUserDep = Annotated[AuthUserRecord, Depends(get_current_user)]
 
 
 def _profile(user: User) -> UserProfile:
@@ -32,14 +31,6 @@ def _profile(user: User) -> UserProfile:
         department=user.department,
         phone=user.phone,
     )
-
-
-def _ensure_system_admin(user: AuthUserRecord) -> None:
-    if user.role != "system_admin":
-        raise HTTPException(
-            status_code=status.HTTP_403_FORBIDDEN,
-            detail={"error_code": ErrorCode.PERMISSION_DENIED, "message": "permission denied"},
-        )
 
 
 def _not_found() -> HTTPException:
@@ -67,10 +58,9 @@ def _user_agent(request: Request) -> str:
 @router.get("")
 async def list_users(
     request: Request,
-    current_user: CurrentUserDep,
+    current_user: SystemAdminDep,
     session: SessionDep,
 ) -> dict[str, object]:
-    _ensure_system_admin(current_user)
     users = await UserService.from_session(session).list_users_for_admin(
         actor=current_user,
         ip_address=_client_ip(request),
@@ -83,10 +73,9 @@ async def list_users(
 async def get_user(
     user_id: uuid.UUID,
     request: Request,
-    current_user: CurrentUserDep,
+    current_user: SystemAdminDep,
     session: SessionDep,
 ) -> dict[str, object]:
-    _ensure_system_admin(current_user)
     try:
         user = await UserService.from_session(session).get_user_for_admin(
             actor=current_user,
@@ -103,10 +92,9 @@ async def get_user(
 async def disable_user(
     user_id: uuid.UUID,
     request: Request,
-    current_user: CurrentUserDep,
+    current_user: SystemAdminDep,
     session: SessionDep,
 ) -> dict[str, object]:
-    _ensure_system_admin(current_user)
     try:
         user = await UserService.from_session(session).disable_user(
             actor=current_user,
@@ -125,10 +113,9 @@ async def disable_user(
 async def enable_user(
     user_id: uuid.UUID,
     request: Request,
-    current_user: CurrentUserDep,
+    current_user: SystemAdminDep,
     session: SessionDep,
 ) -> dict[str, object]:
-    _ensure_system_admin(current_user)
     try:
         user = await UserService.from_session(session).enable_user(
             actor=current_user,

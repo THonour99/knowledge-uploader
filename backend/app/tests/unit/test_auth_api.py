@@ -267,6 +267,62 @@ async def test_login_issues_jwt_and_me_returns_current_user(client: AsyncClient)
     assert me.json()["data"]["email"] == "charlie@company.com"
 
 
+async def test_login_attempts_write_audit_logs(client: AsyncClient) -> None:
+    from sqlalchemy import select
+
+    from app.core.database import AsyncSessionFactory
+    from app.modules.audit.models import AuditLog
+
+    user_id = await _create_user(email="audit-login@company.com", password="password123")
+
+    failed = await client.post(
+        "/api/auth/login",
+        headers={"User-Agent": "auth-audit-test"},
+        json={"email": "audit-login@company.com", "password": "wrong-password"},
+    )
+    success = await client.post(
+        "/api/auth/login",
+        headers={"User-Agent": "auth-audit-test"},
+        json={"email": "audit-login@company.com", "password": "password123"},
+    )
+    unknown = await client.post(
+        "/api/auth/login",
+        headers={"User-Agent": "auth-audit-test"},
+        json={"email": "missing-login@company.com", "password": "password123"},
+    )
+
+    assert failed.status_code == 401
+    assert success.status_code == 200
+    assert unknown.status_code == 401
+
+    async with AsyncSessionFactory() as session:
+        result = await session.execute(
+            select(AuditLog)
+            .where(AuditLog.action.like("auth.login.%"))
+            .order_by(AuditLog.created_at)
+        )
+        logs = list(result.scalars())
+
+    assert len(logs) == 3
+    known_failure = next(
+        log for log in logs if log.metadata_json["failure_reason"] == "invalid_password"
+    )
+    known_success = next(log for log in logs if log.metadata_json["success"] is True)
+    unknown_failure = next(
+        log for log in logs if log.metadata_json["failure_reason"] == "unknown_user"
+    )
+
+    assert known_failure.actor_id == user_id
+    assert known_failure.target_type == "auth_login"
+    assert known_failure.user_agent == "auth-audit-test"
+    assert known_success.actor_id == user_id
+    assert known_success.action == "auth.login.success"
+    assert unknown_failure.actor_id == UUID(int=0)
+    assert unknown_failure.metadata_json["user_id"] is None
+    assert "password123" not in str([log.metadata_json for log in logs])
+    assert "wrong-password" not in str([log.metadata_json for log in logs])
+
+
 async def test_logout_revokes_current_jwt(client: AsyncClient) -> None:
     await _create_user(email="logout@company.com", password="password123")
     login = await client.post(
@@ -452,7 +508,10 @@ async def test_expired_lock_does_not_reactivate_old_jwt(client: AsyncClient) -> 
 
 
 async def test_expired_lock_wrong_password_counts_failed_login(client: AsyncClient) -> None:
+    from sqlalchemy import select
+
     from app.core.database import AsyncSessionFactory
+    from app.modules.audit.models import AuditLog
     from app.modules.user.models import User
 
     user_id = await _create_user(email="expired-lock-wrong@company.com", password="password123")
@@ -475,6 +534,14 @@ async def test_expired_lock_wrong_password_counts_failed_login(client: AsyncClie
         user = await session.get(User, user_id)
         assert user is not None
         assert user.failed_login_count == 1
+        result = await session.execute(
+            select(AuditLog).where(
+                AuditLog.actor_id == user_id,
+                AuditLog.action == "auth.login.failed",
+            )
+        )
+        audit_log = result.scalar_one()
+        assert audit_log.metadata_json["failure_reason"] == "invalid_password"
 
 
 async def test_unknown_email_login_runs_dummy_password_verification(

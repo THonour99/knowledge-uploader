@@ -6,12 +6,25 @@ from typing import Any
 
 import structlog
 
-API_KEY_PATTERN = re.compile(r"(sk-[A-Za-z0-9_-]{4})[A-Za-z0-9_-]+([A-Za-z0-9_-]{4})")
-SENSITIVE_KEY_PARTS = ("api_key", "password", "secret", "token")
+API_KEY_PATTERN = re.compile(r"\b(sk-)[A-Za-z0-9_-]+([A-Za-z0-9_-]{4})\b")
+RAGFLOW_KEY_PATTERN = re.compile(
+    r"\b(ragflow-)[A-Za-z0-9_-]+([A-Za-z0-9_-]{4})\b"
+)
+BEARER_TOKEN_PATTERN = re.compile(r"(Bearer\s+)[A-Za-z0-9._~+/-]+=*", re.IGNORECASE)
+SENSITIVE_KEY_PARTS = (
+    "api_key",
+    "authorization",
+    "credential",
+    "password",
+    "secret",
+    "token",
+)
 
 
 def mask_secret(value: str) -> str:
-    return API_KEY_PATTERN.sub(r"\1****\2", value)
+    masked = API_KEY_PATTERN.sub(r"\1****\2", value)
+    masked = RAGFLOW_KEY_PATTERN.sub(r"\1****\2", masked)
+    return BEARER_TOKEN_PATTERN.sub(r"\1***", masked)
 
 
 def mask_log_value(key: str, value: Any) -> Any:

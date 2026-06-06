@@ -6,18 +6,14 @@ from uuid import UUID
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request, Response
 from sqlalchemy.ext.asyncio import AsyncSession
-from starlette import status
 
 from app.core.database import get_session
-from app.core.deps import get_current_user
-from app.core.exceptions import ErrorCode
+from app.core.permissions import AdminUserDep
 from app.core.responses import success_response
-from app.modules.user.schemas import AuthUserRecord
 
 from . import exceptions
 from .repository import StatisticsRepository  # noqa: TID251 - same-module repository dependency
 from .service import (  # noqa: TID251 - same-module service dependency
-    ADMIN_ROLES,
     RequestContext,
     StatisticsQuery,
     StatisticsService,
@@ -25,19 +21,6 @@ from .service import (  # noqa: TID251 - same-module service dependency
 
 router = APIRouter(prefix="/api/admin/statistics", tags=["statistics"])
 SessionDep = Annotated[AsyncSession, Depends(get_session)]
-CurrentUserDep = Annotated[AuthUserRecord, Depends(get_current_user)]
-
-
-def _require_admin_user(current_user: CurrentUserDep) -> AuthUserRecord:
-    if current_user.role not in ADMIN_ROLES:
-        raise HTTPException(
-            status_code=status.HTTP_403_FORBIDDEN,
-            detail={"error_code": ErrorCode.PERMISSION_DENIED, "message": "permission denied"},
-        )
-    return current_user
-
-
-AdminUserDep = Annotated[AuthUserRecord, Depends(_require_admin_user)]
 
 
 def _service(session: AsyncSession) -> StatisticsService:
