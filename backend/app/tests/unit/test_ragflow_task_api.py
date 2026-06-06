@@ -111,6 +111,10 @@ async def _create_file(
     status_value: str = "pending_review",
     review_status: str = "in_review",
     hash_value: str = "b" * 64,
+    dataset_mapping_id: UUID | None = None,
+    ragflow_dataset_id: str | None = None,
+    ragflow_document_id: str | None = None,
+    ragflow_parse_status: str | None = None,
 ) -> UUID:
     from app.core.database import AsyncSessionFactory
     from app.modules.document.models import File
@@ -127,11 +131,15 @@ async def _create_file(
         object_key=f"uploads/{uploader_id}/file-phase4-handbook.pdf",
         uploader_id=uploader_id,
         department="QA",
+        dataset_mapping_id=dataset_mapping_id,
         visibility="private",
         description="phase4 task target",
         tags=[],
         status=status_value,
         review_status=review_status,
+        ragflow_dataset_id=ragflow_dataset_id,
+        ragflow_document_id=ragflow_document_id,
+        ragflow_parse_status=ragflow_parse_status,
         ai_analysis_enabled_at_upload=False,
     )
     async with AsyncSessionFactory() as session:
@@ -141,7 +149,13 @@ async def _create_file(
         return file.id
 
 
-async def _create_category_and_mapping(client: AsyncClient, token: str) -> tuple[str, str]:
+async def _create_category_and_mapping(
+    client: AsyncClient,
+    token: str,
+    *,
+    ragflow_dataset_id: str = "ragflow-phase4",
+    ragflow_dataset_name: str = "阶段四知识库",
+) -> tuple[str, str]:
     category_response = await client.post(
         "/api/categories",
         headers={"Authorization": f"Bearer {token}"},
@@ -162,8 +176,8 @@ async def _create_category_and_mapping(client: AsyncClient, token: str) -> tuple
         json={
             "name": "阶段四 Dataset",
             "category_id": category_id,
-            "ragflow_dataset_id": "ragflow-phase4",
-            "ragflow_dataset_name": "阶段四知识库",
+            "ragflow_dataset_id": ragflow_dataset_id,
+            "ragflow_dataset_name": ragflow_dataset_name,
             "enabled": True,
         },
     )
@@ -328,6 +342,38 @@ async def test_create_ragflow_upload_task_releases_redis_sync_lock_after_commit(
     finally:
         await redis_client.delete(lock_key)
         await redis_client.aclose()
+
+
+async def test_create_ragflow_upload_task_uses_configured_retry_count(
+    task_client: AsyncClient,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from app.core.config import get_settings
+    from app.core.database import AsyncSessionFactory
+    from app.modules.ragflow.models import SyncTask
+    from app.modules.ragflow.tasks import create_ragflow_upload_sync_task
+
+    await _create_admin_token(task_client)
+    uploader_id = await _create_user(
+        email="phase5-configured-retry@company.com",
+        password="password123",
+    )
+    file_id = await _create_file(uploader_id=uploader_id)
+    monkeypatch.setenv("RAGFLOW_MAX_RETRY_COUNT", "7")
+    get_settings.cache_clear()
+
+    try:
+        async with AsyncSessionFactory() as session:
+            task_id = await create_ragflow_upload_sync_task(session=session, file_id=file_id)
+            await session.commit()
+
+        async with AsyncSessionFactory() as session:
+            task = await session.get(SyncTask, task_id)
+            assert task is not None
+    finally:
+        get_settings.cache_clear()
+
+    assert task.max_retry_count == 7
 
 
 async def test_admin_can_list_and_get_tasks(task_client: AsyncClient) -> None:
@@ -624,30 +670,470 @@ async def test_cancel_queued_task_marks_canceled(task_client: AsyncClient) -> No
     assert data["logs"][-1]["status"] == "canceled"
 
 
-async def test_ragflow_upload_worker_marks_task_succeeded(task_client: AsyncClient) -> None:
+class _FakeReadableStorage:
+    def __init__(self, payload: bytes) -> None:
+        self.payload = payload
+        self.reads: list[tuple[str, str]] = []
+
+    async def get_object(self, *, bucket: str, object_key: str) -> bytes:
+        self.reads.append((bucket, object_key))
+        return self.payload
+
+
+class _FakeRagflowClient:
+    def __init__(
+        self,
+        *,
+        document_id: str = "ragflow-doc-phase5",
+        run_statuses: list[str] | None = None,
+    ) -> None:
+        self.document_id = document_id
+        self.run_statuses = run_statuses or ["DONE"]
+        self.uploads: list[dict[str, object]] = []
+        self.metadata_updates: list[dict[str, object]] = []
+        self.parse_requests: list[tuple[str, str]] = []
+        self.status_requests: list[tuple[str, str]] = []
+
+    async def ping(self) -> bool:
+        return True
+
+    async def upload_document(
+        self,
+        *,
+        dataset_id: str,
+        filename: str,
+        content: bytes,
+        content_type: str,
+    ) -> object:
+        from app.adapters.ragflow.base import RagflowUploadResult
+
+        self.uploads.append(
+            {
+                "dataset_id": dataset_id,
+                "filename": filename,
+                "content": content,
+                "content_type": content_type,
+            }
+        )
+        return RagflowUploadResult(document_id=self.document_id, raw={"id": self.document_id})
+
+    async def update_document_metadata(
+        self,
+        *,
+        dataset_id: str,
+        document_id: str,
+        name: str,
+        metadata: dict[str, object],
+    ) -> None:
+        self.metadata_updates.append(
+            {
+                "dataset_id": dataset_id,
+                "document_id": document_id,
+                "name": name,
+                "metadata": metadata,
+            }
+        )
+
+    async def start_parse(self, *, dataset_id: str, document_id: str) -> None:
+        self.parse_requests.append((dataset_id, document_id))
+
+    async def get_document_status(self, *, dataset_id: str, document_id: str) -> object:
+        from app.adapters.ragflow.base import RagflowDocumentStatus
+
+        self.status_requests.append((dataset_id, document_id))
+        run_status = self.run_statuses.pop(0) if self.run_statuses else "DONE"
+        return RagflowDocumentStatus(
+            document_id=document_id,
+            run=run_status,
+            progress=1.0 if run_status == "DONE" else 0.0,
+            raw={"id": document_id, "run": run_status},
+        )
+
+    async def delete_document(self, *, dataset_id: str, document_id: str) -> None:
+        self.metadata_updates.append(
+            {
+                "dataset_id": dataset_id,
+                "document_id": document_id,
+                "deleted": True,
+            }
+        )
+
+
+async def test_ragflow_upload_worker_uploads_minio_object_and_parses_document(
+    task_client: AsyncClient,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     from app.core.database import AsyncSessionFactory
-    from app.modules.ragflow.models import SyncTask
+    from app.modules.document.models import File
+    from app.modules.ragflow import tasks
+    from app.modules.ragflow.models import SyncTask, SyncTaskLog
     from app.modules.ragflow.tasks import (
         create_ragflow_upload_sync_task,
         run_ragflow_upload_task_async,
     )
 
-    await _create_admin_token(task_client)
+    token = await _create_admin_token(task_client)
     uploader_id = await _create_user(email="phase4-worker@company.com", password="password123")
-    file_id = await _create_file(uploader_id=uploader_id)
+    _, mapping_id = await _create_category_and_mapping(
+        task_client,
+        token,
+        ragflow_dataset_id="ragflow-phase5",
+        ragflow_dataset_name="阶段五知识库",
+    )
+    file_id = await _create_file(
+        uploader_id=uploader_id,
+        status_value="queued",
+        review_status="approved",
+        dataset_mapping_id=UUID(mapping_id),
+        ragflow_dataset_id="ragflow-phase5",
+    )
     async with AsyncSessionFactory() as session:
         task_id = await create_ragflow_upload_sync_task(session=session, file_id=file_id)
         await session.commit()
+
+    storage = _FakeReadableStorage(b"phase 5 document body")
+    client = _FakeRagflowClient()
+    monkeypatch.setattr(tasks, "build_document_storage", lambda _settings: storage)
+    monkeypatch.setattr(tasks, "build_ragflow_client", lambda _settings: client)
 
     await run_ragflow_upload_task_async(str(task_id))
 
     async with AsyncSessionFactory() as session:
         result = await session.execute(select(SyncTask).where(SyncTask.id == task_id))
         task = result.scalar_one()
+        log_result = await session.execute(
+            select(SyncTaskLog)
+            .where(SyncTaskLog.task_id == task_id)
+            .order_by(SyncTaskLog.id.asc())
+        )
+        logs = list(log_result.scalars())
+        file = await session.get(File, file_id)
+        assert file is not None
 
     assert task.status == "succeeded"
     assert task.started_at is not None
     assert task.finished_at is not None
+    assert file.status == "parsed"
+    assert file.ragflow_document_id == "ragflow-doc-phase5"
+    assert file.ragflow_parse_status == "DONE"
+    assert file.ragflow_error_message is None
+    assert file.last_sync_at is not None
+    assert storage.reads == [
+        ("knowledge-files", f"uploads/{uploader_id}/file-phase4-handbook.pdf")
+    ]
+    assert client.uploads == [
+        {
+            "dataset_id": "ragflow-phase5",
+            "filename": "file-phase4-handbook.pdf",
+            "content": b"phase 5 document body",
+            "content_type": "application/pdf",
+        }
+    ]
+    assert client.parse_requests == [("ragflow-phase5", "ragflow-doc-phase5")]
+    assert client.status_requests == [("ragflow-phase5", "ragflow-doc-phase5")]
+    assert [log.message for log in logs] == [
+        "ragflow upload task queued",
+        "ragflow upload task started",
+        "ragflow document upload started",
+        "ragflow document uploaded",
+        "ragflow document metadata updated",
+        "ragflow document parse started",
+        "ragflow parse status DONE",
+        "ragflow upload task completed",
+    ]
+    assert client.metadata_updates[0]["metadata"] == {
+        "source": "knowledge_uploader",
+        "file_id": str(file_id),
+        "uploader": str(uploader_id),
+        "department": "QA",
+        "category": None,
+        "tags": [],
+        "visibility": "private",
+        "summary": None,
+        "version": "1",
+        "uploaded_at": file.uploaded_at.isoformat(),
+    }
+
+
+async def test_ragflow_upload_worker_reuses_existing_document_on_retry(
+    task_client: AsyncClient,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from app.core.database import AsyncSessionFactory
+    from app.modules.document.models import File
+    from app.modules.ragflow import tasks
+    from app.modules.ragflow.models import SyncTask
+    from app.modules.ragflow.tasks import create_ragflow_upload_sync_task
+
+    token = await _create_admin_token(task_client)
+    uploader_id = await _create_user(
+        email="phase5-retry-existing-doc@company.com",
+        password="password123",
+    )
+    _, mapping_id = await _create_category_and_mapping(
+        task_client,
+        token,
+        ragflow_dataset_id="ragflow-phase5",
+        ragflow_dataset_name="阶段五知识库",
+    )
+    file_id = await _create_file(
+        uploader_id=uploader_id,
+        status_value="failed",
+        review_status="approved",
+        dataset_mapping_id=UUID(mapping_id),
+        ragflow_dataset_id="ragflow-phase5",
+        ragflow_document_id="existing-ragflow-doc",
+        ragflow_parse_status="FAIL",
+    )
+    async with AsyncSessionFactory() as session:
+        task_id = await create_ragflow_upload_sync_task(session=session, file_id=file_id)
+        await session.commit()
+
+    storage = _FakeReadableStorage(b"should not be read")
+    client = _FakeRagflowClient(document_id="existing-ragflow-doc", run_statuses=["DONE"])
+    monkeypatch.setattr(tasks, "build_document_storage", lambda _settings: storage)
+    monkeypatch.setattr(tasks, "build_ragflow_client", lambda _settings: client)
+
+    await tasks.run_ragflow_upload_task_async(str(task_id))
+
+    async with AsyncSessionFactory() as session:
+        result = await session.execute(select(SyncTask).where(SyncTask.id == task_id))
+        task = result.scalar_one()
+        file = await session.get(File, file_id)
+        assert file is not None
+
+    assert task.status == "succeeded"
+    assert file.status == "parsed"
+    assert file.ragflow_document_id == "existing-ragflow-doc"
+    assert file.ragflow_parse_status == "DONE"
+    assert storage.reads == []
+    assert client.uploads == []
+    assert client.status_requests == [("ragflow-phase5", "existing-ragflow-doc")]
+
+
+async def test_ragflow_upload_worker_leaves_file_parsing_for_nonterminal_status(
+    task_client: AsyncClient,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from app.core.database import AsyncSessionFactory
+    from app.modules.document.models import File
+    from app.modules.ragflow import tasks
+    from app.modules.ragflow.models import SyncTask
+    from app.modules.ragflow.tasks import create_ragflow_upload_sync_task
+
+    token = await _create_admin_token(task_client)
+    uploader_id = await _create_user(
+        email="phase5-pending-parse@company.com",
+        password="password123",
+    )
+    _, mapping_id = await _create_category_and_mapping(
+        task_client,
+        token,
+        ragflow_dataset_id="ragflow-phase5",
+        ragflow_dataset_name="阶段五知识库",
+    )
+    file_id = await _create_file(
+        uploader_id=uploader_id,
+        status_value="queued",
+        review_status="approved",
+        dataset_mapping_id=UUID(mapping_id),
+        ragflow_dataset_id="ragflow-phase5",
+    )
+    async with AsyncSessionFactory() as session:
+        task_id = await create_ragflow_upload_sync_task(session=session, file_id=file_id)
+        await session.commit()
+
+    storage = _FakeReadableStorage(b"phase 5 document body")
+    client = _FakeRagflowClient(run_statuses=["RUNNING"])
+    monkeypatch.setattr(tasks, "build_document_storage", lambda _settings: storage)
+    monkeypatch.setattr(tasks, "build_ragflow_client", lambda _settings: client)
+
+    with pytest.raises(RuntimeError, match="RagflowParsePendingError"):
+        await tasks.run_ragflow_upload_task_async(str(task_id))
+
+    async with AsyncSessionFactory() as session:
+        task = await session.get(SyncTask, task_id)
+        file = await session.get(File, file_id)
+        assert task is not None
+        assert file is not None
+
+    assert task.status == "failed"
+    assert task.error_message == "RagflowParsePendingError"
+    assert file.status == "parsing"
+    assert file.ragflow_document_id == "ragflow-doc-phase5"
+    assert file.ragflow_parse_status == "RUNNING"
+    assert file.ragflow_error_message is None
+    assert client.uploads != []
+    assert client.parse_requests == [("ragflow-phase5", "ragflow-doc-phase5")]
+    assert client.status_requests == [("ragflow-phase5", "ragflow-doc-phase5")]
+
+
+async def test_ragflow_upload_worker_starts_parse_for_existing_unstarted_document(
+    task_client: AsyncClient,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from app.core.database import AsyncSessionFactory
+    from app.modules.document.models import File
+    from app.modules.ragflow import tasks
+    from app.modules.ragflow.models import SyncTask
+    from app.modules.ragflow.tasks import create_ragflow_upload_sync_task
+
+    token = await _create_admin_token(task_client)
+    uploader_id = await _create_user(
+        email="phase5-existing-unstart@company.com",
+        password="password123",
+    )
+    _, mapping_id = await _create_category_and_mapping(
+        task_client,
+        token,
+        ragflow_dataset_id="ragflow-phase5",
+        ragflow_dataset_name="阶段五知识库",
+    )
+    file_id = await _create_file(
+        uploader_id=uploader_id,
+        status_value="uploaded_to_ragflow",
+        review_status="approved",
+        dataset_mapping_id=UUID(mapping_id),
+        ragflow_dataset_id="ragflow-phase5",
+        ragflow_document_id="existing-ragflow-doc",
+        ragflow_parse_status="UNSTART",
+    )
+    async with AsyncSessionFactory() as session:
+        task_id = await create_ragflow_upload_sync_task(session=session, file_id=file_id)
+        await session.commit()
+
+    storage = _FakeReadableStorage(b"should not be read")
+    client = _FakeRagflowClient(
+        document_id="existing-ragflow-doc",
+        run_statuses=["UNSTART", "DONE"],
+    )
+    monkeypatch.setattr(tasks, "build_document_storage", lambda _settings: storage)
+    monkeypatch.setattr(tasks, "build_ragflow_client", lambda _settings: client)
+
+    await tasks.run_ragflow_upload_task_async(str(task_id))
+
+    async with AsyncSessionFactory() as session:
+        task = await session.get(SyncTask, task_id)
+        file = await session.get(File, file_id)
+        assert task is not None
+        assert file is not None
+
+    assert task.status == "succeeded"
+    assert file.status == "parsed"
+    assert file.ragflow_document_id == "existing-ragflow-doc"
+    assert file.ragflow_parse_status == "DONE"
+    assert storage.reads == []
+    assert client.uploads == []
+    assert client.metadata_updates[0]["document_id"] == "existing-ragflow-doc"
+    assert client.parse_requests == [("ragflow-phase5", "existing-ragflow-doc")]
+    assert client.status_requests == [
+        ("ragflow-phase5", "existing-ragflow-doc"),
+        ("ragflow-phase5", "existing-ragflow-doc"),
+    ]
+
+
+async def test_ragflow_upload_worker_requires_approved_file_before_external_calls(
+    task_client: AsyncClient,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from app.core.database import AsyncSessionFactory
+    from app.modules.ragflow import tasks
+    from app.modules.ragflow.models import SyncTask
+    from app.modules.ragflow.tasks import create_ragflow_upload_sync_task
+
+    token = await _create_admin_token(task_client)
+    uploader_id = await _create_user(
+        email="phase5-unapproved-worker@company.com",
+        password="password123",
+    )
+    _, mapping_id = await _create_category_and_mapping(
+        task_client,
+        token,
+        ragflow_dataset_id="ragflow-phase5",
+        ragflow_dataset_name="阶段五知识库",
+    )
+    file_id = await _create_file(
+        uploader_id=uploader_id,
+        status_value="queued",
+        review_status="in_review",
+        dataset_mapping_id=UUID(mapping_id),
+        ragflow_dataset_id="ragflow-phase5",
+    )
+    async with AsyncSessionFactory() as session:
+        task_id = await create_ragflow_upload_sync_task(session=session, file_id=file_id)
+        await session.commit()
+
+    storage = _FakeReadableStorage(b"must not be read")
+    client = _FakeRagflowClient()
+    monkeypatch.setattr(tasks, "build_document_storage", lambda _settings: storage)
+    monkeypatch.setattr(tasks, "build_ragflow_client", lambda _settings: client)
+
+    with pytest.raises(RuntimeError, match="RagflowSyncPreconditionError"):
+        await tasks.run_ragflow_upload_task_async(str(task_id))
+
+    async with AsyncSessionFactory() as session:
+        result = await session.execute(select(SyncTask).where(SyncTask.id == task_id))
+        task = result.scalar_one()
+
+    assert task.status == "failed"
+    assert task.error_message == "RagflowSyncPreconditionError"
+    assert storage.reads == []
+    assert client.uploads == []
+    assert client.metadata_updates == []
+    assert client.parse_requests == []
+
+
+async def test_ragflow_upload_worker_enforces_dataset_allowlist(
+    task_client: AsyncClient,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from app.core.config import get_settings
+    from app.core.database import AsyncSessionFactory
+    from app.modules.ragflow import tasks
+    from app.modules.ragflow.models import SyncTask
+    from app.modules.ragflow.tasks import create_ragflow_upload_sync_task
+
+    token = await _create_admin_token(task_client)
+    uploader_id = await _create_user(
+        email="phase5-allowlist-worker@company.com",
+        password="password123",
+    )
+    _, mapping_id = await _create_category_and_mapping(
+        task_client,
+        token,
+        ragflow_dataset_id="ragflow-phase5-denied",
+        ragflow_dataset_name="阶段五拒绝知识库",
+    )
+    file_id = await _create_file(
+        uploader_id=uploader_id,
+        status_value="queued",
+        review_status="approved",
+        dataset_mapping_id=UUID(mapping_id),
+        ragflow_dataset_id="ragflow-phase5-denied",
+    )
+    async with AsyncSessionFactory() as session:
+        task_id = await create_ragflow_upload_sync_task(session=session, file_id=file_id)
+        await session.commit()
+
+    storage = _FakeReadableStorage(b"must not be read")
+    client = _FakeRagflowClient()
+    monkeypatch.setattr(tasks, "build_document_storage", lambda _settings: storage)
+    monkeypatch.setattr(tasks, "build_ragflow_client", lambda _settings: client)
+    monkeypatch.setenv("RAGFLOW_ALLOWED_DATASET_IDS", "ragflow-phase5-allowed")
+    get_settings.cache_clear()
+
+    with pytest.raises(RuntimeError, match="RagflowSyncPreconditionError"):
+        await tasks.run_ragflow_upload_task_async(str(task_id))
+    get_settings.cache_clear()
+
+    async with AsyncSessionFactory() as session:
+        result = await session.execute(select(SyncTask).where(SyncTask.id == task_id))
+        task = result.scalar_one()
+
+    assert task.status == "failed"
+    assert task.error_message == "RagflowSyncPreconditionError"
+    assert storage.reads == []
+    assert client.uploads == []
 
 
 async def test_duplicate_running_worker_message_does_not_complete_task(

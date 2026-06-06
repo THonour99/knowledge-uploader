@@ -20,6 +20,16 @@ class DocumentStateMachine:
         ("pending_review", "approved"),
         ("pending_review", "rejected"),
         ("approved", "queued"),
+        ("queued", "syncing"),
+        ("queued", "parsing"),
+        ("syncing", "uploaded_to_ragflow"),
+        ("uploaded_to_ragflow", "parsing"),
+        ("parsing", "parsed"),
+        ("syncing", "failed"),
+        ("uploaded_to_ragflow", "failed"),
+        ("parsing", "failed"),
+        ("failed", "syncing"),
+        ("failed", "parsing"),
     }
 
     @classmethod

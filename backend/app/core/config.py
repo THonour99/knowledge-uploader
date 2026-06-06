@@ -74,9 +74,18 @@ class Settings(BaseSettings):
     ai_analysis_enabled: bool = True
     ragflow_base_url: str = "http://ragflow:9380"
     ragflow_api_key: str = ""
+    ragflow_allowed_dataset_ids: str = ""
+    ragflow_request_timeout: float = 300.0
+    ragflow_max_retry_count: int = 3
 
     @model_validator(mode="after")
     def validate_protected_environment_secrets(self) -> Self:
+        if self.ragflow_api_key.strip() and not _normalized_csv_values(
+            self.ragflow_allowed_dataset_ids
+        ):
+            msg = "RAGFLOW_ALLOWED_DATASET_IDS must be configured when RAGFlow is enabled"
+            raise ValueError(msg)
+
         if self.app_env.strip().lower() not in PROTECTED_ENVS:
             return self
 
@@ -90,7 +99,6 @@ class Settings(BaseSettings):
         if not self.minio_secure:
             msg = "MINIO_SECURE must be true in protected environments"
             raise ValueError(msg)
-
         try:
             Fernet(self.encryption_key.encode("utf-8"))
         except ValueError as exc:
@@ -103,3 +111,7 @@ class Settings(BaseSettings):
 @lru_cache
 def get_settings() -> Settings:
     return Settings()
+
+
+def _normalized_csv_values(raw_value: str) -> set[str]:
+    return {item.strip() for item in raw_value.split(",") if item.strip()}
