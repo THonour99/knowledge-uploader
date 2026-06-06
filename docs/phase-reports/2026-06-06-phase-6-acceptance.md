@@ -158,4 +158,4 @@ Evidence:
 
 - Frontend implementation commit: `58d2451 feat(ai): 实现 AI 配置前端页面`.
 - Backend and integration implementation commit: `b197f4b feat(ai): 添加文档分析流程`.
-- PR: to be created from this branch.
+- PR: https://github.com/THonour99/knowledge-uploader/pull/9
