@@ -43,12 +43,14 @@ The page follows the reference layout: top date/export controls, 5 metric cards,
 - Explorer subagent Halley reviewed the Phase 7 backend/frontend boundaries and recommended real-time aggregation endpoints.
 - Explorer subagent Volta reviewed the statistics design image, frontend route/API conventions, and test points.
 - Quality reviewer subagent Godel reviewed Phase 7 changes before PR creation.
+- Godel's review findings were addressed before PR creation: route-level admin dependency was added, CSV export formula injection was mitigated, invalid `sync_status` is rejected, sync success now counts only `parsed` files, null categories are not sent as fake category IDs, and ECharts colors now read theme variables.
 
 ## Safety Notes
 
 - Statistics APIs are restricted to `knowledge_admin` and `system_admin`.
+- Statistics routes enforce admin access at FastAPI dependency level and again in the service layer.
 - Every statistics read/export endpoint records an admin audit log.
-- Export writes `statistics.export` audit metadata and returns CSV only.
+- Export writes `statistics.export` audit metadata, escapes spreadsheet formula-leading CSV values, and returns CSV only.
 - Frontend only calls backend `api/client.ts` wrappers; it does not access RAGFlow or any AI/model API directly.
 - No RAGFlow knowledge base was modified or deleted.
 - Browser validation used local fixture rows only; no external RAGFlow operation was performed.
@@ -60,7 +62,7 @@ The page follows the reference layout: top date/export controls, 5 metric cards,
 
 ```text
 docker compose run --rm backend-api pytest app/tests/unit/test_statistics_api.py -q
-2 passed
+3 passed
 ```
 
 Covered behavior:
@@ -70,6 +72,9 @@ Covered behavior:
 - Department/category/date filtering.
 - Employee role denied with `PERMISSION_DENIED`.
 - CSV export contains filtered rows only.
+- Invalid `sync_status` returns `VALIDATION_ERROR`.
+- CSV export escapes risky formula-leading user and department values.
+- Files with `ragflow_document_id` but non-`parsed` status are not counted as sync success.
 - Export writes `statistics.export` audit log.
 
 ### Frontend Tests
@@ -113,7 +118,7 @@ The local sandbox returned `spawn EPERM` for esbuild on direct frontend test/bui
 
 ```text
 docker compose run --rm backend-api pytest -q
-117 passed, 1 skipped
+118 passed, 1 skipped
 ```
 
 ### Runtime Health
@@ -148,6 +153,7 @@ Evidence:
 - Console error logs: `[]`
 - Desktop DOM check: no horizontal overflow
 - Mobile viewport `390x844`: no horizontal overflow; core text signals still visible
+- Post-review Browser recheck: desktop actual UI text signals present, console error logs `[]`, mobile `390x844` `scrollWidth=390`
 
 Screenshot capture timed out in the in-app browser CDP backend, so the visual evidence above is DOM/interaction based.
 
@@ -176,4 +182,6 @@ Screenshot capture timed out in the in-app browser CDP backend, so the visual ev
 
 - Backend implementation commit: `b800356 feat(statistics): 添加统计分析接口`
 - Frontend implementation commit: `5203235 feat(statistics): 实现统计分析前端页面`
+- Acceptance report commit: `8950760 docs(report): 添加阶段七验收报告`
+- Review fix commit: `2405f6a fix(statistics): 修复统计导出与过滤风险`
 - PR: TBD
