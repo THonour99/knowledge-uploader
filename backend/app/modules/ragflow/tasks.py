@@ -6,12 +6,18 @@ from importlib import import_module
 
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.core.config import get_settings
+from app.adapters.minio_client import MinioDocumentStorage
+from app.adapters.ragflow.base import RagflowClient
+from app.adapters.ragflow.http import build_ragflow_client as build_http_ragflow_client
+from app.core.config import Settings, get_settings
 from app.core.database import AsyncSessionFactory, engine
 from app.workers.celery_app import celery_app
 
 from .repository import RagflowTaskRepository  # noqa: TID251 - same-module repository dependency
-from .service import RagflowTaskService  # noqa: TID251 - same-module service dependency
+from .service import (  # noqa: TID251 - same-module service dependency
+    RagflowObjectStorage,
+    RagflowTaskService,
+)
 from .sync_locks import (
     RagflowSyncLockBusy,
     acquire_sync_lock,
@@ -21,6 +27,14 @@ from .sync_locks import (
 )
 
 import_module("app.db.models")
+
+
+def build_document_storage(settings: Settings) -> RagflowObjectStorage:
+    return MinioDocumentStorage(settings)
+
+
+def build_ragflow_client(settings: Settings) -> RagflowClient:
+    return build_http_ragflow_client(settings)
 
 
 async def create_ragflow_upload_sync_task(
@@ -138,12 +152,19 @@ async def _run_ragflow_upload_task(sync_task_id: uuid.UUID) -> None:
         if not claimed:
             return
 
+    settings = get_settings()
+    storage = build_document_storage(settings)
+    ragflow_client = build_ragflow_client(settings)
     async with AsyncSessionFactory() as session:
         service = RagflowTaskService(
             session=session,
             repository=RagflowTaskRepository(session),
         )
-        await service.mark_succeeded(sync_task_id)
+        await service.run_upload_task(
+            sync_task_id,
+            storage=storage,
+            ragflow_client=ragflow_client,
+        )
 
 
 async def _mark_ragflow_upload_task_failed(sync_task_id: uuid.UUID, error_type: str) -> None:
@@ -152,4 +173,8 @@ async def _mark_ragflow_upload_task_failed(sync_task_id: uuid.UUID, error_type: 
             session=session,
             repository=RagflowTaskRepository(session),
         )
-        await service.mark_failed(sync_task_id, error_type)
+        await service.mark_failed(
+            sync_task_id,
+            error_type,
+            mark_file_failed=error_type != "RagflowParsePendingError",
+        )
