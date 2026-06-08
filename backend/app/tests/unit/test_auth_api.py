@@ -209,14 +209,13 @@ async def test_register_existing_email_returns_generic_success(client: AsyncClie
         assert result.scalar_one() == 1
 
 
-async def test_register_writes_verification_outbox_with_encrypted_token(
+async def test_register_writes_verification_outbox_without_replayable_token(
     verification_client: AsyncClient,
 ) -> None:
     from sqlalchemy import select
 
     from app.core.database import AsyncSessionFactory
     from app.core.outbox import EventOutbox
-    from app.core.security import decrypt_secret
     from app.modules.auth import events
     from app.modules.auth.models import EmailVerificationToken
 
@@ -238,12 +237,12 @@ async def test_register_writes_verification_outbox_with_encrypted_token(
             )
         ).scalar_one()
 
-    encrypted_token = outbox.payload["verification_token_encrypted"]
-    assert isinstance(encrypted_token, str)
+    assert len(token.token_hash) == 64
+    assert token.token_hash not in outbox.payload.values()
+    assert "verification_token_encrypted" not in outbox.payload
     assert "verification_token" not in outbox.payload
-    raw_token = decrypt_secret(encrypted_token, "RZ1Sw_27VrN9c5Cfsq01qiwViwT6y7jDCuXYn7tgGJY=")
-    assert token.token_hash == sha256(raw_token.encode("utf-8")).hexdigest()
-    assert raw_token not in response.text
+    assert "token_expires_at" in outbox.payload
+    assert response.text.find(token.token_hash) == -1
     assert outbox.trace_id is not None
 
 
@@ -383,14 +382,13 @@ async def test_reset_password_allows_login_with_new_password(client: AsyncClient
     assert new_login.status_code == 200
 
 
-async def test_forgot_password_writes_reset_outbox_with_encrypted_token(
+async def test_forgot_password_writes_reset_outbox_without_replayable_token(
     client: AsyncClient,
 ) -> None:
     from sqlalchemy import select
 
     from app.core.database import AsyncSessionFactory
     from app.core.outbox import EventOutbox
-    from app.core.security import decrypt_secret
     from app.modules.auth import events
     from app.modules.auth.models import PasswordResetToken
 
@@ -410,12 +408,12 @@ async def test_forgot_password_writes_reset_outbox_with_encrypted_token(
             )
         ).scalar_one()
 
-    encrypted_token = outbox.payload["password_reset_token_encrypted"]
-    assert isinstance(encrypted_token, str)
+    assert len(token.token_hash) == 64
+    assert token.token_hash not in outbox.payload.values()
+    assert "password_reset_token_encrypted" not in outbox.payload
     assert "password_reset_token" not in outbox.payload
-    raw_token = decrypt_secret(encrypted_token, "RZ1Sw_27VrN9c5Cfsq01qiwViwT6y7jDCuXYn7tgGJY=")
-    assert token.token_hash == sha256(raw_token.encode("utf-8")).hexdigest()
-    assert raw_token not in response.text
+    assert "token_expires_at" in outbox.payload
+    assert response.text.find(token.token_hash) == -1
 
 
 async def test_reset_password_invalidates_existing_jwt(client: AsyncClient) -> None:

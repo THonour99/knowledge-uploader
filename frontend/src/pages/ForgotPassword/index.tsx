@@ -1,5 +1,8 @@
-import { Button, Card, Form, Input, Space, Typography } from "antd";
+import { MailOutlined } from "@ant-design/icons";
+import { Button, Form, Input } from "antd";
 import { Link } from "react-router-dom";
+
+import { AuthLayout } from "../AuthLayout";
 
 interface ForgotPasswordFormValues {
   email: string;
@@ -7,37 +10,26 @@ interface ForgotPasswordFormValues {
 
 export default function ForgotPasswordPage() {
   return (
-    <div className="auth-page">
-      <Card className="auth-card">
-        <Space direction="vertical" size={24} className="auth-card__content">
-          <div>
-            <Typography.Title level={2} className="auth-title">
-              忘记密码
-            </Typography.Title>
-            <Typography.Paragraph className="auth-description">
-              如邮箱已注册，会收到密码重置邮件
-            </Typography.Paragraph>
-          </div>
-
-          <Form<ForgotPasswordFormValues> layout="vertical" requiredMark={false}>
-            <Form.Item
-              label="公司邮箱"
-              name="email"
-              rules={[
-                { required: true, message: "请输入公司邮箱" },
-                { type: "email", message: "请输入有效邮箱" },
-              ]}
-            >
-              <Input size="large" placeholder="name@company.com" />
-            </Form.Item>
-            <Button type="primary" size="large" block>
-              发送邮件
-            </Button>
-          </Form>
-
-          <Link to="/login">返回登录</Link>
-        </Space>
-      </Card>
-    </div>
+    <AuthLayout
+      title="找回密码"
+      description="输入公司邮箱后，如账号存在会收到一次性重置链接"
+      footer={<Link to="/login">返回登录</Link>}
+    >
+      <Form<ForgotPasswordFormValues> className="auth-form" layout="vertical" requiredMark={false}>
+        <Form.Item
+          label="公司邮箱"
+          name="email"
+          rules={[
+            { required: true, message: "请输入公司邮箱" },
+            { type: "email", message: "请输入有效邮箱" },
+          ]}
+        >
+          <Input size="large" placeholder="name@company.com" prefix={<MailOutlined />} />
+        </Form.Item>
+        <Button type="primary" size="large" block>
+          发送重置邮件
+        </Button>
+      </Form>
+    </AuthLayout>
   );
 }
