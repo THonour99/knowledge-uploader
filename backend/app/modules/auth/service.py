@@ -26,7 +26,6 @@ from app.core.ratelimit import (
 from app.core.security import (
     create_jwt,
     decode_jwt,
-    encrypt_secret,
     hash_password,
     password_fingerprint,
     verify_password,
@@ -137,7 +136,6 @@ class AuthService:
                 event_type=events.AUTH_USER_REGISTERED,
                 user=user,
                 token=token,
-                token_payload_key="verification_token_encrypted",
                 trace_id=trace_id,
             )
         await self._session.commit()
@@ -189,7 +187,6 @@ class AuthService:
             event_type=events.AUTH_USER_VERIFICATION_RESENT,
             user=user,
             token=token,
-            token_payload_key="verification_token_encrypted",
             trace_id=trace_id,
         )
         await self._session.commit()
@@ -332,7 +329,6 @@ class AuthService:
             event_type=events.AUTH_PASSWORD_RESET_REQUESTED,
             user=user,
             token=token,
-            token_payload_key="password_reset_token_encrypted",
             trace_id=trace_id,
         )
         await self._session.commit()
@@ -418,7 +414,6 @@ class AuthService:
         event_type: str,
         user: AuthUserRecord,
         token: IssuedToken,
-        token_payload_key: str,
         trace_id: str | None,
     ) -> None:
         await OutboxRepository(self._session).append(
@@ -429,7 +424,6 @@ class AuthService:
                 "user_id": str(user.id),
                 "email": user.email,
                 "name": user.name,
-                token_payload_key: encrypt_secret(token.raw_token, self._settings.encryption_key),
                 "token_expires_at": token.expires_at.isoformat(),
             },
             trace_id=trace_id,

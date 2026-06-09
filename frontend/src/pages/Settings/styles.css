@@ -1,0 +1,153 @@
+.settings-page-actions {
+  justify-content: flex-end;
+}
+
+.settings-status-grid {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: var(--ku-spacing-section);
+  margin-bottom: var(--ku-spacing-section);
+}
+
+.settings-status-card,
+.settings-panel,
+.settings-tabs-card {
+  border-color: var(--ku-border);
+  border-radius: var(--ku-radius-card);
+}
+
+.settings-status-card .ant-card-body {
+  min-height: 116px;
+  padding: 20px;
+}
+
+.settings-status-card__body {
+  display: flex;
+  gap: 14px;
+  align-items: flex-start;
+}
+
+.settings-status-card__icon {
+  display: inline-flex;
+  flex: 0 0 42px;
+  align-items: center;
+  justify-content: center;
+  width: 42px;
+  height: 42px;
+  border-radius: 10px;
+  color: var(--ku-bg-card);
+  font-size: 22px;
+}
+
+.settings-status-card__icon--primary {
+  background: var(--ku-color-primary);
+}
+
+.settings-status-card__icon--success {
+  background: var(--ku-color-success);
+}
+
+.settings-status-card__icon--warning {
+  background: var(--ku-color-orange);
+}
+
+.settings-status-card__icon--purple {
+  background: var(--ku-color-purple);
+}
+
+.settings-status-card__copy {
+  display: flex;
+  min-width: 0;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.settings-status-card__copy .ant-typography {
+  margin: 0;
+}
+
+.settings-tabs-card > .ant-card-body {
+  padding: 0 20px 20px;
+}
+
+.settings-tabs-card .ant-tabs-nav {
+  margin-bottom: 12px;
+}
+
+.settings-panel-stack {
+  display: grid;
+  gap: var(--ku-spacing-section);
+}
+
+.settings-form-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 0 16px;
+}
+
+.settings-switch-grid {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 12px 24px;
+  margin-bottom: 12px;
+}
+
+.settings-switch-grid .ant-form-item {
+  margin-bottom: 12px;
+}
+
+.settings-number-input {
+  width: 100%;
+}
+
+.settings-service-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: var(--ku-spacing-section);
+}
+
+.settings-dependency-list,
+.settings-health-bars {
+  display: grid;
+  gap: 14px;
+}
+
+.settings-text--primary {
+  color: var(--ku-color-primary);
+}
+
+.settings-text--success {
+  color: var(--ku-color-success);
+}
+
+.settings-text--warning {
+  color: var(--ku-color-orange);
+}
+
+.settings-text--purple {
+  color: var(--ku-color-purple);
+}
+
+@media (max-width: 1280px) {
+  .settings-status-grid {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+}
+
+@media (max-width: 1023px) {
+  .settings-page-actions,
+  .settings-page-actions .ant-btn {
+    width: 100%;
+  }
+
+  .settings-form-grid,
+  .settings-service-grid {
+    grid-template-columns: minmax(0, 1fr);
+  }
+}
+
+@media (max-width: 640px) {
+  .settings-status-grid {
+    grid-template-columns: minmax(0, 1fr);
+  }
+}
