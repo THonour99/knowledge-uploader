@@ -20,6 +20,7 @@ class DocumentStateMachine:
         ("extracting_text", "analysis_failed"),
         ("analysis_queued", "analysis_failed"),
         ("analyzing", "analysis_failed"),
+        ("analysis_failed", "extracting_text"),
         ("analyzing", "analyzed"),
         ("analyzing", "sensitive_review_required"),
         ("uploaded", "pending_review"),
