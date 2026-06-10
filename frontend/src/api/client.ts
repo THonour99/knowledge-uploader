@@ -700,3 +700,61 @@ export async function updateFileClassification(
 
   return unwrapResponse(response.data);
 }
+
+// ── System config types ──────────────────────────────────────────────────────
+
+export type ConfigGroup = "basic" | "upload" | "processing" | "security" | "ragflow";
+
+export type ConfigValueType = "string" | "int" | "bool" | "list" | "secret";
+
+export interface ConfigItem {
+  key: string;
+  value: unknown | null;
+  value_type: ConfigValueType;
+  is_secret: boolean;
+  masked_value: string | null;
+  description: string;
+  updated_at: string | null;
+}
+
+export interface ConfigGroupResponse {
+  group: ConfigGroup;
+  items: ConfigItem[];
+}
+
+export interface RagflowConnectionTestResult {
+  ok: boolean;
+  latency_ms: number | null;
+  error: string | null;
+}
+
+// ── System config API functions ──────────────────────────────────────────────
+
+export async function getConfigs(group: ConfigGroup): Promise<ConfigGroupResponse> {
+  const response = await apiClient.get<ApiEnvelope<ConfigGroupResponse> | ConfigGroupResponse>(
+    "/admin/configs",
+    { params: { group } },
+  );
+
+  return unwrapResponse(response.data);
+}
+
+export async function updateConfigs(
+  group: ConfigGroup,
+  items: Record<string, unknown>,
+): Promise<ConfigGroupResponse> {
+  const response = await apiClient.put<ApiEnvelope<ConfigGroupResponse> | ConfigGroupResponse>(
+    `/admin/configs/${group}`,
+    { items },
+  );
+
+  return unwrapResponse(response.data);
+}
+
+export async function testRagflowConnection(): Promise<RagflowConnectionTestResult> {
+  const response = await apiClient.post<
+    ApiEnvelope<RagflowConnectionTestResult> | RagflowConnectionTestResult
+  >("/admin/ragflow/test-connection");
+
+  return unwrapResponse(response.data);
+}
