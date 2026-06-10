@@ -10,8 +10,7 @@
 }
 
 .settings-status-card,
-.settings-panel,
-.settings-tabs-card {
+.settings-panel {
   border-color: var(--ku-border);
   border-radius: var(--ku-radius-card);
 }
@@ -66,12 +65,17 @@
   margin: 0;
 }
 
-.settings-tabs-card > .ant-card-body {
-  padding: 0 20px 20px;
+.settings-tabs {
+  display: grid;
+  gap: var(--ku-spacing-section);
 }
 
-.settings-tabs-card .ant-tabs-nav {
-  margin-bottom: 12px;
+.settings-tabs > .ant-tabs-nav {
+  margin: 0;
+  padding: 0 20px;
+  border: 1px solid var(--ku-border);
+  border-radius: var(--ku-radius-card);
+  background: var(--ku-bg-card);
 }
 
 .settings-panel-stack {
@@ -81,7 +85,7 @@
 
 .settings-form-grid {
   display: grid;
-  grid-template-columns: repeat(2, minmax(0, 1fr));
+  grid-template-columns: repeat(3, minmax(0, 1fr));
   gap: 0 16px;
 }
 
@@ -130,6 +134,10 @@
 
 @media (max-width: 1280px) {
   .settings-status-grid {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .settings-form-grid {
     grid-template-columns: repeat(2, minmax(0, 1fr));
   }
 }

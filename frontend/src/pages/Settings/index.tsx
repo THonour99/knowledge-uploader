@@ -694,54 +694,53 @@ export default function SettingsPage() {
         ))}
       </div>
 
-      <Card className="settings-tabs-card">
-        <Tabs
-          items={[
-            {
-              key: "basic",
-              label: "基础",
-              children: <ConfigPanel group="basic" cardTitle="基础配置" />,
-            },
-            {
-              key: "upload",
-              label: "上传",
-              children: <ConfigPanel group="upload" cardTitle="上传配置" />,
-            },
-            {
-              key: "processing",
-              label: "处理",
-              children: <ConfigPanel group="processing" cardTitle="处理配置" />,
-            },
-            {
-              key: "security",
-              label: "安全",
-              children: (
-                <div className="settings-panel-stack">
-                  <ConfigPanel group="security" cardTitle="安全策略" dangerConfirm />
-                  <Card className="settings-panel table-card" title="生效策略">
-                    <Table<PolicyRow>
-                      rowKey="key"
-                      columns={policyColumns}
-                      dataSource={policyRows}
-                      pagination={false}
-                    />
-                  </Card>
-                </div>
-              ),
-            },
-            {
-              key: "ragflow",
-              label: "RAGFlow",
-              children: <RagflowPanel />,
-            },
-            {
-              key: "services",
-              label: "服务状态",
-              children: <ServiceSettingsPanel />,
-            },
-          ]}
-        />
-      </Card>
+      <Tabs
+        className="settings-tabs"
+        items={[
+          {
+            key: "basic",
+            label: "基础",
+            children: <ConfigPanel group="basic" cardTitle="基础配置" />,
+          },
+          {
+            key: "upload",
+            label: "上传",
+            children: <ConfigPanel group="upload" cardTitle="上传配置" />,
+          },
+          {
+            key: "processing",
+            label: "处理",
+            children: <ConfigPanel group="processing" cardTitle="处理配置" />,
+          },
+          {
+            key: "security",
+            label: "安全",
+            children: (
+              <div className="settings-panel-stack">
+                <ConfigPanel group="security" cardTitle="安全策略" dangerConfirm />
+                <Card className="settings-panel table-card" title="生效策略">
+                  <Table<PolicyRow>
+                    rowKey="key"
+                    columns={policyColumns}
+                    dataSource={policyRows}
+                    pagination={false}
+                  />
+                </Card>
+              </div>
+            ),
+          },
+          {
+            key: "ragflow",
+            label: "RAGFlow",
+            children: <RagflowPanel />,
+          },
+          {
+            key: "services",
+            label: "服务状态",
+            children: <ServiceSettingsPanel />,
+          },
+        ]}
+      />
     </PageContainer>
   );
 }
