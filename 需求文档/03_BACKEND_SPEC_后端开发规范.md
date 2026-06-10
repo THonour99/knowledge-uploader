@@ -163,11 +163,11 @@ AI 模块必须可关闭。
 负责：
 
 - 用户上传统计
-- 部门统计
+- 部门统计，后续增强
 - 分类统计
 - 趋势统计
 - 失败任务统计
-- 统计导出
+- 统计导出，后续增强
 
 ### 4.8 notification
 
@@ -196,12 +196,14 @@ AI 模块必须可关闭。
 - 上传日志
 - 审核日志
 - 配置变更日志
-- 统计导出日志
+- 统计导出日志，后续增强
 - 管理员操作日志
 
 ---
 
 ## 5. 文件状态流转
+
+文件状态枚举以 `05_DATABASE_API_SPEC_数据库与API规范.md §2` 为唯一来源。任何状态变更必须通过 service 层调用 `DocumentStateMachine.transition(from, to)`，禁止直接 update ORM 状态字段。
 
 ### 5.1 AI 关闭
 
@@ -212,15 +214,16 @@ uploaded → pending_review → approved → queued → syncing → uploaded_to_
 ### 5.2 AI 开启
 
 ```text
-uploaded → extracting_text → analysis_queued → analyzing → analyzed → pending_review → approved → queued → syncing → parsed
+uploaded → extracting_text → analysis_queued → analyzing → analyzed → pending_review → approved → queued → syncing → uploaded_to_ragflow → parsing → parsed
 ```
 
 ### 5.3 状态规则
 
 - AI 关闭时，不创建 AI 任务。
-- AI 关闭时，不能进入 `extracting_text`、`analysis_queued`、`analyzing`、`analyzed`。
+- AI 关闭时，不能进入 `extracting_text`、`analysis_queued`、`analyzing`、`analysis_failed`、`analyzed`。
 - AI 分析失败不能导致文件上传失败。
 - 敏感风险高的文件进入 `sensitive_review_required`。
+- `critical` 严重风险默认阻止同步 RAGFlow。
 
 ---
 

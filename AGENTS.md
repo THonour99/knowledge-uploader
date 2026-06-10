@@ -8,13 +8,14 @@
 
 ## 2. 必读文档（按优先级）
 
-1. `knowledge_uploader_docs/02_ARCHITECTURE_最终架构设计.md` — 架构定版
-2. `knowledge_uploader_docs/03_BACKEND_SPEC_后端开发规范.md` — 后端模块边界
-3. `knowledge_uploader_docs/05_DATABASE_API_SPEC_数据库与API规范.md` — 表与 API
-4. `knowledge_uploader_docs/07_DEPLOYMENT_ENV_部署与环境配置.md` — 12 个服务
-5. `knowledge_uploader_docs/08_TASK_BREAKDOWN_开发任务拆解.md` — 9 阶段任务
-6. `knowledge_platform_design_package/design.md` — UI 视觉权威源（实施后位于 `docs/design/`）
-7. `docs/spark/2026-06-04-p0-implementation-supplement.md` — 跨平台 / 事件总线 / 目录 / 版本锁 / 前端设计落地
+1. `需求文档/01_PRD_产品需求文档.md` — 产品范围与验收基线
+2. `需求文档/02_ARCHITECTURE_最终架构设计.md` — 架构定版
+3. `需求文档/03_BACKEND_SPEC_后端开发规范.md` — 后端模块边界
+4. `需求文档/05_DATABASE_API_SPEC_数据库与API规范.md` — 表与 API
+5. `需求文档/07_DEPLOYMENT_ENV_部署与环境配置.md` — 服务与环境变量
+6. `需求文档/08_TASK_BREAKDOWN_开发任务拆解.md` — 9 阶段任务
+7. `docs/design/design.md` — UI 视觉权威源
+8. `docs/spark/2026-06-04-p0-implementation-supplement.md` — 跨平台 / 事件总线 / 目录 / 版本锁 / 前端设计落地
 
 ## 3. 项目根与目录
 
@@ -22,7 +23,7 @@
 - 后端：`backend/`
 - 前端：`frontend/`
 - 配置：`docker-compose.yml` + `nginx/` + `deploy/`
-- 文档：`knowledge_uploader_docs/`（spec）、`knowledge_platform_design_package/`（设计稿，将迁移到 `docs/design/`）、`docs/spark/`（补充 spec）
+- 文档：`需求文档/`（spec）、`docs/design/`（设计稿）、`docs/spark/`（补充 spec）
 
 ## 4. 架构红线（不可逾越）
 
@@ -71,7 +72,7 @@ modules/<module>/
 
 ## 8. 文件状态机硬规则
 
-完整 17 状态见 `05_DATABASE_API_SPEC §2`。规则：
+完整文件状态见 `需求文档/05_DATABASE_API_SPEC_数据库与API规范.md §2`。规则：
 
 - 状态变更只能通过 `DocumentStateMachine.transition(from, to)` 调用
 - AI 关闭：跳过 `extracting_text` / `analysis_queued` / `analyzing` / `analysis_failed` / `analyzed`
@@ -155,7 +156,7 @@ test(ai): 补全 Prompt 模板渲染单测
 
 ## 13. 阶段化开发（不可跳）
 
-按 `knowledge_uploader_docs/08_TASK_BREAKDOWN.md` 9 阶段顺序推进。每阶段必须：
+按 `需求文档/08_TASK_BREAKDOWN_开发任务拆解.md` 9 阶段顺序推进。每阶段必须：
 
 - `invoke up` 能起所有容器
 - `/api/system/health` 返回 200
@@ -188,10 +189,10 @@ invoke build-arm64 --version=0.1.0
 
 ## 15. 找帮助前先看
 
-- 文件状态相关：`05_DATABASE_API_SPEC §2` + `03_BACKEND_SPEC §5`
-- API 设计：`05_DATABASE_API_SPEC §3`
-- AI Provider：`06_AI_RAGFLOW_SPEC §2`
-- 部署/环境：`07_DEPLOYMENT_ENV`
+- 文件状态相关：`需求文档/05_DATABASE_API_SPEC_数据库与API规范.md §2` + `需求文档/03_BACKEND_SPEC_后端开发规范.md §5`
+- API 设计：`需求文档/05_DATABASE_API_SPEC_数据库与API规范.md §3`
+- AI Provider：`需求文档/06_AI_RAGFLOW_SPEC_AI与RAGFlow集成规范.md §2`
+- 部署/环境：`需求文档/07_DEPLOYMENT_ENV_部署与环境配置.md`
 - 前端设计：`docs/design/design.md` + 补充 spec §9
 - 测试 fixture：`backend/app/tests/conftest.py`
 - 跨平台坑：补充 spec §2

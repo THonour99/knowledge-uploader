@@ -14,7 +14,10 @@
 4. `04_FRONTEND_SPEC_前端开发规范.md`
 5. `05_DATABASE_API_SPEC_数据库与API规范.md`
 6. `06_AI_RAGFLOW_SPEC_AI与RAGFlow集成规范.md`
-7. `08_TASK_BREAKDOWN_开发任务拆解.md`
+7. `07_DEPLOYMENT_ENV_部署与环境配置.md`
+8. `08_TASK_BREAKDOWN_开发任务拆解.md`
+
+本项目只负责向 RAGFlow 同步知识内容，不实现钉钉文档拉取、钉钉机器人、Dify 或 LangBot 集成。
 
 ## 技术栈固定
 
@@ -45,6 +48,8 @@ RAGFlow: RAGFlow Client Adapter
 ## 首批实现任务
 
 请优先实现以下内容：
+
+以下首批任务是工程启动切片，不等于完整 MVP。PRD 第一阶段 MVP 的验收仍以 `01_PRD_产品需求文档.md §10.1` 为准，必须包含审核、RAGFlow 基础配置、手动同步、同步状态、基础操作日志和基础上传统计。
 
 ### 任务 1：基础项目结构
 
@@ -98,19 +103,11 @@ RAGFlow: RAGFlow Client Adapter
 
 ## 文件状态规则
 
-AI 关闭时：
+文件状态枚举和合法流转以 `05_DATABASE_API_SPEC_数据库与API规范.md §2` 为唯一来源，不要在实现中手写另一套状态机。
 
-```text
-uploaded → pending_review → approved → queued → syncing → uploaded_to_ragflow → parsing → parsed
-```
+AI 关闭时不能创建 AI 任务，不能进入 `extracting_text`、`analysis_queued`、`analyzing`、`analysis_failed`、`analyzed` 等 AI 状态。
 
-AI 开启时：
-
-```text
-uploaded → extracting_text → analysis_queued → analyzing → analyzed → pending_review → approved → queued → syncing → parsed
-```
-
-AI 关闭时不能创建 AI 任务，不能进入 AI 状态。
+所有状态变更必须通过 service 层调用 `DocumentStateMachine.transition(from, to)`。
 
 ## 代码质量要求
 

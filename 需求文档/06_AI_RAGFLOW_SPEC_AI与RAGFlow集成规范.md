@@ -57,10 +57,13 @@ ENABLE_AUTO_TAGS=true
 ENABLE_SENSITIVE_DETECTION=true
 ENABLE_OCR=false
 ENABLE_TABLE_ANALYSIS=false
-ENABLE_QUALITY_SCORE=true
-ENABLE_EXPIRE_DETECTION=true
+ENABLE_QUALITY_SCORE=false
+ENABLE_EXPIRE_DETECTION=false
 ENABLE_SIMILARITY_DETECTION=false
 ALLOW_SYNC_WHEN_ANALYSIS_FAILED=true
+AUTO_SYNC_AFTER_REVIEW=false
+BLOCK_HIGH_RISK_SYNC=true
+BLOCK_CRITICAL_RISK_SYNC=true
 ```
 
 规则：
@@ -69,6 +72,8 @@ ALLOW_SYNC_WHEN_ANALYSIS_FAILED=true
 - 即使 `ENABLE_SUMMARY=true`，只要总开关关闭，摘要任务也不执行。
 - 分类级配置可以覆盖或细化全局配置。
 - 文件详情页必须显示 AI 是否执行、是否跳过，以及跳过原因。
+- OCR、表格结构识别、质量评分、过期提醒、相似文档检测在对应功能实现前必须默认关闭。
+- 自动同步只能在文件审核通过后触发；高风险和严重风险同步策略以后台配置为准。
 
 ---
 
@@ -107,6 +112,7 @@ OCR
 
 - 手机号
 - 身份证号
+- 银行卡号
 - 邮箱
 - 内网 IP
 - API Key
@@ -118,6 +124,7 @@ OCR
 - 客户名称
 - 合同金额
 - 内部系统地址
+- 个人隐私信息
 
 风险等级：
 
@@ -134,6 +141,8 @@ critical
 - medium：提醒管理员
 - high：进入 sensitive_review_required
 - critical：默认阻止同步 RAGFlow
+
+`critical` 是高风险的阻断子级别。产品侧展示为“严重风险”，统计时可单独计数，也可归入高风险总数。
 
 ---
 

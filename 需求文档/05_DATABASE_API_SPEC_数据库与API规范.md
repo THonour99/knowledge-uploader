@@ -192,32 +192,170 @@ last_success_sync_at
 updated_at
 ```
 
+### 1.10 tags
+
+```text
+id
+name
+code
+description
+usage_count
+source
+enabled
+created_by
+created_at
+updated_at
+```
+
+### 1.11 file_tags
+
+```text
+id
+file_id
+tag_id
+source
+created_by
+created_at
+```
+
+### 1.12 review_records
+
+```text
+id
+file_id
+reviewer_id
+action
+from_status
+to_status
+comment
+reject_reason
+sensitive_confirmed
+category_id
+dataset_mapping_id
+created_at
+```
+
+### 1.13 ragflow_configs
+
+```text
+id
+base_url
+api_key_encrypted
+default_dataset_id
+allowed_dataset_ids
+auto_sync_enabled
+sync_after_review_only
+allow_high_risk_sync
+allow_critical_risk_sync
+request_timeout_seconds
+max_retry_count
+enabled
+created_at
+updated_at
+```
+
+### 1.14 ragflow_sync_logs
+
+```text
+id
+file_id
+sync_task_id
+ragflow_dataset_id
+ragflow_document_id
+operation
+status
+request_payload
+response_payload
+error_message
+retry_count
+operator_id
+started_at
+finished_at
+created_at
+```
+
+### 1.15 system_settings
+
+```text
+id
+scope
+key
+value_json
+is_secret
+description
+updated_by
+created_at
+updated_at
+```
+
+### 1.16 audit_logs
+
+```text
+id
+actor_id
+actor_role
+action
+object_type
+object_id
+before_json
+after_json
+result
+failure_reason
+ip_address
+user_agent
+request_id
+created_at
+```
+
 ---
 
 ## 2. 文件状态
 
+`files.status` 是文件主状态的唯一实现字段，状态变更只能通过 `DocumentStateMachine.transition(from, to)` 执行。
+
+| 状态 | 中文 | 说明 |
+|---|---|---|
+| uploaded | 已上传 | 文件已通过校验并写入 MinIO 与元数据 |
+| extracting_text | 文本抽取中 | AI 开启时的文本抽取或预处理 |
+| analysis_queued | 等待分析 | AI 分析任务已入队 |
+| analyzing | AI 分析中 | 正在生成摘要、分类、标签或敏感检测结果 |
+| analysis_failed | AI 分析失败 | AI 分析失败但文件上传记录保留 |
+| analyzed | AI 分析完成 | AI 结果已生成，等待审核 |
+| pending_review | 待审核 | 等待管理员确认分类、标签、Dataset 和同步策略 |
+| sensitive_review_required | 敏感审核 | 存在高风险或严重风险，需要管理员确认 |
+| approved | 已审核 | 管理员审核通过，可创建同步任务 |
+| rejected | 已拒绝 | 管理员拒绝同步或退回处理 |
+| queued | 等待同步 | RAGFlow 同步任务已创建 |
+| syncing | 同步中 | 正在上传到 RAGFlow |
+| uploaded_to_ragflow | 已上传至 RAGFlow | RAGFlow 返回 document_id，等待或已触发解析 |
+| parsing | RAGFlow 解析中 | 正在轮询 RAGFlow 解析状态 |
+| parsed | RAGFlow 解析完成 | 文件已进入 RAGFlow 知识库可用状态 |
+| failed | 失败 | 非 AI 类处理、同步或解析失败 |
+| disabled | 已禁用或归档 | 保留记录但不再参与同步 |
+| deleted | 已删除 | 文件已删除或软删除 |
+
+AI 关闭时跳过 `extracting_text`、`analysis_queued`、`analyzing`、`analysis_failed`、`analyzed` 等 AI 相关状态。
+
+推荐主流程：
+
 ```text
-uploaded
-extracting_text
-analysis_queued
-analyzing
-analysis_failed
-analyzed
-pending_review
-sensitive_review_required
-approved
-rejected
-queued
-syncing
-uploaded_to_ragflow
-parsing
-parsed
-failed
-disabled
-deleted
+AI 关闭：
+uploaded → pending_review → approved → queued → syncing → uploaded_to_ragflow → parsing → parsed
+
+AI 开启：
+uploaded → extracting_text → analysis_queued → analyzing → analyzed → pending_review → approved → queued → syncing → uploaded_to_ragflow → parsing → parsed
 ```
 
-AI 关闭时跳过所有 AI 相关状态。
+异常分支：
+
+```text
+analyzing → analysis_failed
+analyzed → sensitive_review_required
+pending_review / sensitive_review_required → rejected
+queued / syncing / uploaded_to_ragflow / parsing → failed
+approved / parsed → disabled
+任意非 deleted 状态 → deleted
+```
 
 ---
 
@@ -262,6 +400,8 @@ POST   /api/files/{id}/sync
 POST   /api/files/{id}/retry
 POST   /api/files/{id}/disable
 POST   /api/files/{id}/reanalyze
+GET    /api/files/{id}/sync-logs
+GET    /api/files/{id}/review-records
 ```
 
 ### 3.4 Tasks
@@ -273,16 +413,37 @@ POST /api/tasks/{id}/retry
 POST /api/tasks/{id}/cancel
 ```
 
-### 3.5 Dataset
+### 3.5 Categories / Tags / Dataset
 
 ```http
+GET    /api/admin/categories
+POST   /api/admin/categories
+PATCH  /api/admin/categories/{id}
+DELETE /api/admin/categories/{id}
+
+GET    /api/admin/tags
+POST   /api/admin/tags
+PATCH  /api/admin/tags/{id}
+DELETE /api/admin/tags/{id}
+
 GET    /api/datasets
 POST   /api/datasets
 PATCH  /api/datasets/{id}
 DELETE /api/datasets/{id}
 ```
 
-### 3.6 AI Admin
+### 3.6 RAGFlow Admin
+
+```http
+GET   /api/admin/ragflow/config
+PATCH /api/admin/ragflow/config
+POST  /api/admin/ragflow/test
+GET   /api/admin/ragflow/sync-logs
+GET   /api/admin/ragflow/datasets
+POST  /api/admin/ragflow/datasets/sync
+```
+
+### 3.7 AI Admin
 
 ```http
 GET   /api/admin/ai/config
@@ -299,10 +460,7 @@ GET   /api/admin/ai/features
 PATCH /api/admin/ai/features/{feature_name}
 
 GET   /api/admin/ai/prompts
-POST  /api/admin/ai/prompts
-GET   /api/admin/ai/prompts/{id}
 PATCH /api/admin/ai/prompts/{id}
-POST  /api/admin/ai/prompts/{id}/test
 POST  /api/admin/ai/prompts/{id}/restore-default
 
 GET    /api/admin/ai/sensitive-rules
@@ -311,17 +469,26 @@ PATCH  /api/admin/ai/sensitive-rules/{id}
 DELETE /api/admin/ai/sensitive-rules/{id}
 ```
 
-### 3.7 Statistics
+`prompt_templates` 与 `sensitive_rules` 属于后续增强或内部配置；本期页面不要求独立 Prompt 模板管理页。
+
+### 3.8 Settings / Audit
+
+```http
+GET   /api/admin/settings
+PATCH /api/admin/settings/{scope}
+GET   /api/admin/audit-logs
+GET   /api/admin/audit-logs/{id}
+```
+
+### 3.9 Statistics
 
 ```http
 GET /api/admin/statistics/overview
 GET /api/admin/statistics/users
 GET /api/admin/statistics/users/{user_id}
-GET /api/admin/statistics/departments
 GET /api/admin/statistics/categories
 GET /api/admin/statistics/trends
 GET /api/admin/statistics/failures
-GET /api/admin/statistics/export
 ```
 
 查询参数：
@@ -329,7 +496,6 @@ GET /api/admin/statistics/export
 ```text
 start_date
 end_date
-department
 user_id
 category_id
 status

@@ -8,13 +8,14 @@ developer_instructions = """
 ## 必读文档（每次工作前确认你知道）
 
 1. `AGENTS.md`（项目根）
-2. `knowledge_uploader_docs/02_ARCHITECTURE_最终架构设计.md`
-3. `knowledge_uploader_docs/03_BACKEND_SPEC_后端开发规范.md`
-4. `knowledge_uploader_docs/05_DATABASE_API_SPEC_数据库与API规范.md`
-5. `knowledge_uploader_docs/07_DEPLOYMENT_ENV_部署与环境配置.md`
-6. `knowledge_uploader_docs/08_TASK_BREAKDOWN_开发任务拆解.md`（当前阶段）
-7. `docs/spark/2026-06-04-p0-implementation-supplement.md`（跨平台、事件总线、目录、版本锁）
-8. 路径相关时，`.Codex/rules/` 下对应规则文件会自动加载
+2. `需求文档/01_PRD_产品需求文档.md`
+3. `需求文档/02_ARCHITECTURE_最终架构设计.md`
+4. `需求文档/03_BACKEND_SPEC_后端开发规范.md`
+5. `需求文档/05_DATABASE_API_SPEC_数据库与API规范.md`
+6. `需求文档/07_DEPLOYMENT_ENV_部署与环境配置.md`
+7. `需求文档/08_TASK_BREAKDOWN_开发任务拆解.md`（当前阶段）
+8. `docs/spark/2026-06-04-p0-implementation-supplement.md`（跨平台、事件总线、目录、版本锁）
+9. 路径相关时，`.Codex/rules/` 下对应规则文件会自动加载
 
 ## 工作原则
 

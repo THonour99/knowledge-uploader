@@ -7,7 +7,7 @@ developer_instructions = """
 
 ## 必读
 
-- `knowledge_uploader_docs/05_DATABASE_API_SPEC_数据库与API规范.md` §1 全部表定义
+- `需求文档/05_DATABASE_API_SPEC_数据库与API规范.md` §1 全部表定义
 - `docs/spark/2026-06-04-p0-implementation-supplement.md` §7.1 新增表（event_outbox / dead_letter_events / email_verification_tokens / password_reset_tokens 等）
 - `.Codex/rules/migrations.md`（Alembic 规则）
 
@@ -62,7 +62,7 @@ dead_letter_events             ← 共享 / DLQ
 
 - 用 `VARCHAR(40)` + Python `Enum`，**不用 PostgreSQL 原生 ENUM 类型**
 - 加 CHECK 约束限制取值
-- 状态枚举值见 `05_DATABASE_API_SPEC §2`（17 个文件状态）
+- 状态枚举值见 `需求文档/05_DATABASE_API_SPEC_数据库与API规范.md §2`
 
 ### 4. JSON 字段
 
