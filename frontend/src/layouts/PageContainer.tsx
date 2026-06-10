@@ -5,12 +5,19 @@ interface PageContainerProps {
   title: string;
   description?: string;
   actions?: ReactNode;
+  className?: string;
   children: ReactNode;
 }
 
-export function PageContainer({ title, description, actions, children }: PageContainerProps) {
+export function PageContainer({
+  title,
+  description,
+  actions,
+  className,
+  children,
+}: PageContainerProps) {
   return (
-    <main className="page-container">
+    <main className={["page-container", className].filter(Boolean).join(" ")}>
       <div className="page-header">
         <div>
           <Typography.Title level={2} className="page-title">

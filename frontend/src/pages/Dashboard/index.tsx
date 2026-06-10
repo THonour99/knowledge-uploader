@@ -365,6 +365,7 @@ function DashboardMetricCard({ metric }: { metric: DashboardMetric }) {
 export default function DashboardPage() {
   return (
     <PageContainer
+      className="dashboard-page"
       title="知识库运营总览"
       description="汇总上传、审核、AI 分析与 RAGFlow 同步关键指标。"
       actions={

@@ -1,3 +1,9 @@
+.page-container.dashboard-page {
+  max-width: none;
+  margin-right: 0;
+  margin-left: 0;
+}
+
 .dashboard-page-actions {
   justify-content: flex-end;
 }
