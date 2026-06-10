@@ -4,6 +4,8 @@
 执行计划：`docs/plan/2026-06-10-r1-auth-and-parsing.md`
 方案总览：`docs/plan/2026-06-10-remediation-overview.md`（缺陷 #1 #2）
 
+当前状态：R1 review 发现的 1 个 High（`run_file_analysis()` 重复投递幂等不完整）已修复并补充回归测试；自动化验证、`backend-api` 镜像构建、运行态容器 recreate、运行容器依赖检查与 `/api/system/health` 均已补齐。浏览器端到端走查仍未执行，保留为人工/浏览器验收项。
+
 ## 1. 交付内容
 
 ### 前端（缺陷 #1：认证三页断链）
@@ -25,29 +27,31 @@
 
 ## 2. 验证结果
 
-| 验证项 | 命令 | 结果 |
+| 验证项 | 命令 / 记录 | 结果 |
 |---|---|---|
+| 前端 R1 定向测试 | `npm --prefix frontend run test:run -- Register ForgotPassword ResetPassword` | ✅ 10/10 通过 |
 | 前端全量测试 | `npm --prefix frontend run test:run` | ✅ 6 文件 19/19 通过 |
 | 前端 lint | `npm --prefix frontend run lint` | ✅ 0 错误 0 警告 |
 | 前端构建 | `npm --prefix frontend run build`（tsc 双 tsconfig + vite） | ✅ 通过（主 chunk >1MB 为既有警告） |
-| 后端新增单测 | `pytest test_ai_parsers.py test_ai_task_retry.py --noconftest` | ✅ 37/37 通过 |
+| 后端 R1 定向回归 | `docker compose run --rm backend-api pytest app/tests/unit/test_ai_tasks.py app/tests/unit/test_ai_parsers.py app/tests/unit/test_ai_task_retry.py` | ✅ 49/49 通过 |
+| 后端全量 pytest | `docker compose run --rm backend-api pytest` | ✅ 170 passed, 1 skipped |
 | 后端既有纯单测回归 | `pytest test_logging.py test_module_boundaries.py test_config.py --noconftest` | ✅ 13/13 通过 |
-| ruff | `ruff check app` | ✅ All checks passed |
-| mypy strict 全量 | `mypy app` | ✅ 197 文件无错误 |
-| ARM64 | `invoke check-arm64` | ✅ 全部依赖 allowlisted |
+| ruff | `docker compose run --rm backend-api ruff check app` | ✅ All checks passed |
+| mypy strict 全量 | `docker compose run --rm backend-api mypy app` | ✅ 197 文件无错误 |
+| ARM64 | `python -m invoke check-arm64` | ✅ 37 个依赖全部 allowlisted |
 | ARM64 独立交叉验证 | `pip download --platform aarch64` 实测 + PyPI 实查 | ✅ 5 个新库均纯 Python wheel；传递依赖 lxml/Pillow 需 manylinux_2_28（Debian 12 基础镜像满足，R5 Docker 构建时复核） |
+| 后端镜像构建 | `docker compose build backend-api` | ✅ 通过 |
+| 运行态容器刷新 | `docker compose up -d --force-recreate --no-deps backend-api worker-ai worker-document worker-ragflow worker-notification worker-statistics scheduler outbox-dispatcher` | ✅ 全部 recreate 后 healthy |
+| 运行态解析依赖 | `docker compose exec backend-api python -c "import pypdf, docx, openpyxl, pptx"`；`docker compose exec worker-ai python -c "import pypdf, docx, openpyxl, pptx"` | ✅ API 与 worker 均可 import |
+| 系统健康检查 | `docker compose exec backend-api python -c "import urllib.request; response = urllib.request.urlopen('http://127.0.0.1:8000/api/system/health', timeout=5); print(response.status); print(response.read().decode())"` | ✅ 200 `{"status":"ok"}` |
 
-评审：三视角（正确性 / 项目规范 / 契约与回归）评审无 blocker；全部 major 与可行 minor 已修复（见 §4）。
+评审：三视角（正确性 / 项目规范 / 契约与回归）评审已补充 1 个 High（见 §4 #9），本轮已修复并通过回归。已知 major 与可行 minor 均已处置。
 
-## 3. 受环境限制未执行项（遗留）
+## 3. 未执行 / 待补齐项
 
-本机 Docker Desktop 未运行，以下验收项**待容器环境执行**：
+本轮已补齐自动化验证、`backend-api` 镜像构建、运行态容器 recreate、运行态依赖检查与系统健康检查；以下验收项仍未在本报告中记录为完成：
 
-1. `invoke test` 全量后端测试（依赖 Postgres/Redis 的 130+ 测试，含 `test_ai_tasks.py` 与 E2E；已静态核对兼容：FakeAiStorage 的 RuntimeError 不在瞬态集合内仍走原失败路径，接口签名未动）。
-2. `docker compose build backend-api`（新依赖镜像构建验证）。
-3. 浏览器端到端走查：注册 → 邮箱验证 → 登录 → 忘记密码 → 重置 → 新密码登录；上传真实 PDF/docx/xlsx/pptx 确认解析入流水线；停 MinIO 实测瞬态重试链路。
-
-**启动 Docker Desktop 后执行：`invoke up && invoke test` 即可补齐以上三项。**
+1. 浏览器端到端走查：注册 → 邮箱验证 → 登录 → 忘记密码 → 重置 → 新密码登录；上传真实 PDF/docx/xlsx/pptx 确认解析入流水线；停 MinIO 实测瞬态重试链路。该项没有本轮实际走查记录，仍待人工/浏览器验收。
 
 ## 4. 评审发现处置表
 
@@ -61,6 +65,7 @@
 | 6 | pdfplumber 已 pin 但零引用（minor） | ✅ 已修复：移除，R5 表格识别时再引入 |
 | 7 | urllib3 直接 import 未声明（minor） | ✅ 已修复：requirements.txt 显式 pin |
 | 8 | 重试窗口内前置条件失效可能卡 extracting_text（minor，低概率竞态） | ⚠️ 已加 warning 日志可观测；完整自愈（中间态文件补标失败）记入 R4 重新分析任务一并处理 |
+| 9 | `run_file_analysis()` 重复投递幂等不完整（High） | ✅ 已修复：对分析中状态且已有 `running` 分析记录、分析成功后续状态且已有 `succeeded` 分析记录的重复投递直接返回既有 analysis id，不再重新拉取存储、不再重置文件状态；新增 `test_running_analysis_repeated_delivery_is_noop` 与 `test_succeeded_analysis_repeated_delivery_is_noop`，并保留 `analysis_failed` 可重试回归 |
 
 ## 5. 计划偏差记录
 
@@ -78,9 +83,9 @@
 |---|---|
 | `feat(frontend): 接通注册与找回密码页面提交逻辑` | client.ts + 三页接线 + 10 测试 |
 | `feat(ai): 添加多格式文档解析器注册表` | requirements + parsers.py + 异常 + service 接线 + 存储错误分类 + 21 测试 + allowlist |
-| `fix(ai): 补全分析任务重试与幂等` | tasks.py 重试/软超时 + 状态机转移 + 16 测试 |
+| `fix(ai): 补全分析任务重试与幂等` | tasks.py 重试/软超时 + 状态机转移 + 16 测试；R1 review 后补齐 `run_file_analysis()` 重复投递幂等 High 回归 |
 | `docs(report): 添加 R1 批次验收报告` | 本文档 |
 
 ## 7. 结论
 
-R1 两项 P0 缺陷（#1 认证前端断链、#2 文档解析能力）在本机可验证范围内全部修复并通过验证；遗留三项容器环境验收项（§3）不阻塞 R2/R3 启动（依赖关系见总览 DAG）。R4 启动前建议先在 Docker 环境补齐 §3 验收。
+R1 两项 P0 缺陷（#1 认证前端断链、#2 文档解析能力）以及 review 新发现的 `run_file_analysis()` 重复投递幂等 High 均已修复；自动化验证、镜像构建、运行态容器刷新、运行态依赖检查与系统健康检查均已通过。R1 剩余未闭环项仅为浏览器端到端走查与真实文件上传链路人工验收。
