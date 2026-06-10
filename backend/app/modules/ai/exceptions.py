@@ -48,3 +48,14 @@ def invalid_provider_config(message: str = "invalid ai provider config") -> AiEr
 
 class AiAnalysisPreconditionError(Exception):
     pass
+
+
+class AiAnalysisTransientError(Exception):
+    pass
+
+
+class DocumentParseError(Exception):
+    def __init__(self, *, format: str, reason: str) -> None:
+        self.format = format
+        self.reason = reason
+        super().__init__(f"{format} 解析失败: {reason}")

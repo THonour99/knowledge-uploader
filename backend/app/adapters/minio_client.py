@@ -4,8 +4,40 @@ from io import BytesIO
 
 import anyio
 from minio import Minio
+from minio.error import MinioException, S3Error
+from urllib3.exceptions import HTTPError as Urllib3HTTPError
 
 from app.core.config import Settings
+
+#: 对象存储调用可能抛出的网络 / 存储类异常。视为瞬态、可重试。
+STORAGE_TRANSIENT_ERRORS: tuple[type[Exception], ...] = (
+    MinioException,
+    Urllib3HTTPError,
+    OSError,
+)
+
+#: 永久性 S3 错误码。重试不可能成功、不应进入重试编排。
+PERMANENT_S3_ERROR_CODES: frozenset[str] = frozenset(
+    {
+        "NoSuchKey",
+        "NoSuchBucket",
+        "AccessDenied",
+        "InvalidAccessKeyId",
+        "SignatureDoesNotMatch",
+        "InvalidBucketName",
+    }
+)
+
+
+def is_transient_storage_error(error: BaseException) -> bool:
+    """判断存储异常是否为瞬态(可重试)。
+
+    永久性 S3 错误(对象不存在 / 凭证错误等)返回 False、
+    其余 ``STORAGE_TRANSIENT_ERRORS`` 实例返回 True。
+    """
+    if isinstance(error, S3Error) and error.code in PERMANENT_S3_ERROR_CODES:
+        return False
+    return isinstance(error, STORAGE_TRANSIENT_ERRORS)
 
 
 class MinioDocumentStorage:

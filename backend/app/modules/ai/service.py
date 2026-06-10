@@ -12,6 +12,7 @@ from urllib.parse import urlparse
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.adapters.llm.openai_compatible import LLMTestResult, OpenAICompatibleProvider
+from app.adapters.minio_client import STORAGE_TRANSIENT_ERRORS, is_transient_storage_error
 from app.core.audit import record_admin_audit_log
 from app.core.config import Settings
 from app.core.document_state import DocumentStateError, DocumentStateMachine
@@ -20,6 +21,7 @@ from app.modules.user.schemas import AuthUserRecord
 
 from . import exceptions
 from .models import AiFeatureConfig, AiProvider, DocumentAnalysis, PromptTemplate, SensitiveRule
+from .parsers import MAX_EXTRACTED_TEXT_LENGTH, extract_text_from_bytes
 from .repository import (  # noqa: TID251 - same-module repository dependency
     AiCategoryRecord,
     AiFileRecord,
@@ -41,7 +43,6 @@ from .schemas import (
 ADMIN_ROLES = {"knowledge_admin", "system_admin"}
 SYSTEM_ADMIN_ROLE = "system_admin"
 MAX_ERROR_MESSAGE_LENGTH = 500
-MAX_EXTRACTED_TEXT_LENGTH = 20_000
 GLOBAL_FEATURE_KEYS = {
     "ai_analysis",
     "allow_external_llm",
@@ -532,8 +533,7 @@ class AiConfigService:
             )
         features = await self._feature_map()
         allow_external_llm = (
-            self._settings.allow_external_llm
-            and features["allow_external_llm"].enabled
+            self._settings.allow_external_llm and features["allow_external_llm"].enabled
         )
         if _is_external_url(provider.base_url) and not allow_external_llm:
             return LLMTestResult(
@@ -649,7 +649,17 @@ class AiAnalysisService:
         try:
             file = await self._transition_file(file, "extracting_text")
             await self._session.commit()
-            raw_content = await storage.get_object(bucket=file.bucket, object_key=file.object_key)
+            try:
+                raw_content = await storage.get_object(
+                    bucket=file.bucket, object_key=file.object_key
+                )
+            except STORAGE_TRANSIENT_ERRORS as exc:
+                if not is_transient_storage_error(exc):
+                    # 永久性存储错误: 交给外层 except Exception 兜底
+                    # (外层负责 rollback 并以异常类型名标记 analysis_failed)。
+                    raise
+                await self._session.rollback()
+                raise exceptions.AiAnalysisTransientError("object storage unavailable") from exc
             extracted_text = extract_text(raw_content, extension=file.extension)
             file = await self._get_file_or_raise(file_id)
             file = await self._transition_file(file, "analysis_queued")
@@ -699,6 +709,12 @@ class AiAnalysisService:
             analysis.finished_at = datetime.now(UTC)
             await self._session.commit()
             return analysis.id
+        except exceptions.AiAnalysisTransientError:
+            raise
+        except exceptions.DocumentParseError as exc:
+            await self._session.rollback()
+            await self._mark_analysis_failed(file_id=file_id, error_message=str(exc))
+            return analysis.id
         except Exception as exc:
             await self._session.rollback()
             error_type = type(exc).__name__
@@ -725,6 +741,10 @@ class AiAnalysisService:
         await self._repository.update_file_analysis_state(file)
         await self._session.commit()
         return analysis
+
+    async def mark_analysis_failed(self, *, file_id: uuid.UUID, error_message: str) -> None:
+        """供 Celery 重试耗尽后调用的公开失败标记入口。"""
+        await self._mark_analysis_failed(file_id=file_id, error_message=error_message)
 
     async def _mark_analysis_failed(self, *, file_id: uuid.UUID, error_message: str) -> None:
         file = await self._get_file_or_raise(file_id)
@@ -794,14 +814,7 @@ def truncate_text(value: str, max_length: int) -> str:
 
 
 def extract_text(content: bytes, *, extension: str) -> str:
-    if extension.lower() not in {"txt", "md", "csv"}:
-        return ""
-    for encoding in ("utf-8", "utf-8-sig", "gb18030"):
-        try:
-            return truncate_text(content.decode(encoding).strip(), MAX_EXTRACTED_TEXT_LENGTH)
-        except UnicodeDecodeError:
-            continue
-    return content.decode("utf-8", errors="ignore").strip()
+    return extract_text_from_bytes(content, extension)
 
 
 def generate_summary(text: str, *, file: AiFileRecord) -> str:
