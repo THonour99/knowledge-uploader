@@ -169,8 +169,8 @@ a {
 
 .page-container {
   width: 100%;
-  max-width: 1440px;
-  margin: 0 auto;
+  max-width: none;
+  margin: 0;
 }
 
 .page-header {
@@ -427,6 +427,17 @@ a {
   margin: 0;
 }
 
+.my-files-empty {
+  display: grid;
+  justify-items: center;
+  gap: 8px;
+  padding: 10px 0;
+}
+
+.my-files-empty .ant-btn {
+  margin-top: 4px;
+}
+
 .table-card .ant-card-body {
   padding: 20px;
 }
@@ -479,6 +490,28 @@ a {
 
 .table-actions__right {
   margin-left: auto;
+}
+
+.table-section-header {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px 16px;
+  align-items: flex-end;
+  justify-content: space-between;
+  margin-bottom: 16px;
+}
+
+.table-section-header__copy {
+  display: grid;
+  gap: 4px;
+}
+
+.table-section-header__title.ant-typography {
+  margin: 0;
+}
+
+.table-section-header__meta {
+  color: var(--ku-text-secondary);
 }
 
 .config-card-actions {

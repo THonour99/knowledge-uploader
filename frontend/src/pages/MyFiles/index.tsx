@@ -1,5 +1,5 @@
 import { useMemo, useState, type ReactNode } from "react";
-import { Button, Card, Input, Select, Space, Table, Typography } from "antd";
+import { Button, Card, Empty, Input, Select, Space, Table, Typography } from "antd";
 import {
   CheckCircleOutlined,
   CloudSyncOutlined,
@@ -199,6 +199,17 @@ export default function MyFilesPage() {
       </div>
 
       <Card className="document-panel table-card">
+        <div className="table-section-header">
+          <span className="table-section-header__copy">
+            <Typography.Title level={4} className="table-section-header__title">
+              文件列表
+            </Typography.Title>
+            <Typography.Text className="table-section-header__meta">
+              当前显示 {filteredFiles.length} 个文件，共 {files.length} 个上传记录
+            </Typography.Text>
+          </span>
+        </div>
+
         <div className="filter-toolbar filter-toolbar--management">
           <Input
             className="filter-toolbar__search"
@@ -239,7 +250,28 @@ export default function MyFilesPage() {
           dataSource={filteredFiles}
           loading={filesQuery.isLoading}
           pagination={{ pageSize: 10, showSizeChanger: false }}
-          locale={{ emptyText: "暂无文件" }}
+          locale={{
+            emptyText: (
+              <Empty
+                image={Empty.PRESENTED_IMAGE_SIMPLE}
+                description={
+                  <span className="my-files-empty">
+                    <Typography.Text strong>还没有符合条件的文件</Typography.Text>
+                    <Typography.Text type="secondary">
+                      上传知识文件后，可以在这里查看解析、审核和同步进度。
+                    </Typography.Text>
+                    <Button
+                      type="primary"
+                      icon={<CloudUploadOutlined />}
+                      onClick={() => navigate("/upload")}
+                    >
+                      上传文件
+                    </Button>
+                  </span>
+                }
+              />
+            ),
+          }}
         />
       </Card>
     </PageContainer>
