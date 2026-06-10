@@ -22,6 +22,47 @@ export interface LoginResponse {
   user: CurrentUser;
 }
 
+export interface RegisterRequest {
+  name: string;
+  email: string;
+  password: string;
+  department?: string;
+  phone?: string;
+}
+
+export interface RegisterResponse {
+  accepted: boolean;
+}
+
+export interface ForgotPasswordRequest {
+  email: string;
+}
+
+export interface ResetPasswordRequest {
+  token: string;
+  new_password: string;
+}
+
+export interface ChangePasswordRequest {
+  current_password: string;
+  new_password: string;
+}
+
+export interface ResendVerificationRequest {
+  email: string;
+}
+
+export interface UserProfile {
+  id: string;
+  name: string;
+  email: string;
+  role: CurrentUser["role"];
+  status: string;
+  email_verified: boolean;
+  department: string | null;
+  phone: string | null;
+}
+
 export interface KnowledgeFile {
   id: string;
   original_name: string;
@@ -371,6 +412,51 @@ export async function login(payload: LoginRequest): Promise<LoginResponse> {
   );
 
   return unwrapResponse(response.data);
+}
+
+export async function register(payload: RegisterRequest): Promise<RegisterResponse> {
+  const response = await apiClient.post<ApiEnvelope<RegisterResponse> | RegisterResponse>(
+    "/auth/register",
+    payload,
+  );
+
+  return unwrapResponse(response.data);
+}
+
+export async function forgotPassword(payload: ForgotPasswordRequest): Promise<void> {
+  const response = await apiClient.post<ApiEnvelope<Record<string, never>>>(
+    "/auth/forgot-password",
+    payload,
+  );
+
+  unwrapResponse(response.data);
+}
+
+export async function resetPassword(payload: ResetPasswordRequest): Promise<UserProfile> {
+  const response = await apiClient.post<ApiEnvelope<UserProfile> | UserProfile>(
+    "/auth/reset-password",
+    payload,
+  );
+
+  return unwrapResponse(response.data);
+}
+
+export async function changePassword(payload: ChangePasswordRequest): Promise<void> {
+  const response = await apiClient.post<ApiEnvelope<Record<string, never>>>(
+    "/auth/change-password",
+    payload,
+  );
+
+  unwrapResponse(response.data);
+}
+
+export async function resendVerification(payload: ResendVerificationRequest): Promise<void> {
+  const response = await apiClient.post<ApiEnvelope<Record<string, never>>>(
+    "/auth/resend-verification",
+    payload,
+  );
+
+  unwrapResponse(response.data);
 }
 
 export async function logout(): Promise<void> {

@@ -5,9 +5,11 @@ import {
   PhoneOutlined,
   UserOutlined,
 } from "@ant-design/icons";
-import { Button, Form, Input, Typography } from "antd";
-import { Link } from "react-router-dom";
+import { App as AntdApp, Button, Form, Input, Typography } from "antd";
+import { useMutation } from "@tanstack/react-query";
+import { Link, useNavigate } from "react-router-dom";
 
+import { register } from "../../api/client";
 import { AuthLayout } from "../AuthLayout";
 
 interface RegisterFormValues {
@@ -20,6 +22,27 @@ interface RegisterFormValues {
 }
 
 export default function RegisterPage() {
+  const navigate = useNavigate();
+  const { message } = AntdApp.useApp();
+
+  const mutation = useMutation({
+    mutationFn: (values: RegisterFormValues) =>
+      register({
+        name: values.name,
+        email: values.email,
+        password: values.password,
+        department: values.department?.trim() ? values.department.trim() : undefined,
+        phone: values.phone?.trim() ? values.phone.trim() : undefined,
+      }),
+    onSuccess: () => {
+      message.success("注册成功，请前往邮箱查收验证邮件完成激活");
+      navigate("/login", { replace: true });
+    },
+    onError: (error) => {
+      message.error(error.message);
+    },
+  });
+
   return (
     <AuthLayout
       title="创建账号"
@@ -30,7 +53,12 @@ export default function RegisterPage() {
         </Typography.Text>
       }
     >
-      <Form<RegisterFormValues> className="auth-form" layout="vertical" requiredMark={false}>
+      <Form<RegisterFormValues>
+        className="auth-form"
+        layout="vertical"
+        requiredMark={false}
+        onFinish={(values) => mutation.mutate(values)}
+      >
         <div className="auth-form-grid">
           <Form.Item label="姓名" name="name" rules={[{ required: true, message: "请输入姓名" }]}>
             <Input size="large" placeholder="请输入姓名" prefix={<UserOutlined />} />
@@ -74,7 +102,7 @@ export default function RegisterPage() {
         >
           <Input.Password size="large" placeholder="请再次输入密码" prefix={<LockOutlined />} />
         </Form.Item>
-        <Button type="primary" size="large" block>
+        <Button type="primary" htmlType="submit" size="large" block loading={mutation.isPending}>
           提交注册
         </Button>
       </Form>
