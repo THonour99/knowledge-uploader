@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import os
-from collections.abc import AsyncGenerator, Callable
+from collections.abc import AsyncGenerator, Awaitable, Callable
 from datetime import UTC, datetime, timedelta
 from hashlib import sha256
 from importlib import import_module
@@ -190,6 +190,22 @@ async def test_register_accepts_allowed_domain_and_rejects_other_domain(
     assert rejected.json()["error_code"] == "EMAIL_DOMAIN_NOT_ALLOWED"
 
 
+async def test_register_rejects_password_below_configured_min_length(
+    client: AsyncClient,
+    set_system_config: Callable[[str, object], Awaitable[None]],
+) -> None:
+    # 密码最小长度由 runtime_config (DB 优先) 控制, 设为 12 后 8 位密码必须被拒
+    await set_system_config("security.password_min_length", 12)
+
+    response = await client.post(
+        "/api/auth/register",
+        json={"name": "Weak", "email": "weak-pass@company.com", "password": "short8ch"},
+    )
+
+    assert response.status_code == 400
+    assert response.json()["error_code"] == "WEAK_PASSWORD"
+
+
 async def test_register_existing_email_returns_generic_success(client: AsyncClient) -> None:
     from sqlalchemy import func, select
 
@@ -228,9 +244,7 @@ async def test_register_writes_verification_outbox_without_replayable_token(
     assert response.json()["data"] == {"accepted": True}
 
     async with AsyncSessionFactory() as session:
-        token = (
-            await session.execute(select(EmailVerificationToken))
-        ).scalar_one()
+        token = (await session.execute(select(EmailVerificationToken))).scalar_one()
         outbox = (
             await session.execute(
                 select(EventOutbox).where(EventOutbox.event_type == events.AUTH_USER_REGISTERED)
@@ -246,7 +260,12 @@ async def test_register_writes_verification_outbox_without_replayable_token(
     assert outbox.trace_id is not None
 
 
-async def test_login_issues_jwt_and_me_returns_current_user(client: AsyncClient) -> None:
+async def test_login_issues_jwt_and_me_returns_current_user(
+    client: AsyncClient,
+    set_system_config: Callable[[str, object], Awaitable[None]],
+) -> None:
+    # 注册后免邮箱验证改由 runtime_config (DB 优先) 控制, 注册即激活方可直接登录
+    await set_system_config("security.require_email_verification", False)
     await client.post(
         "/api/auth/register",
         json={"name": "Charlie", "email": "charlie@company.com", "password": "password123"},

@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import os
-from collections.abc import AsyncGenerator
+from collections.abc import AsyncGenerator, Awaitable, Callable
 from dataclasses import dataclass, field
 from importlib import import_module
 from uuid import UUID
@@ -419,17 +419,19 @@ async def test_upload_rejects_pdf_with_only_magic_header(
 
 async def test_upload_rejects_legacy_ole_extension_even_if_configured(
     document_client: tuple[AsyncClient, FakeDocumentStorage],
+    set_system_config: Callable[[str, object], Awaitable[None]],
 ) -> None:
     from app.core.config import Settings
     from app.core.deps import get_app_settings
     from app.main import app
 
     client, storage = document_client
+    # 扩展名白名单改由 runtime_config (DB 优先) 提供, mime 白名单仍走 settings
+    await set_system_config("upload.allowed_extensions", ["pdf", "txt", "doc"])
     existing_settings = app.dependency_overrides[get_app_settings]()
     assert isinstance(existing_settings, Settings)
     app.dependency_overrides[get_app_settings] = lambda: existing_settings.model_copy(
         update={
-            "upload_allowed_extensions": "pdf,txt,doc",
             "upload_allowed_mime_types": "application/pdf,text/plain,application/msword",
         }
     )
@@ -467,15 +469,18 @@ async def test_upload_rejects_empty_file(
 
 async def test_upload_rejects_file_over_size_limit_before_storage(
     document_client: tuple[AsyncClient, FakeDocumentStorage],
+    set_system_config: Callable[[str, object], Awaitable[None]],
 ) -> None:
     client, storage = document_client
+    # 大小上限改由 runtime_config 的 upload.max_file_size_mb (单位 MB) 提供
+    await set_system_config("upload.max_file_size_mb", 1)
     await _create_user(email="large@company.com", password="password123")
     token = await _login(client, email="large@company.com", password="password123")
 
     response = await client.post(
         "/api/files/upload",
         headers={"Authorization": f"Bearer {token}"},
-        files={"file": ("large.txt", b"a" * 2048, "text/plain")},
+        files={"file": ("large.txt", b"a" * (1024 * 1024 + 1), "text/plain")},
     )
 
     assert response.status_code == 400

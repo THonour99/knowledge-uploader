@@ -39,13 +39,18 @@ def parse_plain_text(content: bytes) -> str:
     return content.decode("utf-8", errors="ignore").strip()
 
 
-def parse_pdf(content: bytes) -> str:
+def parse_pdf(
+    content: bytes,
+    *,
+    max_pages: int = MAX_PDF_PAGES,
+    max_chars: int = MAX_EXTRACTED_TEXT_LENGTH,
+) -> str:
     try:
         reader = PdfReader(BytesIO(content), strict=False)
         parts: list[str] = []
         total_length = 0
         for index, page in enumerate(reader.pages):
-            if index >= MAX_PDF_PAGES or total_length >= MAX_EXTRACTED_TEXT_LENGTH:
+            if index >= max_pages or total_length >= max_chars:
                 break
             text = (page.extract_text() or "").strip()
             if text:
@@ -139,7 +144,19 @@ PARSER_REGISTRY: dict[str, Parser] = {
 }
 
 
-def extract_text_from_bytes(content: bytes, extension: str) -> str:
+def extract_text_from_bytes(
+    content: bytes,
+    extension: str,
+    *,
+    max_pages: int = MAX_PDF_PAGES,
+    max_chars: int = MAX_EXTRACTED_TEXT_LENGTH,
+) -> str:
+    """按扩展名解析文本。
+
+    截断上限默认沿用模块常量; 调用方 (如 ai.service 的异步任务) 可在
+    调用前读取 runtime_config 的 processing.parse_max_pages /
+    processing.parse_max_chars 并显式传入, 本函数保持纯同步无 IO。
+    """
     normalized = extension.lower().lstrip(".")
     if normalized in LEGACY_FORMAT_UPGRADES:
         upgrade = LEGACY_FORMAT_UPGRADES[normalized]
@@ -150,4 +167,7 @@ def extract_text_from_bytes(content: bytes, extension: str) -> str:
     parser = PARSER_REGISTRY.get(normalized)
     if parser is None:
         return ""
-    return parser(content)[:MAX_EXTRACTED_TEXT_LENGTH]
+    if parser is parse_pdf:
+        # parse_pdf 内部仅按页粗截断 (末页可溢出 max_chars), 外层切片是统一出口的精确硬上限
+        return parse_pdf(content, max_pages=max_pages, max_chars=max_chars)[:max_chars]
+    return parser(content)[:max_chars]

@@ -9,6 +9,7 @@ from app.core.audit import record_admin_audit_log
 from app.core.config import get_settings
 from app.core.document_state import DocumentStateError, DocumentStateMachine
 from app.core.outbox import OutboxRepository
+from app.core.runtime_config import get_config
 from app.modules.user.schemas import AuthUserRecord
 
 from . import events, exceptions
@@ -523,7 +524,8 @@ class ReviewService:
 
     async def _ensure_ragflow_sync_allowed(self, file: ReviewFileRecord) -> None:
         if await self._is_critical_sensitive_file(file.id):
-            raise exceptions.invalid_state()
+            if await block_critical_sensitive_sync():
+                raise exceptions.invalid_state()
         analysis_status = await self._repository.get_file_analysis_status(file.id)
         if analysis_status != "failed":
             return
@@ -644,6 +646,14 @@ class ReviewService:
         )
         await self._session.commit()
         raise exceptions.dataset_not_allowed()
+
+
+async def block_critical_sensitive_sync() -> bool:
+    """读取 security.block_critical_sensitive_sync, 缺省 True (critical 默认阻止同步)。"""
+    value = await get_config("security.block_critical_sensitive_sync")
+    if isinstance(value, bool):
+        return value
+    return True
 
 
 def clean_optional_text(value: str | None) -> str | None:

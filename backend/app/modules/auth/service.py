@@ -23,6 +23,7 @@ from app.core.ratelimit import (
     password_reset_rate_limit_key,
     register_rate_limit_key,
 )
+from app.core.runtime_config import get_config
 from app.core.security import (
     create_jwt,
     decode_jwt,
@@ -110,15 +111,16 @@ class AuthService:
 
         normalized_email = normalize_email(email)
         email_domain = extract_email_domain(normalized_email)
-        if email_domain not in allowed_email_domains(self._settings):
+        if email_domain not in await resolve_allowed_email_domains(self._settings):
             raise exceptions.email_domain_not_allowed()
 
-        ensure_password_strength(password, self._settings)
+        ensure_password_strength(password, await resolve_password_min_length(self._settings))
         existing_user = await self._user_store.get_by_email(normalized_email)
         if existing_user is not None:
             return RegistrationResult(accepted=True)
 
-        email_verified = not self._settings.require_email_verification
+        require_verification = await resolve_require_email_verification(self._settings)
+        email_verified = not require_verification
         status = "active" if email_verified else "pending_email_verification"
         user = await self._user_store.create_user(
             name=name.strip(),
@@ -130,7 +132,7 @@ class AuthService:
             status=status,
             email_verified=email_verified,
         )
-        if self._settings.require_email_verification:
+        if require_verification:
             token = await self._create_email_verification_token(user)
             await self._append_email_event(
                 event_type=events.AUTH_USER_REGISTERED,
@@ -334,7 +336,10 @@ class AuthService:
         await self._session.commit()
 
     async def reset_password(self, request: ResetPasswordRequest) -> AuthUserRecord:
-        ensure_password_strength(request.new_password, self._settings)
+        ensure_password_strength(
+            request.new_password,
+            await resolve_password_min_length(self._settings),
+        )
         token = await self._repository.get_password_reset_token(hash_token(request.token))
         now = datetime.now(UTC)
         if token is None or token.used_at is not None or token.expires_at < now:
@@ -358,7 +363,10 @@ class AuthService:
         return user
 
     async def change_password(self, request: ChangePasswordRequest, user: AuthUserRecord) -> None:
-        ensure_password_strength(request.new_password, self._settings)
+        ensure_password_strength(
+            request.new_password,
+            await resolve_password_min_length(self._settings),
+        )
         if not verify_password(request.current_password, user.password_hash):
             raise exceptions.authentication_failed()
         await self._user_store.record_verification_state(
@@ -431,12 +439,14 @@ class AuthService:
 
     async def _record_failed_login(self, user: AuthUserRecord, now: datetime) -> None:
         failed_login_count = user.failed_login_count + 1
-        if failed_login_count >= self._settings.login_max_failed_attempts:
+        max_failed_attempts = await resolve_login_max_failed_attempts(self._settings)
+        if failed_login_count >= max_failed_attempts:
+            lock_minutes = await resolve_login_lock_minutes(self._settings)
             await self._user_store.record_verification_state(
                 user_id=user.id,
                 failed_login_count=failed_login_count,
                 status="locked",
-                locked_until=now + timedelta(minutes=self._settings.login_lock_minutes),
+                locked_until=now + timedelta(minutes=lock_minutes),
                 increment_session_version=True,
             )
             return
@@ -504,9 +514,51 @@ def allowed_email_domains(settings: Settings) -> set[str]:
     }
 
 
-def ensure_password_strength(password: str, settings: Settings) -> None:
-    if len(password) < settings.password_min_length:
-        raise exceptions.weak_password(settings.password_min_length)
+async def resolve_allowed_email_domains(settings: Settings) -> set[str]:
+    """解析允许注册的邮箱域名 (security.allowed_email_domains), 非法值回退环境变量。"""
+    value = await get_config("security.allowed_email_domains")
+    if isinstance(value, list):
+        domains = {str(item).strip().lower() for item in value if str(item).strip()}
+        if domains:
+            return domains
+    return allowed_email_domains(settings)
+
+
+async def resolve_require_email_verification(settings: Settings) -> bool:
+    """解析注册后是否要求邮箱验证 (security.require_email_verification)。"""
+    value = await get_config("security.require_email_verification")
+    if isinstance(value, bool):
+        return value
+    return settings.require_email_verification
+
+
+async def resolve_login_max_failed_attempts(settings: Settings) -> int:
+    """解析连续登录失败锁定阈值 (security.login_max_failed_attempts), 非法值回退环境变量。"""
+    value = await get_config("security.login_max_failed_attempts")
+    if isinstance(value, bool) or not isinstance(value, int) or value <= 0:
+        return settings.login_max_failed_attempts
+    return value
+
+
+async def resolve_login_lock_minutes(settings: Settings) -> int:
+    """解析登录锁定时长分钟 (security.login_lock_minutes), 非法值回退环境变量。"""
+    value = await get_config("security.login_lock_minutes")
+    if isinstance(value, bool) or not isinstance(value, int) or value <= 0:
+        return settings.login_lock_minutes
+    return value
+
+
+async def resolve_password_min_length(settings: Settings) -> int:
+    """解析密码最小长度 (security.password_min_length), 非法值回退环境变量。"""
+    value = await get_config("security.password_min_length")
+    if isinstance(value, bool) or not isinstance(value, int) or value <= 0:
+        return settings.password_min_length
+    return value
+
+
+def ensure_password_strength(password: str, min_length: int) -> None:
+    if len(password) < min_length:
+        raise exceptions.weak_password(min_length)
 
 
 def hash_token(token: str) -> str:

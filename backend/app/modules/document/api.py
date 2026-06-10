@@ -19,7 +19,12 @@ from .exceptions import DocumentError
 from .models import File as DocumentFile
 from .repository import DocumentRepository
 from .schemas import FileListResponse, FileResponse
-from .service import DocumentService, DocumentStorage, UploadedFileResult
+from .service import (
+    DocumentService,
+    DocumentStorage,
+    UploadedFileResult,
+    resolve_upload_max_size_bytes,
+)
 
 router = APIRouter(prefix="/api/files", tags=["files"])
 SessionDep = Annotated[AsyncSession, Depends(get_session)]
@@ -162,10 +167,11 @@ async def upload_file(
 ) -> dict[str, object]:
     try:
         await _enforce_upload_rate_limit(current_user, settings)
+        # 与 service 层共用 runtime_config 的 upload.max_file_size_mb, 避免半切换状态
         data = await _read_upload_file(
             upload=file,
             request=request,
-            max_size=settings.upload_max_file_size_bytes,
+            max_size=await resolve_upload_max_size_bytes(settings),
         )
         result = await _service(session=session, settings=settings, storage=storage).upload_file(
             current_user=current_user,

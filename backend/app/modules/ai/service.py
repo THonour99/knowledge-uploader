@@ -16,12 +16,13 @@ from app.adapters.minio_client import STORAGE_TRANSIENT_ERRORS, is_transient_sto
 from app.core.audit import record_admin_audit_log
 from app.core.config import Settings
 from app.core.document_state import DocumentStateError, DocumentStateMachine
+from app.core.runtime_config import get_config as get_runtime_config
 from app.core.security import decrypt_api_key, encrypt_api_key
 from app.modules.user.schemas import AuthUserRecord
 
 from . import exceptions
 from .models import AiFeatureConfig, AiProvider, DocumentAnalysis, PromptTemplate, SensitiveRule
-from .parsers import MAX_EXTRACTED_TEXT_LENGTH, extract_text_from_bytes
+from .parsers import MAX_EXTRACTED_TEXT_LENGTH, MAX_PDF_PAGES, extract_text_from_bytes
 from .repository import (  # noqa: TID251 - same-module repository dependency
     AiCategoryRecord,
     AiFileRecord,
@@ -686,7 +687,13 @@ class AiAnalysisService:
                     raise
                 await self._session.rollback()
                 raise exceptions.AiAnalysisTransientError("object storage unavailable") from exc
-            extracted_text = extract_text(raw_content, extension=file.extension)
+            parse_max_pages, parse_max_chars = await resolve_parse_limits()
+            extracted_text = extract_text(
+                raw_content,
+                extension=file.extension,
+                max_pages=parse_max_pages,
+                max_chars=parse_max_chars,
+            )
             file = await self._get_file_or_raise(file_id)
             file = await self._transition_file(file, "analysis_queued")
             file = await self._transition_file(file, "analyzing")
@@ -724,7 +731,7 @@ class AiAnalysisService:
             file.category_id = category.category_id or file.category_id
             file = await self._transition_file(file, target_status)
             analysis.status = "succeeded"
-            analysis.extracted_text = truncate_text(extracted_text, MAX_EXTRACTED_TEXT_LENGTH)
+            analysis.extracted_text = truncate_text(extracted_text, parse_max_chars)
             analysis.summary = summary
             analysis.suggested_category_id = category.category_id
             analysis.suggested_category_name = category.category_name
@@ -852,8 +859,35 @@ def truncate_text(value: str, max_length: int) -> str:
     return value[:max_length]
 
 
-def extract_text(content: bytes, *, extension: str) -> str:
-    return extract_text_from_bytes(content, extension)
+async def resolve_parse_limits() -> tuple[int, int]:
+    """读取解析截断上限 (processing.parse_max_pages / parse_max_chars)。
+
+    DB 值优先, 环境无值时 runtime_config 回退种子默认; 非法值回退模块常量,
+    保证 parsers 始终拿到正整数上限。
+    """
+    pages_value = await get_runtime_config("processing.parse_max_pages")
+    chars_value = await get_runtime_config("processing.parse_max_chars")
+    max_pages = (
+        pages_value
+        if isinstance(pages_value, int) and not isinstance(pages_value, bool) and pages_value > 0
+        else MAX_PDF_PAGES
+    )
+    max_chars = (
+        chars_value
+        if isinstance(chars_value, int) and not isinstance(chars_value, bool) and chars_value > 0
+        else MAX_EXTRACTED_TEXT_LENGTH
+    )
+    return max_pages, max_chars
+
+
+def extract_text(
+    content: bytes,
+    *,
+    extension: str,
+    max_pages: int = MAX_PDF_PAGES,
+    max_chars: int = MAX_EXTRACTED_TEXT_LENGTH,
+) -> str:
+    return extract_text_from_bytes(content, extension, max_pages=max_pages, max_chars=max_chars)
 
 
 def generate_summary(text: str, *, file: AiFileRecord) -> str:

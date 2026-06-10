@@ -16,6 +16,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.core.audit import record_audit_log
 from app.core.config import Settings
 from app.core.outbox import OutboxRepository
+from app.core.runtime_config import get_config
 from app.modules.user.schemas import AuthUserRecord
 
 from . import events, exceptions
@@ -100,9 +101,9 @@ class DocumentService:
         client_ip: str,
         user_agent: str,
     ) -> UploadedFileResult:
-        self._validate_size(len(data))
+        await self._validate_size(len(data))
         sanitized_name, extension = sanitize_filename(original_filename)
-        self._validate_extension(extension)
+        await self._validate_extension(extension)
         mime_type = self._validate_mime_type(
             data=data,
             extension=extension,
@@ -220,16 +221,17 @@ class DocumentService:
             raise exceptions.file_not_found()
         return file
 
-    def _validate_size(self, size: int) -> None:
+    async def _validate_size(self, size: int) -> None:
         if size <= 0:
             raise exceptions.file_empty()
-        if size > self._settings.upload_max_file_size_bytes:
-            raise exceptions.file_too_large(self._settings.upload_max_file_size_bytes)
+        max_size_bytes = await resolve_upload_max_size_bytes(self._settings)
+        if size > max_size_bytes:
+            raise exceptions.file_too_large(max_size_bytes)
 
-    def _validate_extension(self, extension: str) -> None:
+    async def _validate_extension(self, extension: str) -> None:
         if extension in UNSUPPORTED_LEGACY_EXTENSIONS:
             raise exceptions.extension_not_allowed(extension)
-        if extension not in normalized_csv(self._settings.upload_allowed_extensions):
+        if extension not in await resolve_allowed_extensions(self._settings):
             raise exceptions.extension_not_allowed(extension)
 
     def _validate_mime_type(
@@ -272,6 +274,29 @@ class DocumentService:
                 "ai_analysis_enabled_at_upload": file.ai_analysis_enabled_at_upload,
             },
         )
+
+
+async def resolve_upload_max_size_bytes(settings: Settings) -> int:
+    """解析单文件大小上限并统一换算为字节。
+
+    配置键 ``upload.max_file_size_mb`` 的单位是 MB (PRD 6.14.1),
+    而既有 ``settings.upload_max_file_size_bytes`` 的单位是字节,
+    比较前在此统一乘 1024*1024 换算; 非法值回退环境变量字节值。
+    """
+    value = await get_config("upload.max_file_size_mb")
+    if isinstance(value, bool) or not isinstance(value, int) or value <= 0:
+        return settings.upload_max_file_size_bytes
+    return value * 1024 * 1024
+
+
+async def resolve_allowed_extensions(settings: Settings) -> set[str]:
+    """解析允许上传的扩展名白名单 (upload.allowed_extensions), 非法值回退环境变量。"""
+    value = await get_config("upload.allowed_extensions")
+    if isinstance(value, list):
+        normalized = {str(item).strip().lower().lstrip(".") for item in value if str(item).strip()}
+        if normalized:
+            return normalized
+    return normalized_csv(settings.upload_allowed_extensions)
 
 
 def normalized_csv(raw_value: str) -> set[str]:

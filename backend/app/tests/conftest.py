@@ -2,9 +2,11 @@ from __future__ import annotations
 
 import os
 import sys
+from collections.abc import Awaitable, Callable, Generator
 from pathlib import Path
 
 import psycopg
+import pytest
 from psycopg import sql
 
 BACKEND_ROOT = Path(__file__).resolve().parents[2]
@@ -62,3 +64,55 @@ for module_name in list(sys.modules):
         continue
     if module_name.startswith("app."):
         del sys.modules[module_name]
+
+SetSystemConfig = Callable[[str, object], Awaitable[None]]
+
+
+@pytest.fixture(autouse=True)
+def clear_runtime_config_cache() -> Generator[None, None, None]:
+    """隔离 runtime_config 进程内 TTL 缓存, 防止配置值在测试间污染。"""
+    from app.core import runtime_config
+
+    runtime_config.invalidate()
+    yield
+    runtime_config.invalidate()
+
+
+@pytest.fixture
+def set_system_config() -> SetSystemConfig:
+    """向 system_configs 表 upsert 一个配置值并失效 runtime_config 缓存。
+
+    单测建表走 ``Base.metadata.create_all``, 不执行种子迁移, 因此该 helper
+    需要时插入新行; 已有行则原地更新。DB 值优先于环境变量,
+    用于替代以前 monkeypatch settings 的配置覆盖方式。
+    """
+
+    async def _set(key: str, value: object) -> None:
+        from sqlalchemy import select
+
+        from app.core import runtime_config
+        from app.core.database import AsyncSessionFactory
+        from app.modules.config.defaults import DEFINITIONS_BY_KEY
+        from app.modules.config.models import SystemConfig
+
+        definition = DEFINITIONS_BY_KEY[key]
+        async with AsyncSessionFactory() as session:
+            result = await session.execute(select(SystemConfig).where(SystemConfig.key == key))
+            row = result.scalar_one_or_none()
+            if row is None:
+                session.add(
+                    SystemConfig(
+                        key=key,
+                        group=definition.group,
+                        value=value,
+                        value_type=definition.value_type,
+                        is_secret=definition.is_secret,
+                        description=definition.description,
+                    )
+                )
+            else:
+                row.value = value
+            await session.commit()
+        runtime_config.invalidate(key)
+
+    return _set
