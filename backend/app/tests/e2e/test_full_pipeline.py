@@ -234,7 +234,13 @@ async def full_pipeline_client(
     app.dependency_overrides[get_document_storage] = lambda: storage
     monkeypatch.setattr(ai_tasks, "build_ai_storage", lambda _settings: storage)
     monkeypatch.setattr(ragflow_tasks, "build_document_storage", lambda _settings: storage)
-    monkeypatch.setattr(ragflow_tasks, "build_ragflow_client", lambda _settings: ragflow_client)
+
+    async def _fake_build_ragflow_client() -> FakeRagflowClient:
+        return ragflow_client
+
+    monkeypatch.setattr(
+        ragflow_tasks, "build_ragflow_client_from_runtime_config", _fake_build_ragflow_client
+    )
 
     transport = ASGITransport(app=app)  # type: ignore[arg-type]
     async with AsyncClient(transport=transport, base_url="http://testserver") as test_client:

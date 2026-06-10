@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import os
-from collections.abc import AsyncGenerator
+from collections.abc import AsyncGenerator, Awaitable, Callable
 from uuid import UUID
 
 import pytest
@@ -346,9 +346,8 @@ async def test_create_ragflow_upload_task_releases_redis_sync_lock_after_commit(
 
 async def test_create_ragflow_upload_task_uses_configured_retry_count(
     task_client: AsyncClient,
-    monkeypatch: pytest.MonkeyPatch,
+    set_system_config: Callable[[str, object], Awaitable[None]],
 ) -> None:
-    from app.core.config import get_settings
     from app.core.database import AsyncSessionFactory
     from app.modules.ragflow.models import SyncTask
     from app.modules.ragflow.tasks import create_ragflow_upload_sync_task
@@ -359,19 +358,16 @@ async def test_create_ragflow_upload_task_uses_configured_retry_count(
         password="password123",
     )
     file_id = await _create_file(uploader_id=uploader_id)
-    monkeypatch.setenv("RAGFLOW_MAX_RETRY_COUNT", "7")
-    get_settings.cache_clear()
+    # 最大重试次数由 runtime_config (DB 优先) 控制
+    await set_system_config("ragflow.sync_max_retries", 7)
 
-    try:
-        async with AsyncSessionFactory() as session:
-            task_id = await create_ragflow_upload_sync_task(session=session, file_id=file_id)
-            await session.commit()
+    async with AsyncSessionFactory() as session:
+        task_id = await create_ragflow_upload_sync_task(session=session, file_id=file_id)
+        await session.commit()
 
-        async with AsyncSessionFactory() as session:
-            task = await session.get(SyncTask, task_id)
-            assert task is not None
-    finally:
-        get_settings.cache_clear()
+    async with AsyncSessionFactory() as session:
+        task = await session.get(SyncTask, task_id)
+        assert task is not None
 
     assert task.max_retry_count == 7
 
@@ -794,7 +790,13 @@ async def test_ragflow_upload_worker_uploads_minio_object_and_parses_document(
     storage = _FakeReadableStorage(b"phase 5 document body")
     client = _FakeRagflowClient()
     monkeypatch.setattr(tasks, "build_document_storage", lambda _settings: storage)
-    monkeypatch.setattr(tasks, "build_ragflow_client", lambda _settings: client)
+
+    async def _fake_build_ragflow_client() -> object:
+        return client
+
+    monkeypatch.setattr(
+        tasks, "build_ragflow_client_from_runtime_config", _fake_build_ragflow_client
+    )
 
     await run_ragflow_upload_task_async(str(task_id))
 
@@ -888,7 +890,13 @@ async def test_ragflow_upload_worker_reuses_existing_document_on_retry(
     storage = _FakeReadableStorage(b"should not be read")
     client = _FakeRagflowClient(document_id="existing-ragflow-doc", run_statuses=["DONE"])
     monkeypatch.setattr(tasks, "build_document_storage", lambda _settings: storage)
-    monkeypatch.setattr(tasks, "build_ragflow_client", lambda _settings: client)
+
+    async def _fake_build_ragflow_client() -> object:
+        return client
+
+    monkeypatch.setattr(
+        tasks, "build_ragflow_client_from_runtime_config", _fake_build_ragflow_client
+    )
 
     await tasks.run_ragflow_upload_task_async(str(task_id))
 
@@ -942,7 +950,13 @@ async def test_ragflow_upload_worker_leaves_file_parsing_for_nonterminal_status(
     storage = _FakeReadableStorage(b"phase 5 document body")
     client = _FakeRagflowClient(run_statuses=["RUNNING"])
     monkeypatch.setattr(tasks, "build_document_storage", lambda _settings: storage)
-    monkeypatch.setattr(tasks, "build_ragflow_client", lambda _settings: client)
+
+    async def _fake_build_ragflow_client() -> object:
+        return client
+
+    monkeypatch.setattr(
+        tasks, "build_ragflow_client_from_runtime_config", _fake_build_ragflow_client
+    )
 
     with pytest.raises(RuntimeError, match="RagflowParsePendingError"):
         await tasks.run_ragflow_upload_task_async(str(task_id))
@@ -1004,7 +1018,13 @@ async def test_ragflow_upload_worker_starts_parse_for_existing_unstarted_documen
         run_statuses=["UNSTART", "DONE"],
     )
     monkeypatch.setattr(tasks, "build_document_storage", lambda _settings: storage)
-    monkeypatch.setattr(tasks, "build_ragflow_client", lambda _settings: client)
+
+    async def _fake_build_ragflow_client() -> object:
+        return client
+
+    monkeypatch.setattr(
+        tasks, "build_ragflow_client_from_runtime_config", _fake_build_ragflow_client
+    )
 
     await tasks.run_ragflow_upload_task_async(str(task_id))
 
@@ -1062,7 +1082,13 @@ async def test_ragflow_upload_worker_requires_approved_file_before_external_call
     storage = _FakeReadableStorage(b"must not be read")
     client = _FakeRagflowClient()
     monkeypatch.setattr(tasks, "build_document_storage", lambda _settings: storage)
-    monkeypatch.setattr(tasks, "build_ragflow_client", lambda _settings: client)
+
+    async def _fake_build_ragflow_client() -> object:
+        return client
+
+    monkeypatch.setattr(
+        tasks, "build_ragflow_client_from_runtime_config", _fake_build_ragflow_client
+    )
 
     with pytest.raises(RuntimeError, match="RagflowSyncPreconditionError"):
         await tasks.run_ragflow_upload_task_async(str(task_id))
@@ -1128,7 +1154,13 @@ async def test_ragflow_upload_worker_blocks_critical_sensitive_file_before_exter
     storage = _FakeReadableStorage(b"must not be read")
     client = _FakeRagflowClient()
     monkeypatch.setattr(tasks, "build_document_storage", lambda _settings: storage)
-    monkeypatch.setattr(tasks, "build_ragflow_client", lambda _settings: client)
+
+    async def _fake_build_ragflow_client() -> object:
+        return client
+
+    monkeypatch.setattr(
+        tasks, "build_ragflow_client_from_runtime_config", _fake_build_ragflow_client
+    )
 
     with pytest.raises(RuntimeError, match="RagflowSyncPreconditionError"):
         await tasks.run_ragflow_upload_task_async(str(task_id))
@@ -1143,6 +1175,78 @@ async def test_ragflow_upload_worker_blocks_critical_sensitive_file_before_exter
     assert client.uploads == []
     assert client.metadata_updates == []
     assert client.parse_requests == []
+
+
+async def test_ragflow_upload_worker_allows_critical_file_when_block_config_disabled(
+    task_client: AsyncClient,
+    monkeypatch: pytest.MonkeyPatch,
+    set_system_config: Callable[[str, object], Awaitable[None]],
+) -> None:
+    from app.core.database import AsyncSessionFactory
+    from app.modules.ai.models import DocumentAnalysis
+    from app.modules.ragflow import tasks
+    from app.modules.ragflow.models import SyncTask
+    from app.modules.ragflow.tasks import create_ragflow_upload_sync_task
+
+    token = await _create_admin_token(task_client)
+    uploader_id = await _create_user(
+        email="phase6-critical-allowed@company.com",
+        password="password123",
+    )
+    _, mapping_id = await _create_category_and_mapping(
+        task_client,
+        token,
+        ragflow_dataset_id="ragflow-phase6-critical-allowed",
+        ragflow_dataset_name="阶段六敏感放行知识库",
+    )
+    file_id = await _create_file(
+        uploader_id=uploader_id,
+        status_value="queued",
+        review_status="approved",
+        dataset_mapping_id=UUID(mapping_id),
+        ragflow_dataset_id="ragflow-phase6-critical-allowed",
+    )
+    async with AsyncSessionFactory() as session:
+        session.add(
+            DocumentAnalysis(
+                file_id=file_id,
+                status="succeeded",
+                sensitive_risk_level="critical",
+                sensitive_hits=[
+                    {
+                        "rule_name": "生产环境凭据",
+                        "risk_level": "critical",
+                        "action": "block_sync",
+                    }
+                ],
+            )
+        )
+        task_id = await create_ragflow_upload_sync_task(session=session, file_id=file_id)
+        await session.commit()
+
+    # 管理员显式关闭 critical 阻断后, critical 文件允许同步
+    await set_system_config("security.block_critical_sensitive_sync", False)
+
+    storage = _FakeReadableStorage(b"critical but allowed body")
+    client = _FakeRagflowClient()
+    monkeypatch.setattr(tasks, "build_document_storage", lambda _settings: storage)
+
+    async def _fake_build_ragflow_client() -> object:
+        return client
+
+    monkeypatch.setattr(
+        tasks, "build_ragflow_client_from_runtime_config", _fake_build_ragflow_client
+    )
+
+    await tasks.run_ragflow_upload_task_async(str(task_id))
+
+    async with AsyncSessionFactory() as session:
+        result = await session.execute(select(SyncTask).where(SyncTask.id == task_id))
+        task = result.scalar_one()
+
+    assert task.status == "succeeded"
+    assert len(client.uploads) == 1
+    assert client.uploads[0]["dataset_id"] == "ragflow-phase6-critical-allowed"
 
 
 async def test_ragflow_upload_worker_enforces_dataset_allowlist(
@@ -1180,7 +1284,13 @@ async def test_ragflow_upload_worker_enforces_dataset_allowlist(
     storage = _FakeReadableStorage(b"must not be read")
     client = _FakeRagflowClient()
     monkeypatch.setattr(tasks, "build_document_storage", lambda _settings: storage)
-    monkeypatch.setattr(tasks, "build_ragflow_client", lambda _settings: client)
+
+    async def _fake_build_ragflow_client() -> object:
+        return client
+
+    monkeypatch.setattr(
+        tasks, "build_ragflow_client_from_runtime_config", _fake_build_ragflow_client
+    )
     monkeypatch.setenv("RAGFLOW_ALLOWED_DATASET_IDS", "ragflow-phase5-allowed")
     get_settings.cache_clear()
 

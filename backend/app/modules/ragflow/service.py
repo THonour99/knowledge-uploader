@@ -12,6 +12,7 @@ from app.core.audit import record_admin_audit_log
 from app.core.config import get_settings
 from app.core.document_state import DocumentStateError, DocumentStateMachine
 from app.core.outbox import OutboxRepository
+from app.core.runtime_config import get_config
 from app.modules.user.schemas import AuthUserRecord
 
 from . import events, exceptions
@@ -87,7 +88,7 @@ class RagflowTaskService:
             task_type=RAGFLOW_UPLOAD_TASK,
             status="queued",
             retry_count=0,
-            max_retry_count=max(0, get_settings().ragflow_max_retry_count),
+            max_retry_count=await resolve_sync_max_retries(),
         )
         task = await self._repository.add_task(task)
         await self._repository.add_log(
@@ -423,7 +424,10 @@ class RagflowTaskService:
         return file.ragflow_dataset_id
 
     async def _ensure_ai_sync_policy_allows(self, file: RagflowSyncFileRecord) -> None:
-        if await self._repository.get_file_sensitive_risk_level(file.id) == "critical":
+        if (
+            await self._repository.get_file_sensitive_risk_level(file.id) == "critical"
+            and await block_critical_sensitive_sync()
+        ):
             raise RagflowSyncPreconditionError
         analysis_status = await self._repository.get_file_analysis_status(file.id)
         if analysis_status != "failed":
@@ -587,6 +591,25 @@ class RagflowTaskService:
                 "status": task.status,
             },
         )
+
+
+async def resolve_sync_max_retries() -> int:
+    """解析 RAGFlow 同步最大重试次数 (ragflow.sync_max_retries), 非法值回退环境变量。"""
+    value = await get_config("ragflow.sync_max_retries")
+    if isinstance(value, bool) or not isinstance(value, int) or value < 0:
+        return max(0, get_settings().ragflow_max_retry_count)
+    return value
+
+
+async def block_critical_sensitive_sync() -> bool:
+    """读取 security.block_critical_sensitive_sync, 读取失败或非 bool 一律按 True 保守阻止。
+
+    与 review 模块的同名配置语义保持一致 (critical 默认阻止同步)。
+    """
+    value = await get_config("security.block_critical_sensitive_sync")
+    if isinstance(value, bool):
+        return value
+    return True
 
 
 def _is_success_run(run: str) -> bool:

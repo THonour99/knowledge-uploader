@@ -8,9 +8,10 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.adapters.minio_client import MinioDocumentStorage
 from app.adapters.ragflow.base import RagflowClient
-from app.adapters.ragflow.http import build_ragflow_client as build_http_ragflow_client
+from app.adapters.ragflow.http import HttpRagflowClient
 from app.core.config import Settings, get_settings
 from app.core.database import AsyncSessionFactory, engine
+from app.core.runtime_config import get_config
 from app.workers.celery_app import celery_app
 
 from .repository import RagflowTaskRepository  # noqa: TID251 - same-module repository dependency
@@ -33,8 +34,26 @@ def build_document_storage(settings: Settings) -> RagflowObjectStorage:
     return MinioDocumentStorage(settings)
 
 
-def build_ragflow_client(settings: Settings) -> RagflowClient:
-    return build_http_ragflow_client(settings)
+async def build_ragflow_client_from_runtime_config() -> RagflowClient:
+    """Build a RAGFlow HTTP client using runtime config (DB-first, env fallback)."""
+    base_url_value = await get_config("ragflow.base_url")
+    api_key_value = await get_config("ragflow.api_key")
+    timeout_value = await get_config("ragflow.sync_timeout_seconds")
+
+    base_url = (
+        str(base_url_value) if base_url_value is not None else get_settings().ragflow_base_url
+    )
+    api_key = str(api_key_value) if api_key_value is not None else get_settings().ragflow_api_key
+    timeout_seconds = (
+        float(timeout_value)
+        if isinstance(timeout_value, int | float)
+        else get_settings().ragflow_request_timeout
+    )
+    return HttpRagflowClient(
+        base_url=base_url,
+        api_key=api_key,
+        timeout_seconds=timeout_seconds,
+    )
 
 
 async def create_ragflow_upload_sync_task(
@@ -154,7 +173,7 @@ async def _run_ragflow_upload_task(sync_task_id: uuid.UUID) -> None:
 
     settings = get_settings()
     storage = build_document_storage(settings)
-    ragflow_client = build_ragflow_client(settings)
+    ragflow_client = await build_ragflow_client_from_runtime_config()
     async with AsyncSessionFactory() as session:
         service = RagflowTaskService(
             session=session,

@@ -1,14 +1,19 @@
 from __future__ import annotations
 
+import time
 from typing import Annotated, NoReturn
 from uuid import UUID
 
+import structlog
 from fastapi import APIRouter, Depends, HTTPException, Request
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.adapters.ragflow.base import RagflowClientError
+from app.adapters.ragflow.http import HttpRagflowClient, redact_secret
 from app.core.database import get_session
-from app.core.permissions import AdminUserDep
+from app.core.permissions import AdminUserDep, SystemAdminDep
 from app.core.responses import success_response
+from app.core.runtime_config import get_config
 
 from .exceptions import RagflowTaskError
 from .repository import RagflowTaskRepository  # noqa: TID251 - same-module repository dependency
@@ -19,6 +24,7 @@ from .service import (  # noqa: TID251 - same-module service dependency
     SyncTaskBundle,
 )
 
+logger = structlog.get_logger(__name__)
 router = APIRouter(tags=["ragflow"])
 SessionDep = Annotated[AsyncSession, Depends(get_session)]
 
@@ -140,3 +146,57 @@ async def cancel_task(
     except RagflowTaskError as error:
         _raise_ragflow_task_error(error)
     return success_response(_task_response(task).model_dump(mode="json"), request)
+
+
+@router.post("/api/admin/ragflow/test-connection")
+async def test_ragflow_connection(
+    request: Request,
+    current_user: SystemAdminDep,
+) -> dict[str, object]:
+    base_url_value = await get_config("ragflow.base_url")
+    api_key_value = await get_config("ragflow.api_key")
+    timeout_value = await get_config("ragflow.sync_timeout_seconds")
+
+    base_url = str(base_url_value) if base_url_value is not None else ""
+    api_key = str(api_key_value) if api_key_value is not None else ""
+    timeout_seconds = float(timeout_value) if isinstance(timeout_value, int | float) else 30.0
+
+    logger.info(
+        "ragflow_test_connection_started",
+        base_url=base_url,
+        user_id=str(current_user.id),
+    )
+
+    start = time.monotonic()
+    ok = True
+    error_summary: str | None = None
+    client = HttpRagflowClient(
+        base_url=base_url,
+        api_key=api_key,
+        timeout_seconds=timeout_seconds,
+    )
+    try:
+        await client.check_connection()
+    except RagflowClientError as exc:
+        # HttpRagflowClient 抛错前已自行脱敏; 这里复用 redact_secret 兜底 (空 key 原样返回)
+        ok = False
+        error_summary = redact_secret(str(exc), api_key)
+
+    latency_ms = (time.monotonic() - start) * 1000.0
+
+    logger.info(
+        "ragflow_test_connection_finished",
+        ok=ok,
+        latency_ms=round(latency_ms, 1),
+        base_url=base_url,
+        user_id=str(current_user.id),
+    )
+
+    return success_response(
+        {
+            "ok": ok,
+            "latency_ms": round(latency_ms, 1),
+            "error": error_summary,
+        },
+        request,
+    )

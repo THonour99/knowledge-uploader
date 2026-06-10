@@ -5,8 +5,6 @@ from typing import cast
 import httpx
 from httpx._types import QueryParamTypes, RequestFiles
 
-from app.core.config import Settings
-
 from .base import RagflowClientError, RagflowDocumentStatus, RagflowUploadResult
 
 DEFAULT_TIMEOUT_SECONDS = 30.0
@@ -26,24 +24,20 @@ class HttpRagflowClient:
         self._timeout_seconds = timeout_seconds
         self._client = client
 
-    @classmethod
-    def from_settings(cls, settings: Settings) -> HttpRagflowClient:
-        return cls(
-            base_url=settings.ragflow_base_url,
-            api_key=settings.ragflow_api_key,
-            timeout_seconds=settings.ragflow_request_timeout,
-        )
-
     async def ping(self) -> bool:
         try:
-            await self._request(
-                "GET",
-                "/api/v1/datasets",
-                params={"page": 1, "page_size": 1},
-            )
+            await self.check_connection()
         except RagflowClientError:
             return False
         return True
+
+    async def check_connection(self) -> None:
+        """显式连通性探测; 失败时抛出已脱敏的 RagflowClientError, 保留错误详情。"""
+        await self._request(
+            "GET",
+            "/api/v1/datasets",
+            params={"page": 1, "page_size": 1},
+        )
 
     async def upload_document(
         self,
@@ -204,11 +198,7 @@ class HttpRagflowClient:
         return documents
 
     def _client_error(self, message: str) -> RagflowClientError:
-        return RagflowClientError(_redact_secret(message, self._api_key))
-
-
-def build_ragflow_client(settings: Settings) -> HttpRagflowClient:
-    return HttpRagflowClient.from_settings(settings)
+        return RagflowClientError(redact_secret(message, self._api_key))
 
 
 def _optional_float(value: object) -> float | None:
@@ -222,7 +212,8 @@ def _optional_float(value: object) -> float | None:
     return None
 
 
-def _redact_secret(value: str, secret: str) -> str:
+def redact_secret(value: str, secret: str) -> str:
+    """把消息中出现的 secret 替换为 ****; secret 为空时原样返回。"""
     if not secret:
         return value
     return value.replace(secret, "****")
