@@ -46,6 +46,26 @@ interface ActivityItem {
   tone: "primary" | "success" | "warning" | "danger";
 }
 
+interface CategoryItem {
+  name: string;
+  percent: number;
+  count: number;
+  tone: "primary" | "success" | "warning" | "purple" | "cyan";
+}
+
+interface QuickStat {
+  label: string;
+  value: string;
+  helper: string;
+}
+
+interface HealthItem {
+  name: string;
+  value: number;
+  icon: ReactNode;
+  tone: "primary" | "success" | "purple";
+}
+
 interface RecentFile {
   id: string;
   name: string;
@@ -127,6 +147,42 @@ const activityItems: ActivityItem[] = [
     description: "客户案例汇编检测到高风险片段",
     time: "34 分钟前",
     tone: "warning",
+  },
+];
+
+const categoryItems: CategoryItem[] = [
+  { name: "产品", percent: 34, count: 412, tone: "primary" },
+  { name: "技术", percent: 24, count: 291, tone: "success" },
+  { name: "客服", percent: 18, count: 218, tone: "warning" },
+  { name: "制度", percent: 14, count: 170, tone: "purple" },
+  { name: "市场", percent: 10, count: 121, tone: "cyan" },
+];
+
+const quickStats: QuickStat[] = [
+  { label: "AI 分析耗时", value: "2.8 分钟", helper: "较昨日 -0.4 分钟" },
+  { label: "平均审核时长", value: "1.6 小时", helper: "SLA 内 92%" },
+  { label: "活跃上传人", value: "86 人", helper: "覆盖 12 个部门" },
+  { label: "本周新增标签", value: "342 个", helper: "重复率 4.8%" },
+];
+
+const healthItems: HealthItem[] = [
+  {
+    name: "RAGFlow API",
+    value: 98,
+    icon: <CheckCircleOutlined />,
+    tone: "success",
+  },
+  {
+    name: "AI Provider",
+    value: 92,
+    icon: <RobotOutlined />,
+    tone: "purple",
+  },
+  {
+    name: "同步队列",
+    value: 76,
+    icon: <CloudSyncOutlined />,
+    tone: "primary",
   },
 ];
 
@@ -216,14 +272,14 @@ const trendOption: EChartsOption = {
 const categoryOption: EChartsOption = {
   color: ["#1677ff", "#16a34a", "#f59e0b", "#7c3aed", "#06b6d4"],
   tooltip: { trigger: "item" },
-  legend: { bottom: 0, left: "center", itemWidth: 10, itemHeight: 10 },
   series: [
     {
       name: "分类占比",
       type: "pie",
-      radius: ["46%", "68%"],
-      center: ["50%", "43%"],
-      label: { formatter: "{b}\n{d}%", color: "#475467" },
+      radius: ["56%", "76%"],
+      center: ["50%", "50%"],
+      label: { show: false },
+      labelLine: { show: false },
       data: [
         { value: 34, name: "产品" },
         { value: 24, name: "技术" },
@@ -326,133 +382,160 @@ export default function DashboardPage() {
         ))}
       </div>
 
-      <div className="dashboard-main-grid">
-        <div className="dashboard-primary">
-          <Card
-            className="dashboard-panel dashboard-trend-card"
-            title={
-              <Space>
-                <RiseOutlined />
-                上传与审核趋势
-              </Space>
-            }
-          >
-            <ReactECharts option={trendOption} className="dashboard-chart" />
-          </Card>
+      <div className="dashboard-content-grid">
+        <Card
+          className="dashboard-panel dashboard-trend-card dashboard-span-8"
+          title={
+            <Space>
+              <RiseOutlined />
+              上传与审核趋势
+            </Space>
+          }
+        >
+          <ReactECharts option={trendOption} className="dashboard-chart" />
+        </Card>
 
-          <div className="dashboard-secondary-grid">
-            <Card
-              className="dashboard-panel"
-              title={
-                <Space>
-                  <TeamOutlined />
-                  部门贡献排行
-                </Space>
-              }
-            >
-              <div className="dashboard-ranking-list">
-                {rankingItems.map((item) => (
-                  <div className="dashboard-ranking-row" key={item.name}>
-                    <span className="dashboard-ranking-row__rank">{item.rank}</span>
-                    <Avatar className="dashboard-ranking-row__avatar">{item.name.slice(0, 1)}</Avatar>
-                    <span className="dashboard-ranking-row__copy">
-                      <Typography.Text strong>{item.name}</Typography.Text>
-                      <Typography.Text type="secondary">{item.department}</Typography.Text>
-                    </span>
-                    <span className="dashboard-ranking-row__count">{item.count}</span>
-                    <Progress percent={item.percent} showInfo={false} />
-                  </div>
-                ))}
-              </div>
-            </Card>
-
-            <Card
-              className="dashboard-panel"
-              title={
-                <Space>
-                  <BarChartOutlined />
-                  知识分类占比
-                </Space>
-              }
-            >
-              <ReactECharts option={categoryOption} className="dashboard-category-chart" />
-            </Card>
+        <Card
+          className="dashboard-panel dashboard-activity-card dashboard-span-4"
+          title="今日待办与动态"
+        >
+          <div className="dashboard-todo-strip">
+            <div>
+              <Typography.Text type="secondary">待审核</Typography.Text>
+              <Typography.Title level={4}>64</Typography.Title>
+            </div>
+            <div>
+              <Typography.Text type="secondary">高风险</Typography.Text>
+              <Typography.Title level={4}>12</Typography.Title>
+            </div>
+            <div>
+              <Typography.Text type="secondary">失败</Typography.Text>
+              <Typography.Title level={4}>8</Typography.Title>
+            </div>
           </div>
 
-          <Card className="dashboard-panel table-card" title="最近上传文件">
-            <Table<RecentFile>
-              rowKey="id"
-              columns={recentFileColumns}
-              dataSource={recentFiles}
-              pagination={false}
-              size="middle"
-            />
-          </Card>
-        </div>
+          <div className="dashboard-activity-list">
+            {activityItems.map((item) => (
+              <div className="dashboard-activity-row" key={item.title}>
+                <span className={`dashboard-activity-row__dot dashboard-text--${item.tone}`} />
+                <span className="dashboard-activity-row__copy">
+                  <Typography.Text strong>{item.title}</Typography.Text>
+                  <Typography.Text type="secondary">{item.description}</Typography.Text>
+                  <Typography.Text type="secondary">{item.time}</Typography.Text>
+                </span>
+              </div>
+            ))}
+          </div>
+        </Card>
 
-        <aside className="dashboard-rail">
-          <Card className="dashboard-panel" title="实时动态">
-            <div className="dashboard-activity-list">
-              {activityItems.map((item) => (
-                <div className="dashboard-activity-row" key={item.title}>
-                  <span className={`dashboard-activity-row__dot dashboard-text--${item.tone}`} />
-                  <span className="dashboard-activity-row__copy">
-                    <Typography.Text strong>{item.title}</Typography.Text>
-                    <Typography.Text type="secondary">{item.description}</Typography.Text>
-                    <Typography.Text type="secondary">{item.time}</Typography.Text>
-                  </span>
+        <Card
+          className="dashboard-panel dashboard-ranking-card dashboard-insight-card dashboard-span-6"
+          title={
+            <Space>
+              <TeamOutlined />
+              部门贡献排行
+            </Space>
+          }
+        >
+          <div className="dashboard-ranking-list">
+            {rankingItems.map((item) => (
+              <div className="dashboard-ranking-row" key={item.name}>
+                <span className="dashboard-ranking-row__rank">{item.rank}</span>
+                <Avatar className="dashboard-ranking-row__avatar">{item.name.slice(0, 1)}</Avatar>
+                <span className="dashboard-ranking-row__copy">
+                  <Typography.Text strong>{item.name}</Typography.Text>
+                  <Typography.Text type="secondary">{item.department}</Typography.Text>
+                </span>
+                <span className="dashboard-ranking-row__count">{item.count}</span>
+                <Progress percent={item.percent} showInfo={false} />
+              </div>
+            ))}
+          </div>
+        </Card>
+
+        <Card
+          className="dashboard-panel dashboard-category-card dashboard-insight-card dashboard-span-6"
+          title={
+            <Space>
+              <BarChartOutlined />
+              知识分类占比
+            </Space>
+          }
+        >
+          <div className="dashboard-category-layout">
+            <div className="dashboard-category-visual">
+              <ReactECharts option={categoryOption} className="dashboard-category-chart" />
+              <div className="dashboard-category-total">
+                <Typography.Text type="secondary">总条目</Typography.Text>
+                <Typography.Title level={4}>1,212</Typography.Title>
+              </div>
+            </div>
+            <div className="dashboard-category-details">
+              {categoryItems.map((item) => (
+                <div className="dashboard-category-row" key={item.name}>
+                  <div className="dashboard-category-row__header">
+                    <span
+                      className={`dashboard-category-row__swatch dashboard-category-row__swatch--${item.tone}`}
+                    />
+                    <Typography.Text strong>{item.name}</Typography.Text>
+                    <Typography.Text type="secondary">{item.count} 条</Typography.Text>
+                    <Typography.Text className="dashboard-category-row__percent">
+                      {item.percent}%
+                    </Typography.Text>
+                  </div>
+                  <Progress percent={item.percent} showInfo={false} />
                 </div>
               ))}
             </div>
-          </Card>
+          </div>
+        </Card>
 
-          <Card className="dashboard-panel" title="快捷统计">
-            <div className="dashboard-quick-stats">
-              <div>
-                <Typography.Text type="secondary">AI 分析耗时</Typography.Text>
-                <Typography.Title level={4}>2.8 分钟</Typography.Title>
+        <Card className="dashboard-panel dashboard-efficiency-card dashboard-span-8" title="处理效率">
+          <div className="dashboard-quick-stats">
+            {quickStats.map((item) => (
+              <div className="dashboard-quick-stat" key={item.label}>
+                <Typography.Text type="secondary">{item.label}</Typography.Text>
+                <Typography.Title level={4}>{item.value}</Typography.Title>
+                <Typography.Text type="secondary">{item.helper}</Typography.Text>
               </div>
-              <div>
-                <Typography.Text type="secondary">平均审核时长</Typography.Text>
-                <Typography.Title level={4}>1.6 小时</Typography.Title>
-              </div>
-              <div>
-                <Typography.Text type="secondary">活跃上传人</Typography.Text>
-                <Typography.Title level={4}>86 人</Typography.Title>
-              </div>
-              <div>
-                <Typography.Text type="secondary">本周新增标签</Typography.Text>
-                <Typography.Title level={4}>342 个</Typography.Title>
-              </div>
-            </div>
-          </Card>
+            ))}
+          </div>
+        </Card>
 
-          <Card className="dashboard-panel" title="系统状态">
-            <div className="dashboard-health-list">
-              <div>
+        <Card className="dashboard-panel dashboard-health-card dashboard-span-4" title="系统状态">
+          <div className="dashboard-health-list">
+            {healthItems.map((item) => (
+              <div className="dashboard-health-row" key={item.name}>
                 <Space>
-                  <CheckCircleOutlined className="dashboard-text--success" />
-                  <Typography.Text strong>RAGFlow API</Typography.Text>
+                  <span className={`dashboard-text--${item.tone}`}>{item.icon}</span>
+                  <Typography.Text strong>{item.name}</Typography.Text>
                 </Space>
-                <Progress percent={98} size="small" status="active" />
+                <Progress
+                  percent={item.value}
+                  size="small"
+                  status={item.tone === "success" ? "active" : "normal"}
+                  strokeColor={
+                    item.tone === "purple"
+                      ? "#7c3aed"
+                      : item.tone === "primary"
+                        ? "#1677ff"
+                        : undefined
+                  }
+                />
               </div>
-              <div>
-                <Space>
-                  <RobotOutlined className="dashboard-text--purple" />
-                  <Typography.Text strong>AI Provider</Typography.Text>
-                </Space>
-                <Progress percent={92} size="small" strokeColor="#7c3aed" />
-              </div>
-              <div>
-                <Space>
-                  <CloudSyncOutlined className="dashboard-text--primary" />
-                  <Typography.Text strong>同步队列</Typography.Text>
-                </Space>
-                <Progress percent={76} size="small" strokeColor="#1677ff" />
-              </div>
-            </div>
-          </Card>
-        </aside>
+            ))}
+          </div>
+        </Card>
+
+        <Card className="dashboard-panel table-card dashboard-span-12" title="最近上传文件">
+          <Table<RecentFile>
+            rowKey="id"
+            columns={recentFileColumns}
+            dataSource={recentFiles}
+            pagination={false}
+            size="middle"
+          />
+        </Card>
       </div>
     </PageContainer>
   );
