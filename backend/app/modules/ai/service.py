@@ -49,6 +49,28 @@ GLOBAL_FEATURE_KEYS = {
     "allow_sync_when_analysis_failed",
 }
 RISK_ORDER = {"none": 0, "low": 1, "medium": 2, "high": 3, "critical": 4}
+AI_ANALYSIS_IN_PROGRESS_FILE_STATUSES = frozenset(
+    {
+        "extracting_text",
+        "analysis_queued",
+        "analyzing",
+    }
+)
+AI_ANALYSIS_SUCCEEDED_FILE_STATUSES = frozenset(
+    {
+        "analyzed",
+        "sensitive_review_required",
+        "pending_review",
+        "approved",
+        "rejected",
+        "queued",
+        "syncing",
+        "uploaded_to_ragflow",
+        "parsing",
+        "parsed",
+        "failed",
+    }
+)
 
 
 class AiObjectStorage(Protocol):
@@ -643,6 +665,10 @@ class AiAnalysisService:
         file = await self._get_file_or_raise(file_id)
         if not file.ai_analysis_enabled_at_upload:
             raise exceptions.AiAnalysisPreconditionError("AI disabled when file was uploaded")
+        idempotent_analysis = await self._get_analysis_for_idempotent_delivery(file)
+        if idempotent_analysis is not None:
+            await self._session.commit()
+            return idempotent_analysis.id
 
         provider = await self._repository.get_enabled_provider()
         analysis = await self._start_analysis(file=file, provider=provider)
@@ -741,6 +767,19 @@ class AiAnalysisService:
         await self._repository.update_file_analysis_state(file)
         await self._session.commit()
         return analysis
+
+    async def _get_analysis_for_idempotent_delivery(
+        self,
+        file: AiFileRecord,
+    ) -> DocumentAnalysis | None:
+        analysis = await self._repository.get_document_analysis(file.id)
+        if analysis is None:
+            return None
+        if analysis.status == "running" and file.status in AI_ANALYSIS_IN_PROGRESS_FILE_STATUSES:
+            return analysis
+        if analysis.status == "succeeded" and file.status in AI_ANALYSIS_SUCCEEDED_FILE_STATUSES:
+            return analysis
+        return None
 
     async def mark_analysis_failed(self, *, file_id: uuid.UUID, error_message: str) -> None:
         """供 Celery 重试耗尽后调用的公开失败标记入口。"""
