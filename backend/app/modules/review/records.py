@@ -18,7 +18,7 @@ class ReviewFileRecord:
     dataset_mapping_id: UUID | None
     visibility: str
     description: str | None
-    tags: list[str]
+    tags: list[str]  # AI 建议标签快照; 正式标签关联见 tags/file_tags
     status: str
     review_status: str
     ragflow_dataset_id: str | None

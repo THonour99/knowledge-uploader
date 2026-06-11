@@ -21,6 +21,9 @@ class DocumentStateMachine:
         ("analysis_queued", "analysis_failed"),
         ("analyzing", "analysis_failed"),
         ("analysis_failed", "extracting_text"),
+        ("analysis_failed", "analysis_queued"),
+        ("analyzed", "analysis_queued"),
+        ("analyzing", "analysis_queued"),
         ("analyzing", "analyzed"),
         ("analyzing", "sensitive_review_required"),
         ("uploaded", "pending_review"),
@@ -40,6 +43,28 @@ class DocumentStateMachine:
         ("parsing", "failed"),
         ("failed", "syncing"),
         ("failed", "parsing"),
+        # 管理员重新分析: 把已完成分析的文件重置回可重试状态 (PRD 6.10.2)
+        ("analyzed", "analysis_failed"),
+        # 归档 (-> disabled): 仅允许稳定态进入 (PRD 6.4 / 6.10)
+        ("approved", "disabled"),
+        ("parsed", "disabled"),
+        ("failed", "disabled"),
+        ("rejected", "disabled"),
+        ("analyzed", "disabled"),
+        ("pending_review", "disabled"),
+        # 软删 (-> deleted): 流水线中间态 (queued/syncing/parsing 等) 不允许直接删除
+        ("uploaded", "deleted"),
+        ("pending_review", "deleted"),
+        ("approved", "deleted"),
+        ("rejected", "deleted"),
+        ("failed", "deleted"),
+        ("parsed", "deleted"),
+        ("analysis_failed", "deleted"),
+        ("analyzed", "deleted"),
+        ("sensitive_review_required", "deleted"),
+        ("disabled", "deleted"),
+        ("deleted", "ragflow_cleanup_failed"),
+        ("ragflow_cleanup_failed", "deleted"),
     }
 
     @classmethod

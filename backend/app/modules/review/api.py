@@ -3,7 +3,7 @@ from __future__ import annotations
 from typing import Annotated, NoReturn
 from uuid import UUID
 
-from fastapi import APIRouter, Depends, HTTPException, Request, Response
+from fastapi import APIRouter, Depends, HTTPException, Query, Request, Response
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.database import get_session
@@ -14,7 +14,7 @@ from app.modules.document.schemas import FileListResponse, FileResponse
 from app.modules.user.schemas import AuthUserRecord
 
 from .exceptions import ReviewError
-from .models import Category, DatasetMapping
+from .models import Category, DatasetMapping, Tag
 from .records import ReviewFileRecord
 from .repository import ReviewRepository  # noqa: TID251 - same-module repository dependency
 from .schemas import (
@@ -28,6 +28,11 @@ from .schemas import (
     DatasetMappingUpdateRequest,
     RejectFileRequest,
     ReviewDecisionRequest,
+    TagCreateRequest,
+    TagListResponse,
+    TagMergeRequest,
+    TagResponse,
+    TagUpdateRequest,
     UpdateFileClassificationRequest,
 )
 from .service import RequestContext, ReviewService  # noqa: TID251 - same-module service dependency
@@ -118,6 +123,125 @@ def _file_response(file: ReviewFileRecord) -> FileResponse:
         created_at=file.created_at,
         updated_at=file.updated_at,
     )
+
+
+def _tag_response(tag: Tag, usage_count: int) -> TagResponse:
+    return TagResponse(
+        id=tag.id,
+        name=tag.name,
+        description=tag.description,
+        usage_count=usage_count,
+        is_system_generated=tag.is_system_generated,
+        enabled=tag.enabled,
+        created_at=tag.created_at,
+        updated_at=tag.updated_at,
+    )
+
+
+@router.get("/api/tags")
+async def list_tags(
+    request: Request,
+    current_user: CurrentUserDep,
+    session: SessionDep,
+    enabled: Annotated[bool | None, Query()] = None,
+    search: Annotated[str | None, Query()] = None,
+    page: Annotated[int, Query(ge=1)] = 1,
+    page_size: Annotated[int, Query(ge=1, le=100)] = 50,
+) -> dict[str, object]:
+    try:
+        items, total = await _service(session).list_tags(
+            current_user=current_user,
+            enabled=enabled,
+            search=search,
+            page=page,
+            page_size=page_size,
+            context=_context_from(request),
+        )
+    except ReviewError as error:
+        _raise_review_error(error)
+    response = TagListResponse(
+        items=[_tag_response(tag, usage_count) for tag, usage_count in items],
+        total=total,
+        page=page,
+        page_size=page_size,
+    )
+    return success_response(response.model_dump(mode="json"), request)
+
+
+@router.post("/api/tags", status_code=201)
+async def create_tag(
+    payload: TagCreateRequest,
+    request: Request,
+    current_user: AdminUserDep,
+    session: SessionDep,
+) -> dict[str, object]:
+    try:
+        tag, usage_count = await _service(session).create_tag(
+            current_user=current_user,
+            request=payload,
+            context=_context_from(request),
+        )
+    except ReviewError as error:
+        _raise_review_error(error)
+    return success_response(_tag_response(tag, usage_count).model_dump(mode="json"), request)
+
+
+@router.patch("/api/tags/{tag_id}")
+async def update_tag(
+    tag_id: UUID,
+    payload: TagUpdateRequest,
+    request: Request,
+    current_user: AdminUserDep,
+    session: SessionDep,
+) -> dict[str, object]:
+    try:
+        tag, usage_count = await _service(session).update_tag(
+            current_user=current_user,
+            tag_id=tag_id,
+            request=payload,
+            context=_context_from(request),
+        )
+    except ReviewError as error:
+        _raise_review_error(error)
+    return success_response(_tag_response(tag, usage_count).model_dump(mode="json"), request)
+
+
+@router.post("/api/tags/{tag_id}/merge")
+async def merge_tag(
+    tag_id: UUID,
+    payload: TagMergeRequest,
+    request: Request,
+    current_user: AdminUserDep,
+    session: SessionDep,
+) -> dict[str, object]:
+    try:
+        tag, usage_count = await _service(session).merge_tags(
+            current_user=current_user,
+            source_tag_id=tag_id,
+            target_tag_id=payload.target_tag_id,
+            context=_context_from(request),
+        )
+    except ReviewError as error:
+        _raise_review_error(error)
+    return success_response(_tag_response(tag, usage_count).model_dump(mode="json"), request)
+
+
+@router.delete("/api/tags/{tag_id}")
+async def delete_tag(
+    tag_id: UUID,
+    request: Request,
+    current_user: AdminUserDep,
+    session: SessionDep,
+) -> dict[str, object]:
+    try:
+        await _service(session).delete_tag(
+            current_user=current_user,
+            tag_id=tag_id,
+            context=_context_from(request),
+        )
+    except ReviewError as error:
+        _raise_review_error(error)
+    return success_response({}, request)
 
 
 @router.get("/api/categories")
@@ -259,11 +383,15 @@ async def list_review_files(
     request: Request,
     current_user: AdminUserDep,
     session: SessionDep,
+    extension: Annotated[str | None, Query()] = None,
+    tag_id: Annotated[UUID | None, Query()] = None,
 ) -> dict[str, object]:
     try:
         files = await _service(session).list_review_files(
             current_user=current_user,
             context=_context_from(request),
+            extension=extension,
+            tag_id=tag_id,
         )
     except ReviewError as error:
         _raise_review_error(error)

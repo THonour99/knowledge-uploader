@@ -54,6 +54,30 @@ def task_lock_busy() -> RagflowTaskError:
     )
 
 
+def file_not_found() -> RagflowTaskError:
+    return RagflowTaskError(
+        ErrorCode.VALIDATION_ERROR,
+        "file not found",
+        status.HTTP_404_NOT_FOUND,
+    )
+
+
+def file_not_syncable() -> RagflowTaskError:
+    return RagflowTaskError(
+        ErrorCode.VALIDATION_ERROR,
+        "file cannot be manually synced in its current state",
+        status.HTTP_409_CONFLICT,
+    )
+
+
+def sync_blocked_by_sensitive_policy() -> RagflowTaskError:
+    return RagflowTaskError(
+        ErrorCode.VALIDATION_ERROR,
+        "file sync is blocked by sensitive content policy",
+        status.HTTP_409_CONFLICT,
+    )
+
+
 def task_not_cancelable() -> RagflowTaskError:
     return RagflowTaskError(
         ErrorCode.VALIDATION_ERROR,

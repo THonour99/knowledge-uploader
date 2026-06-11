@@ -13,7 +13,7 @@ from app.core.runtime_config import get_config
 from app.modules.user.schemas import AuthUserRecord
 
 from . import events, exceptions
-from .models import Category, DatasetMapping
+from .models import Category, DatasetMapping, Tag
 from .records import ReviewFileRecord
 from .repository import ReviewRepository  # noqa: TID251 - same-module repository dependency
 from .schemas import (
@@ -22,6 +22,8 @@ from .schemas import (
     DatasetMappingCreateRequest,
     DatasetMappingUpdateRequest,
     ReviewDecisionRequest,
+    TagCreateRequest,
+    TagUpdateRequest,
     UpdateFileClassificationRequest,
 )
 
@@ -295,14 +297,179 @@ class ReviewService:
         )
         await self._session.commit()
 
+    async def list_tags(
+        self,
+        *,
+        current_user: AuthUserRecord,
+        enabled: bool | None,
+        search: str | None,
+        page: int,
+        page_size: int,
+        context: RequestContext,
+    ) -> tuple[list[tuple[Tag, int]], int]:
+        items, total = await self._repository.list_tags(
+            enabled=enabled,
+            search=clean_optional_text(search),
+            page=page,
+            page_size=page_size,
+        )
+        if current_user.role in ADMIN_ROLES:
+            await self._record_admin_audit(
+                current_user=current_user,
+                action="tag.list",
+                target_type="tag_collection",
+                target_id=current_user.id,
+                context=context,
+                metadata_json={"result_count": len(items), "total": total},
+            )
+            await self._session.commit()
+        return items, total
+
+    async def create_tag(
+        self,
+        *,
+        current_user: AuthUserRecord,
+        request: TagCreateRequest,
+        context: RequestContext,
+    ) -> tuple[Tag, int]:
+        self._require_system_admin(current_user)
+        name = request.name.strip()
+        if not name:
+            raise exceptions.tag_name_empty()
+        if await self._repository.get_tag_by_name(name) is not None:
+            raise exceptions.tag_name_conflict()
+        tag = Tag(
+            name=name,
+            description=clean_optional_text(request.description),
+            is_system_generated=False,
+            enabled=True,
+            usage_count=0,
+        )
+        await self._repository.add_tag(tag)
+        await self._record_admin_audit(
+            current_user=current_user,
+            action="tag.create",
+            target_type="tag",
+            target_id=tag.id,
+            context=context,
+            metadata_json={"name": tag.name},
+        )
+        await self._session.commit()
+        await self._session.refresh(tag)
+        return tag, 0
+
+    async def update_tag(
+        self,
+        *,
+        current_user: AuthUserRecord,
+        tag_id: uuid.UUID,
+        request: TagUpdateRequest,
+        context: RequestContext,
+    ) -> tuple[Tag, int]:
+        self._require_system_admin(current_user)
+        tag = await self._get_tag_or_raise(tag_id)
+        if request.name is not None:
+            name = request.name.strip()
+            if not name:
+                raise exceptions.tag_name_empty()
+            existing = await self._repository.get_tag_by_name(name)
+            if existing is not None and existing.id != tag.id:
+                raise exceptions.tag_name_conflict()
+            tag.name = name
+        if "description" in request.model_fields_set:
+            tag.description = clean_optional_text(request.description)
+        if request.enabled is not None:
+            tag.enabled = request.enabled
+        await self._record_admin_audit(
+            current_user=current_user,
+            action="tag.update",
+            target_type="tag",
+            target_id=tag.id,
+            context=context,
+            metadata_json={"name": tag.name, "enabled": tag.enabled},
+        )
+        await self._session.commit()
+        await self._session.refresh(tag)
+        usage_count = await self._repository.count_tag_files(tag.id)
+        return tag, usage_count
+
+    async def merge_tags(
+        self,
+        *,
+        current_user: AuthUserRecord,
+        source_tag_id: uuid.UUID,
+        target_tag_id: uuid.UUID,
+        context: RequestContext,
+    ) -> tuple[Tag, int]:
+        """合并标签: 迁移关联(去重)、重算目标 usage_count、删除源标签, 同一事务提交。"""
+        self._require_system_admin(current_user)
+        if source_tag_id == target_tag_id:
+            raise exceptions.tag_merge_self()
+        source = await self._get_tag_or_raise(source_tag_id)
+        target = await self._get_tag_or_raise(target_tag_id)
+        source_usage = await self._repository.count_tag_files(source.id)
+        await self._repository.move_file_tag_links(
+            source_tag_id=source.id,
+            target_tag_id=target.id,
+        )
+        usage_count = await self._repository.count_tag_files(target.id)
+        await self._repository.set_tag_usage_count(target.id, usage_count)
+        source_name = source.name
+        await self._repository.delete_tag(source)
+        await self._record_admin_audit(
+            current_user=current_user,
+            action="tag.merge",
+            target_type="tag",
+            target_id=target.id,
+            context=context,
+            metadata_json={
+                "source_tag_id": str(source_tag_id),
+                "source_name": source_name,
+                "source_usage_count": source_usage,
+                "target_usage_count": usage_count,
+            },
+        )
+        await self._session.commit()
+        await self._session.refresh(target)
+        return target, usage_count
+
+    async def delete_tag(
+        self,
+        *,
+        current_user: AuthUserRecord,
+        tag_id: uuid.UUID,
+        context: RequestContext,
+    ) -> None:
+        self._require_system_admin(current_user)
+        tag = await self._get_tag_or_raise(tag_id)
+        usage_count = await self._repository.count_tag_files(tag.id)
+        if usage_count > 0:
+            raise exceptions.tag_in_use()
+        tag_name = tag.name
+        await self._repository.delete_tag(tag)
+        await self._record_admin_audit(
+            current_user=current_user,
+            action="tag.delete",
+            target_type="tag",
+            target_id=tag_id,
+            context=context,
+            metadata_json={"name": tag_name},
+        )
+        await self._session.commit()
+
     async def list_review_files(
         self,
         *,
         current_user: AuthUserRecord,
         context: RequestContext,
+        extension: str | None = None,
+        tag_id: uuid.UUID | None = None,
     ) -> list[ReviewFileRecord]:
         self._require_admin(current_user)
-        files = await self._repository.list_files()
+        files = await self._repository.list_files(
+            extension=clean_optional_text(extension),
+            tag_id=tag_id,
+        )
         await self._record_admin_audit(
             current_user=current_user,
             action="file.review_list",
@@ -490,6 +657,12 @@ class ReviewService:
         file = await self._repository.update_file(file)
         await self._session.commit()
         return file
+
+    async def _get_tag_or_raise(self, tag_id: uuid.UUID) -> Tag:
+        tag = await self._repository.get_tag(tag_id)
+        if tag is None:
+            raise exceptions.tag_not_found()
+        return tag
 
     async def _get_category_or_raise(self, category_id: uuid.UUID) -> Category:
         category = await self._repository.get_category(category_id)

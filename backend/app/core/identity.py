@@ -4,6 +4,8 @@ import uuid
 from datetime import datetime
 from typing import Protocol
 
+from sqlalchemy.ext.asyncio import AsyncSession
+
 from app.modules.user.schemas import AuthUserRecord
 
 
@@ -17,11 +19,9 @@ NullableStringUpdate = str | None | _NullValue
 
 
 class UserIdentityStore(Protocol):
-    async def get_by_email(self, email: str) -> AuthUserRecord | None:
-        ...
+    async def get_by_email(self, email: str) -> AuthUserRecord | None: ...
 
-    async def get_by_id(self, user_id: uuid.UUID) -> AuthUserRecord | None:
-        ...
+    async def get_by_id(self, user_id: uuid.UUID) -> AuthUserRecord | None: ...
 
     async def create_user(
         self,
@@ -34,11 +34,9 @@ class UserIdentityStore(Protocol):
         phone: str | None,
         status: str,
         email_verified: bool,
-    ) -> AuthUserRecord:
-        ...
+    ) -> AuthUserRecord: ...
 
-    async def mark_email_verified(self, user_id: uuid.UUID) -> AuthUserRecord:
-        ...
+    async def mark_email_verified(self, user_id: uuid.UUID) -> AuthUserRecord: ...
 
     async def record_verification_state(
         self,
@@ -51,5 +49,11 @@ class UserIdentityStore(Protocol):
         last_login_at: NullableDatetimeUpdate = None,
         last_login_ip: NullableStringUpdate = None,
         increment_session_version: bool = False,
-    ) -> AuthUserRecord:
-        ...
+    ) -> AuthUserRecord: ...
+
+
+def get_user_identity_store(session: AsyncSession) -> UserIdentityStore:
+    """Return the configured user identity store through the core protocol boundary."""
+    from app.modules.user.identity import SqlUserIdentityStore
+
+    return SqlUserIdentityStore(session)

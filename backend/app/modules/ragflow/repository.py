@@ -102,10 +102,11 @@ class RagflowTaskRepository:
         )
         return result.scalar_one_or_none()
 
-    async def list_tasks(self) -> list[SyncTask]:
-        result = await self._session.execute(
-            select(SyncTask).order_by(SyncTask.created_at.desc(), SyncTask.id.desc())
-        )
+    async def list_tasks(self, *, file_id: uuid.UUID | None = None) -> list[SyncTask]:
+        query = select(SyncTask).order_by(SyncTask.created_at.desc(), SyncTask.id.desc())
+        if file_id is not None:
+            query = query.where(SyncTask.file_id == file_id)
+        result = await self._session.execute(query)
         return list(result.scalars())
 
     async def get_task(self, task_id: uuid.UUID) -> SyncTask | None:

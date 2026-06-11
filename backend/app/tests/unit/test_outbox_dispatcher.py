@@ -7,7 +7,10 @@ from typing import Any
 import pytest
 
 from app.core.outbox import EventOutbox
-from app.modules.document.events import DOCUMENT_FILE_UPLOADED
+from app.modules.document.events import (
+    DOCUMENT_FILE_REANALYZE_REQUESTED,
+    DOCUMENT_FILE_UPLOADED,
+)
 from app.workers.outbox_dispatcher import dispatch_celery_task_for_event, dispatch_once
 
 pytestmark = pytest.mark.asyncio
@@ -247,6 +250,32 @@ async def test_file_uploaded_event_requires_file_id_when_ai_enabled() -> None:
         aggregate_type="file",
         aggregate_id="file-1",
         payload={"ai_analysis_enabled_at_upload": True},
+    )
+
+    with pytest.raises(RuntimeError, match="missing file_id"):
+        dispatch_celery_task_for_event(event, sender=FakeCelerySender())
+
+
+async def test_reanalyze_requested_event_dispatches_ai_task() -> None:
+    event = EventOutbox(
+        event_type=DOCUMENT_FILE_REANALYZE_REQUESTED,
+        aggregate_type="file",
+        aggregate_id="file-1",
+        payload={"file_id": "file-1"},
+    )
+    sender = FakeCelerySender()
+
+    dispatch_celery_task_for_event(event, sender=sender)
+
+    assert sender.sent == [{"name": "ai.analyze_file", "args": ["file-1"], "queue": "ai_queue"}]
+
+
+async def test_reanalyze_requested_event_requires_file_id() -> None:
+    event = EventOutbox(
+        event_type=DOCUMENT_FILE_REANALYZE_REQUESTED,
+        aggregate_type="file",
+        aggregate_id="file-1",
+        payload={},
     )
 
     with pytest.raises(RuntimeError, match="missing file_id"):

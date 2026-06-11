@@ -18,66 +18,226 @@ import {
   InboxOutlined,
   InfoCircleOutlined,
   TagsOutlined,
+  WarningOutlined,
 } from "@ant-design/icons";
-import { useMutation } from "@tanstack/react-query";
-import { useState } from "react";
+import { useState, useCallback, useMemo, useRef } from "react";
 import { useNavigate } from "react-router-dom";
+import { useQuery } from "@tanstack/react-query";
 import type { UploadFile } from "antd/es/upload/interface";
 
-import { type KnowledgeFile, uploadDocument } from "../../api/client";
+import type { RcFile } from "antd/es/upload";
+
+import { type KnowledgeFile, getConfigs, uploadDocument } from "../../api/client";
 import { StatusTag } from "../../components/StatusTag";
 import { PageContainer } from "../../layouts/PageContainer";
+import {
+  allowMultiFileFromConfig,
+  allowedExtensionsFromConfig,
+  extensionAcceptValue,
+} from "../../utils/uploadConfig";
+
+/** Maximum number of simultaneous uploads. */
+const CONCURRENCY_LIMIT = 3;
+
+type QueueItemStatus = "pending" | "uploading" | "success" | "duplicate" | "error";
+
+interface QueueItem {
+  uid: string;
+  name: string;
+  file: RcFile;
+  status: QueueItemStatus;
+  percent: number;
+  result: KnowledgeFile | null;
+  errorMessage: string | null;
+}
 
 interface UploadFormValues {
   file?: UploadFile[];
-  title?: string;
-  category?: string;
-  dataset?: string;
-  tags?: string[];
   description?: string;
   visibility: KnowledgeFile["visibility"];
-  submitAfterUpload?: boolean;
-  aiAnalyze?: boolean;
 }
 
 function normalizeUploadFile(event: { fileList?: UploadFile[] } | UploadFile[]): UploadFile[] {
   if (Array.isArray(event)) {
     return event;
   }
-
   return event.fileList ?? [];
+}
+
+/** Run at most `limit` promises concurrently from a task factory array. */
+async function runConcurrent<T>(
+  tasks: Array<() => Promise<T>>,
+  limit: number,
+): Promise<PromiseSettledResult<T>[]> {
+  const results: PromiseSettledResult<T>[] = new Array(tasks.length);
+  let nextIndex = 0;
+
+  async function worker(): Promise<void> {
+    while (nextIndex < tasks.length) {
+      const index = nextIndex;
+      nextIndex += 1;
+      try {
+        results[index] = { status: "fulfilled", value: await tasks[index]() };
+      } catch (err) {
+        results[index] = {
+          status: "rejected",
+          reason: err instanceof Error ? err : new Error(String(err)),
+        };
+      }
+    }
+  }
+
+  const workers = Array.from({ length: Math.min(limit, tasks.length) }, () => worker());
+  await Promise.all(workers);
+  return results;
 }
 
 export default function UploadPage() {
   const navigate = useNavigate();
   const { message } = AntdApp.useApp();
   const [form] = Form.useForm<UploadFormValues>();
-  const [uploadedFile, setUploadedFile] = useState<KnowledgeFile | null>(null);
-  const selectedFiles = Form.useWatch("file", form) ?? [];
 
-  const mutation = useMutation({
-    mutationFn: (values: UploadFormValues) => {
-      const selectedFile = values.file?.[0]?.originFileObj;
+  // The upload queue is separate from the AntD Upload fileList so we can
+  // track per-file progress and result independently of the form state.
+  const [queue, setQueue] = useState<QueueItem[]>([]);
+  const [isUploading, setIsUploading] = useState(false);
+  const uploadConfigQuery = useQuery({
+    queryKey: ["configs", "upload", "upload-page"],
+    queryFn: () => getConfigs("upload"),
+  });
+  const allowedExtensions = useMemo(
+    () => allowedExtensionsFromConfig(uploadConfigQuery.data?.items),
+    [uploadConfigQuery.data?.items],
+  );
+  const allowMultiFile = allowMultiFileFromConfig(uploadConfigQuery.data?.items);
+  const acceptValue = useMemo(() => extensionAcceptValue(allowedExtensions), [allowedExtensions]);
+  const allowedExtensionText = allowedExtensions.map((extension) => extension.toUpperCase()).join("、");
 
-      if (!selectedFile) {
-        throw new Error("请选择文件");
+  // Guard against stale closures when updating individual queue rows.
+  const queueRef = useRef(queue);
+  queueRef.current = queue;
+
+  const updateItem = useCallback(
+    (uid: string, patch: Partial<Omit<QueueItem, "uid" | "name" | "file">>) => {
+      setQueue((prev) =>
+        prev.map((item) => (item.uid === uid ? { ...item, ...patch } : item)),
+      );
+    },
+    [],
+  );
+
+  /** Build a fresh queue from the current AntD fileList. */
+  const buildQueue = useCallback((fileList: UploadFile[]): QueueItem[] => {
+    const items: QueueItem[] = [];
+    for (const uploadFile of fileList) {
+      const rc = uploadFile.originFileObj;
+      if (rc instanceof File) {
+        items.push({
+          uid: uploadFile.uid,
+          name: uploadFile.name,
+          file: rc as RcFile,
+          status: "pending",
+          percent: 0,
+          result: null,
+          errorMessage: null,
+        });
+      }
+    }
+    return items;
+  }, []);
+
+  const handleFileListChange = useCallback(
+    (fileList: UploadFile[]) => {
+      if (!isUploading) {
+        setQueue(buildQueue(fileList));
+      }
+    },
+    [isUploading, buildQueue],
+  );
+
+  const handleSubmit = useCallback(
+    async (values: UploadFormValues) => {
+      const fileList = values.file ?? [];
+
+      if (fileList.length === 0) {
+        message.warning("请至少选择一个文件");
+        return;
       }
 
-      return uploadDocument({
-        file: selectedFile,
-        description: values.description,
-        visibility: values.visibility,
+      // Re-build queue from the current form file list so UIDs match.
+      const freshQueue = buildQueue(fileList);
+      setQueue(freshQueue);
+      setIsUploading(true);
+
+      const tasks = freshQueue.map((item) => async () => {
+        updateItem(item.uid, { status: "uploading", percent: 0 });
+
+        const result = await uploadDocument(
+          {
+            file: item.file,
+            description: values.description,
+            visibility: values.visibility,
+          },
+          (percent) => {
+            updateItem(item.uid, { percent });
+          },
+        );
+
+        updateItem(item.uid, {
+          status: result.duplicate ? "duplicate" : "success",
+          percent: 100,
+          result,
+        });
+
+        return result;
       });
+
+      const settled = await runConcurrent(tasks, CONCURRENCY_LIMIT);
+
+      // Mark failed items.
+      settled.forEach((outcome, i) => {
+        if (outcome.status === "rejected") {
+          const errorMessage =
+            outcome.reason instanceof Error ? outcome.reason.message : "上传失败";
+          updateItem(freshQueue[i].uid, { status: "error", errorMessage });
+        }
+      });
+
+      setIsUploading(false);
+      form.resetFields(["file"]);
+
+      const successCount = settled.filter((r) => r.status === "fulfilled").length;
+      const failCount = settled.filter((r) => r.status === "rejected").length;
+      const dupCount = settled
+        .filter(
+          (r): r is PromiseFulfilledResult<KnowledgeFile> => r.status === "fulfilled",
+        )
+        .filter((r) => r.value.duplicate).length;
+
+      if (failCount === 0) {
+        message.success(
+          dupCount > 0
+            ? `上传完成，共 ${successCount} 个文件，其中 ${dupCount} 个重复`
+            : `上传完成，共 ${successCount} 个文件`,
+        );
+      } else {
+        message.warning(`上传完成：${successCount} 成功，${failCount} 失败`);
+      }
     },
-    onSuccess: (file) => {
-      setUploadedFile(file);
-      message.success(file.duplicate ? "已识别重复文件" : "上传成功");
-      form.resetFields();
+    [buildQueue, updateItem, form, message],
+  );
+
+  const selectedFiles: UploadFile[] = Form.useWatch("file", form) ?? [];
+
+  // Sync queue when the file list changes and we are not uploading.
+  const handleFormValuesChange = useCallback(
+    (changed: Partial<UploadFormValues>) => {
+      if ("file" in changed && !isUploading) {
+        handleFileListChange(changed.file ?? []);
+      }
     },
-    onError: (error) => {
-      message.error(error.message);
-    },
-  });
+    [isUploading, handleFileListChange],
+  );
 
   return (
     <PageContainer
@@ -90,11 +250,10 @@ export default function UploadPage() {
         layout="vertical"
         initialValues={{
           visibility: "private",
-          submitAfterUpload: true,
-          aiAnalyze: true,
         }}
         requiredMark={false}
-        onFinish={(values) => mutation.mutate(values)}
+        onValuesChange={handleFormValuesChange}
+        onFinish={handleSubmit}
       >
         <div className="upload-main">
           <Card
@@ -113,37 +272,110 @@ export default function UploadPage() {
               rules={[{ required: true, message: "请选择文件" }]}
             >
               <Upload.Dragger
-                maxCount={1}
-                multiple={false}
+                multiple={allowMultiFile}
+                maxCount={allowMultiFile ? undefined : 1}
                 beforeUpload={() => false}
-                accept=".pdf,.doc,.docx,.xls,.xlsx,.ppt,.pptx,.txt,.md,.csv"
+                accept={acceptValue}
+                disabled={isUploading}
               >
                 <p className="ant-upload-drag-icon">
                   <InboxOutlined />
                 </p>
                 <p className="ant-upload-text">拖拽文件到此处，或点击选择文件</p>
                 <p className="ant-upload-hint">
-                  支持 PDF、Word、Excel、PPT、TXT、Markdown、CSV，上传后自动校验与去重。
+                  支持 {allowedExtensionText}
+                  {allowMultiFile ? "，可同时选择多个文件。" : "，当前仅允许单文件上传。"}
                 </p>
               </Upload.Dragger>
             </Form.Item>
           </Card>
 
           <Card className="document-panel upload-queue-card" title="上传队列">
-            {selectedFiles.length > 0 ? (
-              selectedFiles.map((file) => (
-                <div className="upload-queue-row" key={file.uid}>
-                  <span className="upload-queue-row__icon">
-                    <FileTextOutlined />
-                  </span>
-                  <span className="upload-queue-row__copy">
-                    <Typography.Text strong>{file.name}</Typography.Text>
-                    <Typography.Text type="secondary">等待开始上传</Typography.Text>
-                    <Progress percent={mutation.isPending ? 62 : 0} size="small" status="active" />
-                  </span>
-                  <StatusTag kind="sync" value={mutation.isPending ? "syncing" : "queued"} />
-                </div>
-              ))
+            {queue.length > 0 ? (
+              <div data-testid="upload-queue">
+                {queue.map((item) => (
+                  <div className="upload-queue-row" key={item.uid} data-testid={`queue-row-${item.uid}`}>
+                    <span className="upload-queue-row__icon">
+                      {item.status === "error" ? (
+                        <WarningOutlined style={{ color: "var(--ku-color-danger)" }} />
+                      ) : (
+                        <FileTextOutlined />
+                      )}
+                    </span>
+                    <span className="upload-queue-row__copy">
+                      <Typography.Text strong>{item.name}</Typography.Text>
+                      {item.status === "pending" && (
+                        <Typography.Text type="secondary">等待上传</Typography.Text>
+                      )}
+                      {item.status === "uploading" && (
+                        <Progress percent={item.percent} size="small" status="active" />
+                      )}
+                      {(item.status === "success" || item.status === "duplicate") && (
+                        <Progress percent={100} size="small" status="success" />
+                      )}
+                      {item.status === "error" && (
+                        <>
+                          <Progress percent={item.percent} size="small" status="exception" />
+                          <Typography.Text type="danger" className="upload-queue-row__error">
+                            {item.errorMessage}
+                          </Typography.Text>
+                        </>
+                      )}
+                    </span>
+                    <span className="upload-queue-row__status">
+                      {item.status === "pending" && (
+                        <StatusTag kind="sync" value="queued" />
+                      )}
+                      {item.status === "uploading" && (
+                        <StatusTag kind="sync" value="syncing" />
+                      )}
+                      {item.status === "success" && (
+                        <StatusTag kind="file" value="uploaded" />
+                      )}
+                      {item.status === "duplicate" && (
+                        <StatusTag kind="sync" value="not_synced" />
+                      )}
+                      {item.status === "error" && (
+                        <StatusTag kind="file" value="failed" />
+                      )}
+                    </span>
+                    {item.status === "duplicate" && (
+                      <Typography.Text
+                        type="warning"
+                        className="upload-queue-row__dup"
+                        data-testid={`dup-indicator-${item.uid}`}
+                      >
+                        重复文件（已复用）
+                      </Typography.Text>
+                    )}
+                    {item.status === "success" && item.result && (
+                      <Button
+                        type="link"
+                        size="small"
+                        className="upload-queue-row__link"
+                        onClick={() => navigate(`/files/${item.result!.id}`)}
+                      >
+                        查看详情
+                      </Button>
+                    )}
+                  </div>
+                ))}
+              </div>
+            ) : selectedFiles.length > 0 ? (
+              <div data-testid="upload-queue">
+                {selectedFiles.map((f) => (
+                  <div className="upload-queue-row" key={f.uid}>
+                    <span className="upload-queue-row__icon">
+                      <FileTextOutlined />
+                    </span>
+                    <span className="upload-queue-row__copy">
+                      <Typography.Text strong>{f.name}</Typography.Text>
+                      <Typography.Text type="secondary">等待开始上传</Typography.Text>
+                    </span>
+                    <StatusTag kind="sync" value="queued" />
+                  </div>
+                ))}
+              </div>
             ) : (
               <div className="upload-empty-queue">
                 <InfoCircleOutlined />
@@ -179,41 +411,6 @@ export default function UploadPage() {
             </Space>
           }
         >
-          <Form.Item label="知识标题" name="title">
-            <Input placeholder="默认使用文件名，可在此补充业务标题" />
-          </Form.Item>
-          <Form.Item label="知识分类" name="category">
-            <Select
-              placeholder="请选择分类"
-              options={[
-                { label: "产品资料", value: "product" },
-                { label: "技术支持", value: "support" },
-                { label: "制度流程", value: "process" },
-                { label: "市场素材", value: "marketing" },
-              ]}
-            />
-          </Form.Item>
-          <Form.Item label="目标 Dataset" name="dataset">
-            <Select
-              placeholder="审核后同步的 RAGFlow Dataset"
-              options={[
-                { label: "客服机器人知识库", value: "customer-service" },
-                { label: "技术支持知识库", value: "support" },
-                { label: "员工制度知识库", value: "employee" },
-              ]}
-            />
-          </Form.Item>
-          <Form.Item label="标签" name="tags">
-            <Select
-              mode="tags"
-              placeholder="输入标签后回车"
-              options={[
-                { label: "FAQ", value: "FAQ" },
-                { label: "产品", value: "产品" },
-                { label: "流程", value: "流程" },
-              ]}
-            />
-          </Form.Item>
           <Form.Item label="可见范围" name="visibility">
             <Select
               options={[
@@ -224,47 +421,29 @@ export default function UploadPage() {
             />
           </Form.Item>
           <Form.Item label="说明" name="description">
-            <Input.TextArea rows={5} maxLength={2000} showCount placeholder="补充用途、来源或审核备注" />
+            <Input.TextArea
+              rows={5}
+              maxLength={2000}
+              showCount
+              placeholder="补充用途、来源或审核备注"
+            />
           </Form.Item>
           <div className="upload-switch-grid">
             <Form.Item name="submitAfterUpload" valuePropName="checked">
-              <Switch checkedChildren="上传后提交审核" unCheckedChildren="保存草稿" />
+              <Switch checkedChildren="上传后提交审核" unCheckedChildren="保存草稿" defaultChecked />
             </Form.Item>
             <Form.Item name="aiAnalyze" valuePropName="checked">
-              <Switch checkedChildren="启用 AI 分析" unCheckedChildren="跳过 AI" />
+              <Switch checkedChildren="启用 AI 分析" unCheckedChildren="跳过 AI" defaultChecked />
             </Form.Item>
           </div>
           <Space className="upload-actions">
-            <Button>保存草稿</Button>
-            <Button type="primary" htmlType="submit" loading={mutation.isPending}>
+            <Button disabled={isUploading}>保存草稿</Button>
+            <Button type="primary" htmlType="submit" loading={isUploading}>
               开始上传
             </Button>
           </Space>
         </Card>
       </Form>
-
-      {uploadedFile ? (
-        <Card className="document-panel upload-result-card" title="最近上传">
-          <Space direction="vertical" size={12} className="document-result">
-            <Typography.Text strong>{uploadedFile.original_name}</Typography.Text>
-            <Space wrap>
-              <StatusTag kind="file" value={uploadedFile.status} />
-              <StatusTag kind="review" value={uploadedFile.review_status} />
-              {uploadedFile.duplicate ? <StatusTag kind="sync" value="not_synced" /> : null}
-            </Space>
-            <Typography.Text type="secondary">
-              {uploadedFile.duplicate ? "已识别为本人重复上传" : "已保存并等待后续审核"}
-            </Typography.Text>
-            <Button
-              type="link"
-              className="document-link-button"
-              onClick={() => navigate(`/files/${uploadedFile.id}`)}
-            >
-              查看详情
-            </Button>
-          </Space>
-        </Card>
-      ) : null}
     </PageContainer>
   );
 }

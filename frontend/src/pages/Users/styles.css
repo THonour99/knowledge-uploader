@@ -136,7 +136,7 @@
   padding: 16px;
   border: 1px solid var(--ku-border);
   border-radius: var(--ku-radius-control);
-  background: #fbfdff;
+  background: var(--ku-bg-card);
 }
 
 @media (max-width: 1280px) {

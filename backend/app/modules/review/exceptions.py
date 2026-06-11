@@ -64,3 +64,43 @@ def invalid_visibility() -> ReviewError:
         "invalid category visibility",
         status.HTTP_400_BAD_REQUEST,
     )
+
+
+def tag_not_found() -> ReviewError:
+    return ReviewError(
+        ErrorCode.VALIDATION_ERROR,
+        "tag not found",
+        status.HTTP_404_NOT_FOUND,
+    )
+
+
+def tag_name_conflict() -> ReviewError:
+    return ReviewError(
+        ErrorCode.VALIDATION_ERROR,
+        "tag name already exists",
+        status.HTTP_409_CONFLICT,
+    )
+
+
+def tag_name_empty() -> ReviewError:
+    return ReviewError(
+        ErrorCode.VALIDATION_ERROR,
+        "tag name cannot be empty",
+        status.HTTP_400_BAD_REQUEST,
+    )
+
+
+def tag_merge_self() -> ReviewError:
+    return ReviewError(
+        ErrorCode.VALIDATION_ERROR,
+        "cannot merge a tag into itself",
+        status.HTTP_400_BAD_REQUEST,
+    )
+
+
+def tag_in_use() -> ReviewError:
+    return ReviewError(
+        ErrorCode.VALIDATION_ERROR,
+        "tag has linked files, merge it into another tag first",
+        status.HTTP_409_CONFLICT,
+    )

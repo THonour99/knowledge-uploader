@@ -19,7 +19,7 @@ from sqlalchemy.orm import Mapped, mapped_column
 
 from app.db.base import Base
 
-SYNC_TASK_TYPES = ("ragflow_upload", "ragflow_parse", "ragflow_status_check")
+SYNC_TASK_TYPES = ("ragflow_upload", "ragflow_parse", "ragflow_status_check", "ragflow_delete")
 SYNC_TASK_STATUSES = ("queued", "running", "succeeded", "failed", "canceled")
 ACTIVE_SYNC_TASK_STATUSES = ("queued", "running")
 
@@ -28,7 +28,9 @@ class SyncTask(Base):
     __tablename__ = "sync_tasks"
     __table_args__ = (
         CheckConstraint(
-            "task_type IN ('ragflow_upload', 'ragflow_parse', 'ragflow_status_check')",
+            "task_type IN ("
+            "'ragflow_upload', 'ragflow_parse', 'ragflow_status_check', 'ragflow_delete'"
+            ")",
             name="ck_sync_tasks_task_type",
         ),
         CheckConstraint(

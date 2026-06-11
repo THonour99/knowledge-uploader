@@ -22,6 +22,10 @@ class RagflowClientError(Exception):
     pass
 
 
+class RagflowDocumentNotFoundError(RagflowClientError):
+    """远端文档不存在 (HTTP 404 或 RAGFlow not found 语义), 删除场景按幂等成功处理。"""
+
+
 class RagflowClient(Protocol):
     async def ping(self) -> bool: ...
 

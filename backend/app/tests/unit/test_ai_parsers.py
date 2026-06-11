@@ -198,3 +198,51 @@ class TestDocumentStateMachineRetry:
     def test_analyzed_cannot_go_back_to_extracting_text(self) -> None:
         with pytest.raises(DocumentStateError):
             DocumentStateMachine.transition("analyzed", "extracting_text")
+
+
+class TestDocumentLifecycleTransitions:
+    @pytest.mark.parametrize(
+        "from_status",
+        [
+            "uploaded",
+            "pending_review",
+            "approved",
+            "rejected",
+            "failed",
+            "parsed",
+            "analysis_failed",
+            "analyzed",
+            "sensitive_review_required",
+            "disabled",
+        ],
+    )
+    def test_soft_delete_allowed_from_stable_statuses(self, from_status: str) -> None:
+        assert DocumentStateMachine.transition(from_status, "deleted") == "deleted"
+
+    @pytest.mark.parametrize(
+        "from_status",
+        ["queued", "syncing", "uploaded_to_ragflow", "parsing", "extracting_text", "analyzing"],
+    )
+    def test_soft_delete_rejected_from_mid_pipeline_statuses(self, from_status: str) -> None:
+        with pytest.raises(DocumentStateError):
+            DocumentStateMachine.transition(from_status, "deleted")
+
+    @pytest.mark.parametrize(
+        "from_status",
+        ["approved", "parsed", "failed", "rejected", "analyzed", "pending_review"],
+    )
+    def test_archive_allowed_from_stable_statuses(self, from_status: str) -> None:
+        assert DocumentStateMachine.transition(from_status, "disabled") == "disabled"
+
+    @pytest.mark.parametrize("from_status", ["uploaded", "syncing", "deleted"])
+    def test_archive_rejected_from_other_statuses(self, from_status: str) -> None:
+        with pytest.raises(DocumentStateError):
+            DocumentStateMachine.transition(from_status, "disabled")
+
+    def test_deleted_is_terminal(self) -> None:
+        for to_status in ("uploaded", "pending_review", "approved", "disabled"):
+            with pytest.raises(DocumentStateError):
+                DocumentStateMachine.transition("deleted", to_status)
+
+    def test_analyzed_can_reset_to_analysis_failed_for_reanalysis(self) -> None:
+        assert DocumentStateMachine.transition("analyzed", "analysis_failed") == "analysis_failed"

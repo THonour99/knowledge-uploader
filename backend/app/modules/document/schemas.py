@@ -22,6 +22,7 @@ class FileResponse(BaseModel):
     dataset_mapping_id: UUID | None
     visibility: str
     description: str | None
+    # AI 建议标签 (建议值); 正式标签实体见 review 模块 GET /api/tags 与 file_tags 关联。
     tags: list[str]
     status: str
     review_status: str

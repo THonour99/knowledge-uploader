@@ -39,6 +39,7 @@ const statusMap: Record<StatusKind, Record<string, StatusMeta>> = {
     failed: { label: "失败", color: "danger" },
     disabled: { label: "已禁用", color: "default" },
     deleted: { label: "已删除", color: "default", italic: true },
+    ragflow_cleanup_failed: { label: "远端清理失败", color: "danger" },
   },
   review: {
     pending: { label: "待审核", color: "queued" },

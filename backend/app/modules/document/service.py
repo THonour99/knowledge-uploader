@@ -15,6 +15,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.audit import record_admin_audit_log, record_audit_log
 from app.core.config import Settings
+from app.core.document_state import DocumentStateError, DocumentStateMachine
 from app.core.outbox import OutboxRepository
 from app.core.runtime_config import get_config
 from app.modules.user.schemas import AuthUserRecord
@@ -55,6 +56,14 @@ UNSUPPORTED_LEGACY_EXTENSIONS = {"doc", "xls", "ppt"}
 TEXT_EXTENSIONS = {"txt", "md", "csv"}
 ADMIN_ROLES = {"knowledge_admin", "system_admin"}
 EXTRACTED_TEXT_PREVIEW_CHARS = 500
+# 重新分析的合法源状态: 失败/已分析可重跑; 中间态属于 R1 遗留卡死文件, 允许救回
+REANALYZE_SOURCE_STATUSES = {
+    "analysis_failed",
+    "analyzed",
+    "extracting_text",
+    "analysis_queued",
+    "analyzing",
+}
 
 
 class DocumentStorage(Protocol):
@@ -122,6 +131,7 @@ class DocumentService:
         )
         if visibility not in VALID_VISIBILITIES:
             raise exceptions.invalid_visibility()
+        await self._validate_quota(uploader_id=current_user.id, incoming_size=len(data))
 
         file_hash = sha256(data).hexdigest()
         duplicate = await self._repository.find_first_by_hash_for_uploader(
@@ -220,8 +230,18 @@ class DocumentService:
             },
         )
 
-    async def list_my_files(self, current_user: AuthUserRecord) -> list[File]:
-        return await self._repository.list_for_uploader(current_user.id)
+    async def list_my_files(
+        self,
+        current_user: AuthUserRecord,
+        *,
+        extension: str | None = None,
+        tag_id: uuid.UUID | None = None,
+    ) -> list[File]:
+        return await self._repository.list_for_uploader(
+            current_user.id,
+            extension=clean_optional_text(extension),
+            tag_id=tag_id,
+        )
 
     async def get_my_file(self, *, current_user: AuthUserRecord, file_id: uuid.UUID) -> File:
         file = await self._repository.get_for_uploader(
@@ -290,6 +310,178 @@ class DocumentService:
             await self._session.commit()
         return result
 
+    async def delete_file(
+        self,
+        *,
+        current_user: AuthUserRecord,
+        file_id: uuid.UUID,
+        client_ip: str,
+        user_agent: str,
+    ) -> None:
+        """软删文件: 状态机转 deleted, MinIO 对象保留, 远端清理交 ragflow 模块异步执行。"""
+        is_admin = current_user.role in ADMIN_ROLES
+        if is_admin:
+            file = await self._repository.get_by_id(file_id)
+        else:
+            file = await self._repository.get_for_uploader(
+                file_id=file_id,
+                uploader_id=current_user.id,
+            )
+        if file is None or file.status == "deleted":
+            raise exceptions.file_not_found()
+        if not is_admin and await get_config("upload.allow_user_delete") is not True:
+            raise exceptions.permission_denied()
+        previous_status = file.status
+        file.status = self._transition_or_raise(file.status, "deleted")
+        delete_remote = (
+            file.ragflow_document_id is not None
+            and await get_config("ragflow.delete_remote_on_file_delete") is True
+        )
+        await OutboxRepository(self._session).append(
+            event_type=events.DOCUMENT_FILE_DELETED,
+            aggregate_type="file",
+            aggregate_id=str(file.id),
+            payload={
+                "file_id": str(file.id),
+                "ragflow_document_id": file.ragflow_document_id,
+                "ragflow_dataset_id": file.ragflow_dataset_id,
+                "delete_remote": delete_remote,
+            },
+        )
+        await record_audit_log(
+            self._session,
+            actor_id=current_user.id,
+            action="file.delete",
+            target_type="file",
+            target_id=file.id,
+            ip_address=client_ip,
+            user_agent=user_agent[:512] or "unknown",
+            metadata_json={
+                "original_name": file.original_name,
+                "previous_status": previous_status,
+                "actor_role": current_user.role,
+                "delete_remote": delete_remote,
+            },
+        )
+        await self._session.commit()
+
+    async def archive_file(
+        self,
+        *,
+        current_user: AuthUserRecord,
+        file_id: uuid.UUID,
+        client_ip: str,
+        user_agent: str,
+    ) -> File:
+        """归档文件 (-> disabled), 是否保留远端文档由配置决策后写入事件 payload。"""
+        self._require_admin(current_user)
+        file = await self._repository.get_by_id(file_id)
+        if file is None or file.status == "deleted":
+            raise exceptions.file_not_found()
+        previous_status = file.status
+        file.status = self._transition_or_raise(file.status, "disabled")
+        keep_remote = await get_config("ragflow.keep_remote_on_archive") is not False
+        await OutboxRepository(self._session).append(
+            event_type=events.DOCUMENT_FILE_ARCHIVED,
+            aggregate_type="file",
+            aggregate_id=str(file.id),
+            payload={
+                "file_id": str(file.id),
+                "ragflow_document_id": file.ragflow_document_id,
+                "keep_remote": keep_remote,
+            },
+        )
+        await record_admin_audit_log(
+            self._session,
+            actor_id=current_user.id,
+            action="file.archive",
+            target_type="file",
+            target_id=file.id,
+            ip_address=client_ip,
+            user_agent=user_agent[:512] or "unknown",
+            metadata_json={
+                "original_name": file.original_name,
+                "previous_status": previous_status,
+                "keep_remote": keep_remote,
+            },
+        )
+        await self._session.commit()
+        await self._session.refresh(file)
+        return file
+
+    async def reanalyze_file(
+        self,
+        *,
+        current_user: AuthUserRecord,
+        file_id: uuid.UUID,
+        client_ip: str,
+        user_agent: str,
+        audit_action: str = "file.reanalyze",
+    ) -> None:
+        """重置文件到 analysis_queued 并经 outbox 事件重新入 AI 分析队列。
+
+        当前文本解析在分析流水线内执行, 因此 reparse 与 reanalyze 共用本路径;
+        卡死在 extracting_text/analyzing 等中间态的文件也允许经此救回 (R1 遗留)。
+        """
+        self._require_admin(current_user)
+        file = await self._repository.get_by_id(file_id)
+        if file is None or file.status == "deleted":
+            raise exceptions.file_not_found()
+        if not await self._is_ai_analysis_enabled():
+            raise exceptions.ai_analysis_disabled()
+        if file.status not in REANALYZE_SOURCE_STATUSES:
+            raise exceptions.invalid_state()
+        previous_status = file.status
+        if file.status != "analysis_queued":
+            file.status = self._transition_or_raise(file.status, "analysis_queued")
+        await OutboxRepository(self._session).append(
+            event_type=events.DOCUMENT_FILE_REANALYZE_REQUESTED,
+            aggregate_type="file",
+            aggregate_id=str(file.id),
+            payload={"file_id": str(file.id)},
+        )
+        await record_admin_audit_log(
+            self._session,
+            actor_id=current_user.id,
+            action=audit_action,
+            target_type="file",
+            target_id=file.id,
+            ip_address=client_ip,
+            user_agent=user_agent[:512] or "unknown",
+            metadata_json={
+                "original_name": file.original_name,
+                "previous_status": previous_status,
+            },
+        )
+        await self._session.commit()
+
+    def _require_admin(self, current_user: AuthUserRecord) -> None:
+        if current_user.role not in ADMIN_ROLES:
+            raise exceptions.permission_denied()
+
+    def _transition_or_raise(self, from_status: str, to_status: str) -> str:
+        try:
+            return DocumentStateMachine.transition(from_status, to_status)
+        except DocumentStateError as exc:
+            raise exceptions.invalid_state() from exc
+
+    async def _is_ai_analysis_enabled(self) -> bool:
+        """与 ai 模块同语义: 环境总开关与 ai_analysis 特性行 (缺省回退环境值) 同时为开。"""
+        if not self._settings.ai_analysis_enabled:
+            return False
+        feature_enabled = await self._repository.get_ai_analysis_feature_enabled()
+        return feature_enabled if feature_enabled is not None else True
+
+    async def _validate_quota(self, *, uploader_id: uuid.UUID, incoming_size: int) -> None:
+        quota_mb = await resolve_user_quota_mb()
+        if quota_mb is None:
+            return
+        quota_bytes = quota_mb * 1024 * 1024
+        await self._repository.lock_uploader_quota(uploader_id)
+        used_bytes = await self._repository.sum_size_for_uploader(uploader_id)
+        if used_bytes + incoming_size > quota_bytes:
+            raise exceptions.quota_exceeded(used_bytes=used_bytes, quota_bytes=quota_bytes)
+
     async def _validate_size(self, size: int) -> None:
         if size <= 0:
             raise exceptions.file_empty()
@@ -356,6 +548,14 @@ async def resolve_upload_max_size_bytes(settings: Settings) -> int:
     if isinstance(value, bool) or not isinstance(value, int) or value <= 0:
         return settings.upload_max_file_size_bytes
     return value * 1024 * 1024
+
+
+async def resolve_user_quota_mb() -> int | None:
+    """解析单用户配额 (upload.user_quota_mb, 单位 MB); 0 或非法值表示不限。"""
+    value = await get_config("upload.user_quota_mb")
+    if isinstance(value, bool) or not isinstance(value, int) or value <= 0:
+        return None
+    return value
 
 
 async def resolve_allowed_extensions(settings: Settings) -> set[str]:

@@ -3,7 +3,7 @@ from __future__ import annotations
 import uuid
 from typing import Annotated
 
-from fastapi import APIRouter, Depends, HTTPException, Request
+from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from sqlalchemy.ext.asyncio import AsyncSession
 from starlette import status
 
@@ -12,9 +12,14 @@ from app.core.exceptions import ErrorCode
 from app.core.permissions import SystemAdminDep
 from app.core.responses import success_response
 from app.modules.user.models import User
-from app.modules.user.schemas import UserProfile
+from app.modules.user.schemas import ChangeUserRoleRequest, UserProfile
 
-from .service import UserNotFoundError, UserPermissionError, UserService
+from .service import (
+    UserNotFoundError,
+    UserPermissionError,
+    UserService,
+    UserStateError,
+)
 
 router = APIRouter(prefix="/api/users", tags=["users"])
 SessionDep = Annotated[AsyncSession, Depends(get_session)]
@@ -47,6 +52,13 @@ def _permission_denied() -> HTTPException:
     )
 
 
+def _conflict(message: str) -> HTTPException:
+    return HTTPException(
+        status_code=status.HTTP_409_CONFLICT,
+        detail={"error_code": ErrorCode.VALIDATION_ERROR, "message": message},
+    )
+
+
 def _client_ip(request: Request) -> str:
     return request.client.host if request.client is not None else "unknown"
 
@@ -60,13 +72,23 @@ async def list_users(
     request: Request,
     current_user: SystemAdminDep,
     session: SessionDep,
+    page: int = Query(default=1, ge=1),
+    page_size: int = Query(default=20, ge=1, le=100),
+    search: str | None = Query(default=None),
+    role: str | None = Query(default=None),
+    status: str | None = Query(default=None),
 ) -> dict[str, object]:
-    users = await UserService.from_session(session).list_users_for_admin(
+    result = await UserService.from_session(session).list_users_paginated(
         actor=current_user,
         ip_address=_client_ip(request),
         user_agent=_user_agent(request),
+        page=page,
+        page_size=page_size,
+        search=search,
+        role=role,
+        status=status,
     )
-    return success_response([_profile(user).model_dump(mode="json") for user in users], request)
+    return success_response(result.model_dump(mode="json"), request)
 
 
 @router.get("/{user_id}")
@@ -126,3 +148,47 @@ async def enable_user(
     except UserNotFoundError as exc:
         raise _not_found() from exc
     return success_response(_profile(user).model_dump(mode="json"), request)
+
+
+@router.patch("/{user_id}/role")
+async def change_user_role(
+    user_id: uuid.UUID,
+    payload: ChangeUserRoleRequest,
+    request: Request,
+    current_user: SystemAdminDep,
+    session: SessionDep,
+) -> dict[str, object]:
+    try:
+        user = await UserService.from_session(session).change_user_role(
+            actor=current_user,
+            target_id=user_id,
+            new_role=payload.role,
+            ip_address=_client_ip(request),
+            user_agent=_user_agent(request),
+        )
+    except UserPermissionError as exc:
+        raise _conflict(str(exc)) from exc
+    except UserNotFoundError as exc:
+        raise _not_found() from exc
+    return success_response(_profile(user).model_dump(mode="json"), request)
+
+
+@router.post("/{user_id}/reset-password")
+async def reset_user_password(
+    user_id: uuid.UUID,
+    request: Request,
+    current_user: SystemAdminDep,
+    session: SessionDep,
+) -> dict[str, object]:
+    try:
+        await UserService.from_session(session).request_password_reset(
+            actor=current_user,
+            target_id=user_id,
+            ip_address=_client_ip(request),
+            user_agent=_user_agent(request),
+        )
+    except UserNotFoundError as exc:
+        raise _not_found() from exc
+    except UserStateError as exc:
+        raise _conflict(str(exc)) from exc
+    return success_response({}, request)

@@ -3,7 +3,7 @@ from __future__ import annotations
 from typing import Annotated, NoReturn
 from uuid import UUID
 
-from fastapi import APIRouter, Depends, File, Form, HTTPException, Request, UploadFile
+from fastapi import APIRouter, Depends, File, Form, HTTPException, Query, Request, UploadFile
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.adapters.minio_client import MinioDocumentStorage
@@ -11,6 +11,7 @@ from app.core.config import Settings
 from app.core.database import get_session
 from app.core.deps import get_app_settings, get_current_user
 from app.core.exceptions import ErrorCode
+from app.core.permissions import AdminUserDep
 from app.core.ratelimit import is_within_rate_limit, upload_rate_limit_key
 from app.core.responses import success_response
 from app.modules.user.schemas import AuthUserRecord
@@ -28,6 +29,7 @@ from .service import (
 )
 
 router = APIRouter(prefix="/api/files", tags=["files"])
+admin_router = APIRouter(prefix="/api/admin/files", tags=["files-admin"])
 SessionDep = Annotated[AsyncSession, Depends(get_session)]
 SettingsDep = Annotated[Settings, Depends(get_app_settings)]
 CurrentUserDep = Annotated[AuthUserRecord, Depends(get_current_user)]
@@ -205,9 +207,13 @@ async def list_my_files(
     session: SessionDep,
     settings: SettingsDep,
     storage: DocumentStorageDep,
+    extension: Annotated[str | None, Query()] = None,
+    tag_id: Annotated[UUID | None, Query()] = None,
 ) -> dict[str, object]:
     files = await _service(session=session, settings=settings, storage=storage).list_my_files(
-        current_user
+        current_user,
+        extension=extension,
+        tag_id=tag_id,
     )
     response = FileListResponse(
         items=[_file_response(file) for file in files],
@@ -239,3 +245,89 @@ async def get_file_detail(
     except DocumentError as error:
         _raise_document_error(error)
     return success_response(_file_detail_response(detail).model_dump(mode="json"), request)
+
+
+@router.delete("/{file_id}")
+async def delete_file(
+    file_id: UUID,
+    request: Request,
+    current_user: CurrentUserDep,
+    session: SessionDep,
+    settings: SettingsDep,
+    storage: DocumentStorageDep,
+) -> dict[str, object]:
+    try:
+        await _service(session=session, settings=settings, storage=storage).delete_file(
+            current_user=current_user,
+            file_id=file_id,
+            client_ip=_client_ip(request),
+            user_agent=_user_agent(request),
+        )
+    except DocumentError as error:
+        _raise_document_error(error)
+    return success_response({}, request)
+
+
+@admin_router.post("/{file_id}/archive")
+async def archive_file(
+    file_id: UUID,
+    request: Request,
+    current_user: AdminUserDep,
+    session: SessionDep,
+    settings: SettingsDep,
+    storage: DocumentStorageDep,
+) -> dict[str, object]:
+    try:
+        file = await _service(session=session, settings=settings, storage=storage).archive_file(
+            current_user=current_user,
+            file_id=file_id,
+            client_ip=_client_ip(request),
+            user_agent=_user_agent(request),
+        )
+    except DocumentError as error:
+        _raise_document_error(error)
+    return success_response(_file_response(file).model_dump(mode="json"), request)
+
+
+@admin_router.post("/{file_id}/reanalyze")
+async def reanalyze_file(
+    file_id: UUID,
+    request: Request,
+    current_user: AdminUserDep,
+    session: SessionDep,
+    settings: SettingsDep,
+    storage: DocumentStorageDep,
+) -> dict[str, object]:
+    try:
+        await _service(session=session, settings=settings, storage=storage).reanalyze_file(
+            current_user=current_user,
+            file_id=file_id,
+            client_ip=_client_ip(request),
+            user_agent=_user_agent(request),
+        )
+    except DocumentError as error:
+        _raise_document_error(error)
+    return success_response({}, request)
+
+
+@admin_router.post("/{file_id}/reparse")
+async def reparse_file(
+    file_id: UUID,
+    request: Request,
+    current_user: AdminUserDep,
+    session: SessionDep,
+    settings: SettingsDep,
+    storage: DocumentStorageDep,
+) -> dict[str, object]:
+    # 当前文本解析在 AI 分析流水线内执行, reparse 复用 reanalyze 路径重新入队
+    try:
+        await _service(session=session, settings=settings, storage=storage).reanalyze_file(
+            current_user=current_user,
+            file_id=file_id,
+            client_ip=_client_ip(request),
+            user_agent=_user_agent(request),
+            audit_action="file.reparse",
+        )
+    except DocumentError as error:
+        _raise_document_error(error)
+    return success_response({}, request)

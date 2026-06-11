@@ -479,7 +479,19 @@ export async function logout(): Promise<void> {
   await apiClient.post("/auth/logout");
 }
 
-export async function uploadDocument(payload: UploadDocumentPayload): Promise<KnowledgeFile> {
+export interface DocumentListQuery {
+  extension?: string;
+  tag_id?: string;
+  page?: number;
+  page_size?: number;
+  status?: string;
+  review_status?: string;
+}
+
+export async function uploadDocument(
+  payload: UploadDocumentPayload,
+  onUploadProgress?: (percent: number) => void,
+): Promise<KnowledgeFile> {
   const formData = new FormData();
   formData.append("file", payload.file);
   formData.append("visibility", payload.visibility);
@@ -491,14 +503,26 @@ export async function uploadDocument(payload: UploadDocumentPayload): Promise<Kn
   const response = await apiClient.post<ApiEnvelope<KnowledgeFile> | KnowledgeFile>(
     "/files/upload",
     formData,
-    { timeout: 60_000 },
+    {
+      timeout: 60_000,
+      onUploadProgress: onUploadProgress
+        ? (event) => {
+            if (event.total && event.total > 0) {
+              onUploadProgress(Math.round((event.loaded * 100) / event.total));
+            }
+          }
+        : undefined,
+    },
   );
 
   return unwrapResponse(response.data);
 }
 
-export async function listDocuments(): Promise<FileListResponse> {
-  const response = await apiClient.get<ApiEnvelope<FileListResponse> | FileListResponse>("/files");
+export async function listDocuments(params: DocumentListQuery = {}): Promise<FileListResponse> {
+  const response = await apiClient.get<ApiEnvelope<FileListResponse> | FileListResponse>(
+    "/files",
+    { params },
+  );
 
   return unwrapResponse(response.data);
 }
@@ -668,9 +692,18 @@ export async function testAiProvider(providerId: string): Promise<AiProviderTest
   return unwrapResponse(response.data);
 }
 
-export async function listReviewFiles(): Promise<FileListResponse> {
+export interface ReviewFilesQuery {
+  extension?: string;
+  tag_id?: string;
+  page?: number;
+  page_size?: number;
+  status?: string;
+}
+
+export async function listReviewFiles(params: ReviewFilesQuery = {}): Promise<FileListResponse> {
   const response = await apiClient.get<ApiEnvelope<FileListResponse> | FileListResponse>(
     "/review/files",
+    { params },
   );
 
   return unwrapResponse(response.data);
@@ -784,7 +817,6 @@ export interface SyncTaskListResponse {
 export interface TaskListQuery {
   task_type?: string;
   status?: string;
-  /** 后端 /api/tasks 暂不支持该筛选, 传参无副作用; 页面侧仍需按 file_id 过滤 */
   file_id?: string;
 }
 
@@ -888,6 +920,200 @@ export async function cancelTask(id: string): Promise<SyncTask> {
 
 export async function getMe(): Promise<UserProfile> {
   const response = await apiClient.get<ApiEnvelope<UserProfile> | UserProfile>("/auth/me");
+
+  return unwrapResponse(response.data);
+}
+
+// ── Tag types ─────────────────────────────────────────────────────────────────
+
+export interface Tag {
+  id: string;
+  name: string;
+  description: string | null;
+  usage_count: number;
+  is_system_generated: boolean;
+  enabled: boolean;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface TagListResponse {
+  items: Tag[];
+  total: number;
+  page: number;
+  page_size: number;
+}
+
+export interface TagListQuery {
+  enabled?: boolean;
+  search?: string;
+  page?: number;
+  page_size?: number;
+}
+
+export interface CreateTagPayload {
+  name: string;
+  description?: string;
+}
+
+export interface UpdateTagPayload {
+  name?: string;
+  description?: string | null;
+  enabled?: boolean;
+}
+
+export interface MergeTagPayload {
+  target_tag_id: string;
+}
+
+// ── Tag API functions ─────────────────────────────────────────────────────────
+
+export async function listTags(params: TagListQuery = {}): Promise<TagListResponse> {
+  const response = await apiClient.get<ApiEnvelope<TagListResponse> | TagListResponse>(
+    "/tags",
+    { params },
+  );
+
+  return unwrapResponse(response.data);
+}
+
+export async function createTag(payload: CreateTagPayload): Promise<Tag> {
+  const response = await apiClient.post<ApiEnvelope<Tag> | Tag>("/tags", payload);
+
+  return unwrapResponse(response.data);
+}
+
+export async function updateTag(id: string, payload: UpdateTagPayload): Promise<Tag> {
+  const response = await apiClient.patch<ApiEnvelope<Tag> | Tag>(`/tags/${id}`, payload);
+
+  return unwrapResponse(response.data);
+}
+
+export async function mergeTag(id: string, payload: MergeTagPayload): Promise<Tag> {
+  const response = await apiClient.post<ApiEnvelope<Tag> | Tag>(`/tags/${id}/merge`, payload);
+
+  return unwrapResponse(response.data);
+}
+
+export async function deleteTag(id: string): Promise<void> {
+  const response = await apiClient.delete<ApiEnvelope<Record<string, never>>>(`/tags/${id}`);
+
+  unwrapResponse(response.data);
+}
+
+// ── Admin user management types ───────────────────────────────────────────────
+
+export type AdminUserRole = "employee" | "knowledge_admin" | "system_admin";
+
+export interface AdminUserItem {
+  id: string;
+  name: string;
+  email: string;
+  role: AdminUserRole;
+  status: string;
+  department: string | null;
+  email_verified: boolean;
+  created_at: string;
+  upload_count: number;
+  last_upload_at: string | null;
+}
+
+export interface AdminUserListResponse {
+  items: AdminUserItem[];
+  total: number;
+  page: number;
+  page_size: number;
+}
+
+export interface AdminUserListQuery {
+  page?: number;
+  page_size?: number;
+  search?: string;
+  role?: AdminUserRole;
+  status?: string;
+}
+
+// ── Admin user management API functions ──────────────────────────────────────
+
+export async function listAdminUsers(
+  params: AdminUserListQuery = {},
+): Promise<AdminUserListResponse> {
+  const response = await apiClient.get<
+    ApiEnvelope<AdminUserListResponse> | AdminUserListResponse
+  >("/users", { params });
+
+  return unwrapResponse(response.data);
+}
+
+export async function changeUserRole(id: string, role: AdminUserRole): Promise<UserProfile> {
+  const response = await apiClient.patch<ApiEnvelope<UserProfile> | UserProfile>(
+    `/users/${id}/role`,
+    { role },
+  );
+
+  return unwrapResponse(response.data);
+}
+
+export async function resetUserPassword(id: string): Promise<void> {
+  const response = await apiClient.post<ApiEnvelope<Record<string, never>>>(
+    `/users/${id}/reset-password`,
+  );
+
+  unwrapResponse(response.data);
+}
+
+export async function disableUser(id: string): Promise<void> {
+  const response = await apiClient.post<ApiEnvelope<Record<string, never>>>(
+    `/users/${id}/disable`,
+  );
+
+  unwrapResponse(response.data);
+}
+
+export async function enableUser(id: string): Promise<void> {
+  const response = await apiClient.post<ApiEnvelope<Record<string, never>>>(
+    `/users/${id}/enable`,
+  );
+
+  unwrapResponse(response.data);
+}
+
+// ── File operation API functions ──────────────────────────────────────────────
+
+export async function deleteFile(id: string): Promise<void> {
+  const response = await apiClient.delete<ApiEnvelope<Record<string, never>>>(`/files/${id}`);
+
+  unwrapResponse(response.data);
+}
+
+export async function archiveFile(id: string): Promise<KnowledgeFile> {
+  const response = await apiClient.post<ApiEnvelope<KnowledgeFile> | KnowledgeFile>(
+    `/admin/files/${id}/archive`,
+  );
+
+  return unwrapResponse(response.data);
+}
+
+export async function reparseFile(id: string): Promise<void> {
+  const response = await apiClient.post<ApiEnvelope<Record<string, never>>>(
+    `/admin/files/${id}/reparse`,
+  );
+
+  unwrapResponse(response.data);
+}
+
+export async function reanalyzeFile(id: string): Promise<void> {
+  const response = await apiClient.post<ApiEnvelope<Record<string, never>>>(
+    `/admin/files/${id}/reanalyze`,
+  );
+
+  unwrapResponse(response.data);
+}
+
+export async function syncFile(id: string): Promise<SyncTask> {
+  const response = await apiClient.post<ApiEnvelope<SyncTask> | SyncTask>(
+    `/admin/files/${id}/sync`,
+  );
 
   return unwrapResponse(response.data);
 }

@@ -7,7 +7,11 @@ from typing import Protocol
 
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.adapters.ragflow.base import RagflowClient, RagflowDocumentStatus
+from app.adapters.ragflow.base import (
+    RagflowClient,
+    RagflowDocumentNotFoundError,
+    RagflowDocumentStatus,
+)
 from app.core.audit import record_admin_audit_log
 from app.core.config import get_settings
 from app.core.document_state import DocumentStateError, DocumentStateMachine
@@ -23,7 +27,10 @@ from .sync_locks import acquire_sync_lock, release_sync_lock, release_sync_lock_
 
 ADMIN_ROLES = {"knowledge_admin", "system_admin"}
 RAGFLOW_UPLOAD_TASK = "ragflow_upload"
+RAGFLOW_DELETE_TASK = "ragflow_delete"
+MANUAL_SYNC_SOURCE_STATUSES = {"approved", "failed"}
 MAX_ERROR_MESSAGE_LENGTH = 2000
+DELETE_CLEANUP_FAILURE_SOURCE_STATUSES = {"deleted"}
 RAGFLOW_SUCCESS_RUNS = {"3", "DONE"}
 RAGFLOW_FAILED_RUNS = {"4", "FAIL", "FAILED", "ERROR"}
 RAGFLOW_UNSTART_RUNS = {"0", "UNSTART"}
@@ -99,14 +106,39 @@ class RagflowTaskService:
         await self._append_task_queued_event(task)
         return task
 
+    async def create_ragflow_delete_task(self, file_id: uuid.UUID) -> SyncTask:
+        existing = await self._repository.get_active_task(
+            file_id=file_id,
+            task_type=RAGFLOW_DELETE_TASK,
+        )
+        if existing is not None:
+            return existing
+
+        task = SyncTask(
+            file_id=file_id,
+            task_type=RAGFLOW_DELETE_TASK,
+            status="queued",
+            retry_count=0,
+            max_retry_count=await resolve_sync_max_retries(),
+        )
+        task = await self._repository.add_task(task)
+        await self._repository.add_log(
+            task_id=task.id,
+            status=task.status,
+            message="ragflow delete task queued",
+        )
+        await self._append_task_queued_event(task)
+        return task
+
     async def list_tasks(
         self,
         *,
         current_user: AuthUserRecord,
         context: RequestContext,
+        file_id: uuid.UUID | None = None,
     ) -> list[SyncTaskBundle]:
         self._require_admin(current_user)
-        tasks = await self._repository.list_tasks()
+        tasks = await self._repository.list_tasks(file_id=file_id)
         bundles = [await self._bundle(task) for task in tasks]
         await self._record_admin_audit(
             current_user=current_user,
@@ -114,7 +146,10 @@ class RagflowTaskService:
             target_type="task_collection",
             target_id=current_user.id,
             context=context,
-            metadata_json={"result_count": len(tasks)},
+            metadata_json={
+                "result_count": len(tasks),
+                "file_id": str(file_id) if file_id is not None else None,
+            },
         )
         await self._session.commit()
         return bundles
@@ -170,7 +205,7 @@ class RagflowTaskService:
         try:
             active_task = await self._repository.get_active_task(
                 file_id=task.file_id,
-                task_type=RAGFLOW_UPLOAD_TASK,
+                task_type=task.task_type,
             )
             if active_task is not None and active_task.id != task.id:
                 raise exceptions.task_conflict()
@@ -235,6 +270,72 @@ class RagflowTaskService:
         await self._session.refresh(task)
         return await self._bundle(task)
 
+    async def manual_sync_file(
+        self,
+        *,
+        current_user: AuthUserRecord,
+        file_id: uuid.UUID,
+        context: RequestContext,
+    ) -> SyncTaskBundle:
+        self._require_admin(current_user)
+        file = await self._repository.get_file_for_update(file_id)
+        if file is None:
+            raise exceptions.file_not_found()
+        if file.status not in MANUAL_SYNC_SOURCE_STATUSES or file.review_status != "approved":
+            raise exceptions.file_not_syncable()
+        if (
+            await self._repository.get_file_sensitive_risk_level(file.id) == "critical"
+            and await block_critical_sensitive_sync()
+        ):
+            raise exceptions.sync_blocked_by_sensitive_policy()
+        active_task = await self._repository.get_active_task(
+            file_id=file_id,
+            task_type=RAGFLOW_UPLOAD_TASK,
+        )
+        if active_task is not None:
+            raise exceptions.task_conflict()
+
+        settings = get_settings()
+        lock_token = uuid.uuid4().hex
+        lock_acquired = await acquire_sync_lock(
+            redis_url=settings.cache_redis_url,
+            file_id=file_id,
+            token=lock_token,
+        )
+        if not lock_acquired:
+            raise exceptions.task_lock_busy()
+
+        release_sync_lock_after_transaction(
+            session=self._session,
+            redis_url=settings.cache_redis_url,
+            file_id=file_id,
+            token=lock_token,
+        )
+        try:
+            from_status = file.status
+            if file.status == "approved":
+                file.status = DocumentStateMachine.transition(file.status, "queued")
+                await self._repository.update_file_sync_state(file)
+            task = await self.create_ragflow_upload_task(file_id)
+            await self._record_admin_audit(
+                current_user=current_user,
+                action="file.manual_sync",
+                target_type="file",
+                target_id=file_id,
+                context=context,
+                metadata_json={"task_id": str(task.id), "from_status": from_status},
+            )
+            await self._session.commit()
+            await self._session.refresh(task)
+            return await self._bundle(task)
+        except Exception:
+            await release_sync_lock(
+                redis_url=settings.cache_redis_url,
+                file_id=file_id,
+                token=lock_token,
+            )
+            raise
+
     async def claim_running(self, task_id: uuid.UUID) -> bool:
         task = await self._get_task_for_update_or_raise(task_id)
         if task.status != "queued":
@@ -246,7 +347,7 @@ class RagflowTaskService:
         await self._repository.add_log(
             task_id=task.id,
             status=task.status,
-            message="ragflow upload task started",
+            message=f"{_task_label(task.task_type)} task started",
         )
         await self._session.commit()
         return True
@@ -353,6 +454,67 @@ class RagflowTaskService:
         _raise_if_parse_not_terminal(parse_status)
         return await self.mark_succeeded(task_id)
 
+    async def run_delete_task(
+        self,
+        task_id: uuid.UUID,
+        *,
+        ragflow_client: RagflowClient,
+    ) -> SyncTask:
+        task = await self._get_task_for_update_or_raise(task_id)
+        if task.status != "running":
+            return task
+
+        file = await self._repository.get_file_for_update(task.file_id)
+        if file is None:
+            await self._repository.add_log(
+                task_id=task.id,
+                status=task.status,
+                message="file record missing, nothing to delete remotely",
+            )
+            await self._session.commit()
+            return await self.mark_succeeded(task_id)
+
+        document_id = file.ragflow_document_id
+        if document_id is None or not document_id.strip():
+            await self._repository.add_log(
+                task_id=task.id,
+                status=task.status,
+                message="ragflow document pointer already cleared",
+            )
+            await self._session.commit()
+            return await self.mark_succeeded(task_id)
+
+        dataset_id = self._require_dataset_id(file)
+        await self._repository.add_log(
+            task_id=task.id,
+            status=task.status,
+            message="ragflow document delete started",
+        )
+        await self._session.commit()
+
+        try:
+            await ragflow_client.delete_document(
+                dataset_id=dataset_id,
+                document_id=document_id,
+            )
+            delete_message = "ragflow document deleted"
+        except RagflowDocumentNotFoundError:
+            delete_message = "ragflow document already absent (404), treated as success"
+
+        file.ragflow_document_id = None
+        if file.status == "ragflow_cleanup_failed":
+            file.status = DocumentStateMachine.transition(file.status, "deleted")
+        file.ragflow_error_message = None
+        file.last_sync_at = datetime.now(UTC)
+        await self._repository.update_file_sync_state(file)
+        await self._repository.add_log(
+            task_id=task.id,
+            status=task.status,
+            message=delete_message,
+        )
+        await self._session.commit()
+        return await self.mark_succeeded(task_id)
+
     async def mark_succeeded(self, task_id: uuid.UUID) -> SyncTask:
         task = await self._get_task_for_update_or_raise(task_id)
         if task.status in {"canceled", "failed", "succeeded"}:
@@ -365,7 +527,7 @@ class RagflowTaskService:
         await self._repository.add_log(
             task_id=task.id,
             status=task.status,
-            message="ragflow upload task completed",
+            message=f"{_task_label(task.task_type)} task completed",
         )
         await self._session.commit()
         return task
@@ -381,7 +543,9 @@ class RagflowTaskService:
         if task.status in {"canceled", "succeeded"}:
             return task
         file = await self._repository.get_file_for_update(task.file_id)
-        if file is not None and mark_file_failed:
+        if file is not None and task.task_type == RAGFLOW_DELETE_TASK:
+            await self._try_mark_file_cleanup_failed(file, error_message)
+        elif file is not None and mark_file_failed:
             await self._try_mark_file_failed(file, error_message)
         task.status = "failed"
         task.finished_at = datetime.now(UTC)
@@ -389,7 +553,7 @@ class RagflowTaskService:
         await self._repository.add_log(
             task_id=task.id,
             status=task.status,
-            message="ragflow upload task failed",
+            message=f"{_task_label(task.task_type)} task failed",
         )
         await self._session.commit()
         return task
@@ -525,6 +689,23 @@ class RagflowTaskService:
         file.last_sync_at = datetime.now(UTC)
         await self._repository.update_file_sync_state(file)
 
+    async def _try_mark_file_cleanup_failed(
+        self,
+        file: RagflowSyncFileRecord,
+        error_message: str,
+    ) -> None:
+        if file.status in DELETE_CLEANUP_FAILURE_SOURCE_STATUSES:
+            try:
+                file.status = DocumentStateMachine.transition(
+                    file.status,
+                    "ragflow_cleanup_failed",
+                )
+            except DocumentStateError:
+                pass
+        file.ragflow_error_message = error_message[:MAX_ERROR_MESSAGE_LENGTH]
+        file.last_sync_at = datetime.now(UTC)
+        await self._repository.update_file_sync_state(file)
+
     def _build_metadata(self, file: RagflowSyncFileRecord) -> dict[str, object]:
         return {
             "source": "knowledge_uploader",
@@ -610,6 +791,11 @@ async def block_critical_sensitive_sync() -> bool:
     if isinstance(value, bool):
         return value
     return True
+
+
+def _task_label(task_type: str) -> str:
+    """sync 任务类型转日志用语 (ragflow_upload -> 'ragflow upload')。"""
+    return task_type.replace("_", " ")
 
 
 def _is_success_run(run: str) -> bool:

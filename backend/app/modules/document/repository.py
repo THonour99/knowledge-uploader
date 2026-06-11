@@ -5,7 +5,7 @@ from dataclasses import dataclass
 from datetime import datetime
 from typing import cast
 
-from sqlalchemy import Column, DateTime, MetaData, String, Table, Text, select
+from sqlalchemy import Boolean, Column, DateTime, MetaData, String, Table, Text, func, select
 from sqlalchemy.dialects.postgresql import UUID
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -42,6 +42,21 @@ SYNC_TASKS = Table(
     Column("created_at", DateTime(timezone=True), nullable=False),
 )
 
+FILE_TAGS = Table(
+    "file_tags",
+    MetaData(),
+    Column("file_id", UUID(as_uuid=True), primary_key=True),
+    Column("tag_id", UUID(as_uuid=True), primary_key=True),
+)
+
+AI_FEATURE_CONFIGS = Table(
+    "ai_feature_configs",
+    MetaData(),
+    Column("id", UUID(as_uuid=True), primary_key=True),
+    Column("feature_name", String(80), nullable=False),
+    Column("enabled", Boolean, nullable=False),
+)
+
 
 @dataclass(frozen=True)
 class DocumentAnalysisRecord:
@@ -63,14 +78,32 @@ class DocumentRepository:
 
     async def get_for_uploader(self, *, file_id: uuid.UUID, uploader_id: uuid.UUID) -> File | None:
         result = await self._session.execute(
-            select(File).where(File.id == file_id, File.uploader_id == uploader_id)
+            select(File).where(
+                File.id == file_id,
+                File.uploader_id == uploader_id,
+                File.status.not_in(HIDDEN_FILE_STATUSES),
+            )
         )
         return result.scalar_one_or_none()
 
-    async def list_for_uploader(self, uploader_id: uuid.UUID) -> list[File]:
-        result = await self._session.execute(
-            select(File).where(File.uploader_id == uploader_id).order_by(File.uploaded_at.desc())
+    async def list_for_uploader(
+        self,
+        uploader_id: uuid.UUID,
+        *,
+        extension: str | None = None,
+        tag_id: uuid.UUID | None = None,
+    ) -> list[File]:
+        stmt = select(File).where(
+            File.uploader_id == uploader_id,
+            File.status.not_in(HIDDEN_FILE_STATUSES),
         )
+        if extension:
+            stmt = stmt.where(File.extension == extension)
+        if tag_id is not None:
+            stmt = stmt.join(FILE_TAGS, FILE_TAGS.c.file_id == File.id).where(
+                FILE_TAGS.c.tag_id == tag_id
+            )
+        result = await self._session.execute(stmt.order_by(File.uploaded_at.desc()))
         return list(result.scalars())
 
     async def find_first_by_hash_for_uploader(
@@ -81,7 +114,11 @@ class DocumentRepository:
     ) -> File | None:
         result = await self._session.execute(
             select(File)
-            .where(File.hash == file_hash, File.uploader_id == uploader_id)
+            .where(
+                File.hash == file_hash,
+                File.uploader_id == uploader_id,
+                File.status.not_in(HIDDEN_FILE_STATUSES),
+            )
             .order_by(File.uploaded_at.asc())
         )
         return result.scalars().first()
@@ -91,6 +128,31 @@ class DocumentRepository:
         await self._session.flush()
         await self._session.refresh(file)
         return file
+
+    async def sum_size_for_uploader(self, uploader_id: uuid.UUID) -> int:
+        """统计上传者已占用的存储字节数 (软删/清理失败的删除态不计入配额)。"""
+        result = await self._session.execute(
+            select(func.coalesce(func.sum(File.size), 0)).where(
+                File.uploader_id == uploader_id,
+                File.status.not_in(HIDDEN_FILE_STATUSES),
+            )
+        )
+        return int(result.scalar_one())
+
+    async def lock_uploader_quota(self, uploader_id: uuid.UUID) -> None:
+        """Serialize quota checks and file inserts per uploader in the current transaction."""
+        await self._session.execute(
+            select(func.pg_advisory_xact_lock(_uploader_quota_lock_key(uploader_id)))
+        )
+
+    async def get_ai_analysis_feature_enabled(self) -> bool | None:
+        """只读联查 ai 模块特性开关表; 无行时返回 None 由 service 回退 settings。"""
+        result = await self._session.execute(
+            select(AI_FEATURE_CONFIGS.c.enabled).where(
+                AI_FEATURE_CONFIGS.c.feature_name == "ai_analysis"
+            )
+        )
+        return cast(bool | None, result.scalar_one_or_none())
 
     async def get_category_name(self, file_id: uuid.UUID) -> str | None:
         result = await self._session.execute(
@@ -131,3 +193,10 @@ class DocumentRepository:
             .limit(1)
         )
         return cast(str | None, result.scalars().first())
+
+
+HIDDEN_FILE_STATUSES = ("deleted", "ragflow_cleanup_failed")
+
+
+def _uploader_quota_lock_key(uploader_id: uuid.UUID) -> int:
+    return int.from_bytes(uploader_id.bytes[:8], byteorder="big", signed=True)

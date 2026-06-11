@@ -5,7 +5,12 @@ from typing import cast
 import httpx
 from httpx._types import QueryParamTypes, RequestFiles
 
-from .base import RagflowClientError, RagflowDocumentStatus, RagflowUploadResult
+from .base import (
+    RagflowClientError,
+    RagflowDocumentNotFoundError,
+    RagflowDocumentStatus,
+    RagflowUploadResult,
+)
 
 DEFAULT_TIMEOUT_SECONDS = 30.0
 
@@ -105,11 +110,18 @@ class HttpRagflowClient:
         )
 
     async def delete_document(self, *, dataset_id: str, document_id: str) -> None:
-        await self._request(
-            "DELETE",
-            f"/api/v1/datasets/{dataset_id}/documents",
-            json={"ids": [document_id]},
-        )
+        try:
+            await self._request(
+                "DELETE",
+                f"/api/v1/datasets/{dataset_id}/documents",
+                json={"ids": [document_id]},
+            )
+        except RagflowDocumentNotFoundError:
+            raise
+        except RagflowClientError as exc:
+            if _is_document_not_found(str(exc)):
+                raise RagflowDocumentNotFoundError(str(exc)) from None
+            raise
 
     async def _request(
         self,
@@ -199,6 +211,12 @@ class HttpRagflowClient:
 
     def _client_error(self, message: str) -> RagflowClientError:
         return RagflowClientError(redact_secret(message, self._api_key))
+
+
+def _is_document_not_found(message: str) -> bool:
+    """识别远端文档不存在的错误 (HTTP 404 或 RAGFlow 'not found' 业务码消息)。"""
+    lowered = message.lower()
+    return "http 404" in lowered or "not found" in lowered
 
 
 def _optional_float(value: object) -> float | None:

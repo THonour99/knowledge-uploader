@@ -36,7 +36,7 @@ class File(Base):
             "'uploaded', 'extracting_text', 'analysis_queued', 'analyzing', "
             "'analysis_failed', 'analyzed', 'pending_review', 'sensitive_review_required', "
             "'approved', 'rejected', 'queued', 'syncing', 'uploaded_to_ragflow', "
-            "'parsing', 'parsed', 'failed', 'disabled', 'deleted'"
+            "'parsing', 'parsed', 'failed', 'disabled', 'deleted', 'ragflow_cleanup_failed'"
             ")",
             name="ck_files_status",
         ),
@@ -76,6 +76,7 @@ class File(Base):
     )
     visibility: Mapped[str] = mapped_column(String(20), nullable=False, server_default="private")
     description: Mapped[str | None] = mapped_column(Text)
+    # 语义降级: 仅保存 AI 建议标签快照; 正式标签以 review 模块 tags/file_tags 关联为准。
     tags: Mapped[list[str]] = mapped_column(
         JSONB,
         nullable=False,

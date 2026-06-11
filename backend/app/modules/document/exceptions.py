@@ -62,6 +62,44 @@ def file_not_found() -> DocumentError:
     return DocumentError(ErrorCode.FILE_NOT_FOUND, "file not found", status.HTTP_404_NOT_FOUND)
 
 
+def permission_denied() -> DocumentError:
+    return DocumentError(
+        ErrorCode.PERMISSION_DENIED,
+        "permission denied",
+        status.HTTP_403_FORBIDDEN,
+    )
+
+
+def invalid_state() -> DocumentError:
+    return DocumentError(
+        ErrorCode.VALIDATION_ERROR,
+        "invalid file status transition",
+        status.HTTP_400_BAD_REQUEST,
+    )
+
+
+def ai_analysis_disabled() -> DocumentError:
+    return DocumentError(
+        ErrorCode.VALIDATION_ERROR,
+        "ai analysis is disabled",
+        status.HTTP_409_CONFLICT,
+    )
+
+
+def quota_exceeded(*, used_bytes: int, quota_bytes: int) -> DocumentError:
+    used_mb = used_bytes / (1024 * 1024)
+    quota_mb = quota_bytes / (1024 * 1024)
+    remaining_mb = max(quota_bytes - used_bytes, 0) / (1024 * 1024)
+    return DocumentError(
+        ErrorCode.FILE_QUOTA_EXCEEDED,
+        (
+            f"storage quota exceeded: used {used_mb:.2f}MB, "
+            f"quota {quota_mb:.2f}MB, remaining {remaining_mb:.2f}MB"
+        ),
+        status.HTTP_400_BAD_REQUEST,
+    )
+
+
 def storage_error() -> DocumentError:
     return DocumentError(
         ErrorCode.STORAGE_ERROR,

@@ -30,6 +30,10 @@ STORAGE_RETRY_EXHAUSTED_MESSAGE = f"存储暂不可用。已重试 {STORAGE_RETR
 ANALYSIS_SOFT_TIME_LIMIT_SECONDS = 600
 ANALYSIS_TIME_LIMIT_SECONDS = 660
 ANALYSIS_TIMEOUT_MESSAGE = f"分析超时({ANALYSIS_SOFT_TIME_LIMIT_SECONDS}s)"
+# R1 遗留自愈: 前置条件在投递窗口内失效时, 处于这些中间态的文件必须补标失败,
+# 否则会永远卡在 extracting_text/analyzing 而 analysis 停在 running。
+STUCK_ANALYSIS_FILE_STATUSES = frozenset({"extracting_text", "analysis_queued", "analyzing"})
+PRECONDITION_FAILED_MESSAGE_PREFIX = "前置条件失效"
 
 
 def build_ai_storage(settings: Settings) -> AiObjectStorage:
@@ -109,6 +113,7 @@ async def run_mark_analysis_failed_task_async(file_id: str, *, error_message: st
 async def _run_ai_analyze_file(file_id: uuid.UUID) -> None:
     settings = get_settings()
     storage = build_ai_storage(settings)
+    precondition_reason: str | None = None
     async with AsyncSessionFactory() as session:
         service = AiAnalysisService(
             session=session,
@@ -119,10 +124,38 @@ async def _run_ai_analyze_file(file_id: uuid.UUID) -> None:
             await service.run_file_analysis(file_id, storage=storage)
         except AiAnalysisPreconditionError as exc:
             # 前置条件在投递与执行之间的窗口内变化(例如 AI 被关闭)属预期竞态、
-            # 不算失败。记录 warning 便于排查、保持静默跳过的行为不变。
+            # 不算失败。记录 warning 便于排查; 但若文件已进入分析中间态,
+            # 必须补标 analysis_failed 防止永久卡死 (R1 遗留自愈)。
             logger.warning(
                 "ai_analysis_precondition_failed",
                 file_id=str(file_id),
                 reason=str(exc),
             )
+            precondition_reason = str(exc)
+    if precondition_reason is not None:
+        await _mark_stuck_intermediate_file_failed(file_id, reason=precondition_reason)
+
+
+async def _mark_stuck_intermediate_file_failed(file_id: uuid.UUID, *, reason: str) -> None:
+    """把卡在分析中间态的文件补标 analysis_failed, 非中间态文件保持静默跳过。"""
+    settings = get_settings()
+    async with AsyncSessionFactory() as session:
+        repository = AiRepository(session)
+        file = await repository.get_file_for_update(file_id)
+        if file is None or file.status not in STUCK_ANALYSIS_FILE_STATUSES:
             return
+        service = AiAnalysisService(
+            session=session,
+            repository=repository,
+            settings=settings,
+        )
+        await service.mark_analysis_failed(
+            file_id=file_id,
+            error_message=f"{PRECONDITION_FAILED_MESSAGE_PREFIX}: {reason}",
+        )
+        logger.warning(
+            "ai_analysis_stuck_file_marked_failed",
+            file_id=str(file_id),
+            previous_status=file.status,
+            reason=reason,
+        )

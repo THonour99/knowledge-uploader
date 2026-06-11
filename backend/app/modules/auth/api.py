@@ -8,6 +8,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.core.config import Settings
 from app.core.database import get_session
 from app.core.deps import BearerCredentialsDep, get_app_settings, get_current_user
+from app.core.identity import get_user_identity_store
 from app.core.responses import success_response
 from app.modules.auth.exceptions import AuthError
 from app.modules.auth.schemas import (
@@ -20,7 +21,6 @@ from app.modules.auth.schemas import (
     TokenRequest,
     UserProfile,
 )
-from app.modules.user.identity import SqlUserIdentityStore
 from app.modules.user.schemas import AuthUserRecord
 
 from .repository import AuthRepository
@@ -36,7 +36,7 @@ def _service(session: AsyncSession, settings: Settings) -> AuthService:
     return AuthService(
         session=session,
         repository=AuthRepository(session),
-        user_store=SqlUserIdentityStore(session),
+        user_store=get_user_identity_store(session),
         settings=settings,
     )
 

@@ -7,6 +7,7 @@ import {
   Form,
   Input,
   Modal,
+  Popconfirm,
   Select,
   Space,
   Table,
@@ -15,6 +16,7 @@ import {
 import {
   CheckCircleOutlined,
   CloudSyncOutlined,
+  DeleteOutlined,
   DownloadOutlined,
   FileExcelOutlined,
   FileAddOutlined,
@@ -24,9 +26,11 @@ import {
   FilePptOutlined,
   FileWordOutlined,
   FilterOutlined,
+  InboxOutlined,
   ReloadOutlined,
   SafetyOutlined,
   StarOutlined,
+  SyncOutlined,
 } from "@ant-design/icons";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import dayjs, { type Dayjs } from "dayjs";
@@ -39,15 +43,26 @@ import {
   type DatasetMapping,
   type KnowledgeFile,
   approveFile,
+  archiveFile,
+  deleteFile,
+  getConfigs,
   listCategories,
   listDatasetMappings,
   listReviewFiles,
+  listTags,
+  reanalyzeFile,
   rejectFile,
   submitFileForReview,
+  syncFile,
   updateFileClassification,
 } from "../../api/client";
 import { StatusTag } from "../../components/StatusTag";
 import { PageContainer } from "../../layouts/PageContainer";
+import { allowedExtensionsFromConfig } from "../../utils/uploadConfig";
+
+// ── 常量 ──────────────────────────────────────────────────────────────────────
+
+// ── 类型 ──────────────────────────────────────────────────────────────────────
 
 interface ReviewFormValues {
   category_id?: string;
@@ -55,8 +70,12 @@ interface ReviewFormValues {
   reason?: string;
 }
 
+// ── 工具函数 ──────────────────────────────────────────────────────────────────
+
 const { RangePicker } = DatePicker;
 const reviewableStatuses = new Set(["uploaded", "analyzed", "sensitive_review_required"]);
+const reanalyzeStatuses = new Set(["analysis_failed", "analyzed"]);
+const syncableStatuses = new Set(["approved", "failed"]);
 
 function formatFileSize(size: number): string {
   if (size < 1024) {
@@ -122,6 +141,8 @@ function fileTypeMeta(fileName: string) {
   return { icon: <FileOutlined />, className: "file-title-cell__icon--default" };
 }
 
+// ── 子组件 ────────────────────────────────────────────────────────────────────
+
 function MetricCard({
   icon,
   title,
@@ -153,6 +174,8 @@ function MetricCard({
   );
 }
 
+// ── 主页面 ────────────────────────────────────────────────────────────────────
+
 export default function FileManagementPage() {
   const { message } = AntdApp.useApp();
   const queryClient = useQueryClient();
@@ -170,10 +193,19 @@ export default function FileManagementPage() {
   const [syncFilter, setSyncFilter] = useState("all");
   const [riskFilter, setRiskFilter] = useState("all");
   const [uploadedRange, setUploadedRange] = useState<[Dayjs, Dayjs] | null>(null);
+  // 新增：服务端筛选参数
+  const [extensionFilter, setExtensionFilter] = useState<string | undefined>(undefined);
+  const [tagIdFilter, setTagIdFilter] = useState<string | undefined>(undefined);
+
+  // ── 数据查询 ─────────────────────────────────────────────────────────────────
 
   const reviewFilesQuery = useQuery({
-    queryKey: ["review-files"],
-    queryFn: listReviewFiles,
+    queryKey: ["review-files", { extension: extensionFilter, tag_id: tagIdFilter }],
+    queryFn: () =>
+      listReviewFiles({
+        extension: extensionFilter,
+        tag_id: tagIdFilter,
+      }),
   });
   const categoriesQuery = useQuery({
     queryKey: ["categories"],
@@ -183,10 +215,30 @@ export default function FileManagementPage() {
     queryKey: ["dataset-mappings"],
     queryFn: listDatasetMappings,
   });
+  const tagsQuery = useQuery({
+    queryKey: ["tags"],
+    queryFn: () => listTags({ enabled: true, page_size: 200 }),
+  });
+  const uploadConfigQuery = useQuery({
+    queryKey: ["configs", "upload", "file-management"],
+    queryFn: () => getConfigs("upload"),
+  });
 
   const categories = categoriesQuery.data?.items ?? [];
   const datasets = datasetsQuery.data?.items ?? [];
   const files = reviewFilesQuery.data?.items ?? [];
+  const tags = tagsQuery.data?.items ?? [];
+  const allowedExtensions = useMemo(
+    () => allowedExtensionsFromConfig(uploadConfigQuery.data?.items),
+    [uploadConfigQuery.data?.items],
+  );
+  const extensionOptions = useMemo(
+    () => [
+      { label: "文件类型：全部", value: "all" },
+      ...allowedExtensions.map((ext) => ({ label: `.${ext}`, value: ext })),
+    ],
+    [allowedExtensions],
+  );
   const categoryIdForApprove = Form.useWatch("category_id", approveForm);
   const categoryIdForClassification = Form.useWatch("category_id", classificationForm);
 
@@ -211,13 +263,24 @@ export default function FileManagementPage() {
       })),
     [files],
   );
+  const tagOptions = useMemo(
+    () => [
+      { label: "标签：全部", value: "all" },
+      ...tags.map((tag) => ({ label: tag.name, value: tag.id })),
+    ],
+    [tags],
+  );
   const approveDatasetOptions = buildMappingOptions(datasets, categoryIdForApprove);
   const classificationDatasetOptions = buildMappingOptions(datasets, categoryIdForClassification);
+
+  // ── 客户端筛选（与服务端筛选叠加） ───────────────────────────────────────────
 
   const filteredFiles = files.filter((file) => {
     const keyword = searchText.trim().toLowerCase();
     const categoryName = file.category_id ? categoryNameById.get(file.category_id) ?? "" : "";
-    const datasetName = file.dataset_mapping_id ? mappingById.get(file.dataset_mapping_id)?.name ?? "" : "";
+    const datasetName = file.dataset_mapping_id
+      ? mappingById.get(file.dataset_mapping_id)?.name ?? ""
+      : "";
     const haystack = [
       file.original_name,
       file.mime_type,
@@ -235,7 +298,9 @@ export default function FileManagementPage() {
       (!keyword || haystack.includes(keyword)) &&
       (uploaderFilter === "all" || file.uploader_id === uploaderFilter) &&
       (categoryFilter === "all" || file.category_id === categoryFilter) &&
-      (reviewFilter === "all" || file.review_status === reviewFilter || file.status === reviewFilter) &&
+      (reviewFilter === "all" ||
+        file.review_status === reviewFilter ||
+        file.status === reviewFilter) &&
       (syncFilter === "all" || syncStatus(file) === syncFilter) &&
       (riskFilter === "all" || riskLevel(file) === riskFilter) &&
       (!uploadedRange ||
@@ -244,12 +309,16 @@ export default function FileManagementPage() {
     );
   });
 
+  // ── 刷新辅助 ─────────────────────────────────────────────────────────────────
+
   const refreshFiles = async () => {
     await Promise.all([
       queryClient.invalidateQueries({ queryKey: ["review-files"] }),
       queryClient.invalidateQueries({ queryKey: ["documents"] }),
     ]);
   };
+
+  // ── mutations ────────────────────────────────────────────────────────────────
 
   const submitMutation = useMutation({
     mutationFn: submitFileForReview,
@@ -310,6 +379,52 @@ export default function FileManagementPage() {
     },
   });
 
+  const syncMutation = useMutation({
+    mutationFn: (id: string) => syncFile(id),
+    onSuccess: async () => {
+      message.success("手动同步任务已创建");
+      await refreshFiles();
+    },
+    onError: (error) => {
+      message.error(error.message);
+    },
+  });
+
+  const deleteMutation = useMutation({
+    mutationFn: (id: string) => deleteFile(id),
+    onSuccess: async () => {
+      message.success("文件已删除");
+      await refreshFiles();
+    },
+    onError: (error) => {
+      message.error(error.message);
+    },
+  });
+
+  const archiveMutation = useMutation({
+    mutationFn: (id: string) => archiveFile(id),
+    onSuccess: async () => {
+      message.success("文件已归档");
+      await refreshFiles();
+    },
+    onError: (error) => {
+      message.error(error.message);
+    },
+  });
+
+  const reanalyzeMutation = useMutation({
+    mutationFn: (id: string) => reanalyzeFile(id),
+    onSuccess: async () => {
+      message.success("重新分析已触发");
+      await refreshFiles();
+    },
+    onError: (error) => {
+      message.error(error.message);
+    },
+  });
+
+  // ── Modal 开关 ────────────────────────────────────────────────────────────────
+
   const openApproveModal = (file: KnowledgeFile) => {
     setApprovingFile(file);
     approveForm.setFieldsValue({
@@ -339,6 +454,8 @@ export default function FileManagementPage() {
     }
   };
 
+  // ── 重置筛选 ──────────────────────────────────────────────────────────────────
+
   const resetFilters = () => {
     setSearchText("");
     setUploaderFilter("all");
@@ -347,7 +464,11 @@ export default function FileManagementPage() {
     setSyncFilter("all");
     setRiskFilter("all");
     setUploadedRange(null);
+    setExtensionFilter(undefined);
+    setTagIdFilter(undefined);
   };
+
+  // ── 表格列定义 ────────────────────────────────────────────────────────────────
 
   const columns: ColumnsType<KnowledgeFile> = [
     {
@@ -406,7 +527,10 @@ export default function FileManagementPage() {
       width: 104,
       ellipsis: true,
       render: (value: string | null) => (
-        <span className="single-line-text" title={value ? categoryNameById.get(value) ?? "未知分类" : "未分类"}>
+        <span
+          className="single-line-text"
+          title={value ? categoryNameById.get(value) ?? "未知分类" : "未分类"}
+        >
           {value ? categoryNameById.get(value) ?? "未知分类" : "未分类"}
         </span>
       ),
@@ -449,20 +573,30 @@ export default function FileManagementPage() {
     {
       title: "操作",
       key: "actions",
-      width: 148,
+      width: 220,
+      fixed: "right" as const,
       render: (_, record) => {
         const canSubmit = reviewableStatuses.has(record.status);
         const canDecide = record.status === "pending_review";
+        const canSync = syncableStatuses.has(record.status);
+        const canReanalyze = reanalyzeStatuses.has(record.status);
 
         return (
-          <Space size={8}>
+          <Space size={4} wrap>
+            {/* 审核 / 送审 */}
             {canDecide ? (
-              <Button type="link" className="table-link-button" onClick={() => openApproveModal(record)}>
+              <Button
+                type="link"
+                size="small"
+                className="table-link-button"
+                onClick={() => openApproveModal(record)}
+              >
                 审核
               </Button>
             ) : canSubmit ? (
               <Button
                 type="link"
+                size="small"
                 className="table-link-button"
                 loading={submitMutation.isPending}
                 onClick={() => submitMutation.mutate(record.id)}
@@ -470,27 +604,110 @@ export default function FileManagementPage() {
                 送审
               </Button>
             ) : null}
-            <Button type="link" className="table-link-button" onClick={() => openClassificationModal(record)}>
+
+            {/* 修改分类 */}
+            <Button
+              type="link"
+              size="small"
+              className="table-link-button"
+              onClick={() => openClassificationModal(record)}
+            >
               修改分类
             </Button>
-            {record.status === "approved" ? (
-              <Button type="link" className="table-link-button" disabled>
-                同步
+
+            {/* 手动同步（approved / failed 态） */}
+            {canSync ? (
+              <Popconfirm
+                title="手动触发同步"
+                description="将该文件重新推送到 RAGFlow 知识库，确认继续？"
+                onConfirm={() => syncMutation.mutate(record.id)}
+                okText="确定"
+                cancelText="取消"
+              >
+                <Button
+                  type="link"
+                  size="small"
+                  icon={<SyncOutlined />}
+                  className="table-link-button"
+                  loading={syncMutation.isPending}
+                >
+                  同步
+                </Button>
+              </Popconfirm>
+            ) : null}
+
+            {/* 重新分析（analysis_failed / analyzed 态） */}
+            {canReanalyze ? (
+              <Button
+                type="link"
+                size="small"
+                className="table-link-button"
+                loading={reanalyzeMutation.isPending}
+                onClick={() => reanalyzeMutation.mutate(record.id)}
+              >
+                重新分析
               </Button>
             ) : null}
+
+            {/* 归档 */}
+            <Popconfirm
+              title="归档文件"
+              description="归档后文件将停止同步，确认继续？"
+              onConfirm={() => archiveMutation.mutate(record.id)}
+              okText="确定"
+              cancelText="取消"
+            >
+              <Button
+                type="link"
+                size="small"
+                icon={<InboxOutlined />}
+                className="table-link-button"
+                loading={archiveMutation.isPending}
+              >
+                归档
+              </Button>
+            </Popconfirm>
+
+            {/* 驳回（待审核态） */}
             {canDecide ? (
-              <Button type="link" danger className="table-link-button" onClick={() => openRejectModal(record)}>
+              <Button
+                type="link"
+                danger
+                size="small"
+                className="table-link-button"
+                onClick={() => openRejectModal(record)}
+              >
                 驳回
               </Button>
             ) : null}
-            <Button type="link" danger className="table-link-button" disabled>
-              禁用
-            </Button>
+
+            {/* 删除 */}
+            <Popconfirm
+              title="删除文件"
+              description="此操作不可撤销，文件将被软删除并触发 RAGFlow 联动清理，确认删除？"
+              onConfirm={() => deleteMutation.mutate(record.id)}
+              okText="确定"
+              cancelText="取消"
+              okButtonProps={{ danger: true }}
+            >
+              <Button
+                type="link"
+                danger
+                size="small"
+                icon={<DeleteOutlined />}
+                className="table-link-button"
+                loading={deleteMutation.isPending}
+              >
+                删除
+              </Button>
+            </Popconfirm>
           </Space>
         );
       },
     },
   ];
+
+  // ── 渲染 ──────────────────────────────────────────────────────────────────────
 
   return (
     <PageContainer
@@ -529,6 +746,7 @@ export default function FileManagementPage() {
       </div>
 
       <Card className="document-panel table-card">
+        {/* ── 筛选栏 ── */}
         <div className="filter-toolbar filter-toolbar--management">
           <Input.Search
             className="filter-toolbar__search"
@@ -583,6 +801,23 @@ export default function FileManagementPage() {
             ]}
             onChange={setRiskFilter}
           />
+          {/* 新增：文件类型筛选（服务端过滤） */}
+          <Select
+            className="filter-toolbar__control"
+            value={extensionFilter ?? "all"}
+            options={extensionOptions}
+            onChange={(value) => setExtensionFilter(value === "all" ? undefined : value)}
+            placeholder="文件类型：全部"
+          />
+          {/* 新增：标签筛选（服务端过滤） */}
+          <Select
+            className="filter-toolbar__control"
+            value={tagIdFilter ?? "all"}
+            options={tagOptions}
+            onChange={(value) => setTagIdFilter(value === "all" ? undefined : value)}
+            loading={tagsQuery.isLoading}
+            placeholder="标签：全部"
+          />
           <RangePicker
             className="filter-toolbar__range"
             placeholder={["开始日期", "结束日期"]}
@@ -591,12 +826,17 @@ export default function FileManagementPage() {
           />
         </div>
 
+        {/* ── 表格工具栏 ── */}
         <div className="table-actions">
           <Button icon={<FilterOutlined />} onClick={resetFilters}>
             重置筛选
           </Button>
           <Space wrap className="table-actions__right">
-            <Button type="primary" icon={<CheckCircleOutlined />} disabled={selectedRowKeys.length === 0}>
+            <Button
+              type="primary"
+              icon={<CheckCircleOutlined />}
+              disabled={selectedRowKeys.length === 0}
+            >
               批量审核
             </Button>
             <Button icon={<CloudSyncOutlined />} disabled={selectedRowKeys.length === 0}>
@@ -624,9 +864,11 @@ export default function FileManagementPage() {
             selectedRowKeys,
             onChange: setSelectedRowKeys,
           }}
+          scroll={{ x: 1200 }}
         />
       </Card>
 
+      {/* ── 审核通过 Modal ── */}
       <Modal
         title="审核通过"
         open={Boolean(approvingFile)}
@@ -670,6 +912,7 @@ export default function FileManagementPage() {
         </Form>
       </Modal>
 
+      {/* ── 拒绝文件 Modal ── */}
       <Modal
         title="拒绝文件"
         open={Boolean(rejectingFile)}
@@ -691,12 +934,17 @@ export default function FileManagementPage() {
             }
           }}
         >
-          <Form.Item label="拒绝原因" name="reason" rules={[{ required: true, message: "请输入拒绝原因" }]}>
+          <Form.Item
+            label="拒绝原因"
+            name="reason"
+            rules={[{ required: true, message: "请输入拒绝原因" }]}
+          >
             <Input.TextArea rows={4} maxLength={500} showCount />
           </Form.Item>
         </Form>
       </Modal>
 
+      {/* ── 调整分类 Modal ── */}
       <Modal
         title="调整分类与 Dataset"
         open={Boolean(classifyingFile)}

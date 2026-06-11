@@ -100,6 +100,39 @@ class DatasetMappingListResponse(BaseModel):
     total: int
 
 
+class TagCreateRequest(BaseModel):
+    name: str = Field(min_length=1, max_length=120)
+    description: str | None = None
+
+
+class TagUpdateRequest(BaseModel):
+    name: str | None = Field(default=None, min_length=1, max_length=120)
+    description: str | None = None
+    enabled: bool | None = None
+
+
+class TagMergeRequest(BaseModel):
+    target_tag_id: UUID
+
+
+class TagResponse(BaseModel):
+    id: UUID
+    name: str
+    description: str | None
+    usage_count: int
+    is_system_generated: bool
+    enabled: bool
+    created_at: datetime
+    updated_at: datetime
+
+
+class TagListResponse(BaseModel):
+    items: list[TagResponse]
+    total: int
+    page: int
+    page_size: int
+
+
 class ReviewDecisionRequest(BaseModel):
     category_id: UUID | None = None
     dataset_mapping_id: UUID | None = None

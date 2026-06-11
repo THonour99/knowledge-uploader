@@ -79,11 +79,13 @@ async def list_tasks(
     request: Request,
     current_user: AdminUserDep,
     session: SessionDep,
+    file_id: UUID | None = None,
 ) -> dict[str, object]:
     try:
         tasks = await _service(session).list_tasks(
             current_user=current_user,
             context=_context_from(request),
+            file_id=file_id,
         )
     except RagflowTaskError as error:
         _raise_ragflow_task_error(error)
@@ -141,6 +143,24 @@ async def cancel_task(
         task = await _service(session).cancel_task(
             current_user=current_user,
             task_id=task_id,
+            context=_context_from(request),
+        )
+    except RagflowTaskError as error:
+        _raise_ragflow_task_error(error)
+    return success_response(_task_response(task).model_dump(mode="json"), request)
+
+
+@router.post("/api/admin/files/{file_id}/sync")
+async def manual_sync_file(
+    file_id: UUID,
+    request: Request,
+    current_user: AdminUserDep,
+    session: SessionDep,
+) -> dict[str, object]:
+    try:
+        task = await _service(session).manual_sync_file(
+            current_user=current_user,
+            file_id=file_id,
             context=_context_from(request),
         )
     except RagflowTaskError as error:

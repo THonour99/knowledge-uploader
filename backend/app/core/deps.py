@@ -12,9 +12,9 @@ from starlette import status
 from app.core.config import Settings, get_settings
 from app.core.database import get_session
 from app.core.exceptions import ErrorCode
+from app.core.identity import get_user_identity_store
 from app.core.ratelimit import is_jwt_blacklisted
 from app.core.security import decode_jwt, password_fingerprint
-from app.modules.user.identity import SqlUserIdentityStore
 from app.modules.user.schemas import AuthUserRecord
 
 bearer_scheme = HTTPBearer(auto_error=False)
@@ -67,7 +67,7 @@ async def get_current_user(
             status.HTTP_401_UNAUTHORIZED,
         )
 
-    user = await SqlUserIdentityStore(session).get_by_id(user_id)
+    user = await get_user_identity_store(session).get_by_id(user_id)
     if user is None:
         raise http_error(
             ErrorCode.AUTHENTICATION_FAILED,

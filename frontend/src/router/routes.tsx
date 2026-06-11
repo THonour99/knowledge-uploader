@@ -19,6 +19,7 @@ import AiConfigPage from "../pages/AiConfig";
 import AuditLogsPage from "../pages/AuditLogs";
 import CategoriesPage from "../pages/Categories";
 import DashboardPage from "../pages/Dashboard";
+import TagsPage from "../pages/Tags";
 import DatasetConfigPage from "../pages/DatasetConfig";
 import FileDetailPage from "../pages/FileDetail";
 import FileManagementPage from "../pages/FileManagement";
@@ -128,6 +129,12 @@ export const appRoutes: AppRoute[] = [
     element: <CategoriesPage />,
     roles: [Roles.SYSTEM_ADMIN],
     nav: { label: "分类管理", icon: <TagsOutlined /> },
+  },
+  {
+    path: "/tags",
+    element: <TagsPage />,
+    roles: [Roles.SYSTEM_ADMIN],
+    nav: { label: "标签管理", icon: <TagsOutlined /> },
   },
   {
     path: "/profile",
