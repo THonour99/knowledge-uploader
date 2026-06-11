@@ -412,6 +412,39 @@
   margin: 0;
 }
 
+.dashboard-failure-list {
+  display: grid;
+  gap: 14px;
+}
+
+.dashboard-failure-row {
+  display: grid;
+  gap: 6px;
+}
+
+.dashboard-failure-row__header {
+  display: flex;
+  justify-content: space-between;
+  gap: 8px;
+  min-width: 0;
+}
+
+.dashboard-failure-row__track {
+  display: block;
+  height: 6px;
+  border-radius: 4px;
+  background: var(--ku-bg-base);
+  overflow: hidden;
+}
+
+.dashboard-failure-row__bar {
+  display: block;
+  height: 100%;
+  border-radius: 4px;
+  background: var(--ku-color-danger);
+  transition: width 0.3s ease;
+}
+
 .dashboard-health-list {
   display: grid;
   gap: 18px;
