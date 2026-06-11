@@ -49,11 +49,15 @@ const statusMap: Record<StatusKind, Record<string, StatusMeta>> = {
   sync: {
     not_synced: { label: "未同步", color: "default" },
     queued: { label: "待同步", color: "primary" },
+    running: { label: "执行中", color: "processing", processing: true },
     syncing: { label: "同步中", color: "processing", processing: true },
     synced: { label: "已同步", color: "success" },
+    succeeded: { label: "已成功", color: "success" },
     failed: { label: "同步失败", color: "danger" },
+    canceled: { label: "已取消", color: "default" },
   },
   risk: {
+    none: { label: "无风险", color: "default" },
     low: { label: "低风险", color: "success" },
     medium: { label: "中风险", color: "warning" },
     high: { label: "高风险", color: "danger" },

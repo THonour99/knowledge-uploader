@@ -40,3 +40,19 @@ class FileResponse(BaseModel):
 class FileListResponse(BaseModel):
     items: list[FileResponse]
     total: int
+
+
+class FileAnalysisDetail(BaseModel):
+    status: str
+    summary: str | None
+    sensitive_risk_level: str
+    quality_score: float | None = None
+    extracted_text_preview: str | None
+    error_message: str | None
+    finished_at: datetime | None
+
+
+class FileDetailResponse(FileResponse):
+    category_name: str | None = None
+    analysis: FileAnalysisDetail | None = None
+    sync_error: str | None = None

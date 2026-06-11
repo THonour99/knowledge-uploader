@@ -18,10 +18,11 @@ from app.modules.user.schemas import AuthUserRecord
 from .exceptions import DocumentError
 from .models import File as DocumentFile
 from .repository import DocumentRepository
-from .schemas import FileListResponse, FileResponse
+from .schemas import FileDetailResponse, FileListResponse, FileResponse
 from .service import (
     DocumentService,
     DocumentStorage,
+    FileDetailResult,
     UploadedFileResult,
     resolve_upload_max_size_bytes,
 )
@@ -95,6 +96,15 @@ def _file_response(
 
 def _upload_response(result: UploadedFileResult) -> FileResponse:
     return _file_response(result.file, duplicate_file_id=result.duplicate_file_id)
+
+
+def _file_detail_response(detail: FileDetailResult) -> FileDetailResponse:
+    return FileDetailResponse(
+        **_file_response(detail.file).model_dump(),
+        category_name=detail.category_name,
+        analysis=detail.analysis,
+        sync_error=detail.sync_error,
+    )
 
 
 def _raise_rate_limited() -> NoReturn:
@@ -207,7 +217,7 @@ async def list_my_files(
 
 
 @router.get("/{file_id}")
-async def get_my_file(
+async def get_file_detail(
     file_id: UUID,
     request: Request,
     current_user: CurrentUserDep,
@@ -216,10 +226,16 @@ async def get_my_file(
     storage: DocumentStorageDep,
 ) -> dict[str, object]:
     try:
-        file = await _service(session=session, settings=settings, storage=storage).get_my_file(
+        detail = await _service(
+            session=session,
+            settings=settings,
+            storage=storage,
+        ).get_file_detail(
             current_user=current_user,
             file_id=file_id,
+            client_ip=_client_ip(request),
+            user_agent=_user_agent(request),
         )
     except DocumentError as error:
         _raise_document_error(error)
-    return success_response(_file_response(file).model_dump(mode="json"), request)
+    return success_response(_file_detail_response(detail).model_dump(mode="json"), request)

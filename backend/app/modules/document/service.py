@@ -13,7 +13,7 @@ from typing import Protocol
 import filetype
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.core.audit import record_audit_log
+from app.core.audit import record_admin_audit_log, record_audit_log
 from app.core.config import Settings
 from app.core.outbox import OutboxRepository
 from app.core.runtime_config import get_config
@@ -22,6 +22,7 @@ from app.modules.user.schemas import AuthUserRecord
 from . import events, exceptions
 from .models import File
 from .repository import DocumentRepository
+from .schemas import FileAnalysisDetail
 
 WINDOWS_RESERVED_NAMES = {
     "CON",
@@ -52,6 +53,8 @@ OOXML_REQUIRED_ENTRIES = {
 }
 UNSUPPORTED_LEGACY_EXTENSIONS = {"doc", "xls", "ppt"}
 TEXT_EXTENSIONS = {"txt", "md", "csv"}
+ADMIN_ROLES = {"knowledge_admin", "system_admin"}
+EXTRACTED_TEXT_PREVIEW_CHARS = 500
 
 
 class DocumentStorage(Protocol):
@@ -73,6 +76,14 @@ class DocumentStorage(Protocol):
 class UploadedFileResult:
     file: File
     duplicate_file_id: uuid.UUID | None
+
+
+@dataclass(frozen=True)
+class FileDetailResult:
+    file: File
+    category_name: str | None
+    analysis: FileAnalysisDetail | None
+    sync_error: str | None
 
 
 class DocumentService:
@@ -220,6 +231,64 @@ class DocumentService:
         if file is None:
             raise exceptions.file_not_found()
         return file
+
+    async def get_file_detail(
+        self,
+        *,
+        current_user: AuthUserRecord,
+        file_id: uuid.UUID,
+        client_ip: str,
+        user_agent: str,
+    ) -> FileDetailResult:
+        is_admin_view = current_user.role in ADMIN_ROLES
+        if is_admin_view:
+            file = await self._repository.get_by_id(file_id)
+            if file is None:
+                raise exceptions.file_not_found()
+        else:
+            file = await self.get_my_file(current_user=current_user, file_id=file_id)
+
+        analysis = await self._repository.get_analysis_for_file(file.id)
+        result = FileDetailResult(
+            file=file,
+            category_name=await self._repository.get_category_name(file.id),
+            analysis=(
+                FileAnalysisDetail(
+                    status=analysis.status,
+                    summary=analysis.summary,
+                    sensitive_risk_level=analysis.sensitive_risk_level,
+                    quality_score=None,
+                    extracted_text_preview=(
+                        analysis.extracted_text[:EXTRACTED_TEXT_PREVIEW_CHARS]
+                        if analysis.extracted_text is not None
+                        else None
+                    ),
+                    error_message=analysis.error_message,
+                    finished_at=analysis.finished_at,
+                )
+                if analysis is not None
+                else None
+            ),
+            sync_error=await self._repository.get_latest_failed_sync_error(file.id),
+        )
+        # 审计在全部查询成功后写入并与之同事务提交, 避免 admin/员工两条路径事务边界不一致,
+        # 也保证只记录实际成功返回的查看操作。
+        if is_admin_view:
+            await record_admin_audit_log(
+                self._session,
+                actor_id=current_user.id,
+                action="file.view_detail",
+                target_type="file",
+                target_id=file.id,
+                ip_address=client_ip,
+                user_agent=user_agent[:512] or "unknown",
+                metadata_json={
+                    "original_name": file.original_name,
+                    "uploader_id": str(file.uploader_id),
+                },
+            )
+            await self._session.commit()
+        return result
 
     async def _validate_size(self, size: int) -> None:
         if size <= 0:

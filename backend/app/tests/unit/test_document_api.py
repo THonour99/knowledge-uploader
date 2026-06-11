@@ -3,8 +3,9 @@ from __future__ import annotations
 import os
 from collections.abc import AsyncGenerator, Awaitable, Callable
 from dataclasses import dataclass, field
+from datetime import UTC, datetime, timedelta
 from importlib import import_module
-from uuid import UUID
+from uuid import UUID, uuid4
 
 import pytest
 from httpx import ASGITransport, AsyncClient
@@ -606,3 +607,195 @@ async def test_employee_lists_and_views_only_own_files(
     assert denied_detail.status_code == 404
     assert denied_detail.json()["error_code"] == "FILE_NOT_FOUND"
     assert other_id != owner_id
+
+
+async def _create_category_named(name: str) -> UUID:
+    from app.core.database import AsyncSessionFactory
+    from app.modules.review.models import Category
+
+    category = Category(name=name, code=f"cat-{uuid4().hex[:8]}", keywords=[])
+    async with AsyncSessionFactory() as session:
+        session.add(category)
+        await session.commit()
+        await session.refresh(category)
+        return category.id
+
+
+async def _assign_file_category(file_id: UUID, category_id: UUID) -> None:
+    from app.core.database import AsyncSessionFactory
+    from app.modules.document.models import File
+
+    async with AsyncSessionFactory() as session:
+        result = await session.execute(select(File).where(File.id == file_id))
+        file = result.scalar_one()
+        file.category_id = category_id
+        await session.commit()
+
+
+async def _create_analysis(
+    *,
+    file_id: UUID,
+    status: str = "succeeded",
+    summary: str | None = None,
+    sensitive_risk_level: str = "none",
+    extracted_text: str | None = None,
+    error_message: str | None = None,
+) -> None:
+    from app.core.database import AsyncSessionFactory
+    from app.modules.ai.models import DocumentAnalysis
+
+    now = datetime.now(UTC)
+    analysis = DocumentAnalysis(
+        file_id=file_id,
+        status=status,
+        extracted_text=extracted_text,
+        summary=summary,
+        suggested_tags=[],
+        sensitive_risk_level=sensitive_risk_level,
+        sensitive_hits=[],
+        error_message=error_message,
+        started_at=now,
+        finished_at=None if status == "running" else now,
+    )
+    async with AsyncSessionFactory() as session:
+        session.add(analysis)
+        await session.commit()
+
+
+async def _create_failed_sync_task(
+    *,
+    file_id: UUID,
+    error_message: str,
+    created_at: datetime,
+) -> None:
+    from app.core.database import AsyncSessionFactory
+    from app.modules.ragflow.models import SyncTask
+
+    task = SyncTask(
+        file_id=file_id,
+        task_type="ragflow_upload",
+        status="failed",
+        error_message=error_message,
+        created_at=created_at,
+    )
+    async with AsyncSessionFactory() as session:
+        session.add(task)
+        await session.commit()
+
+
+async def _upload_pdf(client: AsyncClient, *, token: str, filename: str) -> str:
+    response = await client.post(
+        "/api/files/upload",
+        headers={"Authorization": f"Bearer {token}"},
+        files={"file": (filename, PDF_BYTES, "application/pdf")},
+    )
+    assert response.status_code == 201
+    return str(response.json()["data"]["id"])
+
+
+async def test_owner_file_detail_includes_category_analysis_and_sync_error(
+    document_client: tuple[AsyncClient, FakeDocumentStorage],
+) -> None:
+    client, _storage = document_client
+    await _create_user(email="detail-owner@company.com", password="password123")
+    token = await _login(client, email="detail-owner@company.com", password="password123")
+    file_id = await _upload_pdf(client, token=token, filename="detail.pdf")
+
+    category_id = await _create_category_named("制度文档")
+    await _assign_file_category(UUID(file_id), category_id)
+    await _create_analysis(
+        file_id=UUID(file_id),
+        status="succeeded",
+        summary="文档摘要内容",
+        sensitive_risk_level="medium",
+        extracted_text="a" * 600,
+    )
+    now = datetime.now(UTC)
+    await _create_failed_sync_task(
+        file_id=UUID(file_id),
+        error_message="older sync error",
+        created_at=now - timedelta(minutes=5),
+    )
+    await _create_failed_sync_task(
+        file_id=UUID(file_id),
+        error_message="latest sync error",
+        created_at=now,
+    )
+
+    response = await client.get(
+        f"/api/files/{file_id}",
+        headers={"Authorization": f"Bearer {token}"},
+    )
+
+    assert response.status_code == 200
+    data = response.json()["data"]
+    assert data["category_name"] == "制度文档"
+    analysis = data["analysis"]
+    assert analysis is not None
+    assert analysis["status"] == "succeeded"
+    assert analysis["summary"] == "文档摘要内容"
+    assert analysis["sensitive_risk_level"] == "medium"
+    assert analysis["quality_score"] is None
+    assert analysis["extracted_text_preview"] == "a" * 500
+    assert analysis["error_message"] is None
+    assert analysis["finished_at"] is not None
+    assert data["sync_error"] == "latest sync error"
+
+
+async def test_file_detail_returns_null_extras_without_records(
+    document_client: tuple[AsyncClient, FakeDocumentStorage],
+) -> None:
+    client, _storage = document_client
+    await _create_user(email="detail-empty@company.com", password="password123")
+    token = await _login(client, email="detail-empty@company.com", password="password123")
+    file_id = await _upload_pdf(client, token=token, filename="empty-detail.pdf")
+
+    response = await client.get(
+        f"/api/files/{file_id}",
+        headers={"Authorization": f"Bearer {token}"},
+    )
+
+    assert response.status_code == 200
+    data = response.json()["data"]
+    assert data["category_name"] is None
+    assert data["analysis"] is None
+    assert data["sync_error"] is None
+
+
+@pytest.mark.parametrize("admin_role", ["knowledge_admin", "system_admin"])
+async def test_admin_views_any_file_detail_and_writes_audit(
+    document_client: tuple[AsyncClient, FakeDocumentStorage],
+    admin_role: str,
+) -> None:
+    from app.core.database import AsyncSessionFactory
+    from app.modules.audit.models import AuditLog
+
+    client, _storage = document_client
+    owner_id = await _create_user(email="detail-employee@company.com", password="password123")
+    owner_token = await _login(client, email="detail-employee@company.com", password="password123")
+    file_id = await _upload_pdf(client, token=owner_token, filename="admin-view.pdf")
+
+    admin_email = f"{admin_role.replace('_', '-')}@company.com"
+    admin_id = await _create_user(email=admin_email, password="password123", role=admin_role)
+    admin_token = await _login(client, email=admin_email, password="password123")
+
+    response = await client.get(
+        f"/api/files/{file_id}",
+        headers={"Authorization": f"Bearer {admin_token}"},
+    )
+
+    assert response.status_code == 200
+    data = response.json()["data"]
+    assert data["id"] == file_id
+    assert data["uploader_id"] == str(owner_id)
+
+    async with AsyncSessionFactory() as session:
+        result = await session.execute(
+            select(AuditLog).where(AuditLog.action == "file.view_detail")
+        )
+        audit_logs = list(result.scalars())
+
+    assert len(audit_logs) == 1
+    assert audit_logs[0].actor_id == admin_id
+    assert audit_logs[0].target_id == UUID(file_id)
+    assert audit_logs[0].target_type == "file"
