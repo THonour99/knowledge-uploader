@@ -4,6 +4,7 @@ import {
   LeftOutlined,
   LogoutOutlined,
   UserOutlined,
+  ProfileOutlined,
 } from "@ant-design/icons";
 import { App as AntdApp, Avatar, Badge, Button, Dropdown, Input, Space, Typography } from "antd";
 import type { MenuProps } from "antd";
@@ -49,6 +50,13 @@ export function TopHeader() {
   };
 
   const items: MenuProps["items"] = [
+    {
+      key: "profile",
+      icon: <ProfileOutlined />,
+      label: "个人中心",
+      onClick: () => { navigate("/profile"); },
+    },
+    { type: "divider" },
     {
       key: "logout",
       icon: <LogoutOutlined />,

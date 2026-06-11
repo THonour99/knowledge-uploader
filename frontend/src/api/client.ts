@@ -63,6 +63,16 @@ export interface UserProfile {
   phone: string | null;
 }
 
+export interface FileAnalysis {
+  status: string;
+  summary: string | null;
+  sensitive_risk_level: string;
+  quality_score: number | null;
+  extracted_text_preview: string | null;
+  error_message: string | null;
+  finished_at: string | null;
+}
+
 export interface KnowledgeFile {
   id: string;
   original_name: string;
@@ -88,6 +98,12 @@ export interface KnowledgeFile {
   updated_at: string;
   duplicate: boolean;
   duplicate_file_id: string | null;
+  /** 仅文件详情接口返回, 列表接口无此字段 */
+  category_name?: string | null;
+  /** 仅文件详情接口返回; 无分析记录时为 null */
+  analysis?: FileAnalysis | null;
+  /** 仅文件详情接口返回; 最近一次失败同步任务的错误信息 */
+  sync_error?: string | null;
 }
 
 export interface FileListResponse {
@@ -701,6 +717,77 @@ export async function updateFileClassification(
   return unwrapResponse(response.data);
 }
 
+// ── Audit log types ──────────────────────────────────────────────────────────
+
+export interface AuditLogItem {
+  id: string;
+  actor_id: string;
+  actor_name: string | null;
+  actor_email: string | null;
+  action: string;
+  target_type: string;
+  target_id: string;
+  ip_address: string | null;
+  user_agent: string | null;
+  reason: string | null;
+  metadata: Record<string, unknown> | null;
+  created_at: string;
+}
+
+export interface AuditLogListResponse {
+  items: AuditLogItem[];
+  total: number;
+  page: number;
+  page_size: number;
+}
+
+export interface AuditLogQuery {
+  page?: number;
+  page_size?: number;
+  actor_id?: string;
+  action?: string;
+  target_type?: string;
+  created_from?: string;
+  created_to?: string;
+}
+
+// ── Sync task types ───────────────────────────────────────────────────────────
+
+export interface SyncTaskLog {
+  id: number;
+  task_id: string;
+  status: string;
+  message: string;
+  created_at: string;
+}
+
+export interface SyncTask {
+  id: string;
+  file_id: string;
+  task_type: string;
+  status: string;
+  retry_count: number;
+  max_retry_count: number;
+  error_message: string | null;
+  started_at: string | null;
+  finished_at: string | null;
+  created_at: string;
+  updated_at: string;
+  logs: SyncTaskLog[];
+}
+
+export interface SyncTaskListResponse {
+  items: SyncTask[];
+  total: number;
+}
+
+export interface TaskListQuery {
+  task_type?: string;
+  status?: string;
+  /** 后端 /api/tasks 暂不支持该筛选, 传参无副作用; 页面侧仍需按 file_id 过滤 */
+  file_id?: string;
+}
+
 // ── System config types ──────────────────────────────────────────────────────
 
 export type ConfigGroup = "basic" | "upload" | "processing" | "security" | "ragflow";
@@ -755,6 +842,52 @@ export async function testRagflowConnection(): Promise<RagflowConnectionTestResu
   const response = await apiClient.post<
     ApiEnvelope<RagflowConnectionTestResult> | RagflowConnectionTestResult
   >("/admin/ragflow/test-connection");
+
+  return unwrapResponse(response.data);
+}
+
+// ── Audit log API functions ──────────────────────────────────────────────────
+
+export async function listAuditLogs(params: AuditLogQuery = {}): Promise<AuditLogListResponse> {
+  const response = await apiClient.get<
+    ApiEnvelope<AuditLogListResponse> | AuditLogListResponse
+  >("/admin/audit-logs", { params });
+
+  return unwrapResponse(response.data);
+}
+
+// ── Task API functions ────────────────────────────────────────────────────────
+
+export async function listTasks(params: TaskListQuery = {}): Promise<SyncTaskListResponse> {
+  const response = await apiClient.get<
+    ApiEnvelope<SyncTaskListResponse> | SyncTaskListResponse
+  >("/tasks", { params });
+
+  return unwrapResponse(response.data);
+}
+
+export async function getTask(id: string): Promise<SyncTask> {
+  const response = await apiClient.get<ApiEnvelope<SyncTask> | SyncTask>(`/tasks/${id}`);
+
+  return unwrapResponse(response.data);
+}
+
+export async function retryTask(id: string): Promise<SyncTask> {
+  const response = await apiClient.post<ApiEnvelope<SyncTask> | SyncTask>(`/tasks/${id}/retry`);
+
+  return unwrapResponse(response.data);
+}
+
+export async function cancelTask(id: string): Promise<SyncTask> {
+  const response = await apiClient.post<ApiEnvelope<SyncTask> | SyncTask>(`/tasks/${id}/cancel`);
+
+  return unwrapResponse(response.data);
+}
+
+// ── User profile API functions ────────────────────────────────────────────────
+
+export async function getMe(): Promise<UserProfile> {
+  const response = await apiClient.get<ApiEnvelope<UserProfile> | UserProfile>("/auth/me");
 
   return unwrapResponse(response.data);
 }
