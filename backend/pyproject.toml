@@ -43,6 +43,7 @@ ignore = []
 known-first-party = ["app"]
 
 [tool.ruff.lint.per-file-ignores]
+"app/modules/audit/api.py" = ["TID251"]
 "app/modules/audit/service.py" = ["TID251"]
 "app/modules/auth/api.py" = ["TID251"]
 "app/modules/auth/service.py" = ["TID251"]
