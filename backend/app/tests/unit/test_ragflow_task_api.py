@@ -1042,15 +1042,15 @@ async def test_ragflow_status_check_worker_marks_done_as_parsed(
     await tasks.run_ragflow_upload_task_async(str(task_id))
 
     async with AsyncSessionFactory() as session:
-        task = await session.get(SyncTask, task_id)
-        file = await session.get(File, file_id)
-        assert task is not None
-        assert file is not None
+        loaded_task = await session.get(SyncTask, task_id)
+        loaded_file = await session.get(File, file_id)
+        assert loaded_task is not None
+        assert loaded_file is not None
 
-    assert task.status == "succeeded"
-    assert file.status == "parsed"
-    assert file.ragflow_parse_status == "DONE"
-    assert file.ragflow_error_message is None
+    assert loaded_task.status == "succeeded"
+    assert loaded_file.status == "parsed"
+    assert loaded_file.ragflow_parse_status == "DONE"
+    assert loaded_file.ragflow_error_message is None
     assert storage.reads == []
     assert client.uploads == []
     assert client.parse_requests == []
@@ -1114,16 +1114,16 @@ async def test_ragflow_status_check_worker_marks_fail_as_failed(
         await tasks.run_ragflow_upload_task_async(str(task_id))
 
     async with AsyncSessionFactory() as session:
-        task = await session.get(SyncTask, task_id)
-        file = await session.get(File, file_id)
-        assert task is not None
-        assert file is not None
+        loaded_task = await session.get(SyncTask, task_id)
+        loaded_file = await session.get(File, file_id)
+        assert loaded_task is not None
+        assert loaded_file is not None
 
-    assert task.status == "failed"
-    assert task.error_message == "RagflowParseFailedError"
-    assert file.status == "failed"
-    assert file.ragflow_parse_status == "FAIL"
-    assert file.ragflow_error_message == "RagflowParseFailedError"
+    assert loaded_task.status == "failed"
+    assert loaded_task.error_message == "RagflowParseFailedError"
+    assert loaded_file.status == "failed"
+    assert loaded_file.ragflow_parse_status == "FAIL"
+    assert loaded_file.ragflow_error_message == "RagflowParseFailedError"
     assert storage.reads == []
     assert client.uploads == []
     assert client.parse_requests == []
@@ -1165,11 +1165,11 @@ async def test_duplicate_status_check_worker_message_does_not_reclaim_running_ta
     await run_ragflow_upload_task_async(str(task_id))
 
     async with AsyncSessionFactory() as session:
-        task = await session.get(SyncTask, task_id)
-        assert task is not None
+        loaded_task = await session.get(SyncTask, task_id)
+        assert loaded_task is not None
 
-    assert task.status == "running"
-    assert task.finished_at is None
+    assert loaded_task.status == "running"
+    assert loaded_task.finished_at is None
 
 
 async def test_ragflow_upload_worker_starts_parse_for_existing_unstarted_document(

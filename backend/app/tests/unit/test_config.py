@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from typing import Any
+
 import pytest
 from pydantic import ValidationError
 
@@ -10,8 +12,8 @@ PRODUCTION_FERNET_KEY = "x6TF85ulMkiMF3GSpxCRgYn5v_t7q8D2r5LJw8ZvcVY="
 PRODUCTION_JWT_SECRET = "this-is-a-production-secret-with-32-bytes"
 
 
-def _production_settings(**overrides: object) -> dict[str, object]:
-    settings: dict[str, object] = {
+def _production_settings(**overrides: Any) -> dict[str, Any]:
+    settings: dict[str, Any] = {
         "app_env": "production",
         "jwt_secret": PRODUCTION_JWT_SECRET,
         "encryption_key": PRODUCTION_FERNET_KEY,

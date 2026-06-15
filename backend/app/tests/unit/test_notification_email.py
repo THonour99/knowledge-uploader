@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from email.message import EmailMessage
 from typing import ClassVar
 
 import pytest
@@ -16,7 +17,7 @@ class FakeSmtp:
         self.timeout = timeout
         self.started_tls = False
         self.login_args: tuple[str, str] | None = None
-        self.message = None
+        self.message: EmailMessage | None = None
         FakeSmtp.instances.append(self)
 
     def __enter__(self) -> FakeSmtp:
@@ -31,16 +32,14 @@ class FakeSmtp:
     def login(self, username: str, password: str) -> None:
         self.login_args = (username, password)
 
-    def send_message(self, message: object) -> None:
+    def send_message(self, message: EmailMessage) -> None:
         self.message = message
 
 
 @pytest.mark.asyncio
 async def test_smtp_adapter_sends_message_with_starttls(monkeypatch: pytest.MonkeyPatch) -> None:
-    from app.adapters.email import smtp as smtp_module
-
     FakeSmtp.instances = []
-    monkeypatch.setattr(smtp_module.smtplib, "SMTP", FakeSmtp)
+    monkeypatch.setattr("app.adapters.email.smtp.smtplib.SMTP", FakeSmtp)
 
     adapter = SmtpEmailAdapter(
         SmtpEmailConfig(
@@ -63,10 +62,12 @@ async def test_smtp_adapter_sends_message_with_starttls(monkeypatch: pytest.Monk
     assert smtp.timeout == 3
     assert smtp.started_tls is True
     assert smtp.login_args == ("mailer", "secret")
-    assert smtp.message["From"] == "noreply@company.test"
-    assert smtp.message["To"] == "user@company.test"
-    assert smtp.message["Subject"] == "subject"
-    assert smtp.message.get_content().strip() == "body"
+    message = smtp.message
+    assert message is not None
+    assert message["From"] == "noreply@company.test"
+    assert message["To"] == "user@company.test"
+    assert message["Subject"] == "subject"
+    assert message.get_content().strip() == "body"
 
 
 def test_send_email_task_uses_mocked_adapter(monkeypatch: pytest.MonkeyPatch) -> None:

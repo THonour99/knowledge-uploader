@@ -213,9 +213,9 @@ async def test_document_expiry_handler_is_idempotent_and_sends_email_once(
     assert "policy.pdf" in notification.body
     assert notification.metadata_json["file_id"] == str(file_id)
     assert notification.metadata_json["expiry_status"] == "expiring"
-    assert notification.metadata_json["idempotency_key"].startswith(
-        f"document_expiry:{file_id}:expiring:"
-    )
+    idempotency_key = notification.metadata_json["idempotency_key"]
+    assert isinstance(idempotency_key, str)
+    assert idempotency_key.startswith(f"document_expiry:{file_id}:expiring:")
     assert emails == [
         {
             "recipient": "expiry-target@company.com",

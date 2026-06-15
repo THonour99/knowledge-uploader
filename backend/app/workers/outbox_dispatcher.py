@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import signal
 from collections.abc import Callable
+from dataclasses import dataclass
 from typing import Protocol
 
 from kombu import Connection, Exchange, Producer
@@ -39,14 +40,21 @@ class EventPublisher(Protocol):
         pass
 
 
+@dataclass
+class OutboxEventEnvelope:
+    event_type: str
+    payload: dict[str, object]
+
+
 def dispatch_celery_task_for_event(
     event: EventOutbox,
     *,
     sender: TaskSender | None = None,
 ) -> int:
     load_event_handlers(DEFAULT_EVENT_HANDLER_MODULES)
+    envelope = OutboxEventEnvelope(event_type=event.event_type, payload=event.payload)
     return dispatch_event(
-        event,
+        envelope,
         EventDispatchContext(sender=sender if sender is not None else celery_app),
     )
 
