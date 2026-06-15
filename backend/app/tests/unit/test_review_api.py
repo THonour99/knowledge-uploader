@@ -104,7 +104,12 @@ async def _login(client: AsyncClient, *, email: str, password: str) -> str:
     return str(response.json()["data"]["access_token"])
 
 
-async def _create_file(*, uploader_id: UUID, status_value: str = "uploaded") -> UUID:
+async def _create_file(
+    *,
+    uploader_id: UUID,
+    status_value: str = "uploaded",
+    review_status: str = "pending",
+) -> UUID:
     from app.core.database import AsyncSessionFactory
     from app.modules.document.models import File
 
@@ -124,7 +129,7 @@ async def _create_file(*, uploader_id: UUID, status_value: str = "uploaded") -> 
         description="review target",
         tags=[],
         status=status_value,
-        review_status="pending",
+        review_status=review_status,
         ai_analysis_enabled_at_upload=False,
     )
     async with AsyncSessionFactory() as session:
@@ -532,13 +537,17 @@ async def test_employee_cannot_mutate_review_configuration(
 
 
 async def test_employee_cannot_mutate_review_workflow(review_client: AsyncClient) -> None:
-    uploader_id = await _create_user(email="mutation-employee@company.com", password="password123")
+    await _create_user(email="mutation-employee@company.com", password="password123")
+    other_uploader_id = await _create_user(
+        email="mutation-owner@company.com",
+        password="password123",
+    )
     token = await _login(
         review_client,
         email="mutation-employee@company.com",
         password="password123",
     )
-    file_id = await _create_file(uploader_id=uploader_id, status_value="pending_review")
+    file_id = await _create_file(uploader_id=other_uploader_id, status_value="pending_review")
 
     submit_response = await review_client.post(
         f"/api/files/{file_id}/submit-review",
@@ -564,6 +573,87 @@ async def test_employee_cannot_mutate_review_workflow(review_client: AsyncClient
     assert approve_response.status_code == 403
     assert reject_response.status_code == 403
     assert classification_response.status_code == 403
+
+
+async def test_employee_can_submit_own_uploaded_file_for_review(
+    review_client: AsyncClient,
+) -> None:
+    from app.core.database import AsyncSessionFactory
+    from app.core.outbox import EventOutbox
+    from app.modules.audit.models import AuditLog
+    from app.modules.document.models import File
+
+    uploader_id = await _create_user(email="owner-submit@company.com", password="password123")
+    token = await _login(review_client, email="owner-submit@company.com", password="password123")
+    file_id = await _create_file(uploader_id=uploader_id, status_value="uploaded")
+
+    response = await review_client.post(
+        f"/api/files/{file_id}/submit-review",
+        headers={"Authorization": f"Bearer {token}"},
+    )
+
+    assert response.status_code == 200
+    submitted = response.json()["data"]
+    assert submitted["status"] == "pending_review"
+    assert submitted["review_status"] == "pending"
+
+    async with AsyncSessionFactory() as session:
+        saved_file = await session.get(File, file_id)
+        audit_result = await session.execute(select(AuditLog).where(AuditLog.target_id == file_id))
+        audit_log = audit_result.scalar_one()
+        event_result = await session.execute(
+            select(EventOutbox).where(EventOutbox.aggregate_id == str(file_id))
+        )
+        outbox_event = event_result.scalar_one()
+
+    assert saved_file is not None
+    assert saved_file.status == "pending_review"
+    assert saved_file.review_status == "pending"
+    assert audit_log.action == "file.submit_review"
+    assert audit_log.actor_id == uploader_id
+    assert audit_log.metadata_json["submitted_by_owner"] is True
+    assert outbox_event.event_type == "review.file.submitted"
+    assert outbox_event.payload["previous_status"] == "uploaded"
+    assert outbox_event.payload["status"] == "pending_review"
+
+
+async def test_employee_can_resubmit_own_rejected_file_for_review(
+    review_client: AsyncClient,
+) -> None:
+    from app.core.database import AsyncSessionFactory
+    from app.core.outbox import EventOutbox
+    from app.modules.document.models import File
+
+    uploader_id = await _create_user(email="owner-resubmit@company.com", password="password123")
+    token = await _login(review_client, email="owner-resubmit@company.com", password="password123")
+    file_id = await _create_file(
+        uploader_id=uploader_id,
+        status_value="rejected",
+        review_status="rejected",
+    )
+
+    response = await review_client.post(
+        f"/api/files/{file_id}/submit-review",
+        headers={"Authorization": f"Bearer {token}"},
+    )
+
+    assert response.status_code == 200
+    submitted = response.json()["data"]
+    assert submitted["status"] == "pending_review"
+    assert submitted["review_status"] == "pending"
+
+    async with AsyncSessionFactory() as session:
+        saved_file = await session.get(File, file_id)
+        event_result = await session.execute(
+            select(EventOutbox).where(EventOutbox.aggregate_id == str(file_id))
+        )
+        outbox_event = event_result.scalar_one()
+
+    assert saved_file is not None
+    assert saved_file.status == "pending_review"
+    assert saved_file.review_status == "pending"
+    assert outbox_event.payload["previous_status"] == "rejected"
+    assert outbox_event.payload["previous_review_status"] == "rejected"
 
 
 async def test_knowledge_admin_reviews_file_and_audit_log_is_written(

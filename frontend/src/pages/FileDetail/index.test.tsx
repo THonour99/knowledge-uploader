@@ -169,12 +169,43 @@ describe("FileDetailPage", () => {
 
     renderFileDetail();
 
-    expect(await screen.findByText("AI 分析")).toBeInTheDocument();
+    expect((await screen.findAllByText("AI 分析")).length).toBeGreaterThan(0);
     expect(screen.getByText("这是一份员工手册的摘要。")).toBeInTheDocument();
     expect(screen.getByText("中风险")).toBeInTheDocument();
 
     fireEvent.click(screen.getByText("提取文本预览"));
     expect(await screen.findByText("员工手册提取文本前五百字……")).toBeInTheDocument();
+  });
+
+  it("renders advanced analysis quality, similarity, table and expiry fields when present", async () => {
+    vi.mocked(getDocument).mockResolvedValue({
+      ...baseFile,
+      expires_at: "2026-06-20T00:00:00Z",
+      expiry_status: "expiring",
+      analysis: {
+        ...baseFile.analysis!,
+        quality_score: 88,
+        table_count: 1,
+        tables_json: [
+          {
+            title: "费用明细",
+            markdown: "| 项目 | 金额 |\n|---|---:|\n| 培训 | 1000 |",
+          },
+        ],
+        similar_file_ids: ["similar-file-1"],
+      },
+    });
+
+    renderFileDetail();
+
+    expect(await screen.findByText("88 分")).toBeInTheDocument();
+    expect(screen.getByText("优秀")).toBeInTheDocument();
+    expect(screen.getAllByText("即将过期").length).toBeGreaterThan(0);
+    expect(screen.getByText("检测到 1 个相似文档")).toBeInTheDocument();
+    expect(screen.getByText("similar-file-1")).toBeInTheDocument();
+
+    fireEvent.click(screen.getByText("费用明细"));
+    expect(await screen.findByText(/培训/)).toBeInTheDocument();
   });
 
   it("renders category and tags card", async () => {

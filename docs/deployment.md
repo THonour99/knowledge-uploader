@@ -68,7 +68,9 @@ Copy-Item docker-compose.override.yml.example docker-compose.override.yml
 | AI | `AI_ANALYSIS_ENABLED`, `ALLOW_EXTERNAL_LLM`, `LLM_PROVIDER`, `LLM_BASE_URL`, `LLM_API_KEY`, `LLM_MODEL` |
 | SMTP | `SMTP_HOST`, `SMTP_PORT`, `SMTP_USER`, `SMTP_PASSWORD`, `SMTP_FROM`, `SMTP_TLS` |
 
-`APP_ENV=production`、`prod` 或 `staging` 时，启动校验会拒绝占位 `JWT_SECRET`、默认 `ENCRYPTION_KEY` 和 `MINIO_SECURE=false`。
+`APP_ENV=production`、`prod` 或 `staging` 时，启动校验会拒绝占位 `JWT_SECRET`、默认 `ENCRYPTION_KEY`、默认数据库 / RabbitMQ / Redis / MinIO 凭据和 `MINIO_SECURE=false`。
+
+如果 `APP_ENV` 漏配但 `APP_BASE_URL` 已经是非本机地址（例如 `https://knowledge.company.com` 或内网生产 IP），同样按受保护环境执行密钥校验，防止生产或 staging 误用 development 默认值。
 
 ## RAGFlow
 
@@ -104,6 +106,22 @@ Remove-Item Env:\SEED_ADMIN_PASSWORD
 ## 前端 API 地址
 
 前端默认使用同域 `/api`，由 Nginx 转发到 `backend-api:8000`。`VITE_API_BASE_URL` 是 Vite 构建期变量，Compose 会通过 frontend build arg 传入；静态 Nginx 镜像启动后的 runtime env 不会改变已构建 JS。
+
+## Proxy Headers
+
+`backend-api` 通过 Uvicorn `--proxy-headers` 读取可信反向代理传入的 `X-Forwarded-For` 和 `X-Forwarded-Proto`，用于生成正确的客户端 IP 与 HTTPS scheme。
+
+Compose 默认：
+
+```env
+UVICORN_FORWARDED_ALLOW_IPS=*
+```
+
+默认值适用于当前编排：公网入口是 `nginx`，后端宿主机端口默认只绑定 `127.0.0.1`。共享环境和生产环境如能固定反代来源 IP，应把 `UVICORN_FORWARDED_ALLOW_IPS` 收窄为精确 IP 列表，例如：
+
+```env
+UVICORN_FORWARDED_ALLOW_IPS=127.0.0.1,172.18.0.5
+```
 
 ## AI Provider
 
@@ -156,13 +174,30 @@ invoke migrate --msg="中文迁移说明"
 ```powershell
 docker compose ps
 curl http://localhost:18000/api/system/health
+curl http://localhost:18000/api/system/ready
 ```
 
-所有服务应为 `running` 或 `healthy`，后端健康检查返回：
+`/api/system/health` 是轻量存活检查，成功返回：
 
 ```json
 {"status":"ok"}
 ```
+
+`/api/system/ready` 是深度就绪检查，覆盖 PostgreSQL、Redis、RabbitMQ 和 MinIO。全部依赖可用时返回 200：
+
+```json
+{
+  "status": "ok",
+  "dependencies": {
+    "database": {"status": "ok"},
+    "redis": {"status": "ok"},
+    "rabbitmq": {"status": "ok"},
+    "minio": {"status": "ok"}
+  }
+}
+```
+
+任一依赖不可用时返回 503，`detail` 只暴露异常类型，不回显连接串或密钥。`backend-api` 容器健康检查使用 `/api/system/ready`。
 
 ## ARM64 生产
 
@@ -176,6 +211,7 @@ docker compose -f docker-compose.yml -f docker-compose.arm64.yml build
 约束：
 
 - Dockerfile base image 必须是官方多架构镜像。
+- 后端 Dockerfile runtime stage 使用 `TARGETPLATFORM`，CI 使用 buildx 验证 `linux/arm64` 后端镜像可构建。
 - 新增 Python 依赖前必须通过 ARM64 wheel 检查。
 - 禁用 `psycopg2*`、`python-magic*`、`mysqlclient`、`pycrypto`、`m2crypto`。
 - 路径处理使用 `pathlib.Path`，文件读写显式 `encoding="utf-8"`。

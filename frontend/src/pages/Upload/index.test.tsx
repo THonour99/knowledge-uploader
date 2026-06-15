@@ -167,9 +167,24 @@ describe("UploadPage multi-file", () => {
     // Call uploadDocument with 3 payloads the same way the component does —
     // one per file, passing visibility and description. We verify each call
     // receives an independent payload.
-    await uploadDocument({ file: makeFile("doc-a.pdf"), visibility: "private" });
-    await uploadDocument({ file: makeFile("doc-b.pdf"), visibility: "private" });
-    await uploadDocument({ file: makeFile("doc-c.pdf"), visibility: "private" });
+    await uploadDocument({
+      file: makeFile("doc-a.pdf"),
+      visibility: "private",
+      submitAfterUpload: true,
+      aiAnalysisEnabled: true,
+    });
+    await uploadDocument({
+      file: makeFile("doc-b.pdf"),
+      visibility: "private",
+      submitAfterUpload: true,
+      aiAnalysisEnabled: true,
+    });
+    await uploadDocument({
+      file: makeFile("doc-c.pdf"),
+      visibility: "private",
+      submitAfterUpload: true,
+      aiAnalysisEnabled: true,
+    });
 
     expect(uploadDocument).toHaveBeenCalledTimes(3);
 
@@ -177,6 +192,32 @@ describe("UploadPage multi-file", () => {
     expect(names).toContain("doc-a.pdf");
     expect(names).toContain("doc-b.pdf");
     expect(names).toContain("doc-c.pdf");
+    expect(uploadDocument).toHaveBeenCalledWith(
+      expect.objectContaining({
+        submitAfterUpload: true,
+        aiAnalysisEnabled: true,
+      }),
+    );
+  });
+
+  it("passes draft and AI skip switches in the upload payload", async () => {
+    vi.mocked(uploadDocument).mockResolvedValue(makeKnowledgeFile());
+
+    renderWithProviders(<UploadPage />);
+
+    await uploadDocument({
+      file: makeFile("draft.pdf"),
+      visibility: "private",
+      submitAfterUpload: false,
+      aiAnalysisEnabled: false,
+    });
+
+    expect(uploadDocument).toHaveBeenCalledWith(
+      expect.objectContaining({
+        submitAfterUpload: false,
+        aiAnalysisEnabled: false,
+      }),
+    );
   });
 
   it("invokes the onUploadProgress callback and receives ascending percent values", async () => {
@@ -296,6 +337,30 @@ describe("UploadPage rendering", () => {
     expect(await screen.findByText(/当前仅允许单文件上传/)).toBeInTheDocument();
   });
 
+  it("honors upload.enabled=false in upload config", async () => {
+    vi.mocked(getConfigs).mockResolvedValueOnce({
+      ...uploadConfigResponse,
+      items: [
+        ...uploadConfigResponse.items,
+        {
+          key: "upload.enabled",
+          value: false,
+          value_type: "bool",
+          is_secret: false,
+          masked_value: null,
+          description: "是否开放员工上传",
+          updated_at: null,
+        },
+      ],
+    });
+
+    renderWithProviders(<UploadPage />);
+
+    expect(await screen.findByText("当前系统已关闭员工上传")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: /开始上传/ })).toBeDisabled();
+    expect(screen.getByRole("button", { name: /保存草稿/ })).toBeDisabled();
+  });
+
   it("shows empty-queue placeholder before any files are selected", () => {
     renderWithProviders(<UploadPage />);
 
@@ -330,8 +395,6 @@ describe("UploadPage rendering", () => {
     fireEvent.click(submitBtn);
 
     // AntD will render validation error message.
-    expect(
-      await screen.findByText("请选择文件"),
-    ).toBeInTheDocument();
+    expect(await screen.findByText("请选择文件")).toBeInTheDocument();
   });
 });

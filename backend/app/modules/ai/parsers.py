@@ -6,6 +6,7 @@
 
 from __future__ import annotations
 
+import re
 from collections.abc import Callable
 from io import BytesIO
 from zipfile import BadZipFile
@@ -28,6 +29,7 @@ TEXT_ENCODINGS = ("utf-8", "utf-8-sig", "gb18030")
 LEGACY_FORMAT_UPGRADES = {"doc": "docx", "xls": "xlsx", "ppt": "pptx"}
 
 Parser = Callable[[bytes], str]
+ExtractedTable = dict[str, object]
 
 
 def parse_plain_text(content: bytes) -> str:
@@ -114,6 +116,125 @@ def parse_xlsx(content: bytes) -> str:
         ) from exc
 
 
+def extract_tables_from_bytes(
+    content: bytes,
+    extension: str,
+    *,
+    max_pages: int = MAX_PDF_PAGES,
+) -> list[ExtractedTable]:
+    """提取可离线识别的表格结构, 输出 JSON 友好的表头、行、列和 Markdown."""
+
+    normalized = extension.lower().lstrip(".")
+    if normalized in LEGACY_FORMAT_UPGRADES:
+        upgrade = LEGACY_FORMAT_UPGRADES[normalized]
+        raise DocumentParseError(
+            format=normalized,
+            reason=f"不支持的旧格式。请转存为 {upgrade} 后重新上传",
+        )
+    if normalized == "xlsx":
+        return extract_xlsx_tables(content)
+    if normalized == "docx":
+        return extract_docx_tables(content)
+    if normalized == "pdf":
+        return extract_pdf_tables(content, max_pages=max_pages)
+    return []
+
+
+def extract_xlsx_tables(content: bytes) -> list[ExtractedTable]:
+    try:
+        workbook = load_workbook(BytesIO(content), read_only=True, data_only=True)
+        try:
+            tables: list[ExtractedTable] = []
+            total_rows = 0
+            for worksheet in workbook.worksheets:
+                rows: list[list[str]] = []
+                for row in worksheet.iter_rows(values_only=True):
+                    if total_rows >= MAX_XLSX_ROWS:
+                        break
+                    rows.append([_cell_to_text(value) for value in row])
+                    total_rows += 1
+                table = _build_table(title=worksheet.title, raw_rows=rows)
+                if table is not None:
+                    tables.append(table)
+                if total_rows >= MAX_XLSX_ROWS:
+                    break
+            return tables
+        finally:
+            workbook.close()
+    except (BadZipFile, InvalidFileException, KeyError, ValueError, OSError) as exc:
+        raise DocumentParseError(
+            format="xlsx",
+            reason=f"文件损坏或内容无法读取 ({type(exc).__name__})",
+        ) from exc
+
+
+def extract_docx_tables(content: bytes) -> list[ExtractedTable]:
+    try:
+        document = load_docx(BytesIO(content))
+        tables: list[ExtractedTable] = []
+        for table in document.tables:
+            rows = [[cell.text.strip() for cell in row.cells] for row in table.rows]
+            table_data = _build_table(title=None, raw_rows=rows)
+            if table_data is not None:
+                tables.append(table_data)
+        return tables
+    except (DocxPackageNotFoundError, BadZipFile, KeyError, ValueError) as exc:
+        raise DocumentParseError(
+            format="docx",
+            reason=f"文件损坏或内容无法读取 ({type(exc).__name__})",
+        ) from exc
+
+
+def extract_pdf_tables(
+    content: bytes,
+    *,
+    max_pages: int = MAX_PDF_PAGES,
+) -> list[ExtractedTable]:
+    """基于 pypdf 文本层的离线表格兜底识别。
+
+    当前依赖清单没有 pdfplumber, 因此只识别文本层中带管道、制表符、逗号或多空格
+    分隔的连续行。扫描版或坐标型 PDF 表格留给 OCR/PDF 表格引擎扩展。
+    """
+
+    try:
+        reader = PdfReader(BytesIO(content), strict=False)
+        tables: list[ExtractedTable] = []
+        for page_index, page in enumerate(reader.pages):
+            if page_index >= max_pages:
+                break
+            text = page.extract_text() or ""
+            for group_index, rows in enumerate(_table_rows_from_text(text), start=1):
+                table = _build_table(
+                    title=f"Page {page_index + 1} Table {group_index}",
+                    raw_rows=rows,
+                )
+                if table is not None:
+                    tables.append(table)
+        return tables
+    except (PyPdfError, ValueError, KeyError, OSError) as exc:
+        raise DocumentParseError(
+            format="pdf",
+            reason=f"文件损坏或内容无法读取 ({type(exc).__name__})",
+        ) from exc
+
+
+def append_tables_markdown(
+    text: str,
+    tables: list[ExtractedTable],
+    *,
+    max_chars: int = MAX_EXTRACTED_TEXT_LENGTH,
+) -> str:
+    markdown_parts = [
+        markdown
+        for table in tables
+        if isinstance((markdown := table.get("markdown")), str) and markdown.strip()
+    ]
+    if not markdown_parts:
+        return text[:max_chars]
+    combined = "\n\n".join(part for part in [text.strip(), *markdown_parts] if part)
+    return combined[:max_chars]
+
+
 def parse_pptx(content: bytes) -> str:
     try:
         presentation = load_pptx(BytesIO(content))
@@ -171,3 +292,102 @@ def extract_text_from_bytes(
         # parse_pdf 内部仅按页粗截断 (末页可溢出 max_chars), 外层切片是统一出口的精确硬上限
         return parse_pdf(content, max_pages=max_pages, max_chars=max_chars)[:max_chars]
     return parser(content)[:max_chars]
+
+
+def _cell_to_text(value: object) -> str:
+    if value is None:
+        return ""
+    return str(value).strip()
+
+
+def _build_table(title: str | None, raw_rows: list[list[str]]) -> ExtractedTable | None:
+    rows = _normalize_rows(raw_rows)
+    if not rows:
+        return None
+    column_count = max(len(row) for row in rows)
+    headers = _pad_row(rows[0], column_count)
+    if not any(headers):
+        headers = [f"Column {index}" for index in range(1, column_count + 1)]
+    body_rows = [_pad_row(row, column_count) for row in rows[1:]]
+    columns = [
+        [row[column_index] for row in body_rows if row[column_index]]
+        for column_index in range(column_count)
+    ]
+    markdown = _table_to_markdown(headers=headers, rows=body_rows)
+    table: ExtractedTable = {
+        "headers": headers,
+        "rows": body_rows,
+        "columns": columns,
+        "markdown": markdown,
+    }
+    if title:
+        table["title"] = title
+    return table
+
+
+def _normalize_rows(raw_rows: list[list[str]]) -> list[list[str]]:
+    rows: list[list[str]] = []
+    for raw_row in raw_rows:
+        row = [_clean_cell(cell) for cell in raw_row]
+        while row and not row[-1]:
+            row.pop()
+        if any(row):
+            rows.append(row)
+    return rows
+
+
+def _clean_cell(value: str) -> str:
+    return re.sub(r"\s+", " ", value).strip()
+
+
+def _pad_row(row: list[str], column_count: int) -> list[str]:
+    if len(row) >= column_count:
+        return row
+    return [*row, *([""] * (column_count - len(row)))]
+
+
+def _table_to_markdown(*, headers: list[str], rows: list[list[str]]) -> str:
+    header_line = "| " + " | ".join(_escape_markdown_cell(cell) for cell in headers) + " |"
+    separator_line = "| " + " | ".join("---" for _ in headers) + " |"
+    body_lines = [
+        "| " + " | ".join(_escape_markdown_cell(cell) for cell in row) + " |" for row in rows
+    ]
+    return "\n".join([header_line, separator_line, *body_lines])
+
+
+def _escape_markdown_cell(value: str) -> str:
+    return value.replace("|", "\\|").replace("\n", " ").strip()
+
+
+def _table_rows_from_text(text: str) -> list[list[list[str]]]:
+    groups: list[list[list[str]]] = []
+    current: list[list[str]] = []
+    for line in text.splitlines():
+        row = _split_table_line(line)
+        if row is None:
+            if len(current) >= 2:
+                groups.append(current)
+            current = []
+            continue
+        current.append(row)
+    if len(current) >= 2:
+        groups.append(current)
+    return groups
+
+
+def _split_table_line(line: str) -> list[str] | None:
+    stripped = line.strip().strip("|").strip()
+    if not stripped:
+        return None
+    if "|" in stripped:
+        cells = stripped.split("|")
+    elif "\t" in stripped:
+        cells = stripped.split("\t")
+    elif "," in stripped:
+        cells = stripped.split(",")
+    elif re.search(r"\s{2,}", stripped):
+        cells = re.split(r"\s{2,}", stripped)
+    else:
+        return None
+    row = [_clean_cell(cell) for cell in cells]
+    return row if sum(1 for cell in row if cell) >= 2 else None

@@ -20,6 +20,7 @@ import {
   EyeOutlined,
   FileTextOutlined,
   SearchOutlined,
+  SendOutlined,
   WarningOutlined,
 } from "@ant-design/icons";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
@@ -34,6 +35,7 @@ import {
   getConfigs,
   listDocuments,
   listTags,
+  submitFileForReview,
 } from "../../api/client";
 import { StatusTag } from "../../components/StatusTag";
 import { PageContainer } from "../../layouts/PageContainer";
@@ -62,6 +64,10 @@ function syncStatus(file: KnowledgeFile): string {
     return "syncing";
   }
   return file.ragflow_document_id ? "queued" : "not_synced";
+}
+
+function canSubmitForReview(file: KnowledgeFile): boolean {
+  return file.status === "uploaded" || file.status === "rejected";
 }
 
 interface MyFilesMetric {
@@ -124,6 +130,17 @@ export default function MyFilesPage() {
       } else {
         void message.error(error.message || "删除失败");
       }
+    },
+  });
+
+  const submitReviewMutation = useMutation({
+    mutationFn: (fileId: string) => submitFileForReview(fileId),
+    onSuccess: () => {
+      void queryClient.invalidateQueries({ queryKey: ["documents", "mine"] });
+      void message.success("已提交审核");
+    },
+    onError: (error: Error) => {
+      void message.error(error.message || "提交审核失败");
     },
   });
 
@@ -251,7 +268,7 @@ export default function MyFilesPage() {
     {
       title: "操作",
       key: "actions",
-      width: 120,
+      width: 220,
       fixed: "right",
       render: (_, record) => (
         <Space size={4}>
@@ -261,6 +278,19 @@ export default function MyFilesPage() {
             onClick={() => navigate(`/files/${record.id}`)}
             aria-label="查看详情"
           />
+          {canSubmitForReview(record) && (
+            <Button
+              type="text"
+              icon={<SendOutlined />}
+              loading={
+                submitReviewMutation.isPending && submitReviewMutation.variables === record.id
+              }
+              onClick={() => submitReviewMutation.mutate(record.id)}
+              aria-label={`提交审核 ${record.original_name}`}
+            >
+              提交审核
+            </Button>
+          )}
           <Popconfirm
             title="删除文件"
             description="确认删除该文件？此操作不可撤销。"

@@ -199,6 +199,11 @@ class DocumentAnalysis(Base):
             "sensitive_risk_level IN ('none', 'low', 'medium', 'high', 'critical')",
             name="ck_document_analysis_sensitive_risk_level",
         ),
+        CheckConstraint("table_count >= 0", name="ck_document_analysis_table_count_non_negative"),
+        CheckConstraint(
+            "quality_score IS NULL OR (quality_score >= 0 AND quality_score <= 100)",
+            name="ck_document_analysis_quality_score_range",
+        ),
         Index("uq_document_analysis_file_id", "file_id", unique=True),
         Index("idx_document_analysis_status", "status"),
         Index("idx_document_analysis_sensitive_risk_level", "sensitive_risk_level"),
@@ -230,6 +235,23 @@ class DocumentAnalysis(Base):
         server_default="none",
     )
     sensitive_hits: Mapped[list[dict[str, object]]] = mapped_column(
+        JSONB,
+        nullable=False,
+        server_default=sql_text("'[]'::jsonb"),
+    )
+    tables_json: Mapped[list[dict[str, object]]] = mapped_column(
+        JSONB,
+        nullable=False,
+        server_default=sql_text("'[]'::jsonb"),
+    )
+    table_count: Mapped[int] = mapped_column(Integer, nullable=False, server_default="0")
+    quality_score: Mapped[int | None] = mapped_column(Integer)
+    quality_detail: Mapped[dict[str, object]] = mapped_column(
+        JSONB,
+        nullable=False,
+        server_default=sql_text("'{}'::jsonb"),
+    )
+    similar_file_ids: Mapped[list[str]] = mapped_column(
         JSONB,
         nullable=False,
         server_default=sql_text("'[]'::jsonb"),

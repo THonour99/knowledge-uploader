@@ -23,6 +23,7 @@ from app.modules.auth.service import AuthService  # noqa: TID251 - same-module s
 from app.workers.celery_app import celery_app
 
 import_module("app.db.models")
+import_module("app.modules.notification.tasks")
 
 logger = structlog.get_logger(__name__)
 

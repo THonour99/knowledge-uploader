@@ -27,6 +27,7 @@ from .sync_locks import acquire_sync_lock, release_sync_lock, release_sync_lock_
 
 ADMIN_ROLES = {"knowledge_admin", "system_admin"}
 RAGFLOW_UPLOAD_TASK = "ragflow_upload"
+RAGFLOW_STATUS_CHECK_TASK = "ragflow_status_check"
 RAGFLOW_DELETE_TASK = "ragflow_delete"
 MANUAL_SYNC_SOURCE_STATUSES = {"approved", "failed"}
 MAX_ERROR_MESSAGE_LENGTH = 2000
@@ -126,6 +127,30 @@ class RagflowTaskService:
             task_id=task.id,
             status=task.status,
             message="ragflow delete task queued",
+        )
+        await self._append_task_queued_event(task)
+        return task
+
+    async def create_ragflow_status_check_task(self, file_id: uuid.UUID) -> SyncTask:
+        existing = await self._repository.get_active_task(
+            file_id=file_id,
+            task_type=RAGFLOW_STATUS_CHECK_TASK,
+        )
+        if existing is not None:
+            return existing
+
+        task = SyncTask(
+            file_id=file_id,
+            task_type=RAGFLOW_STATUS_CHECK_TASK,
+            status="queued",
+            retry_count=0,
+            max_retry_count=await resolve_sync_max_retries(),
+        )
+        task = await self._repository.add_task(task)
+        await self._repository.add_log(
+            task_id=task.id,
+            status=task.status,
+            message="ragflow status check task queued",
         )
         await self._append_task_queued_event(task)
         return task
@@ -362,6 +387,13 @@ class RagflowTaskService:
         task = await self._get_task_for_update_or_raise(task_id)
         if task.status != "running":
             return task
+        if task.task_type == RAGFLOW_STATUS_CHECK_TASK:
+            return await self._run_status_check_task(
+                task=task,
+                ragflow_client=ragflow_client,
+            )
+        if task.task_type != RAGFLOW_UPLOAD_TASK:
+            return task
 
         file = await self._get_file_for_update_or_raise(task.file_id)
         dataset_id = await self._require_sync_target(file)
@@ -397,9 +429,12 @@ class RagflowTaskService:
                     dataset_id=dataset_id,
                     document_id=document_id,
                 )
-            await self._apply_parse_status(task=task, file=file, parse_status=parse_status)
-            _raise_if_parse_not_terminal(parse_status)
-            return await self.mark_succeeded(task_id)
+            file = await self._apply_parse_status(task=task, file=file, parse_status=parse_status)
+            return await self._complete_after_parse_status(
+                task=task,
+                file=file,
+                parse_status=parse_status,
+            )
 
         file = await self._transition_sync_file(
             task=task,
@@ -450,9 +485,35 @@ class RagflowTaskService:
             dataset_id=dataset_id,
             document_id=upload_result.document_id,
         )
-        await self._apply_parse_status(task=task, file=file, parse_status=parse_status)
-        _raise_if_parse_not_terminal(parse_status)
-        return await self.mark_succeeded(task_id)
+        file = await self._apply_parse_status(task=task, file=file, parse_status=parse_status)
+        return await self._complete_after_parse_status(
+            task=task,
+            file=file,
+            parse_status=parse_status,
+        )
+
+    async def _run_status_check_task(
+        self,
+        *,
+        task: SyncTask,
+        ragflow_client: RagflowClient,
+    ) -> SyncTask:
+        file = await self._get_file_for_update_or_raise(task.file_id)
+        dataset_id = await self._require_sync_target(file)
+        document_id = file.ragflow_document_id
+        if document_id is None or not document_id.strip():
+            raise RagflowSyncPreconditionError
+
+        parse_status = await ragflow_client.get_document_status(
+            dataset_id=dataset_id,
+            document_id=document_id,
+        )
+        file = await self._apply_parse_status(task=task, file=file, parse_status=parse_status)
+        return await self._complete_after_parse_status(
+            task=task,
+            file=file,
+            parse_status=parse_status,
+        )
 
     async def run_delete_task(
         self,
@@ -554,6 +615,18 @@ class RagflowTaskService:
             task_id=task.id,
             status=task.status,
             message=f"{_task_label(task.task_type)} task failed",
+        )
+        await OutboxRepository(self._session).append(
+            event_type=events.RAGFLOW_SYNC_TASK_FAILED,
+            aggregate_type="sync_task",
+            aggregate_id=str(task.id),
+            payload={
+                "sync_task_id": str(task.id),
+                "file_id": str(task.file_id),
+                "task_type": task.task_type,
+                "status": task.status,
+                "error_message": task.error_message,
+            },
         )
         await self._session.commit()
         return task
@@ -674,6 +747,50 @@ class RagflowTaskService:
         )
         await self._session.commit()
         return updated_file
+
+    async def _complete_after_parse_status(
+        self,
+        *,
+        task: SyncTask,
+        file: RagflowSyncFileRecord,
+        parse_status: RagflowDocumentStatus,
+    ) -> SyncTask:
+        run = parse_status.run.upper()
+        if _is_failed_run(run):
+            raise RagflowParseFailedError
+        if _is_success_run(run):
+            return await self.mark_succeeded(task.id)
+        return await self._complete_and_queue_status_check(task=task, file=file, run=run)
+
+    async def _complete_and_queue_status_check(
+        self,
+        *,
+        task: SyncTask,
+        file: RagflowSyncFileRecord,
+        run: str,
+    ) -> SyncTask:
+        if task.status != "running":
+            return task
+
+        task.status = "succeeded"
+        task.finished_at = datetime.now(UTC)
+        task.error_message = None
+        await self._repository.add_log(
+            task_id=task.id,
+            status=task.status,
+            message=f"{_task_label(task.task_type)} task completed",
+        )
+        status_check_task = await self.create_ragflow_status_check_task(file.id)
+        await self._repository.add_log(
+            task_id=task.id,
+            status=task.status,
+            message=(
+                f"ragflow parse status {run} pending; "
+                f"status check task {status_check_task.id} queued"
+            ),
+        )
+        await self._session.commit()
+        return task
 
     async def _try_mark_file_failed(
         self,

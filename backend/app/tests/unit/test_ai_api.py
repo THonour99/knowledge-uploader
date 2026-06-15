@@ -123,6 +123,9 @@ async def test_system_admin_reads_ai_config_without_secret_echo(ai_client: Async
         "auto_category",
         "tag_generation",
         "sensitive_detection",
+        "table_extraction",
+        "quality_score",
+        "similarity_detection",
     }
     assert data["providers"][0]["has_api_key"] is True
     assert data["providers"][0]["api_key_masked"] == "sk-****cret"

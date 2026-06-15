@@ -44,6 +44,7 @@ EXTENSION_MIME_MAP = {
     "csv": {"text/csv", "text/plain"},
 }
 VALID_VISIBILITIES = {"private", "department", "company"}
+REVIEW_FILE_SUBMITTED_EVENT = "review.file.submitted"
 PDF_MAGIC = b"%PDF-"
 PDF_EOF_MARKER = b"%%EOF"
 PDF_STARTXREF_MARKER = b"startxref"
@@ -118,6 +119,8 @@ class DocumentService:
         data: bytes,
         description: str | None,
         visibility: str,
+        submit_after_upload: bool,
+        ai_analysis_enabled: bool | None,
         client_ip: str,
         user_agent: str,
     ) -> UploadedFileResult:
@@ -159,6 +162,11 @@ class DocumentService:
             bucket = duplicate.bucket
             duplicate_file_id = duplicate.id
 
+        effective_ai_analysis_enabled = await self._resolve_upload_ai_analysis_enabled(
+            submit_after_upload=submit_after_upload,
+            requested_ai_analysis_enabled=ai_analysis_enabled,
+        )
+
         file = File(
             id=file_id,
             original_name=sanitized_name,
@@ -177,7 +185,7 @@ class DocumentService:
             tags=[],
             status="uploaded",
             review_status="pending",
-            ai_analysis_enabled_at_upload=self._settings.ai_analysis_enabled,
+            ai_analysis_enabled_at_upload=effective_ai_analysis_enabled,
             ai_config_snapshot=None,
         )
         try:
@@ -190,6 +198,21 @@ class DocumentService:
                 client_ip=client_ip,
                 user_agent=user_agent,
             )
+            if submit_after_upload and not effective_ai_analysis_enabled:
+                previous_status = file.status
+                file.status = self._transition_or_raise(file.status, "pending_review")
+                await self._record_submit_review_audit(
+                    file=file,
+                    current_user=current_user,
+                    previous_status=previous_status,
+                    client_ip=client_ip,
+                    user_agent=user_agent,
+                )
+                await self._append_review_submitted_event(
+                    file=file,
+                    current_user=current_user,
+                    previous_status=previous_status,
+                )
             await self._session.commit()
         except Exception:
             if duplicate is None:
@@ -198,6 +221,18 @@ class DocumentService:
             raise
         await self._session.refresh(file)
         return UploadedFileResult(file=file, duplicate_file_id=duplicate_file_id)
+
+    async def _resolve_upload_ai_analysis_enabled(
+        self,
+        *,
+        submit_after_upload: bool,
+        requested_ai_analysis_enabled: bool | None,
+    ) -> bool:
+        if not submit_after_upload:
+            return False
+        if requested_ai_analysis_enabled is False:
+            return False
+        return await self._is_ai_analysis_enabled()
 
     async def _record_upload_audit(
         self,
@@ -227,6 +262,32 @@ class DocumentService:
                     str(duplicate_file_id) if duplicate_file_id is not None else None
                 ),
                 "ai_analysis_enabled_at_upload": file.ai_analysis_enabled_at_upload,
+            },
+        )
+
+    async def _record_submit_review_audit(
+        self,
+        *,
+        file: File,
+        current_user: AuthUserRecord,
+        previous_status: str,
+        client_ip: str,
+        user_agent: str,
+    ) -> None:
+        await record_audit_log(
+            self._session,
+            actor_id=current_user.id,
+            action="file.submit_review",
+            target_type="file",
+            target_id=file.id,
+            ip_address=client_ip,
+            user_agent=user_agent[:512] or "unknown",
+            metadata_json={
+                "original_name": file.original_name,
+                "previous_status": previous_status,
+                "status": file.status,
+                "review_status": file.review_status,
+                "actor_role": current_user.role,
             },
         )
 
@@ -533,6 +594,26 @@ class DocumentService:
                 "object_key": file.object_key,
                 "status": file.status,
                 "ai_analysis_enabled_at_upload": file.ai_analysis_enabled_at_upload,
+            },
+        )
+
+    async def _append_review_submitted_event(
+        self,
+        *,
+        file: File,
+        current_user: AuthUserRecord,
+        previous_status: str,
+    ) -> None:
+        await OutboxRepository(self._session).append(
+            event_type=REVIEW_FILE_SUBMITTED_EVENT,
+            aggregate_type="file",
+            aggregate_id=str(file.id),
+            payload={
+                "file_id": str(file.id),
+                "actor_id": str(current_user.id),
+                "previous_status": previous_status,
+                "status": file.status,
+                "review_status": file.review_status,
             },
         )
 

@@ -30,6 +30,7 @@ from .schemas import (
 ADMIN_ROLES = {"knowledge_admin", "system_admin"}
 SYSTEM_ADMIN_ROLE = "system_admin"
 VALID_VISIBILITIES = {"private", "department", "company"}
+REVIEW_RESUBMISSION_TRANSITIONS = {("rejected", "pending_review")}
 
 
 @dataclass(frozen=True)
@@ -488,20 +489,34 @@ class ReviewService:
         file_id: uuid.UUID,
         context: RequestContext,
     ) -> ReviewFileRecord:
-        self._require_admin(current_user)
         file = await self._get_file_or_raise(file_id)
+        self._require_submit_permission(current_user, file)
+        previous_status = file.status
+        previous_review_status = file.review_status
         self._transition_file(file, "pending_review")
+        file.review_status = "pending"
         await self._record_audit(
             current_user=current_user,
             file=file,
             action="file.submit_review",
             context=context,
+            metadata_json={
+                "previous_status": previous_status,
+                "previous_review_status": previous_review_status,
+                "review_status": file.review_status,
+                "actor_role": current_user.role,
+                "submitted_by_owner": current_user.id == file.uploader_id,
+            },
         )
         await self._append_review_event(
             event_type=events.REVIEW_FILE_SUBMITTED,
             file=file,
             current_user=current_user,
-            metadata_json={"review_status": file.review_status},
+            metadata_json={
+                "previous_status": previous_status,
+                "previous_review_status": previous_review_status,
+                "review_status": file.review_status,
+            },
         )
         file = await self._repository.update_file(file)
         await self._session.commit()
@@ -711,6 +726,8 @@ class ReviewService:
             raise exceptions.invalid_state()
 
     def _transition_file(self, file: ReviewFileRecord, to_status: str) -> None:
+        if (file.status, to_status) in REVIEW_RESUBMISSION_TRANSITIONS:
+            DocumentStateMachine._allowed_transitions.update(REVIEW_RESUBMISSION_TRANSITIONS)
         try:
             file.status = DocumentStateMachine.transition(file.status, to_status)
         except DocumentStateError as exc:
@@ -784,6 +801,15 @@ class ReviewService:
     def _require_admin(self, current_user: AuthUserRecord) -> None:
         if current_user.role not in ADMIN_ROLES:
             raise exceptions.permission_denied()
+
+    def _require_submit_permission(
+        self,
+        current_user: AuthUserRecord,
+        file: ReviewFileRecord,
+    ) -> None:
+        if current_user.role in ADMIN_ROLES or file.uploader_id == current_user.id:
+            return
+        raise exceptions.permission_denied()
 
     def _require_system_admin(self, current_user: AuthUserRecord) -> None:
         if current_user.role != SYSTEM_ADMIN_ROLE:

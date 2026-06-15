@@ -10,10 +10,12 @@ from sqlalchemy import (
     Column,
     DateTime,
     MetaData,
+    SmallInteger,
     String,
     Table,
     Text,
     func,
+    or_,
     select,
     update,
 )
@@ -46,6 +48,11 @@ FILES = Table(
     Column("category_id", UUID(as_uuid=True)),
     Column("ai_analysis_enabled_at_upload", Boolean, nullable=False),
     Column("ai_config_snapshot", JSONB),
+    Column("simhash", BigInteger),
+    Column("simhash_band_0", SmallInteger),
+    Column("simhash_band_1", SmallInteger),
+    Column("simhash_band_2", SmallInteger),
+    Column("simhash_band_3", SmallInteger),
     Column("updated_at", DateTime(timezone=True), nullable=False),
 )
 
@@ -80,6 +87,11 @@ class AiFileRecord:
     category_id: uuid.UUID | None
     ai_analysis_enabled_at_upload: bool
     ai_config_snapshot: dict[str, object] | None
+    simhash: int | None
+    simhash_band_0: int | None
+    simhash_band_1: int | None
+    simhash_band_2: int | None
+    simhash_band_3: int | None
 
 
 @dataclass(frozen=True)
@@ -193,11 +205,37 @@ class AiRepository:
                 category_id=file.category_id,
                 tags=file.tags,
                 ai_config_snapshot=file.ai_config_snapshot,
+                simhash=file.simhash,
+                simhash_band_0=file.simhash_band_0,
+                simhash_band_1=file.simhash_band_1,
+                simhash_band_2=file.simhash_band_2,
+                simhash_band_3=file.simhash_band_3,
                 updated_at=func.now(),
             )
             .returning(*FILE_COLUMNS)
         )
         return file_record_from_row(result.mappings().one())
+
+    async def list_simhash_candidates(
+        self,
+        *,
+        file_id: uuid.UUID,
+        bands: tuple[int, int, int, int],
+    ) -> list[AiFileRecord]:
+        result = await self._session.execute(
+            select(*FILE_COLUMNS).where(
+                FILES.c.id != file_id,
+                FILES.c.status.not_in(("deleted", "disabled")),
+                FILES.c.simhash.is_not(None),
+                or_(
+                    FILES.c.simhash_band_0 == bands[0],
+                    FILES.c.simhash_band_1 == bands[1],
+                    FILES.c.simhash_band_2 == bands[2],
+                    FILES.c.simhash_band_3 == bands[3],
+                ),
+            )
+        )
+        return [file_record_from_row(row) for row in result.mappings()]
 
     async def list_categories(self) -> list[AiCategoryRecord]:
         result = await self._session.execute(
@@ -242,6 +280,11 @@ def file_record_from_row(row: RowMapping) -> AiFileRecord:
         category_id=cast(uuid.UUID | None, row["category_id"]),
         ai_analysis_enabled_at_upload=cast(bool, row["ai_analysis_enabled_at_upload"]),
         ai_config_snapshot=cast(dict[str, object] | None, row["ai_config_snapshot"]),
+        simhash=cast(int | None, row["simhash"]),
+        simhash_band_0=cast(int | None, row["simhash_band_0"]),
+        simhash_band_1=cast(int | None, row["simhash_band_1"]),
+        simhash_band_2=cast(int | None, row["simhash_band_2"]),
+        simhash_band_3=cast(int | None, row["simhash_band_3"]),
     )
 
 

@@ -16,6 +16,7 @@ import {
   getConfigs,
   listDocuments,
   listTags,
+  submitFileForReview,
 } from "../../api/client";
 import type * as ApiClientModule from "../../api/client";
 import { themeCssVariables } from "../../theme/tokens";
@@ -31,6 +32,7 @@ vi.mock("../../api/client", async () => {
     listDocuments: vi.fn(),
     listTags: vi.fn(),
     deleteFile: vi.fn(),
+    submitFileForReview: vi.fn(),
   };
 });
 
@@ -163,6 +165,22 @@ const mockFile2 = {
   duplicate_file_id: null,
 };
 
+const mockDraftFile = {
+  ...mockFile2,
+  id: "file-draft",
+  original_name: "草稿文件.pdf",
+  status: "uploaded",
+  review_status: "pending",
+};
+
+const mockRejectedFile = {
+  ...mockFile2,
+  id: "file-rejected",
+  original_name: "被拒文件.pdf",
+  status: "rejected",
+  review_status: "rejected",
+};
+
 const mockFilesResponse: FileListResponse = {
   items: [mockFile1, mockFile2],
   total: 2,
@@ -262,6 +280,7 @@ afterEach(() => {
 
 beforeEach(() => {
   vi.mocked(getConfigs).mockResolvedValue(uploadConfigResponse);
+  vi.mocked(submitFileForReview).mockResolvedValue(mockFile2);
 });
 
 // ── Tests ────────────────────────────────────────────────────────────────────
@@ -315,6 +334,52 @@ describe("MyFilesPage", () => {
     });
   });
 
+  it("submits an uploaded draft file for review and refreshes the list", async () => {
+    vi.mocked(listDocuments).mockResolvedValue({
+      items: [mockDraftFile],
+      total: 1,
+    });
+    vi.mocked(listTags).mockResolvedValue(mockTagsResponse);
+    vi.mocked(submitFileForReview).mockResolvedValue({
+      ...mockDraftFile,
+      status: "pending_review",
+    });
+
+    renderWithProviders(<MyFilesPage />);
+
+    await screen.findByText("草稿文件.pdf");
+    fireEvent.click(screen.getByRole("button", { name: /提交审核 草稿文件/ }));
+
+    await waitFor(() => {
+      expect(submitFileForReview).toHaveBeenCalledWith("file-draft");
+    });
+    await waitFor(() => {
+      expect(listDocuments).toHaveBeenCalledTimes(2);
+    });
+  });
+
+  it("submits a rejected file for review", async () => {
+    vi.mocked(listDocuments).mockResolvedValue({
+      items: [mockRejectedFile],
+      total: 1,
+    });
+    vi.mocked(listTags).mockResolvedValue(mockTagsResponse);
+    vi.mocked(submitFileForReview).mockResolvedValue({
+      ...mockRejectedFile,
+      status: "pending_review",
+      review_status: "pending",
+    });
+
+    renderWithProviders(<MyFilesPage />);
+
+    await screen.findByText("被拒文件.pdf");
+    fireEvent.click(screen.getByRole("button", { name: /提交审核 被拒文件/ }));
+
+    await waitFor(() => {
+      expect(submitFileForReview).toHaveBeenCalledWith("file-rejected");
+    });
+  });
+
   it("handles 403-like error without crashing and does not re-fetch", async () => {
     vi.mocked(listDocuments).mockResolvedValue(mockFilesResponse);
     vi.mocked(listTags).mockResolvedValue(mockTagsResponse);
@@ -347,9 +412,7 @@ describe("MyFilesPage", () => {
     fireEvent.change(extensionSelect, { target: { value: "pdf" } });
 
     await waitFor(() => {
-      expect(listDocuments).toHaveBeenCalledWith(
-        expect.objectContaining({ extension: "pdf" }),
-      );
+      expect(listDocuments).toHaveBeenCalledWith(expect.objectContaining({ extension: "pdf" }));
     });
   });
 
@@ -366,9 +429,7 @@ describe("MyFilesPage", () => {
     fireEvent.change(tagSelect, { target: { value: "tag-1" } });
 
     await waitFor(() => {
-      expect(listDocuments).toHaveBeenCalledWith(
-        expect.objectContaining({ tag_id: "tag-1" }),
-      );
+      expect(listDocuments).toHaveBeenCalledWith(expect.objectContaining({ tag_id: "tag-1" }));
     });
   });
 });

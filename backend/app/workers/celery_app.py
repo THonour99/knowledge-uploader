@@ -23,8 +23,9 @@ celery_app.conf.task_routes = {
 }
 celery_app.conf.imports = (
     "app.modules.ai.tasks",
-    "app.modules.ragflow.tasks",
     "app.modules.auth.tasks",
+    "app.modules.notification.tasks",
+    "app.modules.ragflow.tasks",
 )
 
 app = celery_app

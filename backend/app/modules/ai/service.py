@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import re
 import uuid
-from collections.abc import Iterable, Sequence
+from collections.abc import Iterable, Mapping, Sequence
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from ipaddress import ip_address
@@ -22,7 +22,14 @@ from app.modules.user.schemas import AuthUserRecord
 
 from . import exceptions
 from .models import AiFeatureConfig, AiProvider, DocumentAnalysis, PromptTemplate, SensitiveRule
-from .parsers import MAX_EXTRACTED_TEXT_LENGTH, MAX_PDF_PAGES, extract_text_from_bytes
+from .parsers import (
+    MAX_EXTRACTED_TEXT_LENGTH,
+    MAX_PDF_PAGES,
+    append_tables_markdown,
+    extract_tables_from_bytes,
+    extract_text_from_bytes,
+)
+from .quality import normalize_quality_weights, score_document_quality
 from .repository import (  # noqa: TID251 - same-module repository dependency
     AiCategoryRecord,
     AiFileRecord,
@@ -40,6 +47,7 @@ from .schemas import (
     PromptTemplateResponse,
     SensitiveRuleResponse,
 )
+from .simhash import compute_simhash, hamming_distance, simhash_bands
 
 ADMIN_ROLES = {"knowledge_admin", "system_admin"}
 SYSTEM_ADMIN_ROLE = "system_admin"
@@ -533,6 +541,12 @@ class AiConfigService:
                 self._settings.enable_quality_score,
             ),
             FeatureDefinition(
+                "table_extraction",
+                "表格结构识别",
+                "提取 Excel、Word、PDF 中的表格结构",
+                bool(getattr(self._settings, "enable_table_extraction", False)),
+            ),
+            FeatureDefinition(
                 "ocr", "OCR识别", "为图片/PDF OCR 预留的功能开关", self._settings.enable_ocr
             ),
             FeatureDefinition(
@@ -694,6 +708,18 @@ class AiAnalysisService:
                 max_pages=parse_max_pages,
                 max_chars=parse_max_chars,
             )
+            tables: list[dict[str, object]] = []
+            if features["table_extraction"].enabled:
+                tables = extract_tables_from_bytes(
+                    raw_content,
+                    file.extension,
+                    max_pages=parse_max_pages,
+                )
+                extracted_text = append_tables_markdown(
+                    extracted_text,
+                    tables,
+                    max_chars=parse_max_chars,
+                )
             file = await self._get_file_or_raise(file_id)
             file = await self._transition_file(file, "analysis_queued")
             file = await self._transition_file(file, "analyzing")
@@ -721,6 +747,45 @@ class AiAnalysisService:
                 await self._repository.increment_sensitive_rule_hits(
                     [uuid.UUID(str(hit["rule_id"])) for hit in sensitive_hits]
                 )
+            quality_result = None
+            if features["quality_score"].enabled:
+                quality_weights = await resolve_quality_weights(
+                    features["quality_score"].config_json
+                )
+                quality_result = score_document_quality(
+                    extracted_text,
+                    weights=quality_weights,
+                )
+
+            similar_file_ids: list[str] = []
+            if features["similarity_detection"].enabled:
+                if extracted_text.strip():
+                    fingerprint = compute_simhash(extracted_text)
+                    bands = simhash_bands(fingerprint)
+                    file.simhash = fingerprint
+                    file.simhash_band_0 = bands[0]
+                    file.simhash_band_1 = bands[1]
+                    file.simhash_band_2 = bands[2]
+                    file.simhash_band_3 = bands[3]
+                    threshold = await resolve_similarity_threshold(
+                        features["similarity_detection"].config_json
+                    )
+                    candidates = await self._repository.list_simhash_candidates(
+                        file_id=file.id,
+                        bands=bands,
+                    )
+                    similar_file_ids = [
+                        str(candidate.id)
+                        for candidate in candidates
+                        if candidate.simhash is not None
+                        and hamming_distance(fingerprint, candidate.simhash) <= threshold
+                    ]
+                else:
+                    file.simhash = None
+                    file.simhash_band_0 = None
+                    file.simhash_band_1 = None
+                    file.simhash_band_2 = None
+                    file.simhash_band_3 = None
 
             target_status = (
                 "sensitive_review_required"
@@ -738,6 +803,11 @@ class AiAnalysisService:
             analysis.suggested_tags = tags
             analysis.sensitive_risk_level = risk_level
             analysis.sensitive_hits = sensitive_hits
+            analysis.tables_json = tables
+            analysis.table_count = len(tables)
+            analysis.quality_score = quality_result.score if quality_result is not None else None
+            analysis.quality_detail = quality_result.detail if quality_result is not None else {}
+            analysis.similar_file_ids = similar_file_ids
             analysis.error_message = None
             analysis.finished_at = datetime.now(UTC)
             await self._session.commit()
@@ -878,6 +948,38 @@ async def resolve_parse_limits() -> tuple[int, int]:
         else MAX_EXTRACTED_TEXT_LENGTH
     )
     return max_pages, max_chars
+
+
+async def resolve_quality_weights(config_json: Mapping[str, object]) -> dict[str, float]:
+    runtime_value = await get_runtime_config("ai.quality_weights")
+    runtime_weights = _string_key_mapping(runtime_value)
+    if runtime_weights is not None:
+        return normalize_quality_weights(runtime_weights)
+    feature_weights = _string_key_mapping(config_json.get("weights"))
+    return normalize_quality_weights(feature_weights)
+
+
+async def resolve_similarity_threshold(config_json: Mapping[str, object]) -> int:
+    runtime_value = await get_runtime_config("ai.similarity_hamming_threshold")
+    runtime_threshold = _int_from_object(runtime_value)
+    if runtime_threshold is not None:
+        return runtime_threshold
+    feature_threshold = _int_from_object(config_json.get("hamming_threshold"))
+    return feature_threshold if feature_threshold is not None else 3
+
+
+def _string_key_mapping(value: object) -> dict[str, object] | None:
+    if not isinstance(value, dict):
+        return None
+    return {str(key): item for key, item in value.items()}
+
+
+def _int_from_object(value: object) -> int | None:
+    if isinstance(value, bool) or not isinstance(value, int):
+        return None
+    if value < 0 or value > 64:
+        return None
+    return value
 
 
 def extract_text(

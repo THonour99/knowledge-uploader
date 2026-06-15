@@ -72,6 +72,35 @@ invoke migrate
 - 文案、布局、状态标签与 `docs/design/images/` 参考图一致。
 - 桌面和移动视口不出现不可接受的横向溢出。
 
+### 自动化浏览器验收脚本
+
+新增轻量脚本：
+
+```powershell
+npm --prefix frontend run e2e:acceptance
+```
+
+脚本位置：`frontend/e2e/acceptance.mjs`。
+
+默认访问 `http://127.0.0.1:5173`，可通过环境变量覆盖：
+
+```powershell
+$env:E2E_BASE_URL="http://127.0.0.1:4173"
+npm --prefix frontend run e2e:acceptance
+```
+
+脚本使用 Playwright 的 Chromium 运行真实浏览器，并 mock 前端所需 API：
+
+- `/upload`：验证上传页加载、上传提交审核开关、AI 分析开关。
+- `/files/file-e2e`：验证文件详情质量评分、相似文档、表格预览、过期指标。
+
+本次没有把 `@playwright/test` 作为依赖写入 `package.json` / `package-lock.json`，避免在未授权更新锁文件的情况下新增依赖。需要执行浏览器脚本时先安装本地运行时：
+
+```powershell
+npm --prefix frontend install --save-dev @playwright/test
+npx playwright install chromium
+```
+
 ## 测试数据原则
 
 - RAGFlow 联调只创建新的测试 Dataset 和测试文档。

@@ -9,19 +9,9 @@ from kombu import Connection, Exchange, Producer
 
 from app.core.config import get_settings
 from app.core.database import AsyncSessionFactory
+from app.core.events import EventDispatchContext, TaskSender, dispatch_event, load_event_handlers
 from app.core.logging import configure_logging, get_logger
 from app.core.outbox import EventOutbox, OutboxRepository
-from app.modules.document.events import (
-    DOCUMENT_FILE_REANALYZE_REQUESTED,
-    DOCUMENT_FILE_UPLOADED,
-)
-from app.modules.ragflow.events import RAGFLOW_SYNC_TASK_QUEUED
-from app.modules.ragflow.handlers import (
-    SUBSCRIBED_DOCUMENT_LIFECYCLE_EVENTS,
-    resolve_remote_delete_file_id,
-)
-from app.modules.review.events import REVIEW_FILE_APPROVED
-from app.modules.user.events import USER_PASSWORD_RESET_REQUESTED
 from app.workers.celery_app import celery_app
 
 _running = True
@@ -30,6 +20,18 @@ EVENT_EXCHANGE = "knowledge.events"
 DEFAULT_BATCH_SIZE = 100
 DEFAULT_MAX_ATTEMPTS = 5
 DEFAULT_POLL_INTERVAL_SECONDS = 0.5
+DEFAULT_EVENT_HANDLER_MODULES = (
+    "app.modules.ai.handlers",
+    "app.modules.audit.handlers",
+    "app.modules.auth.handlers",
+    "app.modules.config.handlers",
+    "app.modules.document.handlers",
+    "app.modules.notification.handlers",
+    "app.modules.ragflow.handlers",
+    "app.modules.review.handlers",
+    "app.modules.statistics.handlers",
+    "app.modules.user.handlers",
+)
 
 
 class EventPublisher(Protocol):
@@ -37,83 +39,16 @@ class EventPublisher(Protocol):
         pass
 
 
-class CeleryTaskSender(Protocol):
-    def send_task(self, name: str, args: list[str], queue: str) -> object:
-        pass
-
-
 def dispatch_celery_task_for_event(
     event: EventOutbox,
     *,
-    sender: CeleryTaskSender = celery_app,
-) -> None:
-    # NOTE(arch-debt): dispatcher uses hardcoded event-type branches rather than a
-    # registry/handler pattern.  Adding user.password_reset.requested here follows the
-    # existing convention.  Refactoring to a registry should be tracked as tech-debt.
-    if event.event_type == USER_PASSWORD_RESET_REQUESTED:
-        user_id = event.payload.get("user_id")
-        if not isinstance(user_id, str) or not user_id:
-            msg = "password reset event missing user_id"
-            raise RuntimeError(msg)
-        sender.send_task(
-            "auth.trigger_password_reset",
-            args=[user_id],
-            queue="notification_queue",
-        )
-        return
-
-    if event.event_type == DOCUMENT_FILE_REANALYZE_REQUESTED:
-        file_id = event.payload.get("file_id")
-        if not isinstance(file_id, str) or not file_id:
-            msg = "file reanalyze event missing file_id"
-            raise RuntimeError(msg)
-        # 管理员显式触发: 不在此处再校验 AI 开关, 投递后由任务前置条件兜底
-        sender.send_task("ai.analyze_file", args=[file_id], queue="ai_queue")
-        return
-
-    if event.event_type == DOCUMENT_FILE_UPLOADED:
-        ai_enabled = event.payload.get("ai_analysis_enabled_at_upload")
-        if ai_enabled is not True or not get_settings().ai_analysis_enabled:
-            return
-        file_id = event.payload.get("file_id")
-        if not isinstance(file_id, str) or not file_id:
-            msg = "file uploaded event missing file_id"
-            raise RuntimeError(msg)
-        sender.send_task("ai.analyze_file", args=[file_id], queue="ai_queue")
-        return
-
-    if event.event_type in SUBSCRIBED_DOCUMENT_LIFECYCLE_EVENTS:
-        delete_file_id = resolve_remote_delete_file_id(event)
-        if delete_file_id is None:
-            return
-        sender.send_task(
-            "ragflow.create_delete_task",
-            args=[delete_file_id],
-            queue="ragflow_queue",
-        )
-        return
-
-    if event.event_type != RAGFLOW_SYNC_TASK_QUEUED:
-        if event.event_type != REVIEW_FILE_APPROVED:
-            return
-        ragflow_dataset_id = event.payload.get("ragflow_dataset_id")
-        if not isinstance(ragflow_dataset_id, str) or not ragflow_dataset_id:
-            return
-        file_id = event.payload.get("file_id")
-        if not isinstance(file_id, str) or not file_id:
-            msg = "file approved event missing file_id"
-            raise RuntimeError(msg)
-        sender.send_task("ragflow.create_upload_task", args=[file_id], queue="ragflow_queue")
-        return
-
-    sync_task_id = event.payload.get("sync_task_id")
-    if not isinstance(sync_task_id, str) or not sync_task_id:
-        msg = "sync task event missing sync_task_id"
-        raise RuntimeError(msg)
-    if event.payload.get("task_type") == "ragflow_delete":
-        sender.send_task("ragflow.delete", args=[sync_task_id], queue="ragflow_queue")
-        return
-    sender.send_task("ragflow.upload", args=[sync_task_id], queue="ragflow_queue")
+    sender: TaskSender | None = None,
+) -> int:
+    load_event_handlers(DEFAULT_EVENT_HANDLER_MODULES)
+    return dispatch_event(
+        event,
+        EventDispatchContext(sender=sender if sender is not None else celery_app),
+    )
 
 
 class KombuEventPublisher:

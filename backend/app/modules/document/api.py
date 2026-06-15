@@ -176,6 +176,8 @@ async def upload_file(
     file: Annotated[UploadFile, File(...)],
     description: Annotated[str | None, Form(max_length=2000)] = None,
     visibility: Annotated[str, Form()] = "private",
+    submit_after_upload: Annotated[bool, Form()] = True,
+    ai_analysis_enabled: Annotated[bool | None, Form()] = None,
 ) -> dict[str, object]:
     try:
         await _enforce_upload_rate_limit(current_user, settings)
@@ -192,6 +194,8 @@ async def upload_file(
             data=data,
             description=description,
             visibility=visibility,
+            submit_after_upload=submit_after_upload,
+            ai_analysis_enabled=ai_analysis_enabled,
             client_ip=_client_ip(request),
             user_agent=_user_agent(request),
         )

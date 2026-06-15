@@ -1,4 +1,5 @@
 import {
+  Alert,
   App as AntdApp,
   Button,
   Card,
@@ -34,6 +35,7 @@ import {
   allowMultiFileFromConfig,
   allowedExtensionsFromConfig,
   extensionAcceptValue,
+  uploadEnabledFromConfig,
 } from "../../utils/uploadConfig";
 
 /** Maximum number of simultaneous uploads. */
@@ -55,6 +57,8 @@ interface UploadFormValues {
   file?: UploadFile[];
   description?: string;
   visibility: KnowledgeFile["visibility"];
+  submitAfterUpload: boolean;
+  aiAnalyze: boolean;
 }
 
 function normalizeUploadFile(event: { fileList?: UploadFile[] } | UploadFile[]): UploadFile[] {
@@ -110,8 +114,11 @@ export default function UploadPage() {
     [uploadConfigQuery.data?.items],
   );
   const allowMultiFile = allowMultiFileFromConfig(uploadConfigQuery.data?.items);
+  const uploadEnabled = uploadEnabledFromConfig(uploadConfigQuery.data?.items);
   const acceptValue = useMemo(() => extensionAcceptValue(allowedExtensions), [allowedExtensions]);
-  const allowedExtensionText = allowedExtensions.map((extension) => extension.toUpperCase()).join("、");
+  const allowedExtensionText = allowedExtensions
+    .map((extension) => extension.toUpperCase())
+    .join("、");
 
   // Guard against stale closures when updating individual queue rows.
   const queueRef = useRef(queue);
@@ -119,9 +126,7 @@ export default function UploadPage() {
 
   const updateItem = useCallback(
     (uid: string, patch: Partial<Omit<QueueItem, "uid" | "name" | "file">>) => {
-      setQueue((prev) =>
-        prev.map((item) => (item.uid === uid ? { ...item, ...patch } : item)),
-      );
+      setQueue((prev) => prev.map((item) => (item.uid === uid ? { ...item, ...patch } : item)));
     },
     [],
   );
@@ -158,9 +163,16 @@ export default function UploadPage() {
   const handleSubmit = useCallback(
     async (values: UploadFormValues) => {
       const fileList = values.file ?? [];
+      const submitAfterUpload = values.submitAfterUpload ?? false;
+      const aiAnalysisEnabled = values.aiAnalyze ?? true;
 
       if (fileList.length === 0) {
         message.warning("请至少选择一个文件");
+        return;
+      }
+
+      if (!uploadEnabled) {
+        message.warning("当前系统已关闭员工上传");
         return;
       }
 
@@ -177,6 +189,8 @@ export default function UploadPage() {
             file: item.file,
             description: values.description,
             visibility: values.visibility,
+            submitAfterUpload,
+            aiAnalysisEnabled,
           },
           (percent) => {
             updateItem(item.uid, { percent });
@@ -209,9 +223,7 @@ export default function UploadPage() {
       const successCount = settled.filter((r) => r.status === "fulfilled").length;
       const failCount = settled.filter((r) => r.status === "rejected").length;
       const dupCount = settled
-        .filter(
-          (r): r is PromiseFulfilledResult<KnowledgeFile> => r.status === "fulfilled",
-        )
+        .filter((r): r is PromiseFulfilledResult<KnowledgeFile> => r.status === "fulfilled")
         .filter((r) => r.value.duplicate).length;
 
       if (failCount === 0) {
@@ -224,8 +236,13 @@ export default function UploadPage() {
         message.warning(`上传完成：${successCount} 成功，${failCount} 失败`);
       }
     },
-    [buildQueue, updateItem, form, message],
+    [buildQueue, updateItem, form, message, uploadEnabled],
   );
+
+  const handleSaveDraft = useCallback(() => {
+    form.setFieldsValue({ submitAfterUpload: false });
+    form.submit();
+  }, [form]);
 
   const selectedFiles: UploadFile[] = Form.useWatch("file", form) ?? [];
 
@@ -250,6 +267,8 @@ export default function UploadPage() {
         layout="vertical"
         initialValues={{
           visibility: "private",
+          submitAfterUpload: true,
+          aiAnalyze: true,
         }}
         requiredMark={false}
         onValuesChange={handleFormValuesChange}
@@ -265,6 +284,15 @@ export default function UploadPage() {
               </Space>
             }
           >
+            {!uploadEnabled ? (
+              <Alert
+                type="warning"
+                showIcon
+                className="upload-disabled-alert"
+                message="当前系统已关闭员工上传"
+                description="管理员重新开启上传入口后，员工可继续选择文件并提交。"
+              />
+            ) : null}
             <Form.Item
               name="file"
               valuePropName="fileList"
@@ -276,7 +304,7 @@ export default function UploadPage() {
                 maxCount={allowMultiFile ? undefined : 1}
                 beforeUpload={() => false}
                 accept={acceptValue}
-                disabled={isUploading}
+                disabled={isUploading || !uploadEnabled}
               >
                 <p className="ant-upload-drag-icon">
                   <InboxOutlined />
@@ -294,7 +322,11 @@ export default function UploadPage() {
             {queue.length > 0 ? (
               <div data-testid="upload-queue">
                 {queue.map((item) => (
-                  <div className="upload-queue-row" key={item.uid} data-testid={`queue-row-${item.uid}`}>
+                  <div
+                    className="upload-queue-row"
+                    key={item.uid}
+                    data-testid={`queue-row-${item.uid}`}
+                  >
                     <span className="upload-queue-row__icon">
                       {item.status === "error" ? (
                         <WarningOutlined style={{ color: "var(--ku-color-danger)" }} />
@@ -323,21 +355,11 @@ export default function UploadPage() {
                       )}
                     </span>
                     <span className="upload-queue-row__status">
-                      {item.status === "pending" && (
-                        <StatusTag kind="sync" value="queued" />
-                      )}
-                      {item.status === "uploading" && (
-                        <StatusTag kind="sync" value="syncing" />
-                      )}
-                      {item.status === "success" && (
-                        <StatusTag kind="file" value="uploaded" />
-                      )}
-                      {item.status === "duplicate" && (
-                        <StatusTag kind="sync" value="not_synced" />
-                      )}
-                      {item.status === "error" && (
-                        <StatusTag kind="file" value="failed" />
-                      )}
+                      {item.status === "pending" && <StatusTag kind="sync" value="queued" />}
+                      {item.status === "uploading" && <StatusTag kind="sync" value="syncing" />}
+                      {(item.status === "success" || item.status === "duplicate") &&
+                        item.result && <StatusTag kind="file" value={item.result.status} />}
+                      {item.status === "error" && <StatusTag kind="file" value="failed" />}
                     </span>
                     {item.status === "duplicate" && (
                       <Typography.Text
@@ -430,15 +452,26 @@ export default function UploadPage() {
           </Form.Item>
           <div className="upload-switch-grid">
             <Form.Item name="submitAfterUpload" valuePropName="checked">
-              <Switch checkedChildren="上传后提交审核" unCheckedChildren="保存草稿" defaultChecked />
+              <Switch
+                checkedChildren="上传后提交审核"
+                unCheckedChildren="保存草稿"
+                defaultChecked
+              />
             </Form.Item>
             <Form.Item name="aiAnalyze" valuePropName="checked">
               <Switch checkedChildren="启用 AI 分析" unCheckedChildren="跳过 AI" defaultChecked />
             </Form.Item>
           </div>
           <Space className="upload-actions">
-            <Button disabled={isUploading}>保存草稿</Button>
-            <Button type="primary" htmlType="submit" loading={isUploading}>
+            <Button disabled={isUploading || !uploadEnabled} onClick={handleSaveDraft}>
+              保存草稿
+            </Button>
+            <Button
+              type="primary"
+              htmlType="submit"
+              loading={isUploading}
+              disabled={!uploadEnabled}
+            >
               开始上传
             </Button>
           </Space>

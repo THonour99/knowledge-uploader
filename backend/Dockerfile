@@ -16,9 +16,10 @@ WORKDIR /build
 COPY requirements.txt requirements-dev.txt ./
 RUN pip install --user --no-cache-dir -r requirements-dev.txt
 
-FROM --platform=$BUILDPLATFORM ${PYTHON_IMAGE} AS runtime
+FROM --platform=$TARGETPLATFORM ${PYTHON_IMAGE} AS runtime
 
 ARG PYTHON_IMAGE
+ARG TARGETPLATFORM
 
 ENV PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1 \

@@ -435,6 +435,104 @@ async def test_forgot_password_writes_reset_outbox_without_replayable_token(
     assert response.text.find(token.token_hash) == -1
 
 
+async def test_register_verification_token_not_stored_in_db_outbox_or_logs(
+    verification_client: AsyncClient,
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    from sqlalchemy import select
+
+    from app.core.database import AsyncSessionFactory
+    from app.core.outbox import EventOutbox
+    from app.modules.auth import events
+    from app.modules.auth.models import EmailVerificationToken
+
+    raw_token = "raw-verification-token"
+    sent: list[dict[str, str]] = []
+
+    def fake_enqueue_email(*, recipient: str, subject: str, body: str) -> None:
+        sent.append({"recipient": recipient, "subject": subject, "body": body})
+
+    monkeypatch.setattr("app.modules.auth.service.secrets.token_urlsafe", lambda _size: raw_token)
+    monkeypatch.setattr("app.modules.auth.service.enqueue_email", fake_enqueue_email)
+
+    response = await verification_client.post(
+        "/api/auth/register",
+        json={
+            "name": "Pending User",
+            "email": "token-check@company.com",
+            "password": "password123",
+        },
+    )
+
+    assert response.status_code == 201
+
+    async with AsyncSessionFactory() as session:
+        token = (await session.execute(select(EmailVerificationToken))).scalar_one()
+        outbox = (
+            await session.execute(
+                select(EventOutbox).where(EventOutbox.event_type == events.AUTH_USER_REGISTERED)
+            )
+        ).scalar_one()
+
+    assert token.token_hash == sha256(raw_token.encode("utf-8")).hexdigest()
+    assert raw_token not in token.token_hash
+    assert raw_token not in str(outbox.payload)
+    assert "token" not in outbox.payload
+    assert sent[0]["recipient"] == "token-check@company.com"
+    assert raw_token in sent[0]["body"]
+    assert raw_token not in caplog.text
+
+
+async def test_forgot_password_token_not_stored_in_db_outbox_or_logs(
+    client: AsyncClient,
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    from sqlalchemy import select
+
+    from app.core.database import AsyncSessionFactory
+    from app.core.outbox import EventOutbox
+    from app.modules.auth import events
+    from app.modules.auth.models import PasswordResetToken
+
+    raw_token = "raw-reset-token"
+    sent: list[dict[str, str]] = []
+
+    def fake_enqueue_email(*, recipient: str, subject: str, body: str) -> None:
+        sent.append({"recipient": recipient, "subject": subject, "body": body})
+
+    await _create_user(email="reset-token-check@company.com", password="password123")
+    monkeypatch.setattr("app.modules.auth.service.secrets.token_urlsafe", lambda _size: raw_token)
+    monkeypatch.setattr("app.modules.auth.service.enqueue_email", fake_enqueue_email)
+
+    response = await client.post(
+        "/api/auth/forgot-password",
+        json={"email": "reset-token-check@company.com"},
+    )
+
+    assert response.status_code == 200
+
+    async with AsyncSessionFactory() as session:
+        token = (await session.execute(select(PasswordResetToken))).scalar_one()
+        outbox = (
+            await session.execute(
+                select(EventOutbox).where(
+                    EventOutbox.event_type == events.AUTH_PASSWORD_RESET_REQUESTED
+                )
+            )
+        ).scalar_one()
+
+    assert token.token_hash == sha256(raw_token.encode("utf-8")).hexdigest()
+    assert raw_token not in token.token_hash
+    assert raw_token not in str(outbox.payload)
+    assert "token" not in outbox.payload
+    assert "password_reset_token" not in outbox.payload
+    assert sent[0]["recipient"] == "reset-token-check@company.com"
+    assert raw_token in sent[0]["body"]
+    assert raw_token not in caplog.text
+
+
 async def test_reset_password_invalidates_existing_jwt(client: AsyncClient) -> None:
     user_id = await _create_user(email="token-reset@company.com", password="oldpassword123")
     login = await client.post(

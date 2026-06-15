@@ -5,6 +5,7 @@ import {
   Collapse,
   Descriptions,
   Empty,
+  Progress,
   Result,
   Space,
   Tag,
@@ -16,7 +17,15 @@ import { useQuery } from "@tanstack/react-query";
 import dayjs from "dayjs";
 import { useNavigate, useParams } from "react-router-dom";
 
-import { type FileAnalysis, type SyncTask, getDocument, listTasks } from "../../api/client";
+import {
+  type FileAnalysis,
+  type FileAnalysisTable,
+  type KnowledgeFile,
+  type SimilarFileReference,
+  type SyncTask,
+  getDocument,
+  listTasks,
+} from "../../api/client";
 import { StatusTag } from "../../components/StatusTag";
 import { PageContainer } from "../../layouts/PageContainer";
 import { Roles, useAuthStore } from "../../store/auth.store";
@@ -45,12 +54,167 @@ function formatTaskWindow(task: SyncTask): string {
   return `${startedAt} ~ ${dayjs(task.finished_at).format("YYYY-MM-DD HH:mm")}`;
 }
 
+function clampScore(score: number): number {
+  return Math.max(0, Math.min(100, Math.round(score)));
+}
+
+function qualityLevel(score: number | null | undefined): string {
+  if (typeof score !== "number") {
+    return "暂无评分";
+  }
+  if (score >= 85) {
+    return "优秀";
+  }
+  if (score >= 70) {
+    return "良好";
+  }
+  if (score >= 60) {
+    return "待优化";
+  }
+  return "低质量";
+}
+
+function qualityProgressStatus(score: number): "success" | "normal" | "exception" {
+  if (score >= 85) {
+    return "success";
+  }
+  if (score < 60) {
+    return "exception";
+  }
+  return "normal";
+}
+
+function expiryMeta(expiresAt?: string | null, explicitStatus?: string | null) {
+  if (!expiresAt && !explicitStatus) {
+    return null;
+  }
+
+  const expiry = expiresAt ? dayjs(expiresAt) : null;
+  const inferredStatus =
+    explicitStatus ??
+    (expiry?.isBefore(dayjs())
+      ? "expired"
+      : expiry?.diff(dayjs(), "day") !== undefined && expiry.diff(dayjs(), "day") <= 7
+        ? "expiring"
+        : "active");
+
+  const labelMap: Record<string, { label: string; color: string }> = {
+    active: { label: "有效", color: "green" },
+    expiring: { label: "即将过期", color: "orange" },
+    expired: { label: "已过期", color: "red" },
+    never: { label: "长期有效", color: "default" },
+  };
+  const status = labelMap[inferredStatus] ?? { label: inferredStatus, color: "default" };
+  const dateText = expiry?.isValid() ? expiry.format("YYYY-MM-DD") : "未设置到期日";
+
+  return { ...status, dateText };
+}
+
+function ExpiryIndicator({
+  expiresAt,
+  status,
+}: {
+  expiresAt?: string | null;
+  status?: string | null;
+}) {
+  const meta = expiryMeta(expiresAt, status);
+  if (!meta) {
+    return <Typography.Text type="secondary">暂无过期规则</Typography.Text>;
+  }
+
+  return (
+    <Space size={6} wrap>
+      <Tag color={meta.color}>{meta.label}</Tag>
+      <Typography.Text>{meta.dateText}</Typography.Text>
+    </Space>
+  );
+}
+
+function similarReferenceLabel(reference: SimilarFileReference): string {
+  if (typeof reference === "string") {
+    return reference;
+  }
+
+  return (
+    reference.original_name ??
+    reference.name ??
+    reference.file_id ??
+    reference.id ??
+    "未命名相似文档"
+  );
+}
+
+function similarReferenceHint(reference: SimilarFileReference): string | null {
+  if (typeof reference === "string") {
+    return null;
+  }
+
+  const score = reference.similarity ?? reference.score;
+  if (typeof score !== "number") {
+    return null;
+  }
+
+  return score <= 1 ? `${Math.round(score * 100)}% 相似` : `${Math.round(score)} 分`;
+}
+
+function similarReferences(analysis: FileAnalysis): SimilarFileReference[] {
+  if (analysis.similar_files && analysis.similar_files.length > 0) {
+    return analysis.similar_files;
+  }
+
+  return analysis.similar_file_ids ?? [];
+}
+
+function tableTitle(table: FileAnalysisTable, index: number): string {
+  return table.title ?? table.name ?? `表格 ${index + 1}`;
+}
+
+function tablePreview(table: FileAnalysisTable): string {
+  if (table.markdown?.trim()) {
+    return table.markdown.trim();
+  }
+  if (table.text?.trim()) {
+    return table.text.trim();
+  }
+  return JSON.stringify(table, null, 2);
+}
+
 interface AnalysisCardProps {
   analysis: FileAnalysis;
+  file: KnowledgeFile;
   loading: boolean;
 }
 
-function AnalysisCard({ analysis, loading }: AnalysisCardProps) {
+function AnalysisCard({ analysis, file, loading }: AnalysisCardProps) {
+  const qualityScore =
+    typeof analysis.quality_score === "number" ? clampScore(analysis.quality_score) : null;
+  const tables = analysis.tables_json ?? [];
+  const tableCount = analysis.table_count ?? tables.length;
+  const similarItems = similarReferences(analysis);
+  const expiresAt = file.expires_at ?? analysis.expires_at ?? analysis.detected_expire_at ?? null;
+  const expiryStatus = file.expiry_status ?? analysis.expiry_status ?? null;
+  const collapseItems = [
+    {
+      key: "extracted-text-preview",
+      label: "提取文本预览",
+      children: (
+        <Typography.Paragraph className="document-extracted-preview">
+          {analysis.extracted_text_preview ?? "暂无提取文本"}
+        </Typography.Paragraph>
+      ),
+    },
+    ...tables.map((table, index) => ({
+      key: `table-${index}`,
+      label: tableTitle(table, index),
+      children: (
+        <div className="document-table-preview">
+          <Typography.Text type="secondary">表格结构预览</Typography.Text>
+          <pre className="document-table-preview__body">{tablePreview(table)}</pre>
+        </div>
+      ),
+    })),
+  ];
+
   return (
     <Card className="document-panel" title="AI 分析" loading={loading}>
       <Space direction="vertical" size={12} className="document-result">
@@ -62,28 +226,70 @@ function AnalysisCard({ analysis, loading }: AnalysisCardProps) {
             description={analysis.error_message ?? "分析任务执行失败"}
           />
         ) : null}
+        <div className="document-analysis-metrics">
+          <div className="document-analysis-metric">
+            <span className="document-analysis-metric__label">质量评分</span>
+            <span className="document-analysis-metric__value">
+              {qualityScore === null ? "暂无" : `${qualityScore} 分`}
+            </span>
+            {qualityScore === null ? (
+              <span className="document-analysis-metric__hint">等待 R5 质量评分结果</span>
+            ) : (
+              <Progress
+                percent={qualityScore}
+                size="small"
+                status={qualityProgressStatus(qualityScore)}
+                showInfo={false}
+              />
+            )}
+          </div>
+          <div className="document-analysis-metric">
+            <span className="document-analysis-metric__label">相似文档</span>
+            <span className="document-analysis-metric__value">{similarItems.length}</span>
+            <span className="document-analysis-metric__hint">近重复检测结果</span>
+          </div>
+          <div className="document-analysis-metric">
+            <span className="document-analysis-metric__label">表格结构</span>
+            <span className="document-analysis-metric__value">{tableCount}</span>
+            <span className="document-analysis-metric__hint">已识别表格数量</span>
+          </div>
+        </div>
         <Descriptions column={1} size="middle" labelStyle={{ width: 140 }}>
           <Descriptions.Item label="风险等级">
             <StatusTag kind="risk" value={analysis.sensitive_risk_level} />
+          </Descriptions.Item>
+          <Descriptions.Item label="质量等级">{qualityLevel(qualityScore)}</Descriptions.Item>
+          <Descriptions.Item label="过期状态">
+            <ExpiryIndicator expiresAt={expiresAt} status={expiryStatus} />
           </Descriptions.Item>
           <Descriptions.Item label="摘要">{analysis.summary ?? "-"}</Descriptions.Item>
           <Descriptions.Item label="完成时间">
             {analysis.finished_at ? dayjs(analysis.finished_at).format("YYYY-MM-DD HH:mm") : "-"}
           </Descriptions.Item>
         </Descriptions>
-        <Collapse
-          items={[
-            {
-              key: "extracted-text-preview",
-              label: "提取文本预览",
-              children: (
-                <Typography.Paragraph className="document-extracted-preview">
-                  {analysis.extracted_text_preview ?? "暂无提取文本"}
-                </Typography.Paragraph>
-              ),
-            },
-          ]}
-        />
+        {similarItems.length > 0 ? (
+          <Alert
+            type="warning"
+            showIcon
+            message={`检测到 ${similarItems.length} 个相似文档`}
+            description={
+              <div className="document-analysis-list">
+                {similarItems.map((reference) => (
+                  <span
+                    className="document-analysis-list__item"
+                    key={similarReferenceLabel(reference)}
+                  >
+                    <Typography.Text>{similarReferenceLabel(reference)}</Typography.Text>
+                    {similarReferenceHint(reference) ? (
+                      <Tag color="orange">{similarReferenceHint(reference)}</Tag>
+                    ) : null}
+                  </span>
+                ))}
+              </div>
+            }
+          />
+        ) : null}
+        <Collapse items={collapseItems} />
       </Space>
     </Card>
   );
@@ -189,6 +395,12 @@ export default function FileDetailPage() {
               <Descriptions.Item label="文件大小">{formatFileSize(file.size)}</Descriptions.Item>
               <Descriptions.Item label="MIME">{file.mime_type}</Descriptions.Item>
               <Descriptions.Item label="可见范围">{file.visibility}</Descriptions.Item>
+              <Descriptions.Item label="AI 分析">
+                {file.ai_analysis_enabled_at_upload ? "已启用" : "上传时跳过"}
+              </Descriptions.Item>
+              <Descriptions.Item label="过期指标">
+                <ExpiryIndicator expiresAt={file.expires_at} status={file.expiry_status} />
+              </Descriptions.Item>
               <Descriptions.Item label="上传时间">
                 {dayjs(file.uploaded_at).format("YYYY-MM-DD HH:mm")}
               </Descriptions.Item>
@@ -217,19 +429,14 @@ export default function FileDetailPage() {
         </Card>
 
         {file?.analysis ? (
-          <AnalysisCard analysis={file.analysis} loading={fileQuery.isLoading} />
+          <AnalysisCard analysis={file.analysis} file={file} loading={fileQuery.isLoading} />
         ) : null}
 
         <Card className="document-panel" title="同步信息" loading={fileQuery.isLoading}>
           {file ? (
             <Space direction="vertical" size={12} className="document-result">
               {file.sync_error ? (
-                <Alert
-                  type="error"
-                  showIcon
-                  message="同步失败原因"
-                  description={file.sync_error}
-                />
+                <Alert type="error" showIcon message="同步失败原因" description={file.sync_error} />
               ) : null}
               <Typography.Text>
                 RAGFlow 文档：

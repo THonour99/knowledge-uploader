@@ -10,6 +10,7 @@ from sqlalchemy import (
     DateTime,
     ForeignKey,
     Index,
+    SmallInteger,
     String,
     Text,
     func,
@@ -51,6 +52,11 @@ class File(Base):
         Index("idx_files_category_id", "category_id"),
         Index("idx_files_dataset_mapping_id", "dataset_mapping_id"),
         Index("idx_files_object_key", "object_key"),
+        Index("idx_files_simhash", "simhash"),
+        Index("idx_files_simhash_band_0", "simhash_band_0"),
+        Index("idx_files_simhash_band_1", "simhash_band_1"),
+        Index("idx_files_simhash_band_2", "simhash_band_2"),
+        Index("idx_files_simhash_band_3", "simhash_band_3"),
     )
 
     id: Mapped[uuid.UUID] = mapped_column(primary_key=True, default=uuid.uuid4)
@@ -98,6 +104,11 @@ class File(Base):
         server_default="false",
     )
     ai_config_snapshot: Mapped[dict[str, object] | None] = mapped_column(JSONB)
+    simhash: Mapped[int | None] = mapped_column(BigInteger)
+    simhash_band_0: Mapped[int | None] = mapped_column(SmallInteger)
+    simhash_band_1: Mapped[int | None] = mapped_column(SmallInteger)
+    simhash_band_2: Mapped[int | None] = mapped_column(SmallInteger)
+    simhash_band_3: Mapped[int | None] = mapped_column(SmallInteger)
     uploaded_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True),
         nullable=False,

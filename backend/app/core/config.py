@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from functools import lru_cache
 from typing import Self
+from urllib.parse import urlparse
 
 from cryptography.fernet import Fernet
 from pydantic import Field, model_validator
@@ -11,10 +12,16 @@ PROTECTED_ENVS = {"production", "prod", "staging"}
 DEFAULT_DEV_ENCRYPTION_KEY = "RZ1Sw_27VrN9c5Cfsq01qiwViwT6y7jDCuXYn7tgGJY="
 PLACEHOLDER_SECRETS = {
     "",
+    "change-me",
     "change-me-change-me-change-me-change-me",
     "change-me-fernet-key",
+    "changeme",
     DEFAULT_DEV_ENCRYPTION_KEY,
+    "knowledge_password",
+    "password",
 }
+PLACEHOLDER_IDENTIFIERS = {"", "knowledge", "minioadmin"}
+LOCAL_APP_BASE_HOSTS = {"localhost", "127.0.0.1", "::1"}
 
 
 class Settings(BaseSettings):
@@ -23,6 +30,7 @@ class Settings(BaseSettings):
     app_name: str = "knowledge-uploader"
     app_env: str = "development"
     app_base_url: str = "http://localhost"
+    dependency_check_timeout_seconds: float = 3.0
 
     database_url: str = Field(
         default="postgresql+asyncpg://knowledge:knowledge_password@postgres:5432/knowledge_uploader"
@@ -106,16 +114,18 @@ class Settings(BaseSettings):
             msg = "RAGFLOW_ALLOWED_DATASET_IDS must be configured when RAGFlow is enabled"
             raise ValueError(msg)
 
-        if self.app_env.strip().lower() not in PROTECTED_ENVS:
+        if not _requires_protected_secret_validation(self.app_env, self.app_base_url):
             return self
 
-        if self.jwt_secret in PLACEHOLDER_SECRETS or len(self.jwt_secret) < 32:
-            msg = "JWT_SECRET must be a non-placeholder value with at least 32 characters"
-            raise ValueError(msg)
-
-        if self.encryption_key in PLACEHOLDER_SECRETS:
-            msg = "ENCRYPTION_KEY must be a non-placeholder Fernet key"
-            raise ValueError(msg)
+        _ensure_non_placeholder_secret("JWT_SECRET", self.jwt_secret, min_length=32)
+        _ensure_non_placeholder_secret("ENCRYPTION_KEY", self.encryption_key)
+        _ensure_non_placeholder_url_password("DATABASE_URL", self.database_url)
+        _ensure_non_placeholder_url_password("ALEMBIC_DATABASE_URL", self.alembic_database_url)
+        _ensure_non_placeholder_url_password("CELERY_BROKER_URL", self.celery_broker_url)
+        _ensure_non_placeholder_url_password("CELERY_RESULT_BACKEND", self.celery_result_backend)
+        _ensure_non_placeholder_url_password("CACHE_REDIS_URL", self.cache_redis_url)
+        _ensure_non_placeholder_identifier("MINIO_ACCESS_KEY", self.minio_access_key)
+        _ensure_non_placeholder_secret("MINIO_SECRET_KEY", self.minio_secret_key)
         if not self.minio_secure:
             msg = "MINIO_SECURE must be true in protected environments"
             raise ValueError(msg)
@@ -135,3 +145,38 @@ def get_settings() -> Settings:
 
 def _normalized_csv_values(raw_value: str) -> set[str]:
     return {item.strip() for item in raw_value.split(",") if item.strip()}
+
+
+def _requires_protected_secret_validation(app_env: str, app_base_url: str) -> bool:
+    normalized_env = app_env.strip().lower()
+    return normalized_env in PROTECTED_ENVS or _looks_like_deployed_base_url(app_base_url)
+
+
+def _looks_like_deployed_base_url(raw_value: str) -> bool:
+    parsed = urlparse(raw_value.strip())
+    hostname = parsed.hostname
+    if hostname is None:
+        return False
+    return hostname.lower() not in LOCAL_APP_BASE_HOSTS
+
+
+def _ensure_non_placeholder_secret(name: str, raw_value: str, *, min_length: int = 1) -> None:
+    value = raw_value.strip()
+    if value in PLACEHOLDER_SECRETS or value.lower() in PLACEHOLDER_SECRETS:
+        msg = f"{name} must be a non-placeholder value"
+        raise ValueError(msg)
+    if len(value) < min_length:
+        msg = f"{name} must be at least {min_length} characters"
+        raise ValueError(msg)
+
+
+def _ensure_non_placeholder_identifier(name: str, raw_value: str) -> None:
+    value = raw_value.strip()
+    if value in PLACEHOLDER_IDENTIFIERS or value.lower() in PLACEHOLDER_IDENTIFIERS:
+        msg = f"{name} must be a non-placeholder value"
+        raise ValueError(msg)
+
+
+def _ensure_non_placeholder_url_password(name: str, raw_value: str) -> None:
+    password = urlparse(raw_value).password or ""
+    _ensure_non_placeholder_secret(name, password)

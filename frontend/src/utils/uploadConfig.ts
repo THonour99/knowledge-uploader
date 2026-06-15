@@ -23,6 +23,11 @@ export function allowMultiFileFromConfig(items: ConfigItem[] | undefined): boole
   return valueFor(items, "upload.allow_multi_file") !== false;
 }
 
+export function uploadEnabledFromConfig(items: ConfigItem[] | undefined): boolean {
+  const enabled = valueFor(items, "upload.enabled") ?? valueFor(items, "upload.enable_upload");
+  return enabled !== false;
+}
+
 export function extensionAcceptValue(extensions: string[]): string {
   return extensions.map((extension) => `.${extension}`).join(",");
 }

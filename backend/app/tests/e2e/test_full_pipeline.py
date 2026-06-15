@@ -285,7 +285,9 @@ async def _dispatch_pending_events(sender: FakeCelerySender) -> list[dict[str, o
 
 
 async def _run_sent_tasks(sent_tasks: list[dict[str, object]]) -> None:
+    from app.core.database import AsyncSessionFactory
     from app.modules.ai.tasks import run_ai_analyze_file_task_async
+    from app.modules.notification.handlers import handle_review_file_approved
     from app.modules.ragflow.tasks import (
         run_create_ragflow_upload_task_async,
         run_ragflow_upload_task_async,
@@ -298,6 +300,9 @@ async def _run_sent_tasks(sent_tasks: list[dict[str, object]]) -> None:
         task_arg = str(args[0])
         if sent_task["name"] == "ai.analyze_file":
             await run_ai_analyze_file_task_async(task_arg)
+        elif sent_task["name"] == "notification.review_approved":
+            async with AsyncSessionFactory() as session:
+                await handle_review_file_approved({"file_id": task_arg}, session=session)
         elif sent_task["name"] == "ragflow.create_upload_task":
             await run_create_ragflow_upload_task_async(task_arg)
         elif sent_task["name"] == "ragflow.upload":
@@ -314,6 +319,7 @@ async def test_full_pipeline_upload_analyze_approve_syncs_to_ragflow(
     from app.modules.ai.models import DocumentAnalysis
     from app.modules.audit.models import AuditLog
     from app.modules.document.models import File
+    from app.modules.notification.models import Notification
     from app.modules.ragflow.models import SyncTask
 
     client, storage, ragflow_client = full_pipeline_client
@@ -412,10 +418,15 @@ async def test_full_pipeline_upload_analyze_approve_syncs_to_ragflow(
     review_tasks = await _dispatch_pending_events(sender)
     assert review_tasks == [
         {
+            "name": "notification.review_approved",
+            "args": [str(file_id)],
+            "queue": "notification_queue",
+        },
+        {
             "name": "ragflow.create_upload_task",
             "args": [str(file_id)],
             "queue": "ragflow_queue",
-        }
+        },
     ]
     await _run_sent_tasks(review_tasks)
 
@@ -441,6 +452,10 @@ async def test_full_pipeline_upload_analyze_approve_syncs_to_ragflow(
             select(AuditLog).where(AuditLog.target_id == file_id).order_by(AuditLog.created_at)
         )
         audit_logs = list(audit_result.scalars())
+        notification_result = await session.execute(
+            select(Notification).where(Notification.user_id == uploader_id)
+        )
+        notifications = list(notification_result.scalars())
 
     assert final_file.status == "parsed"
     assert final_file.review_status == "approved"
@@ -459,6 +474,9 @@ async def test_full_pipeline_upload_analyze_approve_syncs_to_ragflow(
         "file.submit_review",
         "file.approve",
     ]
+    assert len(notifications) == 1
+    assert notifications[0].type == "review_approved"
+    assert str(notifications[0].metadata_json["file_id"]) == str(file_id)
     assert storage.reads == [
         (final_file.bucket, final_file.object_key),
         (final_file.bucket, final_file.object_key),

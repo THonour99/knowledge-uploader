@@ -8,6 +8,7 @@ from hashlib import sha256
 from typing import Any
 
 import jwt
+import structlog
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.audit import record_audit_log
@@ -40,6 +41,7 @@ from app.modules.auth.schemas import (
     ResetPasswordRequest,
     TokenRequest,
 )
+from app.modules.notification.tasks import enqueue_email
 from app.modules.user.schemas import AuthUserRecord
 
 from .repository import AuthRepository
@@ -49,6 +51,7 @@ DUMMY_PASSWORD_HASH = (
     "$rsYt6WMtudEz8Vt9y34tothMNtzC4iEySJLI/E/UXCI"
 )
 ANONYMOUS_AUDIT_ID = uuid.UUID(int=0)
+logger = structlog.get_logger(__name__)
 __all__ = [
     "DUMMY_PASSWORD_HASH",
     "AuthService",
@@ -75,6 +78,13 @@ class LoginResult:
 class IssuedToken:
     raw_token: str
     expires_at: datetime
+
+
+@dataclass(frozen=True)
+class QueuedEmail:
+    recipient: str
+    subject: str
+    body: str
 
 
 class AuthService:
@@ -132,6 +142,7 @@ class AuthService:
             status=status,
             email_verified=email_verified,
         )
+        queued_email: QueuedEmail | None = None
         if require_verification:
             token = await self._create_email_verification_token(user)
             await self._append_email_event(
@@ -140,7 +151,9 @@ class AuthService:
                 token=token,
                 trace_id=trace_id,
             )
+            queued_email = self._build_email_verification_email(user=user, token=token)
         await self._session.commit()
+        self._enqueue_email_if_needed(queued_email)
         return RegistrationResult(accepted=True)
 
     async def verify_email(self, request: TokenRequest) -> AuthUserRecord:
@@ -185,6 +198,7 @@ class AuthService:
         if user is None or user.email_verified or user.status == "disabled":
             return
         token = await self._create_email_verification_token(user)
+        queued_email = self._build_email_verification_email(user=user, token=token)
         await self._append_email_event(
             event_type=events.AUTH_USER_VERIFICATION_RESENT,
             user=user,
@@ -192,6 +206,7 @@ class AuthService:
             trace_id=trace_id,
         )
         await self._session.commit()
+        self._enqueue_email_if_needed(queued_email)
 
     async def login(
         self,
@@ -327,6 +342,7 @@ class AuthService:
         if user is None or user.status == "disabled":
             return
         token = await self._create_password_reset_token(user)
+        queued_email = self._build_password_reset_email(user=user, token=token)
         await self._append_email_event(
             event_type=events.AUTH_PASSWORD_RESET_REQUESTED,
             user=user,
@@ -334,6 +350,7 @@ class AuthService:
             trace_id=trace_id,
         )
         await self._session.commit()
+        self._enqueue_email_if_needed(queued_email)
 
     async def reset_password(self, request: ResetPasswordRequest) -> AuthUserRecord:
         ensure_password_strength(
@@ -436,6 +453,61 @@ class AuthService:
             },
             trace_id=trace_id,
         )
+
+    def _build_email_verification_email(
+        self,
+        *,
+        user: AuthUserRecord,
+        token: IssuedToken,
+    ) -> QueuedEmail:
+        verification_url = self._public_url("/auth/verify-email", token.raw_token)
+        body = (
+            f"{user.name}, 您好:\n\n"
+            "请点击下面的链接完成邮箱验证。\n"
+            f"{verification_url}\n\n"
+            f"链接有效期至: {token.expires_at.isoformat()}\n"
+            "如果不是您本人操作, 请忽略本邮件。"
+        )
+        return QueuedEmail(
+            recipient=user.email,
+            subject="请完成邮箱验证",
+            body=body,
+        )
+
+    def _build_password_reset_email(
+        self,
+        *,
+        user: AuthUserRecord,
+        token: IssuedToken,
+    ) -> QueuedEmail:
+        reset_url = self._public_url("/auth/reset-password", token.raw_token)
+        body = (
+            f"{user.name}, 您好:\n\n"
+            "请点击下面的链接重置密码。\n"
+            f"{reset_url}\n\n"
+            f"链接有效期至: {token.expires_at.isoformat()}\n"
+            "如果不是您本人操作, 请忽略本邮件。"
+        )
+        return QueuedEmail(
+            recipient=user.email,
+            subject="密码重置通知",
+            body=body,
+        )
+
+    def _public_url(self, path: str, token: str) -> str:
+        base_url = self._settings.app_base_url.rstrip("/")
+        return f"{base_url}{path}?token={token}"
+
+    def _enqueue_email_if_needed(self, email: QueuedEmail | None) -> None:
+        if email is None:
+            return
+        try:
+            enqueue_email(recipient=email.recipient, subject=email.subject, body=email.body)
+        except Exception as exc:
+            logger.warning(
+                "auth.notification_enqueue_failed",
+                error_type=type(exc).__name__,
+            )
 
     async def _record_failed_login(self, user: AuthUserRecord, now: datetime) -> None:
         failed_login_count = user.failed_login_count + 1

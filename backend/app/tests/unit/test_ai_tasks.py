@@ -5,9 +5,11 @@ from collections.abc import AsyncGenerator
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from importlib import import_module
+from io import BytesIO
 from uuid import UUID
 
 import pytest
+from openpyxl import Workbook
 from redis.asyncio import from_url
 from sqlalchemy import select
 
@@ -109,20 +111,24 @@ async def _create_file(
     ai_enabled: bool = True,
     hash_value: str = "c" * 64,
     status_value: str = "uploaded",
+    original_name: str = "handbook.txt",
+    stored_name: str = "file-handbook.txt",
+    extension: str = "txt",
+    mime_type: str = "text/plain",
 ) -> UUID:
     from app.core.database import AsyncSessionFactory
     from app.modules.document.models import File
 
     file = File(
-        original_name="handbook.txt",
-        stored_name="file-handbook.txt",
-        extension="txt",
-        mime_type="text/plain",
+        original_name=original_name,
+        stored_name=stored_name,
+        extension=extension,
+        mime_type=mime_type,
         size=128,
         hash=hash_value,
         storage_type="minio",
         bucket="knowledge-files",
-        object_key=f"uploads/{uploader_id}/file-handbook.txt",
+        object_key=f"uploads/{uploader_id}/{stored_name}",
         uploader_id=uploader_id,
         department="QA",
         visibility="private",
@@ -212,6 +218,38 @@ async def _create_document_analysis(
         return analysis.id
 
 
+async def _set_ai_feature(
+    *,
+    feature_name: str,
+    enabled: bool,
+    config_json: dict[str, object] | None = None,
+) -> None:
+    from app.core.database import AsyncSessionFactory
+    from app.modules.ai.models import AiFeatureConfig
+
+    async with AsyncSessionFactory() as session:
+        session.add(
+            AiFeatureConfig(
+                feature_name=feature_name,
+                enabled=enabled,
+                config_json=config_json or {},
+            )
+        )
+        await session.commit()
+
+
+def _build_xlsx_bytes(sheet_title: str, rows: list[list[str]]) -> bytes:
+    workbook = Workbook()
+    worksheet = workbook.active
+    assert worksheet is not None
+    worksheet.title = sheet_title
+    for row in rows:
+        worksheet.append(row)
+    buffer = BytesIO()
+    workbook.save(buffer)
+    return buffer.getvalue()
+
+
 async def test_ai_analysis_generates_summary_category_and_tags() -> None:
     from app.core.database import AsyncSessionFactory
     from app.modules.ai.models import DocumentAnalysis
@@ -241,6 +279,97 @@ async def test_ai_analysis_generates_summary_category_and_tags() -> None:
         assert analysis.summary == "handbook onboarding policy and employee benefits"
         assert analysis.suggested_category_id == category_id
         assert analysis.sensitive_risk_level == "none"
+
+
+async def test_ai_analysis_stores_extracted_tables_and_markdown() -> None:
+    from app.core.database import AsyncSessionFactory
+    from app.modules.ai.models import DocumentAnalysis
+
+    uploader_id = await _create_user()
+    file_id = await _create_file(
+        uploader_id=uploader_id,
+        hash_value="d" * 64,
+        original_name="finance.xlsx",
+        stored_name="file-finance.xlsx",
+        extension="xlsx",
+        mime_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+    )
+    await _set_ai_feature(feature_name="table_extraction", enabled=True)
+
+    await _run_analysis(
+        file_id,
+        FakeAiStorage(content=_build_xlsx_bytes("财务", [["合同编号", "金额"], ["KU-001", "100"]])),
+    )
+
+    async with AsyncSessionFactory() as session:
+        result = await session.execute(
+            select(DocumentAnalysis).where(DocumentAnalysis.file_id == file_id)
+        )
+        analysis = result.scalar_one()
+        assert analysis.table_count == 1
+        assert analysis.tables_json[0]["headers"] == ["合同编号", "金额"]
+        assert "| 合同编号 | 金额 |" in (analysis.extracted_text or "")
+
+
+async def test_ai_analysis_stores_quality_score_when_enabled() -> None:
+    from app.core.database import AsyncSessionFactory
+    from app.modules.ai.models import DocumentAnalysis
+
+    uploader_id = await _create_user()
+    file_id = await _create_file(uploader_id=uploader_id, hash_value="e" * 64)
+    await _set_ai_feature(feature_name="quality_score", enabled=True)
+
+    await _run_analysis(
+        file_id,
+        FakeAiStorage(
+            content=(
+                "# 员工手册\n"
+                "1. 入职流程\n"
+                "员工需要完成账号开通、权限申请和安全培训后才能进入项目环境。\n"
+                "2. 审核要求\n"
+                "所有知识库文档需要经过管理员审核后拦截重复或低质量内容进入系统。"
+            ).encode(),
+        ),
+    )
+
+    async with AsyncSessionFactory() as session:
+        result = await session.execute(
+            select(DocumentAnalysis).where(DocumentAnalysis.file_id == file_id)
+        )
+        analysis = result.scalar_one()
+        assert analysis.quality_score is not None
+        assert 0 <= analysis.quality_score <= 100
+        assert analysis.quality_detail["level"] in {"较差", "一般", "良好", "优秀"}
+
+
+async def test_ai_analysis_stores_simhash_and_similar_file_ids() -> None:
+    from app.core.database import AsyncSessionFactory
+    from app.modules.ai.models import DocumentAnalysis
+    from app.modules.document.models import File
+
+    uploader_id = await _create_user()
+    first_file_id = await _create_file(uploader_id=uploader_id, hash_value="f" * 64)
+    second_file_id = await _create_file(uploader_id=uploader_id, hash_value="a" * 64)
+    await _set_ai_feature(feature_name="similarity_detection", enabled=True)
+    content = b"knowledge uploader handbook review workflow ragflow sync quality gate " * 30
+
+    await _run_analysis(first_file_id, FakeAiStorage(content=content))
+    await _run_analysis(second_file_id, FakeAiStorage(content=content + b"minor appendix"))
+
+    async with AsyncSessionFactory() as session:
+        first_file = await session.get(File, first_file_id)
+        second_file = await session.get(File, second_file_id)
+        assert first_file is not None
+        assert second_file is not None
+        assert first_file.simhash is not None
+        assert second_file.simhash is not None
+        assert second_file.simhash_band_0 is not None
+
+        result = await session.execute(
+            select(DocumentAnalysis).where(DocumentAnalysis.file_id == second_file_id)
+        )
+        analysis = result.scalar_one()
+        assert str(first_file_id) in analysis.similar_file_ids
 
 
 async def test_sensitive_high_risk_requires_sensitive_review() -> None:

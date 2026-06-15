@@ -1,4 +1,11 @@
-import type { ReactNode } from "react";
+import {
+  lazy,
+  Suspense,
+  type ComponentType,
+  type LazyExoticComponent,
+  type ReactNode,
+} from "react";
+import { Spin } from "antd";
 import {
   AuditOutlined,
   BarChartOutlined,
@@ -15,26 +22,41 @@ import {
   TeamOutlined,
 } from "@ant-design/icons";
 
-import AiConfigPage from "../pages/AiConfig";
-import AuditLogsPage from "../pages/AuditLogs";
-import CategoriesPage from "../pages/Categories";
-import DashboardPage from "../pages/Dashboard";
-import TagsPage from "../pages/Tags";
-import DatasetConfigPage from "../pages/DatasetConfig";
-import FileDetailPage from "../pages/FileDetail";
-import FileManagementPage from "../pages/FileManagement";
-import ForgotPasswordPage from "../pages/ForgotPassword";
-import LoginPage from "../pages/Login";
-import MyFilesPage from "../pages/MyFiles";
-import ProfilePage from "../pages/Profile";
-import RegisterPage from "../pages/Register";
-import ResetPasswordPage from "../pages/ResetPassword";
-import SettingsPage from "../pages/Settings";
-import StatisticsPage from "../pages/Statistics";
-import TaskLogsPage from "../pages/TaskLogs";
-import UploadPage from "../pages/Upload";
-import UsersPage from "../pages/Users";
 import { type Role, Roles } from "../store/auth.store";
+
+const AiConfigPage = lazy(() => import("../pages/AiConfig"));
+const AuditLogsPage = lazy(() => import("../pages/AuditLogs"));
+const CategoriesPage = lazy(() => import("../pages/Categories"));
+const DashboardPage = lazy(() => import("../pages/Dashboard"));
+const DatasetConfigPage = lazy(() => import("../pages/DatasetConfig"));
+const FileDetailPage = lazy(() => import("../pages/FileDetail"));
+const FileManagementPage = lazy(() => import("../pages/FileManagement"));
+const ForgotPasswordPage = lazy(() => import("../pages/ForgotPassword"));
+const LoginPage = lazy(() => import("../pages/Login"));
+const MyFilesPage = lazy(() => import("../pages/MyFiles"));
+const ProfilePage = lazy(() => import("../pages/Profile"));
+const RegisterPage = lazy(() => import("../pages/Register"));
+const ResetPasswordPage = lazy(() => import("../pages/ResetPassword"));
+const SettingsPage = lazy(() => import("../pages/Settings"));
+const StatisticsPage = lazy(() => import("../pages/Statistics"));
+const TagsPage = lazy(() => import("../pages/Tags"));
+const TaskLogsPage = lazy(() => import("../pages/TaskLogs"));
+const UploadPage = lazy(() => import("../pages/Upload"));
+const UsersPage = lazy(() => import("../pages/Users"));
+
+function routeElement(Page: LazyExoticComponent<ComponentType>) {
+  return (
+    <Suspense
+      fallback={
+        <div className="route-loading">
+          <Spin />
+        </div>
+      }
+    >
+      <Page />
+    </Suspense>
+  );
+}
 
 export interface RouteNavigation {
   label: string;
@@ -49,96 +71,96 @@ export interface AppRoute {
 }
 
 export const publicRoutes: AppRoute[] = [
-  { path: "/login", element: <LoginPage />, roles: [] },
-  { path: "/register", element: <RegisterPage />, roles: [] },
-  { path: "/forgot-password", element: <ForgotPasswordPage />, roles: [] },
-  { path: "/reset-password/:token", element: <ResetPasswordPage />, roles: [] },
+  { path: "/login", element: routeElement(LoginPage), roles: [] },
+  { path: "/register", element: routeElement(RegisterPage), roles: [] },
+  { path: "/forgot-password", element: routeElement(ForgotPasswordPage), roles: [] },
+  { path: "/reset-password/:token", element: routeElement(ResetPasswordPage), roles: [] },
 ];
 
 export const appRoutes: AppRoute[] = [
   {
     path: "/dashboard",
-    element: <DashboardPage />,
+    element: routeElement(DashboardPage),
     roles: [Roles.KNOWLEDGE_ADMIN, Roles.SYSTEM_ADMIN],
     nav: { label: "仪表盘", icon: <DashboardOutlined /> },
   },
   {
     path: "/upload",
-    element: <UploadPage />,
+    element: routeElement(UploadPage),
     nav: { label: "文件上传", icon: <CloudUploadOutlined /> },
   },
   {
     path: "/my-files",
-    element: <MyFilesPage />,
+    element: routeElement(MyFilesPage),
     nav: { label: "我的文件", icon: <FileTextOutlined /> },
   },
   {
     path: "/files",
-    element: <FileManagementPage />,
+    element: routeElement(FileManagementPage),
     roles: [Roles.KNOWLEDGE_ADMIN, Roles.SYSTEM_ADMIN],
     nav: { label: "文件管理", icon: <FolderOpenOutlined /> },
   },
   {
     path: "/files/:id",
-    element: <FileDetailPage />,
+    element: routeElement(FileDetailPage),
   },
   {
     path: "/datasets",
-    element: <DatasetConfigPage />,
+    element: routeElement(DatasetConfigPage),
     roles: [Roles.SYSTEM_ADMIN],
     nav: { label: "Dataset 配置", icon: <DatabaseOutlined /> },
   },
   {
     path: "/ai-config",
-    element: <AiConfigPage />,
+    element: routeElement(AiConfigPage),
     roles: [Roles.SYSTEM_ADMIN],
     nav: { label: "AI 配置", icon: <RobotOutlined /> },
   },
   {
     path: "/statistics",
-    element: <StatisticsPage />,
+    element: routeElement(StatisticsPage),
     roles: [Roles.KNOWLEDGE_ADMIN, Roles.SYSTEM_ADMIN],
     nav: { label: "统计分析", icon: <BarChartOutlined /> },
   },
   {
     path: "/users",
-    element: <UsersPage />,
+    element: routeElement(UsersPage),
     roles: [Roles.SYSTEM_ADMIN],
     nav: { label: "用户管理", icon: <TeamOutlined /> },
   },
   {
     path: "/settings",
-    element: <SettingsPage />,
+    element: routeElement(SettingsPage),
     roles: [Roles.SYSTEM_ADMIN],
     nav: { label: "系统设置", icon: <SettingOutlined /> },
   },
   {
     path: "/audit-logs",
-    element: <AuditLogsPage />,
+    element: routeElement(AuditLogsPage),
     roles: [Roles.KNOWLEDGE_ADMIN, Roles.SYSTEM_ADMIN],
     nav: { label: "操作日志", icon: <AuditOutlined /> },
   },
   {
     path: "/task-logs",
-    element: <TaskLogsPage />,
+    element: routeElement(TaskLogsPage),
     roles: [Roles.KNOWLEDGE_ADMIN, Roles.SYSTEM_ADMIN],
     nav: { label: "任务日志", icon: <OrderedListOutlined /> },
   },
   {
     path: "/categories",
-    element: <CategoriesPage />,
+    element: routeElement(CategoriesPage),
     roles: [Roles.SYSTEM_ADMIN],
     nav: { label: "分类管理", icon: <TagsOutlined /> },
   },
   {
     path: "/tags",
-    element: <TagsPage />,
+    element: routeElement(TagsPage),
     roles: [Roles.SYSTEM_ADMIN],
     nav: { label: "标签管理", icon: <TagsOutlined /> },
   },
   {
     path: "/profile",
-    element: <ProfilePage />,
+    element: routeElement(ProfilePage),
   },
 ];
 

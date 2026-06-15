@@ -68,10 +68,39 @@ export interface FileAnalysis {
   summary: string | null;
   sensitive_risk_level: string;
   quality_score: number | null;
+  quality_detail?: Record<string, unknown> | null;
   extracted_text_preview: string | null;
+  tables_json?: FileAnalysisTable[] | null;
+  table_count?: number | null;
+  similar_file_ids?: string[] | null;
+  similar_files?: SimilarFileReference[] | null;
+  detected_expire_at?: string | null;
+  expires_at?: string | null;
+  expiry_status?: string | null;
   error_message: string | null;
   finished_at: string | null;
 }
+
+export interface FileAnalysisTable {
+  title?: string | null;
+  name?: string | null;
+  headers?: string[] | null;
+  columns?: string[] | null;
+  rows?: unknown[] | null;
+  markdown?: string | null;
+  text?: string | null;
+}
+
+export type SimilarFileReference =
+  | string
+  | {
+      id?: string | null;
+      file_id?: string | null;
+      original_name?: string | null;
+      name?: string | null;
+      similarity?: number | null;
+      score?: number | null;
+    };
 
 export interface KnowledgeFile {
   id: string;
@@ -93,6 +122,8 @@ export interface KnowledgeFile {
   ragflow_parse_status: string | null;
   ai_analysis_enabled_at_upload: boolean;
   uploaded_at: string;
+  expires_at?: string | null;
+  expiry_status?: string | null;
   last_sync_at: string | null;
   created_at: string;
   updated_at: string;
@@ -368,6 +399,8 @@ export interface UploadDocumentPayload {
   file: File;
   description?: string;
   visibility: KnowledgeFile["visibility"];
+  submitAfterUpload?: boolean;
+  aiAnalysisEnabled?: boolean;
 }
 
 export const apiClient = axios.create({
@@ -495,6 +528,8 @@ export async function uploadDocument(
   const formData = new FormData();
   formData.append("file", payload.file);
   formData.append("visibility", payload.visibility);
+  formData.append("submit_after_upload", String(payload.submitAfterUpload ?? false));
+  formData.append("ai_analysis_enabled", String(payload.aiAnalysisEnabled ?? true));
 
   if (payload.description?.trim()) {
     formData.append("description", payload.description.trim());
@@ -519,10 +554,9 @@ export async function uploadDocument(
 }
 
 export async function listDocuments(params: DocumentListQuery = {}): Promise<FileListResponse> {
-  const response = await apiClient.get<ApiEnvelope<FileListResponse> | FileListResponse>(
-    "/files",
-    { params },
-  );
+  const response = await apiClient.get<ApiEnvelope<FileListResponse> | FileListResponse>("/files", {
+    params,
+  });
 
   return unwrapResponse(response.data);
 }
@@ -645,10 +679,9 @@ export async function getStatisticsCategories(
 export async function getStatisticsTrends(
   params: StatisticsQueryParams = {},
 ): Promise<StatisticsTrendResponse> {
-  const response = await apiClient.get<ApiEnvelope<StatisticsTrendResponse> | StatisticsTrendResponse>(
-    "/admin/statistics/trends",
-    { params },
-  );
+  const response = await apiClient.get<
+    ApiEnvelope<StatisticsTrendResponse> | StatisticsTrendResponse
+  >("/admin/statistics/trends", { params });
 
   return unwrapResponse(response.data);
 }
@@ -881,9 +914,10 @@ export async function testRagflowConnection(): Promise<RagflowConnectionTestResu
 // ── Audit log API functions ──────────────────────────────────────────────────
 
 export async function listAuditLogs(params: AuditLogQuery = {}): Promise<AuditLogListResponse> {
-  const response = await apiClient.get<
-    ApiEnvelope<AuditLogListResponse> | AuditLogListResponse
-  >("/admin/audit-logs", { params });
+  const response = await apiClient.get<ApiEnvelope<AuditLogListResponse> | AuditLogListResponse>(
+    "/admin/audit-logs",
+    { params },
+  );
 
   return unwrapResponse(response.data);
 }
@@ -891,9 +925,10 @@ export async function listAuditLogs(params: AuditLogQuery = {}): Promise<AuditLo
 // ── Task API functions ────────────────────────────────────────────────────────
 
 export async function listTasks(params: TaskListQuery = {}): Promise<SyncTaskListResponse> {
-  const response = await apiClient.get<
-    ApiEnvelope<SyncTaskListResponse> | SyncTaskListResponse
-  >("/tasks", { params });
+  const response = await apiClient.get<ApiEnvelope<SyncTaskListResponse> | SyncTaskListResponse>(
+    "/tasks",
+    { params },
+  );
 
   return unwrapResponse(response.data);
 }
@@ -969,10 +1004,9 @@ export interface MergeTagPayload {
 // ── Tag API functions ─────────────────────────────────────────────────────────
 
 export async function listTags(params: TagListQuery = {}): Promise<TagListResponse> {
-  const response = await apiClient.get<ApiEnvelope<TagListResponse> | TagListResponse>(
-    "/tags",
-    { params },
-  );
+  const response = await apiClient.get<ApiEnvelope<TagListResponse> | TagListResponse>("/tags", {
+    params,
+  });
 
   return unwrapResponse(response.data);
 }
@@ -1038,9 +1072,10 @@ export interface AdminUserListQuery {
 export async function listAdminUsers(
   params: AdminUserListQuery = {},
 ): Promise<AdminUserListResponse> {
-  const response = await apiClient.get<
-    ApiEnvelope<AdminUserListResponse> | AdminUserListResponse
-  >("/users", { params });
+  const response = await apiClient.get<ApiEnvelope<AdminUserListResponse> | AdminUserListResponse>(
+    "/users",
+    { params },
+  );
 
   return unwrapResponse(response.data);
 }
@@ -1063,17 +1098,13 @@ export async function resetUserPassword(id: string): Promise<void> {
 }
 
 export async function disableUser(id: string): Promise<void> {
-  const response = await apiClient.post<ApiEnvelope<Record<string, never>>>(
-    `/users/${id}/disable`,
-  );
+  const response = await apiClient.post<ApiEnvelope<Record<string, never>>>(`/users/${id}/disable`);
 
   unwrapResponse(response.data);
 }
 
 export async function enableUser(id: string): Promise<void> {
-  const response = await apiClient.post<ApiEnvelope<Record<string, never>>>(
-    `/users/${id}/enable`,
-  );
+  const response = await apiClient.post<ApiEnvelope<Record<string, never>>>(`/users/${id}/enable`);
 
   unwrapResponse(response.data);
 }

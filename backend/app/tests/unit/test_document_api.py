@@ -225,6 +225,110 @@ async def test_upload_stores_file_metadata_and_minio_object(
     assert audit_log.metadata_json["duplicate"] is False
 
 
+async def test_upload_can_submit_after_upload_when_ai_is_skipped(
+    document_client: tuple[AsyncClient, FakeDocumentStorage],
+) -> None:
+    from app.core.database import AsyncSessionFactory
+    from app.core.outbox import EventOutbox
+    from app.modules.audit.models import AuditLog
+    from app.modules.document.models import File
+
+    client, _storage = document_client
+    user_id = await _create_user(email="submit-after-upload@company.com", password="password123")
+    token = await _login(client, email="submit-after-upload@company.com", password="password123")
+
+    response = await client.post(
+        "/api/files/upload",
+        headers={"Authorization": f"Bearer {token}"},
+        files={"file": ("submit.pdf", PDF_BYTES, "application/pdf")},
+        data={
+            "visibility": "private",
+            "submit_after_upload": "true",
+            "ai_analysis_enabled": "false",
+        },
+    )
+
+    assert response.status_code == 201
+    data = response.json()["data"]
+    file_id = UUID(data["id"])
+    assert data["status"] == "pending_review"
+    assert data["review_status"] == "pending"
+    assert data["ai_analysis_enabled_at_upload"] is False
+
+    async with AsyncSessionFactory() as session:
+        saved_file = await session.get(File, file_id)
+        audit_result = await session.execute(
+            select(AuditLog)
+            .where(AuditLog.target_id == file_id)
+            .where(AuditLog.action.in_(["file.upload", "file.submit_review"]))
+        )
+        audit_logs = list(audit_result.scalars())
+        event_result = await session.execute(
+            select(EventOutbox)
+            .where(EventOutbox.aggregate_id == str(file_id))
+            .order_by(EventOutbox.id)
+        )
+        outbox_events = list(event_result.scalars())
+
+    assert saved_file is not None
+    assert saved_file.status == "pending_review"
+    assert saved_file.review_status == "pending"
+    assert saved_file.ai_analysis_enabled_at_upload is False
+    assert {log.action for log in audit_logs} == {"file.upload", "file.submit_review"}
+    submit_audit = next(log for log in audit_logs if log.action == "file.submit_review")
+    assert submit_audit.actor_id == user_id
+    assert submit_audit.metadata_json["previous_status"] == "uploaded"
+    assert [event.event_type for event in outbox_events] == [
+        "document.file.uploaded",
+        "review.file.submitted",
+    ]
+    assert outbox_events[0].payload["status"] == "uploaded"
+    assert outbox_events[0].payload["ai_analysis_enabled_at_upload"] is False
+    assert outbox_events[1].payload["status"] == "pending_review"
+
+
+async def test_upload_save_draft_keeps_uploaded_and_disables_ai_pipeline(
+    document_client: tuple[AsyncClient, FakeDocumentStorage],
+) -> None:
+    from app.core.database import AsyncSessionFactory
+    from app.core.outbox import EventOutbox
+    from app.modules.document.models import File
+
+    client, _storage = document_client
+    await _create_user(email="draft@company.com", password="password123")
+    token = await _login(client, email="draft@company.com", password="password123")
+
+    response = await client.post(
+        "/api/files/upload",
+        headers={"Authorization": f"Bearer {token}"},
+        files={"file": ("draft.pdf", PDF_BYTES, "application/pdf")},
+        data={
+            "visibility": "private",
+            "submit_after_upload": "false",
+            "ai_analysis_enabled": "true",
+        },
+    )
+
+    assert response.status_code == 201
+    data = response.json()["data"]
+    file_id = UUID(data["id"])
+    assert data["status"] == "uploaded"
+    assert data["ai_analysis_enabled_at_upload"] is False
+
+    async with AsyncSessionFactory() as session:
+        saved_file = await session.get(File, file_id)
+        event_result = await session.execute(
+            select(EventOutbox).where(EventOutbox.aggregate_id == str(file_id))
+        )
+        outbox_event = event_result.scalar_one()
+
+    assert saved_file is not None
+    assert saved_file.status == "uploaded"
+    assert saved_file.ai_analysis_enabled_at_upload is False
+    assert outbox_event.event_type == "document.file.uploaded"
+    assert outbox_event.payload["ai_analysis_enabled_at_upload"] is False
+
+
 async def test_duplicate_upload_is_identified_without_reuploading_object(
     document_client: tuple[AsyncClient, FakeDocumentStorage],
 ) -> None:

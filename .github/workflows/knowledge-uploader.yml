@@ -121,6 +121,15 @@ jobs:
             echo "Skipping backend image build until backend/Dockerfile is created."
           fi
 
+      - name: Build backend linux/arm64 image
+        if: ${{ !env.ACT }}
+        run: |
+          if [ -f backend/Dockerfile ]; then
+            docker buildx build --platform linux/arm64 -f backend/Dockerfile backend
+          else
+            echo "Skipping backend image build until backend/Dockerfile is created."
+          fi
+
       - name: Build frontend linux/amd64 image
         run: |
           if [ -f frontend/Dockerfile ]; then
