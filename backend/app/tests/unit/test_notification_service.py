@@ -174,3 +174,52 @@ async def test_review_handler_creates_in_app_and_email_notification(
             "body": notification.body,
         }
     ]
+
+
+async def test_document_expiry_handler_is_idempotent_and_sends_email_once(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from sqlalchemy import select
+
+    from app.core.database import AsyncSessionFactory
+    from app.modules.notification import handlers
+    from app.modules.notification.models import Notification
+
+    user_id = await _create_user("expiry-target@company.com")
+    file_id = await _create_file(uploader_id=user_id, name="policy.pdf")
+    emails: list[dict[str, str]] = []
+
+    def fake_enqueue_email(*, recipient: str, subject: str, body: str) -> None:
+        emails.append({"recipient": recipient, "subject": subject, "body": body})
+
+    monkeypatch.setattr(handlers, "enqueue_email", fake_enqueue_email)
+    payload = {
+        "file_id": str(file_id),
+        "expires_at": "2026-06-20T00:00:00+00:00",
+        "expiry_status": "expiring",
+    }
+
+    async with AsyncSessionFactory() as session:
+        await handlers.handle_document_expiry_reminder(payload, session=session)
+        await handlers.handle_document_expiry_reminder(payload, session=session)
+
+    async with AsyncSessionFactory() as session:
+        notifications = list((await session.execute(select(Notification))).scalars())
+
+    assert len(notifications) == 1
+    notification = notifications[0]
+    assert notification.user_id == user_id
+    assert notification.type == "document_expiring"
+    assert "policy.pdf" in notification.body
+    assert notification.metadata_json["file_id"] == str(file_id)
+    assert notification.metadata_json["expiry_status"] == "expiring"
+    assert notification.metadata_json["idempotency_key"].startswith(
+        f"document_expiry:{file_id}:expiring:"
+    )
+    assert emails == [
+        {
+            "recipient": "expiry-target@company.com",
+            "subject": "文件即将过期",
+            "body": notification.body,
+        }
+    ]

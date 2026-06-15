@@ -25,6 +25,12 @@ class NotificationPage:
         return (self.page - 1) * self.page_size
 
 
+@dataclass(frozen=True)
+class NotificationCreateResult:
+    notification: Notification
+    created: bool
+
+
 class NotificationService:
     def __init__(
         self,
@@ -56,6 +62,38 @@ class NotificationService:
             await self._session.commit()
             await self._session.refresh(notification)
         return notification
+
+    async def create_in_app_once(
+        self,
+        *,
+        user_id: uuid.UUID,
+        type: str,
+        title: str,
+        body: str,
+        idempotency_key: str,
+        metadata: dict[str, object] | None = None,
+        commit: bool = True,
+    ) -> NotificationCreateResult:
+        key = idempotency_key.strip()
+        existing = await self._repository.get_by_idempotency_key(
+            user_id=user_id,
+            type=type,
+            idempotency_key=key,
+        )
+        if existing is not None:
+            return NotificationCreateResult(notification=existing, created=False)
+
+        next_metadata = dict(metadata or {})
+        next_metadata["idempotency_key"] = key
+        notification = await self.create_in_app(
+            user_id=user_id,
+            type=type,
+            title=title,
+            body=body,
+            metadata=next_metadata,
+            commit=commit,
+        )
+        return NotificationCreateResult(notification=notification, created=True)
 
     async def list_user_notifications(
         self,

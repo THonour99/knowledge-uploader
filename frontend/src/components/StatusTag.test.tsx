@@ -21,4 +21,10 @@ describe("StatusTag", () => {
 
     expect(screen.getByText("未绑定 Dataset")).toBeInTheDocument();
   });
+
+  it("renders expiry status labels", () => {
+    render(<StatusTag kind="expiry" value="expiring" />);
+
+    expect(screen.getByText("即将过期")).toBeInTheDocument();
+  });
 });

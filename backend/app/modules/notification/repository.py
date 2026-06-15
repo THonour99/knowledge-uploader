@@ -35,6 +35,22 @@ class NotificationRepository:
         await self._session.flush()
         return notification
 
+    async def get_by_idempotency_key(
+        self,
+        *,
+        user_id: uuid.UUID,
+        type: str,
+        idempotency_key: str,
+    ) -> Notification | None:
+        result = await self._session.execute(
+            select(Notification).where(
+                Notification.user_id == user_id,
+                Notification.type == type,
+                Notification.metadata_json.op("->>")("idempotency_key") == idempotency_key,
+            )
+        )
+        return result.scalars().first()
+
     async def list_for_user(
         self,
         *,

@@ -8,12 +8,14 @@ import {
   exportStatistics,
   getStatisticsCategories,
   getStatisticsDepartments,
+  getStatisticsExpiry,
   getStatisticsFailures,
   getStatisticsOverview,
   getStatisticsTrends,
   getStatisticsUsers,
   type StatisticsCategoryListResponse,
   type StatisticsDepartmentListResponse,
+  type StatisticsExpiryResponse,
   type StatisticsFailureListResponse,
   type StatisticsOverviewResponse,
   type StatisticsTrendResponse,
@@ -37,6 +39,7 @@ vi.mock("../../api/client", async () => {
     exportStatistics: vi.fn(),
     getStatisticsCategories: vi.fn(),
     getStatisticsDepartments: vi.fn(),
+    getStatisticsExpiry: vi.fn(),
     getStatisticsFailures: vi.fn(),
     getStatisticsOverview: vi.fn(),
     getStatisticsTrends: vi.fn(),
@@ -161,6 +164,23 @@ const failures: StatisticsFailureListResponse = {
   ],
 };
 
+const expiry: StatisticsExpiryResponse = {
+  total: 184,
+  active: 128,
+  expiring: 9,
+  expired: 3,
+  never: 44,
+  remind_days: 7,
+  as_of: "2026-06-15T00:00:00Z",
+  window_end: "2026-06-22T00:00:00Z",
+  items: [
+    { status: "expired", count: 3 },
+    { status: "expiring", count: 9 },
+    { status: "active", count: 128 },
+    { status: "never", count: 44 },
+  ],
+};
+
 beforeAll(() => {
   Object.defineProperty(window, "matchMedia", {
     writable: true,
@@ -225,6 +245,7 @@ function mockStatisticsApi() {
   vi.mocked(getStatisticsCategories).mockResolvedValue(categories);
   vi.mocked(getStatisticsTrends).mockResolvedValue(trends);
   vi.mocked(getStatisticsFailures).mockResolvedValue(failures);
+  vi.mocked(getStatisticsExpiry).mockResolvedValue(expiry);
   vi.mocked(exportStatistics).mockResolvedValue(new Blob(["用户,部门,上传文件总数"]));
 }
 
@@ -246,6 +267,10 @@ describe("StatisticsPage", () => {
     expect(screen.getByText("部门贡献排行")).toBeInTheDocument();
     expect(screen.getByText("分类分布")).toBeInTheDocument();
     expect(screen.getByText("活跃贡献用户排行")).toBeInTheDocument();
+    expect(screen.getByText("过期提醒")).toBeInTheDocument();
+    expect(screen.getByText("状态分布")).toBeInTheDocument();
+    expect(screen.getByText(/2026-06-15 至 2026-06-22/)).toBeInTheDocument();
+    expect(screen.getAllByText("已过期").length).toBeGreaterThan(0);
     expect(screen.getAllByText("李明").length).toBeGreaterThan(0);
     expect(screen.getByText("RuntimeError")).toBeInTheDocument();
   });
@@ -267,6 +292,18 @@ describe("StatisticsPage", () => {
 
     await waitFor(() => {
       expect(exportStatistics).toHaveBeenCalledWith(expect.objectContaining({ group_by: "day" }));
+      expect(getStatisticsExpiry).toHaveBeenCalledWith(expect.objectContaining({ group_by: "day" }));
     });
+  });
+
+  it("keeps the main dashboard usable when the expiry endpoint is unavailable", async () => {
+    mockStatisticsApi();
+    vi.mocked(getStatisticsExpiry).mockRejectedValue(new Error("Not Found"));
+
+    renderWithProviders(<StatisticsPage />);
+
+    expect(await screen.findByRole("heading", { name: "统计分析" })).toBeInTheDocument();
+    expect(await screen.findByText("18,560")).toBeInTheDocument();
+    expect(await screen.findByText("过期统计接口暂不可用")).toBeInTheDocument();
   });
 });

@@ -25,6 +25,8 @@ from .schemas import (
     StatisticsCategoryRow,
     StatisticsDepartmentListResponse,
     StatisticsDepartmentRow,
+    StatisticsExpiryResponse,
+    StatisticsExpiryStatusCount,
     StatisticsFailureListResponse,
     StatisticsFailureRow,
     StatisticsOverviewResponse,
@@ -250,6 +252,54 @@ class StatisticsService:
         await self._session.commit()
         return StatisticsFailureListResponse(items=rows, total=len(rows))
 
+    async def expiry(
+        self,
+        *,
+        current_user: AuthUserRecord,
+        query: StatisticsQuery,
+        context: RequestContext,
+        as_of: datetime | None,
+        remind_days: int,
+    ) -> StatisticsExpiryResponse:
+        self._require_admin(current_user)
+        if remind_days < 0:
+            raise exceptions.invalid_filter("invalid remind_days")
+        effective_as_of = normalized_datetime(as_of)
+        window_end = effective_as_of + timedelta(days=remind_days)
+        counts = await self._repository.count_expiry_statuses(
+            to_filters(query),
+            as_of=effective_as_of,
+            window_end=window_end,
+        )
+        response = StatisticsExpiryResponse(
+            total=counts.total,
+            active=counts.active,
+            expiring=counts.expiring,
+            expired=counts.expired,
+            never=counts.never,
+            remind_days=remind_days,
+            as_of=effective_as_of,
+            window_end=window_end,
+            items=[
+                StatisticsExpiryStatusCount(status="active", count=counts.active),
+                StatisticsExpiryStatusCount(status="expiring", count=counts.expiring),
+                StatisticsExpiryStatusCount(status="expired", count=counts.expired),
+                StatisticsExpiryStatusCount(status="never", count=counts.never),
+            ],
+        )
+        await self._record_audit(
+            current_user=current_user,
+            action="statistics.expiry.view",
+            context=context,
+            metadata_json={
+                **query_metadata(query),
+                "as_of": effective_as_of.isoformat(),
+                "remind_days": remind_days,
+            },
+        )
+        await self._session.commit()
+        return response
+
     async def export_users_csv(
         self,
         *,
@@ -373,6 +423,14 @@ def query_metadata(query: StatisticsQuery) -> dict[str, object]:
         "sync_status": query.sync_status,
         "group_by": query.group_by,
     }
+
+
+def normalized_datetime(value: datetime | None) -> datetime:
+    if value is None:
+        return datetime.now(UTC)
+    if value.tzinfo is None:
+        return value.replace(tzinfo=UTC)
+    return value.astimezone(UTC)
 
 
 def build_user_rows(files: Iterable[StatisticsFileRow]) -> list[StatisticsUserRow]:

@@ -19,7 +19,7 @@ from app.modules.user.schemas import AuthUserRecord
 from .exceptions import DocumentError
 from .models import File as DocumentFile
 from .repository import DocumentRepository
-from .schemas import FileDetailResponse, FileListResponse, FileResponse
+from .schemas import FileDetailResponse, FileListResponse, FileResponse, effective_expiry_status
 from .service import (
     DocumentService,
     DocumentStorage,
@@ -87,6 +87,11 @@ def _file_response(
         ragflow_document_id=file.ragflow_document_id,
         ragflow_parse_status=file.ragflow_parse_status,
         ai_analysis_enabled_at_upload=file.ai_analysis_enabled_at_upload,
+        expires_at=file.expires_at,
+        expiry_status=effective_expiry_status(
+            expires_at=file.expires_at,
+            stored_status=file.expiry_status,
+        ),
         uploaded_at=file.uploaded_at,
         last_sync_at=file.last_sync_at,
         created_at=file.created_at,

@@ -169,6 +169,18 @@ async def _create_file(
         return file.id
 
 
+async def _set_file_expiry_dates(values: dict[UUID, datetime | None]) -> None:
+    from app.core.database import AsyncSessionFactory
+    from app.modules.document.models import File
+
+    async with AsyncSessionFactory() as session:
+        for file_id, expires_at in values.items():
+            file = await session.get(File, file_id)
+            assert file is not None
+            file.expires_at = expires_at
+        await session.commit()
+
+
 async def _seed_statistics_fixture() -> dict[str, UUID]:
     from app.core.database import AsyncSessionFactory
     from app.modules.ai.models import DocumentAnalysis
@@ -371,6 +383,91 @@ async def test_admin_reads_overview_users_departments_categories_and_trends(
     user_detail = user_detail_response.json()["data"]
     assert user_detail["user"]["user_id"] == str(ids["user_a_id"])
     assert user_detail["category_breakdown"][0]["category_name"] == "技术文档"
+
+
+async def test_admin_reads_expiry_statistics(
+    statistics_client: AsyncClient,
+) -> None:
+    from app.core.database import AsyncSessionFactory
+    from app.modules.audit.models import AuditLog
+
+    ids = await _seed_statistics_fixture()
+    await _set_file_expiry_dates(
+        {
+            ids["synced_file_id"]: datetime(2026, 6, 30, 0, 0, tzinfo=UTC),
+            ids["pending_file_id"]: datetime(2026, 6, 20, 0, 0, tzinfo=UTC),
+            ids["failed_file_id"]: datetime(2026, 6, 10, 0, 0, tzinfo=UTC),
+            ids["rejected_file_id"]: None,
+        }
+    )
+    admin_token = await _login(
+        statistics_client,
+        email="stats-admin@company.com",
+        password="password123",
+    )
+    employee_token = await _login(
+        statistics_client,
+        email="stats-employee@company.com",
+        password="password123",
+    )
+    admin_headers = {"Authorization": f"Bearer {admin_token}"}
+
+    expiry_response = await statistics_client.get(
+        "/api/admin/statistics/expiry",
+        headers=admin_headers,
+        params={"as_of": "2026-06-15T00:00:00Z", "remind_days": 7},
+    )
+    department_response = await statistics_client.get(
+        "/api/admin/statistics/expiry",
+        headers=admin_headers,
+        params={
+            "department": "研发中心",
+            "as_of": "2026-06-15T00:00:00Z",
+            "remind_days": 7,
+        },
+    )
+    denied_response = await statistics_client.get(
+        "/api/admin/statistics/expiry",
+        headers={"Authorization": f"Bearer {employee_token}"},
+        params={"as_of": "2026-06-15T00:00:00Z"},
+    )
+
+    assert expiry_response.status_code == 200
+    expiry = expiry_response.json()["data"]
+    assert expiry["total"] == 4
+    assert expiry["active"] == 1
+    assert expiry["expiring"] == 1
+    assert expiry["expired"] == 1
+    assert expiry["never"] == 1
+    assert expiry["remind_days"] == 7
+    assert expiry["as_of"].startswith("2026-06-15T00:00:00")
+    assert expiry["window_end"].startswith("2026-06-22T00:00:00")
+    assert {item["status"]: item["count"] for item in expiry["items"]} == {
+        "active": 1,
+        "expiring": 1,
+        "expired": 1,
+        "never": 1,
+    }
+
+    assert department_response.status_code == 200
+    department_expiry = department_response.json()["data"]
+    assert department_expiry["total"] == 2
+    assert department_expiry["active"] == 1
+    assert department_expiry["expiring"] == 1
+    assert department_expiry["expired"] == 0
+    assert department_expiry["never"] == 0
+
+    assert denied_response.status_code == 403
+    assert denied_response.json()["error_code"] == "PERMISSION_DENIED"
+
+    async with AsyncSessionFactory() as session:
+        result = await session.execute(
+            select(AuditLog).where(AuditLog.action == "statistics.expiry.view")
+        )
+        audit_logs = result.scalars().all()
+        assert len(audit_logs) == 2
+        assert audit_logs[0].target_type == "statistics"
+        assert audit_logs[0].metadata_json["remind_days"] == 7
 
 
 async def test_statistics_failures_export_and_permission(

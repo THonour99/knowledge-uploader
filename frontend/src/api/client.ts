@@ -373,6 +373,25 @@ export interface StatisticsFailureListResponse {
   total: number;
 }
 
+export type ExpiryStatus = "active" | "expiring" | "expired" | "never";
+
+export interface StatisticsExpiryStatusRow {
+  status: ExpiryStatus;
+  count: number;
+}
+
+export interface StatisticsExpiryResponse {
+  total: number;
+  active: number;
+  expiring: number;
+  expired: number;
+  never: number;
+  remind_days: number;
+  as_of: string;
+  window_end: string;
+  items: StatisticsExpiryStatusRow[];
+}
+
 export interface UpdateAiFeaturePayload {
   enabled: boolean;
 }
@@ -692,6 +711,16 @@ export async function getStatisticsFailures(
   const response = await apiClient.get<
     ApiEnvelope<StatisticsFailureListResponse> | StatisticsFailureListResponse
   >("/admin/statistics/failures", { params });
+
+  return unwrapResponse(response.data);
+}
+
+export async function getStatisticsExpiry(
+  params: StatisticsQueryParams = {},
+): Promise<StatisticsExpiryResponse> {
+  const response = await apiClient.get<
+    ApiEnvelope<StatisticsExpiryResponse> | StatisticsExpiryResponse
+  >("/admin/statistics/expiry", { params });
 
   return unwrapResponse(response.data);
 }

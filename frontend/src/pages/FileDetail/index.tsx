@@ -91,12 +91,9 @@ function expiryMeta(expiresAt?: string | null, explicitStatus?: string | null) {
 
   const expiry = expiresAt ? dayjs(expiresAt) : null;
   const inferredStatus =
-    explicitStatus ??
-    (expiry?.isBefore(dayjs())
-      ? "expired"
-      : expiry?.diff(dayjs(), "day") !== undefined && expiry.diff(dayjs(), "day") <= 7
-        ? "expiring"
-        : "active");
+    expiresAt && (!explicitStatus || explicitStatus === "never")
+      ? inferExpiryStatus(expiry)
+      : (explicitStatus ?? inferExpiryStatus(expiry));
 
   const labelMap: Record<string, { label: string; color: string }> = {
     active: { label: "有效", color: "green" },
@@ -108,6 +105,16 @@ function expiryMeta(expiresAt?: string | null, explicitStatus?: string | null) {
   const dateText = expiry?.isValid() ? expiry.format("YYYY-MM-DD") : "未设置到期日";
 
   return { ...status, dateText };
+}
+
+function inferExpiryStatus(expiry: dayjs.Dayjs | null): string {
+  if (expiry?.isBefore(dayjs())) {
+    return "expired";
+  }
+  if (expiry?.diff(dayjs(), "day") !== undefined && expiry.diff(dayjs(), "day") <= 7) {
+    return "expiring";
+  }
+  return "active";
 }
 
 function ExpiryIndicator({

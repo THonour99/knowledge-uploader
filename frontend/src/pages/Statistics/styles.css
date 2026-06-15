@@ -130,6 +130,7 @@
 .statistics-chart-card,
 .statistics-ranking-card,
 .statistics-failure-card,
+.statistics-expiry-card,
 .statistics-users-card {
   border-color: var(--ku-border);
   border-radius: var(--ku-radius-card);
@@ -179,6 +180,12 @@
   display: grid;
   grid-template-columns: minmax(0, 1fr) minmax(300px, 0.38fr);
   gap: var(--ku-spacing-section);
+}
+
+.statistics-side-stack {
+  display: grid;
+  gap: var(--ku-spacing-section);
+  align-content: start;
 }
 
 .statistics-table-toolbar {
@@ -263,6 +270,46 @@
   border-top: 1px solid var(--ku-border);
 }
 
+.statistics-expiry-content {
+  width: 100%;
+}
+
+.statistics-expiry-summary {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 10px;
+}
+
+.statistics-expiry-summary > div {
+  min-width: 0;
+  padding: 12px;
+  border: 1px solid var(--ku-border);
+  border-radius: var(--ku-radius-small);
+  background: var(--ku-bg-base);
+}
+
+.statistics-expiry-summary .ant-typography {
+  margin: 2px 0 0;
+}
+
+.statistics-expiry-breakdown {
+  display: grid;
+  gap: 10px;
+}
+
+.statistics-expiry-breakdown-row {
+  display: grid;
+  grid-template-columns: minmax(74px, auto) minmax(0, 1fr) auto;
+  gap: 8px;
+  align-items: center;
+}
+
+.statistics-expiry-section-title {
+  display: flex;
+  justify-content: space-between;
+  gap: 12px;
+}
+
 @media (max-width: 1280px) {
   .statistics-kpi-grid {
     grid-template-columns: repeat(3, minmax(0, 1fr));
@@ -306,5 +353,9 @@
 
   .statistics-kpi-card__sparkline {
     display: none;
+  }
+
+  .statistics-expiry-summary {
+    grid-template-columns: minmax(0, 1fr);
   }
 }

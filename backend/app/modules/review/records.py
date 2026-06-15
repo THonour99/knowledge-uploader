@@ -25,6 +25,8 @@ class ReviewFileRecord:
     ragflow_document_id: str | None
     ragflow_parse_status: str | None
     ai_analysis_enabled_at_upload: bool
+    expires_at: datetime | None
+    expiry_status: str
     uploaded_at: datetime
     last_sync_at: datetime | None
     created_at: datetime

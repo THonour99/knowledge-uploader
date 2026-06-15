@@ -12,6 +12,7 @@ import {
   Typography,
 } from "antd";
 import {
+  BellOutlined,
   CheckCircleOutlined,
   ClockCircleOutlined,
   DownloadOutlined,
@@ -32,17 +33,21 @@ import {
   exportStatistics,
   getStatisticsCategories,
   getStatisticsDepartments,
+  getStatisticsExpiry,
   getStatisticsFailures,
   getStatisticsOverview,
   getStatisticsTrends,
   getStatisticsUsers,
+  type ExpiryStatus,
   type StatisticsCategoryRow,
   type StatisticsDepartmentRow,
+  type StatisticsExpiryStatusRow,
   type StatisticsFailureRow,
   type StatisticsQueryParams,
   type StatisticsTrendPoint,
   type StatisticsUserRow,
 } from "../../api/client";
+import { StatusTag } from "../../components/StatusTag";
 import { PageContainer } from "../../layouts/PageContainer";
 import "./styles.css";
 
@@ -253,6 +258,27 @@ function topFailureTotal(rows: StatisticsFailureRow[]): number {
   return Math.max(...rows.map((row) => row.failed_tasks), 1);
 }
 
+const expiryStatusOrder: ExpiryStatus[] = ["expired", "expiring", "active", "never"];
+
+function expiryStatusLabel(status: ExpiryStatus): string {
+  const labels: Record<ExpiryStatus, string> = {
+    active: "有效文件",
+    expiring: "即将过期",
+    expired: "已过期",
+    never: "长期有效",
+  };
+
+  return labels[status];
+}
+
+function normalizeExpiryBreakdown(rows: StatisticsExpiryStatusRow[]): StatisticsExpiryStatusRow[] {
+  const rowByStatus = new Map(rows.map((row) => [row.status, row]));
+
+  return expiryStatusOrder.map(
+    (status) => rowByStatus.get(status) ?? { status, count: 0 },
+  );
+}
+
 export default function StatisticsPage() {
   const { message } = AntdApp.useApp();
   const queryClient = useQueryClient();
@@ -315,6 +341,10 @@ export default function StatisticsPage() {
     queryKey: ["statistics", "failures", queryParams],
     queryFn: () => getStatisticsFailures(queryParams),
   });
+  const expiryQuery = useQuery({
+    queryKey: ["statistics", "expiry", queryParams],
+    queryFn: () => getStatisticsExpiry(queryParams),
+  });
 
   const exportMutation = useMutation({
     mutationFn: () => exportStatistics(queryParams),
@@ -333,13 +363,16 @@ export default function StatisticsPage() {
   const categories = categoriesQuery.data?.items ?? [];
   const trends = trendsQuery.data?.items ?? [];
   const failures = failuresQuery.data?.items ?? [];
+  const expiry = expiryQuery.data;
+  const expiryBreakdown = normalizeExpiryBreakdown(expiry?.items ?? []);
   const isLoading =
     overviewQuery.isLoading ||
     usersQuery.isLoading ||
     departmentsQuery.isLoading ||
     categoriesQuery.isLoading ||
     trendsQuery.isLoading ||
-    failuresQuery.isLoading;
+    failuresQuery.isLoading ||
+    expiryQuery.isLoading;
   const firstError = [
     overviewQuery,
     usersQuery,
@@ -641,34 +674,105 @@ export default function StatisticsPage() {
           />
         </Card>
 
-        <Card className="document-panel statistics-failure-card" title="失败统计">
-          {failures.length > 0 ? (
-            <div className="statistics-failure-list">
-              {failures.map((failure) => {
-                const ratio = (failure.failed_tasks / topFailureTotal(failures)) * 100;
-                return (
-                  <div className="statistics-failure-row" key={failure.reason}>
-                    <div className="statistics-failure-row__header">
-                      <Typography.Text>{failure.reason}</Typography.Text>
-                      <Typography.Text type="secondary">
-                        {formatNumber(failure.failed_tasks)} ({formatNumber(failure.failed_files)} 文件)
-                      </Typography.Text>
+        <div className="statistics-side-stack">
+          <Card className="document-panel statistics-failure-card" title="失败统计">
+            {failures.length > 0 ? (
+              <div className="statistics-failure-list">
+                {failures.map((failure) => {
+                  const ratio = (failure.failed_tasks / topFailureTotal(failures)) * 100;
+                  return (
+                    <div className="statistics-failure-row" key={failure.reason}>
+                      <div className="statistics-failure-row__header">
+                        <Typography.Text>{failure.reason}</Typography.Text>
+                        <Typography.Text type="secondary">
+                          {formatNumber(failure.failed_tasks)} ({formatNumber(failure.failed_files)} 文件)
+                        </Typography.Text>
+                      </div>
+                      <span className="statistics-failure-row__track">
+                        <span className="statistics-failure-row__bar" style={{ width: `${ratio}%` }} />
+                      </span>
                     </div>
-                    <span className="statistics-failure-row__track">
-                      <span className="statistics-failure-row__bar" style={{ width: `${ratio}%` }} />
-                    </span>
-                  </div>
-                );
-              })}
-              <div className="statistics-failure-total">
-                <Typography.Text strong>总计</Typography.Text>
-                <Typography.Text>{formatNumber(overview?.failed_tasks ?? 0)} 个任务</Typography.Text>
+                  );
+                })}
+                <div className="statistics-failure-total">
+                  <Typography.Text strong>总计</Typography.Text>
+                  <Typography.Text>{formatNumber(overview?.failed_tasks ?? 0)} 个任务</Typography.Text>
+                </div>
               </div>
-            </div>
-          ) : (
-            <Empty image={Empty.PRESENTED_IMAGE_SIMPLE} description="暂无失败任务" />
-          )}
-        </Card>
+            ) : (
+              <Empty image={Empty.PRESENTED_IMAGE_SIMPLE} description="暂无失败任务" />
+            )}
+          </Card>
+
+          <Card
+            className="document-panel statistics-expiry-card"
+            loading={expiryQuery.isLoading}
+            title={
+              <Space>
+                <BellOutlined />
+                过期提醒
+              </Space>
+            }
+            extra={
+              expiry ? (
+                <Typography.Text type="secondary">
+                  {formatNumber(expiry.remind_days)} 天窗口
+                </Typography.Text>
+              ) : null
+            }
+          >
+            {expiryQuery.isError ? (
+              <Alert
+                type="warning"
+                showIcon
+                message="过期统计接口暂不可用"
+                description={expiryQuery.error.message}
+              />
+            ) : expiry ? (
+              <Space direction="vertical" size={16} className="statistics-expiry-content">
+                <div className="statistics-expiry-summary">
+                  <div>
+                    <Typography.Text type="secondary">过期规则文件</Typography.Text>
+                    <Typography.Title level={4}>
+                      {formatNumber(expiry.total)}
+                    </Typography.Title>
+                  </div>
+                  <div>
+                    <Typography.Text type="secondary">即将过期</Typography.Text>
+                    <Typography.Title level={4} className="statistics-warning">
+                      {formatNumber(expiry.expiring)}
+                    </Typography.Title>
+                  </div>
+                  <div>
+                    <Typography.Text type="secondary">已过期</Typography.Text>
+                    <Typography.Title level={4} className="statistics-negative">
+                      {formatNumber(expiry.expired)}
+                    </Typography.Title>
+                  </div>
+                </div>
+
+                <div className="statistics-expiry-breakdown">
+                  <div className="statistics-expiry-section-title">
+                    <Typography.Text strong>状态分布</Typography.Text>
+                    <Typography.Text type="secondary">
+                      {dayjs(expiry.as_of).format("YYYY-MM-DD")} 至{" "}
+                      {dayjs(expiry.window_end).format("YYYY-MM-DD")}
+                    </Typography.Text>
+                  </div>
+                  {expiryBreakdown.map((row) => (
+                    <div className="statistics-expiry-breakdown-row" key={row.status}>
+                      <StatusTag kind="expiry" value={row.status} />
+                      <Typography.Text>{expiryStatusLabel(row.status)}</Typography.Text>
+                      <Typography.Text strong>{formatNumber(row.count)}</Typography.Text>
+                    </div>
+                  ))}
+                </div>
+              </Space>
+            ) : (
+              <Empty image={Empty.PRESENTED_IMAGE_SIMPLE} description="暂无过期统计" />
+            )}
+          </Card>
+        </div>
       </div>
     </PageContainer>
   );

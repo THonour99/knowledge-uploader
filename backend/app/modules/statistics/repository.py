@@ -14,6 +14,7 @@ from sqlalchemy import (
     Table,
     Text,
     and_,
+    func,
     select,
 )
 from sqlalchemy.dialects.postgresql import JSONB, UUID
@@ -59,6 +60,15 @@ class StatisticsFailedTaskRow:
     reason: str
 
 
+@dataclass(frozen=True)
+class StatisticsExpiryCounts:
+    total: int
+    active: int
+    expiring: int
+    expired: int
+    never: int
+
+
 Meta = MetaData()
 
 FILES = Table(
@@ -73,6 +83,7 @@ FILES = Table(
     Column("review_status", String(40), nullable=False),
     Column("ragflow_document_id", String(120)),
     Column("ragflow_parse_status", String(40)),
+    Column("expires_at", DateTime(timezone=True)),
     Column("uploaded_at", DateTime(timezone=True), nullable=False),
     Column("last_sync_at", DateTime(timezone=True)),
 )
@@ -186,6 +197,32 @@ class StatisticsRepository:
     async def user_exists(self, user_id: uuid.UUID) -> bool:
         result = await self._session.execute(select(USERS.c.id).where(USERS.c.id == user_id))
         return result.scalar_one_or_none() is not None
+
+    async def count_expiry_statuses(
+        self,
+        filters: StatisticsFilters,
+        *,
+        as_of: datetime,
+        window_end: datetime,
+    ) -> StatisticsExpiryCounts:
+        statement = select(
+            func.count(FILES.c.id).label("total"),
+            func.count(FILES.c.id).filter(FILES.c.expires_at.is_(None)).label("never"),
+            func.count(FILES.c.id).filter(FILES.c.expires_at <= as_of).label("expired"),
+            func.count(FILES.c.id)
+            .filter(and_(FILES.c.expires_at > as_of, FILES.c.expires_at <= window_end))
+            .label("expiring"),
+            func.count(FILES.c.id).filter(FILES.c.expires_at > window_end).label("active"),
+        ).where(*self._file_predicates(filters))
+        result = await self._session.execute(statement)
+        row = result.mappings().one()
+        return StatisticsExpiryCounts(
+            total=cast(int, row["total"]),
+            active=cast(int, row["active"]),
+            expiring=cast(int, row["expiring"]),
+            expired=cast(int, row["expired"]),
+            never=cast(int, row["never"]),
+        )
 
     def _file_predicates(self, filters: StatisticsFilters) -> list[ColumnElement[bool]]:
         predicates: list[ColumnElement[bool]] = []

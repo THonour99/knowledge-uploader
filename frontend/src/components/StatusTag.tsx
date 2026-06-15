@@ -2,7 +2,7 @@ import { Tag } from "antd";
 
 import { statusTagColors } from "../theme/tokens";
 
-export type StatusKind = "file" | "review" | "sync" | "risk" | "user" | "dataset";
+export type StatusKind = "file" | "review" | "sync" | "risk" | "user" | "dataset" | "expiry";
 type StatusTone = keyof typeof statusTagColors;
 
 export interface StatusTagProps {
@@ -77,6 +77,12 @@ const statusMap: Record<StatusKind, Record<string, StatusMeta>> = {
     required: { label: "是", color: "success" },
     skipped: { label: "否", color: "default" },
     unbound: { label: "未绑定 Dataset", color: "danger" },
+  },
+  expiry: {
+    active: { label: "有效", color: "success" },
+    expiring: { label: "即将过期", color: "warning" },
+    expired: { label: "已过期", color: "danger" },
+    never: { label: "长期有效", color: "default" },
   },
 };
 

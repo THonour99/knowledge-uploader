@@ -193,6 +193,8 @@ async def test_upload_stores_file_metadata_and_minio_object(
     assert data["uploader_id"] == str(user_id)
     assert data["status"] == "uploaded"
     assert data["review_status"] == "pending"
+    assert data["expires_at"] is None
+    assert data["expiry_status"] == "never"
     assert data["duplicate"] is False
     assert data["duplicate_file_id"] is None
     assert "bucket" not in data
@@ -217,6 +219,8 @@ async def test_upload_stores_file_metadata_and_minio_object(
     assert saved_file.object_key == storage.objects[0].object_key
     assert saved_file.hash
     assert saved_file.description == "员工手册"
+    assert saved_file.expires_at is None
+    assert saved_file.expiry_status == "never"
     assert audit_log.actor_id == user_id
     assert audit_log.target_id == saved_file.id
     assert audit_log.target_type == "file"

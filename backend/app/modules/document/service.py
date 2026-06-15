@@ -5,6 +5,7 @@ import uuid
 import zipfile
 from contextlib import suppress
 from dataclasses import dataclass
+from datetime import datetime, timedelta
 from hashlib import sha256
 from io import BytesIO
 from pathlib import PurePosixPath, PureWindowsPath
@@ -22,7 +23,7 @@ from app.modules.user.schemas import AuthUserRecord
 
 from . import events, exceptions
 from .models import File
-from .repository import DocumentRepository
+from .repository import DocumentRepository, ExpiryScanCandidate
 from .schemas import FileAnalysisDetail
 
 WINDOWS_RESERVED_NAMES = {
@@ -370,6 +371,52 @@ class DocumentService:
             )
             await self._session.commit()
         return result
+
+    async def refresh_expiry_statuses(
+        self,
+        *,
+        now: datetime,
+        warning_window_days: int = 7,
+    ) -> int:
+        warning_deadline = now + timedelta(days=warning_window_days)
+        updated = await self._repository.refresh_expiry_statuses(
+            now=now,
+            warning_deadline=warning_deadline,
+        )
+        await self._session.commit()
+        return updated
+
+    async def list_expiry_scan_candidates(
+        self,
+        *,
+        now: datetime,
+        warning_window_days: int = 7,
+        limit: int = 500,
+    ) -> list[ExpiryScanCandidate]:
+        if limit < 1:
+            raise ValueError("limit must be greater than 0")
+        warning_deadline = now + timedelta(days=warning_window_days)
+        return await self._repository.list_expiry_scan_candidates(
+            now=now,
+            warning_deadline=warning_deadline,
+            limit=limit,
+        )
+
+    async def mark_expiry_notification_sent(
+        self,
+        *,
+        file_id: uuid.UUID,
+        notification_kind: str,
+        sent_at: datetime,
+    ) -> bool:
+        updated = await self._repository.mark_expiry_notification_sent(
+            file_id=file_id,
+            notification_kind=notification_kind,
+            sent_at=sent_at,
+        )
+        if updated:
+            await self._session.commit()
+        return updated
 
     async def delete_file(
         self,

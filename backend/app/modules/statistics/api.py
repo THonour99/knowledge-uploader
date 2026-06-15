@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from datetime import date
+from datetime import date, datetime
 from typing import Annotated, NoReturn
 from uuid import UUID
 
@@ -105,6 +105,44 @@ async def get_statistics_overview(
                 sync_status=sync_status,
             ),
             context=_context_from(request),
+        )
+    except exceptions.StatisticsError as error:
+        _raise_statistics_error(error)
+    return success_response(response.model_dump(mode="json"), request)
+
+
+@router.get("/expiry")
+async def get_statistics_expiry(
+    request: Request,
+    current_user: AdminUserDep,
+    session: SessionDep,
+    start_date: date | None = None,
+    end_date: date | None = None,
+    department: str | None = None,
+    user_id: UUID | None = None,
+    category_id: UUID | None = None,
+    status: str | None = None,
+    review_status: str | None = None,
+    sync_status: str | None = None,
+    as_of: datetime | None = None,
+    remind_days: Annotated[int, Query(ge=0, le=365)] = 7,
+) -> dict[str, object]:
+    try:
+        response = await _service(session).expiry(
+            current_user=current_user,
+            query=_query_from(
+                start_date=start_date,
+                end_date=end_date,
+                department=department,
+                user_id=user_id,
+                category_id=category_id,
+                status=status,
+                review_status=review_status,
+                sync_status=sync_status,
+            ),
+            context=_context_from(request),
+            as_of=as_of,
+            remind_days=remind_days,
         )
     except exceptions.StatisticsError as error:
         _raise_statistics_error(error)

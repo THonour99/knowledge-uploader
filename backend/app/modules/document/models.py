@@ -57,6 +57,21 @@ class File(Base):
         Index("idx_files_simhash_band_1", "simhash_band_1"),
         Index("idx_files_simhash_band_2", "simhash_band_2"),
         Index("idx_files_simhash_band_3", "simhash_band_3"),
+        CheckConstraint(
+            "expiry_status IN ('never', 'active', 'expiring', 'expired')",
+            name="ck_files_expiry_status",
+        ),
+        Index(
+            "idx_files_expiry_scan",
+            "expires_at",
+            "expiry_warning_sent_at",
+            "expiry_expired_sent_at",
+            postgresql_where=sql_text(
+                "expires_at IS NOT NULL "
+                "AND status NOT IN ('deleted', 'disabled', 'ragflow_cleanup_failed')"
+            ),
+        ),
+        Index("idx_files_expiry_status", "expiry_status"),
     )
 
     id: Mapped[uuid.UUID] = mapped_column(primary_key=True, default=uuid.uuid4)
@@ -109,6 +124,10 @@ class File(Base):
     simhash_band_1: Mapped[int | None] = mapped_column(SmallInteger)
     simhash_band_2: Mapped[int | None] = mapped_column(SmallInteger)
     simhash_band_3: Mapped[int | None] = mapped_column(SmallInteger)
+    expires_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    expiry_status: Mapped[str] = mapped_column(String(20), nullable=False, server_default="never")
+    expiry_warning_sent_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    expiry_expired_sent_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     uploaded_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True),
         nullable=False,

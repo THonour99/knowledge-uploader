@@ -3,6 +3,7 @@ from __future__ import annotations
 import uuid
 from collections.abc import Mapping
 from dataclasses import dataclass
+from datetime import datetime
 
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -121,6 +122,49 @@ async def handle_ragflow_sync_failed(
     )
 
 
+async def handle_document_expiry_reminder(
+    event: EventOutbox | Mapping[str, object],
+    *,
+    session: AsyncSession,
+) -> None:
+    payload = _payload_from(event)
+    recipient = await _recipient_from_payload(payload, session=session)
+    if recipient is None:
+        return
+
+    file_id = _string_or_none(payload.get("file_id"))
+    expires_at = _string_or_none(payload.get("expires_at"))
+    expiry_status = _normalized_expiry_status(payload.get("expiry_status"))
+    if file_id is None or expires_at is None or expiry_status is None:
+        return
+
+    notification_type = (
+        events.NOTIFICATION_DOCUMENT_EXPIRED
+        if expiry_status == "expired"
+        else events.NOTIFICATION_DOCUMENT_EXPIRING
+    )
+    title = "文件已过期" if expiry_status == "expired" else "文件即将过期"
+    display_date = _display_date(expires_at)
+    if expiry_status == "expired":
+        body = f"文件 {recipient.file_name} 已于 {display_date} 过期, 请及时复核或更新。"
+    else:
+        body = f"文件 {recipient.file_name} 将于 {display_date} 过期, 请及时复核或更新。"
+
+    await _create_and_send(
+        session=session,
+        recipient=recipient,
+        type=notification_type,
+        title=title,
+        body=body,
+        metadata=_safe_metadata(payload),
+        idempotency_key=_document_expiry_idempotency_key(
+            file_id=file_id,
+            expiry_status=expiry_status,
+            expires_at=expires_at,
+        ),
+    )
+
+
 async def _handle_review_result(
     event: EventOutbox | Mapping[str, object],
     *,
@@ -158,19 +202,35 @@ async def _create_and_send(
     title: str,
     body: str,
     metadata: dict[str, object],
+    idempotency_key: str | None = None,
 ) -> None:
     service = NotificationService(
         session=session,
         repository=NotificationRepository(session),
     )
-    await service.create_in_app(
-        user_id=recipient.user_id,
-        type=type,
-        title=title,
-        body=body,
-        metadata=metadata,
-        commit=False,
-    )
+    created = True
+    if idempotency_key is None:
+        await service.create_in_app(
+            user_id=recipient.user_id,
+            type=type,
+            title=title,
+            body=body,
+            metadata=metadata,
+            commit=False,
+        )
+    else:
+        result = await service.create_in_app_once(
+            user_id=recipient.user_id,
+            type=type,
+            title=title,
+            body=body,
+            metadata=metadata,
+            idempotency_key=idempotency_key,
+            commit=False,
+        )
+        created = result.created
+    if not created:
+        return
     await session.commit()
     if recipient.email:
         enqueue_email(recipient=recipient.email, subject=title, body=body)
@@ -271,11 +331,43 @@ def _payload_from(event: EventOutbox | Mapping[str, object]) -> Mapping[str, obj
 
 def _safe_metadata(payload: Mapping[str, object]) -> dict[str, object]:
     metadata: dict[str, object] = {}
-    for key in ("file_id", "sync_task_id", "status", "review_status", "ragflow_dataset_id"):
+    for key in (
+        "file_id",
+        "sync_task_id",
+        "status",
+        "review_status",
+        "ragflow_dataset_id",
+        "expires_at",
+        "expiry_status",
+    ):
         value = payload.get(key)
         if isinstance(value, str | int | float | bool) or value is None:
             metadata[key] = value
     return metadata
+
+
+def _normalized_expiry_status(value: object) -> str | None:
+    status = _string_or_none(value)
+    if status in {"expiring", "expired"}:
+        return status
+    return None
+
+
+def _display_date(value: str) -> str:
+    try:
+        parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
+    except ValueError:
+        return value
+    return parsed.date().isoformat()
+
+
+def _document_expiry_idempotency_key(
+    *,
+    file_id: str,
+    expiry_status: str,
+    expires_at: str,
+) -> str:
+    return f"document_expiry:{file_id}:{expiry_status}:{_display_date(expires_at)}"
 
 
 def _string_or_none(value: object) -> str | None:

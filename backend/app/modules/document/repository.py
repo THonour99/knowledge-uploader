@@ -5,7 +5,8 @@ from dataclasses import dataclass
 from datetime import datetime
 from typing import cast
 
-from sqlalchemy import Boolean, Column, DateTime, MetaData, String, Table, Text, func, select
+from sqlalchemy import Boolean, Column, DateTime, MetaData, String, Table, Text, case, func, select
+from sqlalchemy import update as sql_update
 from sqlalchemy.dialects.postgresql import UUID
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -66,6 +67,16 @@ class DocumentAnalysisRecord:
     extracted_text: str | None
     error_message: str | None
     finished_at: datetime | None
+
+
+@dataclass(frozen=True)
+class ExpiryScanCandidate:
+    file_id: uuid.UUID
+    uploader_id: uuid.UUID
+    original_name: str
+    expires_at: datetime
+    expiry_status: str
+    notification_kind: str
 
 
 class DocumentRepository:
@@ -194,8 +205,97 @@ class DocumentRepository:
         )
         return cast(str | None, result.scalars().first())
 
+    async def refresh_expiry_statuses(
+        self,
+        *,
+        now: datetime,
+        warning_deadline: datetime,
+    ) -> int:
+        result = await self._session.execute(
+            sql_update(File)
+            .where(File.status.not_in(HIDDEN_FILE_STATUSES))
+            .values(
+                expiry_status=case(
+                    (File.expires_at.is_(None), "never"),
+                    (File.expires_at <= now, "expired"),
+                    (File.expires_at <= warning_deadline, "expiring"),
+                    else_="active",
+                )
+            )
+        )
+        return int(result.rowcount or 0)
+
+    async def list_expiry_scan_candidates(
+        self,
+        *,
+        now: datetime,
+        warning_deadline: datetime,
+        limit: int,
+    ) -> list[ExpiryScanCandidate]:
+        result = await self._session.execute(
+            select(File)
+            .where(
+                File.expires_at.is_not(None),
+                File.expires_at <= warning_deadline,
+                File.status.not_in(EXPIRY_SCAN_EXCLUDED_FILE_STATUSES),
+                (
+                    (File.expires_at <= now) & File.expiry_expired_sent_at.is_(None)
+                    | (File.expires_at > now) & File.expiry_warning_sent_at.is_(None)
+                ),
+            )
+            .order_by(File.expires_at.asc(), File.uploaded_at.asc())
+            .limit(limit)
+        )
+        candidates: list[ExpiryScanCandidate] = []
+        for file in result.scalars():
+            expires_at = file.expires_at
+            if expires_at is None:
+                continue
+            candidates.append(
+                ExpiryScanCandidate(
+                    file_id=file.id,
+                    uploader_id=file.uploader_id,
+                    original_name=file.original_name,
+                    expires_at=expires_at,
+                    expiry_status=file.expiry_status,
+                    notification_kind="expired" if expires_at <= now else "warning",
+                )
+            )
+        return candidates
+
+    async def mark_expiry_notification_sent(
+        self,
+        *,
+        file_id: uuid.UUID,
+        notification_kind: str,
+        sent_at: datetime,
+    ) -> bool:
+        if notification_kind == "warning":
+            timestamp_field = "expiry_warning_sent_at"
+            status_value = "expiring"
+            idempotency_predicate = File.expiry_warning_sent_at.is_(None)
+        elif notification_kind == "expired":
+            timestamp_field = "expiry_expired_sent_at"
+            status_value = "expired"
+            idempotency_predicate = File.expiry_expired_sent_at.is_(None)
+        else:
+            msg = f"invalid expiry notification kind: {notification_kind}"
+            raise ValueError(msg)
+
+        result = await self._session.execute(
+            sql_update(File)
+            .where(
+                File.id == file_id,
+                File.status.not_in(HIDDEN_FILE_STATUSES),
+                idempotency_predicate,
+            )
+            .values({timestamp_field: sent_at, "expiry_status": status_value})
+        )
+        return bool(result.rowcount == 1)
+
 
 HIDDEN_FILE_STATUSES = ("deleted", "ragflow_cleanup_failed")
+EXPIRY_SCAN_EXCLUDED_FILE_STATUSES = (*HIDDEN_FILE_STATUSES, "disabled")
 
 
 def _uploader_quota_lock_key(uploader_id: uuid.UUID) -> int:

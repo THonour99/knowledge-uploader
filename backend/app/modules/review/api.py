@@ -10,7 +10,7 @@ from app.core.database import get_session
 from app.core.deps import get_current_user
 from app.core.permissions import AdminUserDep
 from app.core.responses import success_response
-from app.modules.document.schemas import FileListResponse, FileResponse
+from app.modules.document.schemas import FileListResponse, FileResponse, effective_expiry_status
 from app.modules.user.schemas import AuthUserRecord
 
 from .exceptions import ReviewError
@@ -118,6 +118,11 @@ def _file_response(file: ReviewFileRecord) -> FileResponse:
         ragflow_document_id=file.ragflow_document_id,
         ragflow_parse_status=file.ragflow_parse_status,
         ai_analysis_enabled_at_upload=file.ai_analysis_enabled_at_upload,
+        expires_at=file.expires_at,
+        expiry_status=effective_expiry_status(
+            expires_at=file.expires_at,
+            stored_status=file.expiry_status,
+        ),
         uploaded_at=file.uploaded_at,
         last_sync_at=file.last_sync_at,
         created_at=file.created_at,

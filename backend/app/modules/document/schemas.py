@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from datetime import datetime
+from datetime import UTC, datetime, timedelta
 from uuid import UUID
 
 from pydantic import BaseModel
@@ -8,6 +8,29 @@ from pydantic import BaseModel
 
 class DocumentModuleStatus(BaseModel):
     name: str = "document"
+
+
+def effective_expiry_status(
+    *,
+    expires_at: datetime | None,
+    stored_status: str | None,
+    now: datetime | None = None,
+    warning_window_days: int = 7,
+) -> str:
+    if expires_at is None:
+        return "never"
+    effective_now = now or datetime.now(UTC)
+    if effective_now.tzinfo is None:
+        effective_now = effective_now.replace(tzinfo=UTC)
+    if expires_at.tzinfo is None:
+        expires_at = expires_at.replace(tzinfo=UTC)
+    if expires_at <= effective_now:
+        return "expired"
+    if expires_at <= effective_now + timedelta(days=warning_window_days):
+        return "expiring"
+    if stored_status in {"active", "expiring", "expired"}:
+        return stored_status
+    return "active"
 
 
 class FileResponse(BaseModel):
@@ -30,6 +53,8 @@ class FileResponse(BaseModel):
     ragflow_document_id: str | None
     ragflow_parse_status: str | None
     ai_analysis_enabled_at_upload: bool
+    expires_at: datetime | None
+    expiry_status: str
     uploaded_at: datetime
     last_sync_at: datetime | None
     created_at: datetime

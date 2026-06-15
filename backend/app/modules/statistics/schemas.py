@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import uuid
 from datetime import datetime
+from typing import Literal
 
 from pydantic import BaseModel, Field
 
@@ -95,6 +96,23 @@ class StatisticsFailureRow(BaseModel):
 class StatisticsFailureListResponse(BaseModel):
     items: list[StatisticsFailureRow]
     total: int
+
+
+class StatisticsExpiryStatusCount(BaseModel):
+    status: Literal["active", "expiring", "expired", "never"]
+    count: int
+
+
+class StatisticsExpiryResponse(BaseModel):
+    total: int
+    active: int
+    expiring: int
+    expired: int
+    never: int
+    remind_days: int
+    as_of: datetime
+    window_end: datetime
+    items: list[StatisticsExpiryStatusCount]
 
 
 class StatisticsUserDetailResponse(BaseModel):
