@@ -41,7 +41,12 @@ echo.
 if not exist "%ROOT%\backend\.venv\Scripts\python.exe" (
     echo Creating backend virtual environment...
     %PYTHON_BOOTSTRAP% -m venv "%ROOT%\backend\.venv"
-    if errorlevel 1 exit /b 1
+    if errorlevel 1 (
+        if not exist "%ROOT%\backend\.venv\Scripts\python.exe" exit /b 1
+        echo Virtual environment was created without pip. Bootstrapping pip...
+        "%ROOT%\backend\.venv\Scripts\python.exe" -m ensurepip --upgrade --default-pip
+        if errorlevel 1 exit /b 1
+    )
 ) else (
     "%ROOT%\backend\.venv\Scripts\python.exe" -c "import sys; raise SystemExit(0 if sys.version_info[:2] == (3, 11) else 1)" >nul 2>&1
     if errorlevel 1 (
@@ -49,6 +54,13 @@ if not exist "%ROOT%\backend\.venv\Scripts\python.exe" (
         echo         Remove backend\.venv and rerun scripts\dev-setup.bat.
         exit /b 1
     )
+)
+
+"%ROOT%\backend\.venv\Scripts\python.exe" -m pip --version >nul 2>&1
+if errorlevel 1 (
+    echo Backend virtual environment is missing pip. Bootstrapping pip...
+    "%ROOT%\backend\.venv\Scripts\python.exe" -m ensurepip --upgrade --default-pip
+    if errorlevel 1 exit /b 1
 )
 
 echo Installing backend dependencies...

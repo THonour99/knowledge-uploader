@@ -45,26 +45,62 @@ if "%CHECK_ONLY%"=="1" (
 call "%ROOT%\scripts\dev-api.bat" deps
 if errorlevel 1 (
     echo.
-    echo [ERROR] Local backend dependencies are not ready.
-    pause
-    exit /b 1
+    echo Local backend dependencies are not ready. Running scripts\dev-setup.bat...
+    call "%ROOT%\scripts\dev-setup.bat"
+    if errorlevel 1 (
+        echo.
+        echo [ERROR] Local development setup failed.
+        pause
+        exit /b 1
+    )
+    call "%ROOT%\scripts\dev-api.bat" deps
+    if errorlevel 1 (
+        echo.
+        echo [ERROR] Local backend dependencies are still not ready after setup.
+        pause
+        exit /b 1
+    )
 )
 
 call "%ROOT%\scripts\dev-web.bat" deps
 if errorlevel 1 (
     echo.
-    echo [ERROR] Local frontend dependencies are not ready.
-    pause
-    exit /b 1
+    echo Local frontend dependencies are not ready. Running scripts\dev-setup.bat...
+    call "%ROOT%\scripts\dev-setup.bat"
+    if errorlevel 1 (
+        echo.
+        echo [ERROR] Local development setup failed.
+        pause
+        exit /b 1
+    )
+    call "%ROOT%\scripts\dev-web.bat" deps
+    if errorlevel 1 (
+        echo.
+        echo [ERROR] Local frontend dependencies are still not ready after setup.
+        pause
+        exit /b 1
+    )
 )
 
 if "%START_WORKERS%"=="1" (
     call "%ROOT%\scripts\dev-worker.bat" deps
     if errorlevel 1 (
         echo.
-        echo [ERROR] Local worker dependencies are not ready.
-        pause
-        exit /b 1
+        echo Local worker dependencies are not ready. Running scripts\dev-setup.bat...
+        call "%ROOT%\scripts\dev-setup.bat"
+        if errorlevel 1 (
+            echo.
+            echo [ERROR] Local development setup failed.
+            pause
+            exit /b 1
+        )
+        call "%ROOT%\scripts\dev-worker.bat" deps
+        if errorlevel 1 (
+            echo.
+            echo [ERROR] Local worker dependencies are still not ready after setup.
+            pause
+            exit /b 1
+        )
     )
 )
 
