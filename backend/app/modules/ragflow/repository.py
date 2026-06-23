@@ -168,7 +168,9 @@ class RagflowTaskRepository:
         file_id: uuid.UUID,
     ) -> RagflowSyncFileRecord | None:
         result = await self._session.execute(
-            select(*FILE_COLUMNS).where(FILES.c.id == file_id).with_for_update()
+            select(*FILE_COLUMNS, *self._department_lookup_columns())
+            .where(FILES.c.id == file_id)
+            .with_for_update()
         )
         row = result.mappings().one_or_none()
         return file_record_from_row(row) if row is not None else None
@@ -177,7 +179,7 @@ class RagflowTaskRepository:
         self,
         file: RagflowSyncFileRecord,
     ) -> RagflowSyncFileRecord:
-        result = await self._session.execute(
+        await self._session.execute(
             update(FILES)
             .where(FILES.c.id == file.id)
             .values(
@@ -188,16 +190,26 @@ class RagflowTaskRepository:
                 last_sync_at=file.last_sync_at,
                 updated_at=func.now(),
             )
-            .returning(*FILE_COLUMNS)
         )
-        return file_record_from_row(result.mappings().one())
+        updated_file = await self.get_file(file.id)
+        if updated_file is None:
+            raise RuntimeError("updated ragflow file record disappeared")
+        return updated_file
 
     def _file_select(self) -> Select[tuple[Any, ...]]:
-        return select(
-            *FILE_COLUMNS,
-            DEPARTMENTS.c.name.label("department_name"),
-            DEPARTMENTS.c.code.label("department_code"),
-        ).select_from(FILES.outerjoin(DEPARTMENTS, FILES.c.department_id == DEPARTMENTS.c.id))
+        return select(*FILE_COLUMNS, *self._department_lookup_columns())
+
+    def _department_lookup_columns(self) -> tuple[Any, Any]:
+        return (
+            select(DEPARTMENTS.c.name)
+            .where(DEPARTMENTS.c.id == FILES.c.department_id)
+            .scalar_subquery()
+            .label("department_name"),
+            select(DEPARTMENTS.c.code)
+            .where(DEPARTMENTS.c.id == FILES.c.department_id)
+            .scalar_subquery()
+            .label("department_code"),
+        )
 
     async def get_dataset_mapping(
         self,
