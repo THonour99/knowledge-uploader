@@ -95,7 +95,16 @@ jobs:
             (cd backend && python -m mypy app)
           fi
           if [ -d backend/app/tests ]; then
-            python -m pytest backend/app/tests
+            python -m pytest backend/app/tests --ignore=backend/app/tests/red_team
+          fi
+
+      - name: Red-team adversarial gate
+        env:
+          TEST_POSTGRES_HOST: 127.0.0.1
+          TEST_REDIS_HOST: 127.0.0.1
+        run: |
+          if [ -d backend/app/tests/red_team ]; then
+            python -m pytest backend/app/tests/red_team -v
           fi
 
       - name: Frontend lint and tests
