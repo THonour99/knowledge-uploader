@@ -4,8 +4,10 @@ import uuid
 from dataclasses import dataclass
 
 from sqlalchemy.ext.asyncio import AsyncSession
+from starlette import status
 
 from app.core.audit import record_admin_audit_log
+from app.core.exceptions import ErrorCode
 from app.modules.department.models import UNASSIGNED_DEPARTMENT_ID, Department
 from app.modules.department.schemas import DepartmentListResponse, DepartmentResponse
 from app.modules.user.schemas import AuthUserRecord
@@ -18,6 +20,17 @@ from .repository import DepartmentRepository
 class RequestContext:
     ip_address: str
     user_agent: str
+
+
+def _clean_required_text(value: str, field_name: str) -> str:
+    clean_value = value.strip()
+    if not clean_value:
+        raise exceptions.DepartmentError(
+            ErrorCode.VALIDATION_ERROR,
+            f"department {field_name} cannot be blank",
+            status.HTTP_422_UNPROCESSABLE_ENTITY,
+        )
+    return clean_value
 
 
 class DepartmentService:
@@ -84,8 +97,8 @@ class DepartmentService:
         code: str,
         context: RequestContext,
     ) -> Department:
-        clean_name = name.strip()
-        clean_code = code.strip()
+        clean_name = _clean_required_text(name, "name")
+        clean_code = _clean_required_text(code, "code")
         if await self._repository.get_by_name(clean_name) is not None:
             raise exceptions.name_conflict()
         if await self._repository.get_by_code(clean_code) is not None:
@@ -119,7 +132,7 @@ class DepartmentService:
             raise exceptions.unassigned_immutable()
         before = {"name": department.name, "code": department.code, "status": department.status}
         if name is not None:
-            clean_name = name.strip()
+            clean_name = _clean_required_text(name, "name")
             existing = await self._repository.get_by_name(clean_name)
             if existing is not None and existing.id != department.id:
                 raise exceptions.name_conflict()
