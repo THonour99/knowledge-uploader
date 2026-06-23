@@ -58,4 +58,4 @@ echo ============================================================
 echo.
 
 cd /d "%ROOT%\backend"
-"%PYTHON_CMD%" -m uvicorn app.main:app --reload --host 127.0.0.1 --port %BACKEND_API_PORT% --proxy-headers --forwarded-allow-ips "*"
+"%PYTHON_CMD%" -m uvicorn app.main:app --reload --host 127.0.0.1 --port %BACKEND_API_PORT%
