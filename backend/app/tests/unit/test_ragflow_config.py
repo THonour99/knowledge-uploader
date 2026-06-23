@@ -2,7 +2,7 @@
 
 Tests cover:
 - test-connection success / failure (mock client ping)
-- employee / knowledge_admin get 403
+- employee / dept_admin get 403
 - response and logs do not contain api_key
 - sync task uses runtime_config values (mock get_config, assert client receives them)
 """
@@ -143,10 +143,10 @@ async def test_test_connection_employee_is_403(
     assert response.status_code == 403
 
 
-async def test_test_connection_knowledge_admin_is_403(
+async def test_test_connection_dept_admin_is_403(
     api_client: AsyncClient,
 ) -> None:
-    token = await _create_token(api_client, role="knowledge_admin")
+    token = await _create_token(api_client, role="dept_admin")
     response = await api_client.post(
         "/api/admin/ragflow/test-connection",
         headers={"Authorization": f"Bearer {token}"},

@@ -7,11 +7,11 @@ from fastapi import APIRouter, Depends, File, Form, HTTPException, Query, Reques
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.adapters.minio_client import MinioDocumentStorage
+from app.core.access_scope import ScopedAdminDep
 from app.core.config import Settings
 from app.core.database import get_session
 from app.core.deps import get_app_settings, get_current_user
 from app.core.exceptions import ErrorCode
-from app.core.permissions import AdminUserDep
 from app.core.ratelimit import is_within_rate_limit, upload_rate_limit_key
 from app.core.responses import success_response
 from app.modules.user.schemas import AuthUserRecord
@@ -75,6 +75,9 @@ def _file_response(
         mime_type=file.mime_type,
         size=file.size,
         uploader_id=file.uploader_id,
+        department_id=file.department_id,
+        department_name=getattr(file, "department_name", None) or file.department,
+        department_code=getattr(file, "department_code", None),
         department=file.department,
         category_id=file.category_id,
         dataset_mapping_id=file.dataset_mapping_id,
@@ -281,7 +284,8 @@ async def delete_file(
 async def archive_file(
     file_id: UUID,
     request: Request,
-    current_user: AdminUserDep,
+    current_user: CurrentUserDep,
+    scope: ScopedAdminDep,
     session: SessionDep,
     settings: SettingsDep,
     storage: DocumentStorageDep,
@@ -289,6 +293,7 @@ async def archive_file(
     try:
         file = await _service(session=session, settings=settings, storage=storage).archive_file(
             current_user=current_user,
+            scope=scope,
             file_id=file_id,
             client_ip=_client_ip(request),
             user_agent=_user_agent(request),
@@ -302,7 +307,8 @@ async def archive_file(
 async def reanalyze_file(
     file_id: UUID,
     request: Request,
-    current_user: AdminUserDep,
+    current_user: CurrentUserDep,
+    scope: ScopedAdminDep,
     session: SessionDep,
     settings: SettingsDep,
     storage: DocumentStorageDep,
@@ -310,6 +316,7 @@ async def reanalyze_file(
     try:
         await _service(session=session, settings=settings, storage=storage).reanalyze_file(
             current_user=current_user,
+            scope=scope,
             file_id=file_id,
             client_ip=_client_ip(request),
             user_agent=_user_agent(request),
@@ -323,7 +330,8 @@ async def reanalyze_file(
 async def reparse_file(
     file_id: UUID,
     request: Request,
-    current_user: AdminUserDep,
+    current_user: CurrentUserDep,
+    scope: ScopedAdminDep,
     session: SessionDep,
     settings: SettingsDep,
     storage: DocumentStorageDep,
@@ -332,6 +340,7 @@ async def reparse_file(
     try:
         await _service(session=session, settings=settings, storage=storage).reanalyze_file(
             current_user=current_user,
+            scope=scope,
             file_id=file_id,
             client_ip=_client_ip(request),
             user_agent=_user_agent(request),

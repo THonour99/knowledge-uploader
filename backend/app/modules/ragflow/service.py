@@ -12,6 +12,7 @@ from app.adapters.ragflow.base import (
     RagflowDocumentNotFoundError,
     RagflowDocumentStatus,
 )
+from app.core.access_scope import DepartmentAccessScope
 from app.core.audit import record_admin_audit_log
 from app.core.config import get_settings
 from app.core.document_state import DocumentStateError, DocumentStateMachine
@@ -25,7 +26,7 @@ from .records import RagflowSyncFileRecord
 from .repository import RagflowTaskRepository  # noqa: TID251 - same-module repository dependency
 from .sync_locks import acquire_sync_lock, release_sync_lock, release_sync_lock_after_transaction
 
-ADMIN_ROLES = {"knowledge_admin", "system_admin"}
+ADMIN_ROLES = {"dept_admin", "system_admin"}
 RAGFLOW_UPLOAD_TASK = "ragflow_upload"
 RAGFLOW_STATUS_CHECK_TASK = "ragflow_status_check"
 RAGFLOW_DELETE_TASK = "ragflow_delete"
@@ -159,11 +160,15 @@ class RagflowTaskService:
         self,
         *,
         current_user: AuthUserRecord,
+        scope: DepartmentAccessScope,
         context: RequestContext,
         file_id: uuid.UUID | None = None,
     ) -> list[SyncTaskBundle]:
         self._require_admin(current_user)
-        tasks = await self._repository.list_tasks(file_id=file_id)
+        tasks = await self._repository.list_tasks(
+            file_id=file_id,
+            department_ids=scope.query_department_ids(),
+        )
         bundles = [await self._bundle(task) for task in tasks]
         await self._record_admin_audit(
             current_user=current_user,
@@ -174,6 +179,7 @@ class RagflowTaskService:
             metadata_json={
                 "result_count": len(tasks),
                 "file_id": str(file_id) if file_id is not None else None,
+                **scope.audit_metadata(),
             },
         )
         await self._session.commit()
@@ -183,11 +189,14 @@ class RagflowTaskService:
         self,
         *,
         current_user: AuthUserRecord,
+        scope: DepartmentAccessScope,
         task_id: uuid.UUID,
         context: RequestContext,
     ) -> SyncTaskBundle:
         self._require_admin(current_user)
         task = await self._get_task_or_raise(task_id)
+        file = await self._get_task_file_or_raise(task)
+        self._require_scope_for_file(scope=scope, file=file)
         bundle = await self._bundle(task)
         await self._record_admin_audit(
             current_user=current_user,
@@ -195,6 +204,7 @@ class RagflowTaskService:
             target_type="task",
             target_id=task.id,
             context=context,
+            metadata_json=scope.audit_metadata(file_department_id=file.department_id),
         )
         await self._session.commit()
         return bundle
@@ -203,11 +213,14 @@ class RagflowTaskService:
         self,
         *,
         current_user: AuthUserRecord,
+        scope: DepartmentAccessScope,
         task_id: uuid.UUID,
         context: RequestContext,
     ) -> SyncTaskBundle:
         self._require_admin(current_user)
         task = await self._get_task_for_update_or_raise(task_id)
+        file = await self._get_task_file_or_raise(task)
+        self._require_scope_for_file(scope=scope, file=file)
         if task.status != "failed" or task.retry_count >= task.max_retry_count:
             raise exceptions.task_not_retryable()
 
@@ -252,7 +265,10 @@ class RagflowTaskService:
                 target_type="task",
                 target_id=task.id,
                 context=context,
-                metadata_json={"retry_count": task.retry_count},
+                metadata_json={
+                    "retry_count": task.retry_count,
+                    **scope.audit_metadata(file_department_id=file.department_id),
+                },
             )
             await self._session.commit()
             await self._session.refresh(task)
@@ -269,11 +285,14 @@ class RagflowTaskService:
         self,
         *,
         current_user: AuthUserRecord,
+        scope: DepartmentAccessScope,
         task_id: uuid.UUID,
         context: RequestContext,
     ) -> SyncTaskBundle:
         self._require_admin(current_user)
         task = await self._get_task_for_update_or_raise(task_id)
+        file = await self._get_task_file_or_raise(task)
+        self._require_scope_for_file(scope=scope, file=file)
         if task.status != "queued":
             raise exceptions.task_not_cancelable()
 
@@ -290,6 +309,7 @@ class RagflowTaskService:
             target_type="task",
             target_id=task.id,
             context=context,
+            metadata_json=scope.audit_metadata(file_department_id=file.department_id),
         )
         await self._session.commit()
         await self._session.refresh(task)
@@ -299,6 +319,7 @@ class RagflowTaskService:
         self,
         *,
         current_user: AuthUserRecord,
+        scope: DepartmentAccessScope,
         file_id: uuid.UUID,
         context: RequestContext,
     ) -> SyncTaskBundle:
@@ -306,6 +327,7 @@ class RagflowTaskService:
         file = await self._repository.get_file_for_update(file_id)
         if file is None:
             raise exceptions.file_not_found()
+        self._require_scope_for_file(scope=scope, file=file)
         if file.status not in MANUAL_SYNC_SOURCE_STATUSES or file.review_status != "approved":
             raise exceptions.file_not_syncable()
         if (
@@ -348,7 +370,11 @@ class RagflowTaskService:
                 target_type="file",
                 target_id=file_id,
                 context=context,
-                metadata_json={"task_id": str(task.id), "from_status": from_status},
+                metadata_json={
+                    "task_id": str(task.id),
+                    "from_status": from_status,
+                    **scope.audit_metadata(file_department_id=file.department_id),
+                },
             )
             await self._session.commit()
             await self._session.refresh(task)
@@ -828,6 +854,9 @@ class RagflowTaskService:
             "source": "knowledge_uploader",
             "file_id": str(file.id),
             "uploader": str(file.uploader_id),
+            "department_id": str(file.department_id),
+            "department_name": file.department_name or file.department,
+            "department_code": file.department_code,
             "department": file.department,
             "category": str(file.category_id) if file.category_id is not None else None,
             "tags": file.tags,
@@ -836,6 +865,21 @@ class RagflowTaskService:
             "version": "1",
             "uploaded_at": file.uploaded_at.isoformat(),
         }
+
+    async def _get_task_file_or_raise(self, task: SyncTask) -> RagflowSyncFileRecord:
+        file = await self._repository.get_file(task.file_id)
+        if file is None:
+            raise exceptions.task_not_found()
+        return file
+
+    def _require_scope_for_file(
+        self,
+        *,
+        scope: DepartmentAccessScope,
+        file: RagflowSyncFileRecord,
+    ) -> None:
+        if not scope.covers_department(file.department_id):
+            raise exceptions.permission_denied()
 
     async def _bundle(self, task: SyncTask) -> SyncTaskBundle:
         return SyncTaskBundle(task=task, logs=await self._repository.list_logs(task.id))

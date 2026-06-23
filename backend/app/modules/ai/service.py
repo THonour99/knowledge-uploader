@@ -49,7 +49,7 @@ from .schemas import (
 )
 from .simhash import compute_simhash, hamming_distance, simhash_bands
 
-ADMIN_ROLES = {"knowledge_admin", "system_admin"}
+ADMIN_ROLES = {"system_admin"}
 SYSTEM_ADMIN_ROLE = "system_admin"
 MAX_ERROR_MESSAGE_LENGTH = 500
 GLOBAL_FEATURE_KEYS = {

@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import uuid
 from datetime import datetime
-from typing import cast
+from typing import Any, cast
 
 from sqlalchemy import (
     BigInteger,
@@ -20,6 +20,7 @@ from sqlalchemy import (
 from sqlalchemy.dialects.postgresql import JSONB, UUID
 from sqlalchemy.engine import RowMapping
 from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.sql import Select
 
 from .models import ACTIVE_SYNC_TASK_STATUSES, SyncTask, SyncTaskLog
 from .records import RagflowDatasetMappingRecord, RagflowSyncFileRecord
@@ -36,6 +37,7 @@ FILES = Table(
     Column("bucket", String(100), nullable=False),
     Column("object_key", String(512), nullable=False),
     Column("uploader_id", UUID(as_uuid=True), nullable=False),
+    Column("department_id", UUID(as_uuid=True), nullable=False),
     Column("department", String(100)),
     Column("category_id", UUID(as_uuid=True)),
     Column("dataset_mapping_id", UUID(as_uuid=True)),
@@ -54,6 +56,14 @@ FILES = Table(
 )
 
 FILE_COLUMNS = tuple(FILES.c)
+
+DEPARTMENTS = Table(
+    "departments",
+    MetaData(),
+    Column("id", UUID(as_uuid=True), primary_key=True),
+    Column("name", String(100), nullable=False),
+    Column("code", String(50), nullable=False),
+)
 
 DATASET_MAPPINGS = Table(
     "dataset_mappings",
@@ -102,8 +112,19 @@ class RagflowTaskRepository:
         )
         return result.scalar_one_or_none()
 
-    async def list_tasks(self, *, file_id: uuid.UUID | None = None) -> list[SyncTask]:
+    async def list_tasks(
+        self,
+        *,
+        file_id: uuid.UUID | None = None,
+        department_ids: frozenset[uuid.UUID] | None = None,
+    ) -> list[SyncTask]:
+        if department_ids is not None and not department_ids:
+            return []
         query = select(SyncTask).order_by(SyncTask.created_at.desc(), SyncTask.id.desc())
+        if department_ids is not None:
+            query = query.join(FILES, FILES.c.id == SyncTask.file_id).where(
+                FILES.c.department_id.in_(department_ids)
+            )
         if file_id is not None:
             query = query.where(SyncTask.file_id == file_id)
         result = await self._session.execute(query)
@@ -134,6 +155,14 @@ class RagflowTaskRepository:
         )
         return list(result.scalars())
 
+    async def get_file(
+        self,
+        file_id: uuid.UUID,
+    ) -> RagflowSyncFileRecord | None:
+        result = await self._session.execute(self._file_select().where(FILES.c.id == file_id))
+        row = result.mappings().one_or_none()
+        return file_record_from_row(row) if row is not None else None
+
     async def get_file_for_update(
         self,
         file_id: uuid.UUID,
@@ -162,6 +191,13 @@ class RagflowTaskRepository:
             .returning(*FILE_COLUMNS)
         )
         return file_record_from_row(result.mappings().one())
+
+    def _file_select(self) -> Select[tuple[Any, ...]]:
+        return select(
+            *FILE_COLUMNS,
+            DEPARTMENTS.c.name.label("department_name"),
+            DEPARTMENTS.c.code.label("department_code"),
+        ).select_from(FILES.outerjoin(DEPARTMENTS, FILES.c.department_id == DEPARTMENTS.c.id))
 
     async def get_dataset_mapping(
         self,
@@ -217,6 +253,9 @@ def file_record_from_row(row: RowMapping) -> RagflowSyncFileRecord:
         bucket=cast(str, row["bucket"]),
         object_key=cast(str, row["object_key"]),
         uploader_id=cast(uuid.UUID, row["uploader_id"]),
+        department_id=cast(uuid.UUID, row["department_id"]),
+        department_name=cast(str | None, row.get("department_name")),
+        department_code=cast(str | None, row.get("department_code")),
         department=cast(str | None, row["department"]),
         category_id=cast(uuid.UUID | None, row["category_id"]),
         dataset_mapping_id=cast(uuid.UUID | None, row["dataset_mapping_id"]),

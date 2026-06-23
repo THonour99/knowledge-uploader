@@ -215,13 +215,13 @@ async def test_system_admin_reads_all_config_groups_with_seed_items(
     assert api_key_item["masked_value"] is None
 
 
-async def test_knowledge_admin_can_read_and_employee_cannot(
+async def test_dept_admin_and_employee_cannot_read_configs(
     config_client: AsyncClient,
 ) -> None:
     await _create_user(
         email="config-knowledge-admin@company.com",
         password="password123",
-        role="knowledge_admin",
+        role="dept_admin",
     )
     await _create_user(email="config-employee@company.com", password="password123")
     admin_token = await _login(
@@ -246,8 +246,8 @@ async def test_knowledge_admin_can_read_and_employee_cannot(
         headers={"Authorization": f"Bearer {employee_token}"},
     )
 
-    assert admin_response.status_code == 200
-    assert set(_items_by_key(admin_response.json()["data"])) == EXPECTED_GROUP_KEYS["upload"]
+    assert admin_response.status_code == 403
+    assert admin_response.json()["error_code"] == "PERMISSION_DENIED"
     assert employee_response.status_code == 403
     assert employee_response.json()["error_code"] == "PERMISSION_DENIED"
 
@@ -321,11 +321,21 @@ async def test_system_admin_updates_upload_group_writes_audit_and_outbox(
     ]
 
 
-async def test_knowledge_admin_cannot_update_configs(config_client: AsyncClient) -> None:
+async def test_dept_admin_cannot_update_configs(config_client: AsyncClient) -> None:
+    await _create_user(
+        email="config-verify-admin@company.com",
+        password="password123",
+        role="system_admin",
+    )
     await _create_user(
         email="config-readonly-admin@company.com",
         password="password123",
-        role="knowledge_admin",
+        role="dept_admin",
+    )
+    system_token = await _login(
+        config_client,
+        email="config-verify-admin@company.com",
+        password="password123",
     )
     token = await _login(
         config_client,
@@ -342,7 +352,7 @@ async def test_knowledge_admin_cannot_update_configs(config_client: AsyncClient)
     assert response.status_code == 403
     assert response.json()["error_code"] == "PERMISSION_DENIED"
 
-    items = _items_by_key(await _get_group(config_client, token, "upload"))
+    items = _items_by_key(await _get_group(config_client, system_token, "upload"))
     assert items["upload.max_file_size_mb"]["value"] == 50
 
 

@@ -9,9 +9,7 @@ from .repository import AuditRepository
 from .schemas import AuditLogItemResponse, AuditLogListResponse
 
 # Roles allowed to query audit logs.
-_AUDIT_READ_ROLES: frozenset[str] = frozenset(
-    {Role.KNOWLEDGE_ADMIN.value, Role.SYSTEM_ADMIN.value}
-)
+_AUDIT_READ_ROLES: frozenset[str] = frozenset({Role.SYSTEM_ADMIN.value})
 
 # Maximum allowed page_size for audit log queries.
 _MAX_PAGE_SIZE = 100
@@ -68,9 +66,7 @@ class AuditService:
         non-operational noise.  The decision is deliberate and reviewed.
         """
         if caller_role not in _AUDIT_READ_ROLES:
-            raise AuditPermissionError(
-                f"role '{caller_role}' is not allowed to read audit logs"
-            )
+            raise AuditPermissionError(f"role '{caller_role}' is not allowed to read audit logs")
 
         # Clamp page_size to the configured maximum.
         effective_page_size = min(page_size, _MAX_PAGE_SIZE)

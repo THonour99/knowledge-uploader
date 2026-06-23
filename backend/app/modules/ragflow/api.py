@@ -10,10 +10,13 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.adapters.ragflow.base import RagflowClientError
 from app.adapters.ragflow.http import HttpRagflowClient, redact_secret
+from app.core.access_scope import ScopedAdminDep
 from app.core.database import get_session
-from app.core.permissions import AdminUserDep, SystemAdminDep
+from app.core.deps import get_current_user
+from app.core.permissions import SystemAdminDep
 from app.core.responses import success_response
 from app.core.runtime_config import get_config
+from app.modules.user.schemas import AuthUserRecord
 
 from .exceptions import RagflowTaskError
 from .repository import RagflowTaskRepository  # noqa: TID251 - same-module repository dependency
@@ -27,6 +30,7 @@ from .service import (  # noqa: TID251 - same-module service dependency
 logger = structlog.get_logger(__name__)
 router = APIRouter(tags=["ragflow"])
 SessionDep = Annotated[AsyncSession, Depends(get_session)]
+CurrentUserDep = Annotated[AuthUserRecord, Depends(get_current_user)]
 
 
 def _service(session: AsyncSession) -> RagflowTaskService:
@@ -77,13 +81,15 @@ def _task_response(bundle: SyncTaskBundle) -> SyncTaskResponse:
 @router.get("/api/tasks")
 async def list_tasks(
     request: Request,
-    current_user: AdminUserDep,
+    current_user: CurrentUserDep,
+    scope: ScopedAdminDep,
     session: SessionDep,
     file_id: UUID | None = None,
 ) -> dict[str, object]:
     try:
         tasks = await _service(session).list_tasks(
             current_user=current_user,
+            scope=scope,
             context=_context_from(request),
             file_id=file_id,
         )
@@ -100,12 +106,14 @@ async def list_tasks(
 async def get_task(
     task_id: UUID,
     request: Request,
-    current_user: AdminUserDep,
+    current_user: CurrentUserDep,
+    scope: ScopedAdminDep,
     session: SessionDep,
 ) -> dict[str, object]:
     try:
         task = await _service(session).get_task(
             current_user=current_user,
+            scope=scope,
             task_id=task_id,
             context=_context_from(request),
         )
@@ -118,12 +126,14 @@ async def get_task(
 async def retry_task(
     task_id: UUID,
     request: Request,
-    current_user: AdminUserDep,
+    current_user: CurrentUserDep,
+    scope: ScopedAdminDep,
     session: SessionDep,
 ) -> dict[str, object]:
     try:
         task = await _service(session).retry_task(
             current_user=current_user,
+            scope=scope,
             task_id=task_id,
             context=_context_from(request),
         )
@@ -136,12 +146,14 @@ async def retry_task(
 async def cancel_task(
     task_id: UUID,
     request: Request,
-    current_user: AdminUserDep,
+    current_user: CurrentUserDep,
+    scope: ScopedAdminDep,
     session: SessionDep,
 ) -> dict[str, object]:
     try:
         task = await _service(session).cancel_task(
             current_user=current_user,
+            scope=scope,
             task_id=task_id,
             context=_context_from(request),
         )
@@ -154,12 +166,14 @@ async def cancel_task(
 async def manual_sync_file(
     file_id: UUID,
     request: Request,
-    current_user: AdminUserDep,
+    current_user: CurrentUserDep,
+    scope: ScopedAdminDep,
     session: SessionDep,
 ) -> dict[str, object]:
     try:
         task = await _service(session).manual_sync_file(
             current_user=current_user,
+            scope=scope,
             file_id=file_id,
             context=_context_from(request),
         )

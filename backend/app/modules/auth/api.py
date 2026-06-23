@@ -49,8 +49,12 @@ def _profile(user: AuthUserRecord) -> UserProfile:
         role=user.role,
         status=user.status,
         email_verified=user.email_verified,
+        department_id=user.department_id,
+        department_name=user.department_name,
+        department_code=user.department_code,
         department=user.department,
         phone=user.phone,
+        managed_department_ids=user.managed_department_ids,
     )
 
 

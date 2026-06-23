@@ -1,4 +1,4 @@
-"""红队：文件状态机非法跃迁攻击。
+"""红队:文件状态机非法跃迁攻击。
 
 靶心: app/core/document_state.py::DocumentStateMachine
 铁律: 跑红 = 漏洞真实存在; 跑绿 = 假设被证伪(防御有效, 保留为防回归)。
@@ -11,8 +11,8 @@ import pytest
 
 from app.core.document_state import DocumentStateError, DocumentStateMachine
 
-# 确定性非法跃迁: 业务语义上绝不该允许（05 §2 / CLAUDE.md §8）。
-# 预期【跑绿】= 白名单正确拒绝 = 防御有效。逐条已对照 _allowed_transitions 确认不在白名单。
+# 确定性非法跃迁: 业务语义上绝不该允许(05 §2 / CLAUDE.md §8)。
+# 预期[跑绿]= 白名单正确拒绝 = 防御有效。逐条已对照 _allowed_transitions 确认不在白名单。
 ILLEGAL_TRANSITIONS = [
     ("rejected", "parsed"),  # 被拒文件直接变已解析
     ("rejected", "approved"),  # 被拒文件复活为通过
@@ -61,7 +61,7 @@ def test_queued_cannot_skip_ragflow_upload_to_parsing() -> None:
 
 
 # 05_DATABASE_API_SPEC §2 异常分支: queued / syncing / uploaded_to_ragflow / parsing -> failed
-# 均为合法失败分支。预期【跑绿】= 白名单正确放行 = 失败可被如实落库。
+# 均为合法失败分支。预期[跑绿]= 白名单正确放行 = 失败可被如实落库。
 LEGAL_FAILURE_TRANSITIONS = [
     ("queued", "failed"),
     ("syncing", "failed"),

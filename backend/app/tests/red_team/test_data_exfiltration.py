@@ -1,9 +1,9 @@
-"""红队：越权 / 数据外泄攻击。
+"""红队:越权 / 数据外泄攻击。
 
-靶心: GET /api/files/{id}（详情）与 GET /api/files（列表）的行级隔离。
+靶心: GET /api/files/{id}(详情)与 GET /api/files(列表)的行级隔离。
 攻击假设: repository 的 get/list 可能缺 uploader_id 过滤, 员工可读取 / 枚举他人文件。
 铁律: 跑红 = 越权真实存在; 跑绿 = 隔离有效(证伪)。
-需 postgres + redis（CI services）；本地需 Docker + invoke up。
+需 postgres + redis(CI services);本地需 Docker + invoke up。
 """
 
 from __future__ import annotations
@@ -83,7 +83,11 @@ async def test_employee_cannot_read_others_file_detail(redteam_client: AsyncClie
     """
     owner_id = await _create_user(email="victim@company.com", password="password123")
     await _create_user(email="attacker@company.com", password="password123")
-    attacker_token = await _login(redteam_client, email="attacker@company.com", password="password123")
+    attacker_token = await _login(
+        redteam_client,
+        email="attacker@company.com",
+        password="password123",
+    )
     victim_file_id = await _create_file_row(uploader_id=owner_id)
 
     response = await redteam_client.get(
@@ -91,9 +95,10 @@ async def test_employee_cannot_read_others_file_detail(redteam_client: AsyncClie
         headers={"Authorization": f"Bearer {attacker_token}"},
     )
 
-    assert response.status_code in (403, 404), (
-        f"越权读取: attacker 拿到了 victim 的文件详情 (status={response.status_code})"
-    )
+    assert response.status_code in (
+        403,
+        404,
+    ), f"越权读取: attacker 拿到了 victim 的文件详情 (status={response.status_code})"
 
 
 async def test_file_list_only_returns_own_files(redteam_client: AsyncClient) -> None:
@@ -103,7 +108,11 @@ async def test_file_list_only_returns_own_files(redteam_client: AsyncClient) -> 
     """
     owner_id = await _create_user(email="owner2@company.com", password="password123")
     await _create_user(email="snooper@company.com", password="password123")
-    snooper_token = await _login(redteam_client, email="snooper@company.com", password="password123")
+    snooper_token = await _login(
+        redteam_client,
+        email="snooper@company.com",
+        password="password123",
+    )
     victim_file_id = await _create_file_row(uploader_id=owner_id)
 
     response = await redteam_client.get(

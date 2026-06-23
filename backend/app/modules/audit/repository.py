@@ -71,23 +71,20 @@ class AuditRepository:
         """
         audit = AuditLog.__table__
 
-        base_query = (
-            select(
-                audit.c.id,
-                audit.c.actor_id,
-                USERS.c.name.label("actor_name"),
-                USERS.c.email.label("actor_email"),
-                audit.c.action,
-                audit.c.target_type,
-                audit.c.target_id,
-                audit.c.ip_address,
-                audit.c.user_agent,
-                audit.c.reason,
-                audit.c.metadata_json,
-                audit.c.created_at,
-            )
-            .select_from(audit.outerjoin(USERS, audit.c.actor_id == USERS.c.id))
-        )
+        base_query = select(
+            audit.c.id,
+            audit.c.actor_id,
+            USERS.c.name.label("actor_name"),
+            USERS.c.email.label("actor_email"),
+            audit.c.action,
+            audit.c.target_type,
+            audit.c.target_id,
+            audit.c.ip_address,
+            audit.c.user_agent,
+            audit.c.reason,
+            audit.c.metadata_json,
+            audit.c.created_at,
+        ).select_from(audit.outerjoin(USERS, audit.c.actor_id == USERS.c.id))
 
         # apply filters dynamically
         if actor_id is not None:

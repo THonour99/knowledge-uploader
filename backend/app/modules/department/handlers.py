@@ -1,0 +1,1 @@
+"""Department handlers module."""

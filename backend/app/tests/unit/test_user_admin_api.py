@@ -102,11 +102,11 @@ async def _login(client: AsyncClient, *, email: str, password: str) -> str:
     return str(response.json()["data"]["access_token"])
 
 
-async def test_knowledge_admin_cannot_disable_users(client: AsyncClient) -> None:
+async def test_dept_admin_cannot_disable_users(client: AsyncClient) -> None:
     actor_id = await _create_user(
         email="knowledge-admin@company.com",
         password="password123",
-        role="knowledge_admin",
+        role="dept_admin",
     )
     target_id = await _create_user(email="target@company.com", password="password123")
     token = await _login(client, email="knowledge-admin@company.com", password="password123")

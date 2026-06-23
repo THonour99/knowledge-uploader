@@ -177,13 +177,13 @@ async def test_employee_cannot_read_audit_logs(audit_client: AsyncClient) -> Non
 
 
 # ---------------------------------------------------------------------------
-# Test: knowledge_admin can read audit logs (200)
+# Test: dept_admin cannot read audit logs (403)
 # ---------------------------------------------------------------------------
 
 
-async def test_knowledge_admin_can_read_audit_logs(audit_client: AsyncClient) -> None:
+async def test_dept_admin_cannot_read_audit_logs(audit_client: AsyncClient) -> None:
     actor_id = await _create_user(
-        email="kadmin@company.com", password="pass1234", role="knowledge_admin"
+        email="kadmin@company.com", password="pass1234", role="dept_admin"
     )
     await _create_audit_log(actor_id=actor_id, action="file.approve")
     token = await _login(audit_client, email="kadmin@company.com", password="pass1234")
@@ -193,13 +193,8 @@ async def test_knowledge_admin_can_read_audit_logs(audit_client: AsyncClient) ->
         headers={"Authorization": f"Bearer {token}"},
     )
 
-    assert response.status_code == 200
-    body = response.json()
-    assert body["success"] is True
-    data = body["data"]
-    assert data["total"] >= 1
-    assert data["page"] == 1
-    assert "items" in data
+    assert response.status_code == 403
+    assert response.json()["error_code"] == "PERMISSION_DENIED"
 
 
 # ---------------------------------------------------------------------------
@@ -337,7 +332,7 @@ async def test_filter_by_actor_id(audit_client: AsyncClient) -> None:
         email="actor-a@company.com", password="pass1234", role="system_admin"
     )
     actor_b = await _create_user(
-        email="actor-b@company.com", password="pass1234", role="knowledge_admin"
+        email="actor-b@company.com", password="pass1234", role="dept_admin"
     )
     token = await _login(audit_client, email="actor-a@company.com", password="pass1234")
 
@@ -491,9 +486,7 @@ async def test_actor_name_and_email_are_resolved(audit_client: AsyncClient) -> N
 
 async def test_deleted_actor_returns_null_name_email(audit_client: AsyncClient) -> None:
     ghost_actor_id = uuid.uuid4()  # non-existent user
-    await _create_user(
-        email="real-admin@company.com", password="pass1234", role="system_admin"
-    )
+    await _create_user(email="real-admin@company.com", password="pass1234", role="system_admin")
     token = await _login(audit_client, email="real-admin@company.com", password="pass1234")
     await _create_audit_log(actor_id=ghost_actor_id, action="ghost.action")
 
@@ -555,9 +548,7 @@ async def test_metadata_sensitive_keys_are_redacted(audit_client: AsyncClient) -
 
 
 async def test_page_size_over_100_is_rejected_or_clamped(audit_client: AsyncClient) -> None:
-    await _create_user(
-        email="clamp@company.com", password="pass1234", role="system_admin"
-    )
+    await _create_user(email="clamp@company.com", password="pass1234", role="system_admin")
     token = await _login(audit_client, email="clamp@company.com", password="pass1234")
 
     response = await audit_client.get(

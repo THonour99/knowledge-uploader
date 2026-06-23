@@ -870,7 +870,7 @@ async def test_file_detail_returns_null_extras_without_records(
     assert data["sync_error"] is None
 
 
-@pytest.mark.parametrize("admin_role", ["knowledge_admin", "system_admin"])
+@pytest.mark.parametrize("admin_role", ["system_admin", "system_admin"])
 async def test_admin_views_any_file_detail_and_writes_audit(
     document_client: tuple[AsyncClient, FakeDocumentStorage],
     admin_role: str,

@@ -40,6 +40,9 @@ class FileResponse(BaseModel):
     mime_type: str
     size: int
     uploader_id: UUID
+    department_id: UUID
+    department_name: str | None = None
+    department_code: str | None = None
     department: str | None
     category_id: UUID | None
     dataset_mapping_id: UUID | None

@@ -491,12 +491,12 @@ async def test_review_files_filters_by_extension_and_tag_id(tag_client: AsyncCli
     assert str(other_tag_id) not in ids
 
 
-async def test_employee_and_knowledge_admin_tag_permissions(tag_client: AsyncClient) -> None:
+async def test_employee_and_dept_admin_tag_permissions(tag_client: AsyncClient) -> None:
     await _create_user(email="tag-employee@company.com", password="password123")
     await _create_user(
         email="tag-knowledge-admin@company.com",
         password="password123",
-        role="knowledge_admin",
+        role="dept_admin",
     )
     employee_token = await _login(
         tag_client, email="tag-employee@company.com", password="password123"

@@ -656,7 +656,7 @@ async def test_employee_can_resubmit_own_rejected_file_for_review(
     assert outbox_event.payload["previous_review_status"] == "rejected"
 
 
-async def test_knowledge_admin_reviews_file_and_audit_log_is_written(
+async def test_system_admin_reviews_file_and_audit_log_is_written(
     review_client: AsyncClient,
 ) -> None:
     from app.core.database import AsyncSessionFactory
@@ -665,10 +665,10 @@ async def test_knowledge_admin_reviews_file_and_audit_log_is_written(
     from app.modules.document.models import File
 
     uploader_id = await _create_user(email="uploader@company.com", password="password123")
-    await _create_user(
+    reviewer_id = await _create_user(
         email="reviewer@company.com",
         password="password123",
-        role="knowledge_admin",
+        role="system_admin",
     )
     admin_token = await _login(review_client, email="reviewer@company.com", password="password123")
     file_id = await _create_file(uploader_id=uploader_id)
@@ -692,25 +692,12 @@ async def test_knowledge_admin_reviews_file_and_audit_log_is_written(
         headers={"Authorization": f"Bearer {admin_token}"},
         json={"name": "制度", "code": "policy"},
     )
-    assert category_response.status_code == 403
-
-    system_admin_id = await _create_user(
-        email="system@company.com",
-        password="password123",
-        role="system_admin",
-    )
-    system_token = await _login(review_client, email="system@company.com", password="password123")
-    category = (
-        await review_client.post(
-            "/api/categories",
-            headers={"Authorization": f"Bearer {system_token}"},
-            json={"name": "制度", "code": "policy"},
-        )
-    ).json()["data"]
+    assert category_response.status_code == 201
+    category = category_response.json()["data"]
     dataset = (
         await review_client.post(
             "/api/datasets",
-            headers={"Authorization": f"Bearer {system_token}"},
+            headers={"Authorization": f"Bearer {admin_token}"},
             json={
                 "name": "制度 Dataset",
                 "category_id": category["id"],
@@ -772,7 +759,7 @@ async def test_knowledge_admin_reviews_file_and_audit_log_is_written(
 
     assert [log.action for log in audit_logs] == ["file.submit_review", "file.approve"]
     assert audit_logs[-1].reason == "内容有效"
-    assert audit_logs[-1].actor_id != system_admin_id
+    assert audit_logs[-1].actor_id == reviewer_id
     assert [event.event_type for event in outbox_events] == [
         "review.file.submitted",
         "review.file.approved",
@@ -1111,7 +1098,7 @@ async def test_review_rejects_invalid_file_state_and_dataset_category_mismatch(
     await _create_user(
         email="invalid-reviewer@company.com",
         password="password123",
-        role="knowledge_admin",
+        role="system_admin",
     )
     await _create_user(
         email="invalid-system@company.com",
@@ -1237,7 +1224,7 @@ async def test_system_admin_can_clear_optional_category_fields(
     assert updated["classification_prompt"] is None
 
 
-async def test_knowledge_admin_rejects_file_with_reason(review_client: AsyncClient) -> None:
+async def test_system_admin_rejects_file_with_reason(review_client: AsyncClient) -> None:
     from app.core.database import AsyncSessionFactory
     from app.core.outbox import EventOutbox
     from app.modules.audit.models import AuditLog
@@ -1247,7 +1234,7 @@ async def test_knowledge_admin_rejects_file_with_reason(review_client: AsyncClie
     await _create_user(
         email="reject-reviewer@company.com",
         password="password123",
-        role="knowledge_admin",
+        role="system_admin",
     )
     token = await _login(review_client, email="reject-reviewer@company.com", password="password123")
     file_id = await _create_file(uploader_id=uploader_id, status_value="pending_review")

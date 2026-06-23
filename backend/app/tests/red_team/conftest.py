@@ -1,16 +1,17 @@
 """红队测试专用 fixtures 与攻击载荷。
 
-复用全局 conftest 的 DB/Redis 准备；这里提供红队特有的：
-- redteam_client: 带依赖覆盖的 AsyncClient（仿 unit/test_document_lifecycle.py）
-- malicious_filenames: 文件名清洗攻击载荷（Windows 保留名 / 路径穿越 / 双扩展名）
+复用全局 conftest 的 DB/Redis 准备;这里提供红队特有的:
+- redteam_client: 带依赖覆盖的 AsyncClient(仿 unit/test_document_lifecycle.py)
+- malicious_filenames: 文件名清洗攻击载荷(Windows 保留名 / 路径穿越 / 双扩展名)
 
-需 postgres + redis（CI services 提供；本地需 Docker + invoke up）。
+需 postgres + redis(CI services 提供;本地需 Docker + invoke up)。
 """
 
 from __future__ import annotations
 
 import os
 from collections.abc import AsyncGenerator
+from importlib import import_module
 
 import pytest
 from httpx import ASGITransport, AsyncClient
@@ -21,9 +22,17 @@ async def redteam_client() -> AsyncGenerator[AsyncClient, None]:
     from sqlalchemy.ext.asyncio import AsyncSession
 
     from app.core.config import Settings
-    from app.core.database import AsyncSessionFactory, get_session
+    from app.core.database import AsyncSessionFactory, engine, get_session
     from app.core.deps import get_app_settings
+    from app.db.base import Base
     from app.main import app
+
+    import_module("app.db.models")
+    await engine.dispose()
+    async with engine.begin() as connection:
+        await connection.run_sync(Base.metadata.drop_all)
+        await connection.run_sync(Base.metadata.create_all)
+    await engine.dispose()
 
     settings = Settings(
         allowed_email_domains="company.com",
@@ -44,14 +53,17 @@ async def redteam_client() -> AsyncGenerator[AsyncClient, None]:
     app.dependency_overrides[get_session] = override_session
 
     transport = ASGITransport(app=app)  # type: ignore[arg-type]
-    async with AsyncClient(transport=transport, base_url="http://testserver") as client:
-        yield client
-    app.dependency_overrides.clear()
+    try:
+        async with AsyncClient(transport=transport, base_url="http://testserver") as client:
+            yield client
+    finally:
+        app.dependency_overrides.clear()
+        await engine.dispose()
 
 
 @pytest.fixture
 def malicious_filenames() -> list[str]:
-    """文件名清洗攻击载荷：上传攻击测试用。"""
+    """文件名清洗攻击载荷:上传攻击测试用。"""
     return [
         "CON",
         "PRN",

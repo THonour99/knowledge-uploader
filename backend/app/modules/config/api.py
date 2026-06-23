@@ -9,7 +9,7 @@ from app.core.database import get_session
 from app.core.responses import success_response
 
 from .exceptions import ConfigError
-from .permissions import AdminUserDep
+from .permissions import SystemAdminDep
 from .repository import ConfigRepository  # noqa: TID251 - same-module repository dependency
 from .schemas import ConfigUpdateRequest
 from .service import (  # noqa: TID251 - same-module service dependency
@@ -45,7 +45,7 @@ def _context_from(request: Request) -> RequestContext:
 @router.get("/api/admin/configs")
 async def get_configs(
     request: Request,
-    current_user: AdminUserDep,
+    current_user: SystemAdminDep,
     session: SessionDep,
     group: Annotated[str, Query(min_length=1)],
 ) -> dict[str, object]:
@@ -65,7 +65,7 @@ async def update_configs(
     group: str,
     payload: ConfigUpdateRequest,
     request: Request,
-    current_user: AdminUserDep,
+    current_user: SystemAdminDep,
     session: SessionDep,
 ) -> dict[str, object]:
     try:

@@ -5,7 +5,7 @@ Covers:
 - upload_count and last_upload_at statistics (aggregate, no N+1)
 - PATCH /api/users/{id}/role: success, self-change 409, last-admin downgrade 409
 - POST /api/users/{id}/reset-password: outbox event, audit, disabled user 409
-- employee/knowledge_admin 403 on all new endpoints
+- employee/dept_admin 403 on all new endpoints
 - Audit log assertions for all mutating operations
 """
 
@@ -281,19 +281,19 @@ async def test_list_users_search_case_insensitive(client: AsyncClient) -> None:
 
 async def test_list_users_filter_by_role(client: AsyncClient) -> None:
     await _create_user(email="f-admin@company.com", role="system_admin")
-    await _create_user(email="ka@company.com", role="knowledge_admin")
+    await _create_user(email="ka@company.com", role="dept_admin")
     await _create_user(email="emp@company.com", role="employee")
     token = await _login(client, email="f-admin@company.com")
 
     resp = await client.get(
-        "/api/users?role=knowledge_admin",
+        "/api/users?role=dept_admin",
         headers={"Authorization": f"Bearer {token}"},
     )
 
     assert resp.status_code == 200
     data = resp.json()["data"]
     assert data["total"] >= 1
-    assert all(item["role"] == "knowledge_admin" for item in data["items"])
+    assert all(item["role"] == "dept_admin" for item in data["items"])
 
 
 async def test_list_users_filter_by_status(client: AsyncClient) -> None:
@@ -400,8 +400,8 @@ async def test_list_users_employee_forbidden(client: AsyncClient) -> None:
     assert resp.status_code == 403
 
 
-async def test_list_users_knowledge_admin_forbidden(client: AsyncClient) -> None:
-    await _create_user(email="list-ka@company.com", role="knowledge_admin")
+async def test_list_users_dept_admin_forbidden(client: AsyncClient) -> None:
+    await _create_user(email="list-ka@company.com", role="dept_admin")
     token = await _login(client, email="list-ka@company.com")
 
     resp = await client.get("/api/users", headers={"Authorization": f"Bearer {token}"})
@@ -414,8 +414,8 @@ async def test_list_users_knowledge_admin_forbidden(client: AsyncClient) -> None
 # ---------------------------------------------------------------------------
 
 
-async def test_change_role_employee_to_knowledge_admin(client: AsyncClient) -> None:
-    """system_admin can promote employee to knowledge_admin; audit log written."""
+async def test_change_role_employee_to_dept_admin(client: AsyncClient) -> None:
+    """system_admin can promote employee to dept_admin; audit log written."""
     from sqlalchemy import select
 
     from app.core.database import AsyncSessionFactory
@@ -427,13 +427,13 @@ async def test_change_role_employee_to_knowledge_admin(client: AsyncClient) -> N
 
     resp = await client.patch(
         f"/api/users/{target_id}/role",
-        json={"role": "knowledge_admin"},
+        json={"role": "dept_admin"},
         headers={"Authorization": f"Bearer {token}"},
     )
 
     assert resp.status_code == 200
     data = resp.json()["data"]
-    assert data["role"] == "knowledge_admin"
+    assert data["role"] == "dept_admin"
     assert data["id"] == str(target_id)
 
     async with AsyncSessionFactory() as session:
@@ -445,7 +445,7 @@ async def test_change_role_employee_to_knowledge_admin(client: AsyncClient) -> N
     assert log.actor_id == admin_id
     assert log.target_id == target_id
     assert log.metadata_json["old_role"] == "employee"
-    assert log.metadata_json["new_role"] == "knowledge_admin"
+    assert log.metadata_json["new_role"] == "dept_admin"
 
 
 async def test_change_role_to_system_admin(client: AsyncClient) -> None:
@@ -498,7 +498,7 @@ async def test_change_role_last_admin_downgrade_returns_409(client: AsyncClient)
 
     For API-level coverage: demoting ANY system_admin when there are 2 active admins
     succeeds (see test_change_role_to_system_admin and
-    test_change_role_employee_to_knowledge_admin).
+    test_change_role_employee_to_dept_admin).
     The count==1 guard is verified here at service layer.
     """
     from unittest.mock import AsyncMock, MagicMock, patch
@@ -520,6 +520,9 @@ async def test_change_role_last_admin_downgrade_returns_409(client: AsyncClient)
         role="system_admin",
         status="active",
         email_verified=True,
+        department_id=uuid.UUID("00000000-0000-0000-0000-000000000001"),
+        department_name="未分配",
+        department_code="unassigned",
         failed_login_count=0,
         locked_until=None,
         session_version=0,
@@ -567,21 +570,21 @@ async def test_change_role_employee_returns_403(client: AsyncClient) -> None:
 
     resp = await client.patch(
         f"/api/users/{target_id}/role",
-        json={"role": "knowledge_admin"},
+        json={"role": "dept_admin"},
         headers={"Authorization": f"Bearer {token}"},
     )
 
     assert resp.status_code == 403
 
 
-async def test_change_role_knowledge_admin_returns_403(client: AsyncClient) -> None:
-    await _create_user(email="ka-role@company.com", role="knowledge_admin")
+async def test_change_role_dept_admin_returns_403(client: AsyncClient) -> None:
+    await _create_user(email="ka-role@company.com", role="dept_admin")
     target_id = await _create_user(email="ka-role-target@company.com")
     token = await _login(client, email="ka-role@company.com")
 
     resp = await client.patch(
         f"/api/users/{target_id}/role",
-        json={"role": "knowledge_admin"},
+        json={"role": "dept_admin"},
         headers={"Authorization": f"Bearer {token}"},
     )
 
@@ -694,8 +697,8 @@ async def test_reset_password_employee_returns_403(client: AsyncClient) -> None:
     assert resp.status_code == 403
 
 
-async def test_reset_password_knowledge_admin_returns_403(client: AsyncClient) -> None:
-    await _create_user(email="ka-pw@company.com", role="knowledge_admin")
+async def test_reset_password_dept_admin_returns_403(client: AsyncClient) -> None:
+    await _create_user(email="ka-pw@company.com", role="dept_admin")
     target_id = await _create_user(email="ka-pw-target@company.com")
     token = await _login(client, email="ka-pw@company.com")
 

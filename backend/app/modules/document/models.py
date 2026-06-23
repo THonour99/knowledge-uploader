@@ -46,6 +46,10 @@ class File(Base):
             name="ck_files_review_status",
         ),
         Index("idx_files_uploader_uploaded_at", "uploader_id", "uploaded_at"),
+        Index("idx_files_uploader_status", "uploader_id", "status"),
+        Index("idx_files_department_id", "department_id"),
+        Index("idx_files_department_uploaded_at", "department_id", "uploaded_at"),
+        Index("idx_files_department_review_status", "department_id", "review_status"),
         Index("idx_files_hash", "hash"),
         Index("idx_files_status", "status"),
         Index("idx_files_review_status", "review_status"),
@@ -87,6 +91,11 @@ class File(Base):
     uploader_id: Mapped[uuid.UUID] = mapped_column(
         ForeignKey("users.id", ondelete="RESTRICT"),
         nullable=False,
+    )
+    department_id: Mapped[uuid.UUID] = mapped_column(
+        ForeignKey("departments.id", ondelete="RESTRICT"),
+        nullable=False,
+        server_default="00000000-0000-0000-0000-000000000001",
     )
     department: Mapped[str | None] = mapped_column(String(100))
     category_id: Mapped[uuid.UUID | None] = mapped_column(
