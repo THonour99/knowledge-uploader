@@ -81,3 +81,13 @@ def build_arm64(c: Context, version: str = "dev") -> None:
         f"-t knowledge-backend:{version}-arm64 -f backend/Dockerfile backend/ --load",
         pty=False,
     )
+
+
+@task(pre=[lint, test])
+def review(c: Context) -> None:
+    """只读评审预检: lint + test。完整四方评审走 /review-code skill。"""
+
+
+@task(pre=[lint, test, check_arm64])
+def ship(c: Context) -> None:
+    """完成门事实层: lint + test + check-arm64。含 agent 的四方门走 /ship-gate skill。"""
