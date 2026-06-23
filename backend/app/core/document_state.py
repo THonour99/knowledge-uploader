@@ -34,10 +34,15 @@ class DocumentStateMachine:
         ("pending_review", "rejected"),
         ("approved", "queued"),
         ("queued", "syncing"),
-        ("queued", "parsing"),
         ("syncing", "uploaded_to_ragflow"),
         ("uploaded_to_ragflow", "parsing"),
         ("parsing", "parsed"),
+        # 同步流水线异常分支 -> failed (05_DATABASE_API_SPEC §2 异常分支)。
+        # queued -> failed: 同步任务被 worker 取走 (task=running) 后, 在置 syncing 之前因前置
+        # 校验失败 (Redis 分布式锁、dataset 映射禁用/越权、critical 敏感策略阻断等) 直接失败;
+        # 此刻文件仍是 queued, 必须允许落到 failed, 否则文件卡死在 queued 且失败原因丢失
+        # (_try_mark_file_failed 会静默吞掉 DocumentStateError)。
+        ("queued", "failed"),
         ("syncing", "failed"),
         ("uploaded_to_ragflow", "failed"),
         ("parsing", "failed"),
