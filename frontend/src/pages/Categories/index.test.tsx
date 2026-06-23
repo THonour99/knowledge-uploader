@@ -217,9 +217,23 @@ describe("CategoriesPage", () => {
         expect.objectContaining({
           name: "新分类",
           code: "new-cat",
+          default_visibility: "private",
         }),
       );
     });
+  });
+
+  it("does not render default visibility controls in the category modal", async () => {
+    vi.mocked(listCategories).mockResolvedValue(mockCategoriesResponse);
+    vi.mocked(listDatasetMappings).mockResolvedValue(mockDatasetMappingsResponse);
+
+    renderWithProviders(<CategoriesPage />);
+
+    await screen.findByText("技术文档");
+    fireEvent.click(screen.getByRole("button", { name: /新增分类/ }));
+
+    await screen.findAllByText("新增分类");
+    expect(screen.queryByText("默认可见范围")).not.toBeInTheDocument();
   });
 
   it("submits updateCategory with correct parameters when editing a category", async () => {

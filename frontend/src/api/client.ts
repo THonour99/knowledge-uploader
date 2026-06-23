@@ -59,8 +59,12 @@ export interface UserProfile {
   role: CurrentUser["role"];
   status: string;
   email_verified: boolean;
+  department_id?: string | null;
+  department_name?: string | null;
+  department_code?: string | null;
   department: string | null;
   phone: string | null;
+  managed_department_ids?: string[];
 }
 
 export interface FileAnalysis {
@@ -109,6 +113,9 @@ export interface KnowledgeFile {
   mime_type: string;
   size: number;
   uploader_id: string;
+  department_id?: string | null;
+  department_name?: string | null;
+  department_code?: string | null;
   department: string | null;
   category_id: string | null;
   dataset_mapping_id: string | null;
@@ -1066,7 +1073,7 @@ export async function deleteTag(id: string): Promise<void> {
 
 // ── Admin user management types ───────────────────────────────────────────────
 
-export type AdminUserRole = "employee" | "knowledge_admin" | "system_admin";
+export type AdminUserRole = "employee" | "dept_admin" | "system_admin";
 
 export interface AdminUserItem {
   id: string;
@@ -1074,11 +1081,36 @@ export interface AdminUserItem {
   email: string;
   role: AdminUserRole;
   status: string;
+  department_id?: string | null;
+  department_name?: string | null;
+  department_code?: string | null;
   department: string | null;
+  managed_department_ids?: string[];
   email_verified: boolean;
   created_at: string;
   upload_count: number;
   last_upload_at: string | null;
+}
+
+export interface Department {
+  id: string;
+  name: string;
+  code: string;
+  status: "active" | "disabled";
+  created_at: string;
+  updated_at: string;
+}
+
+export interface DepartmentListResponse {
+  items: Department[];
+  total: number;
+}
+
+export interface ManagedDepartmentsResponse {
+  user_id: string;
+  managed_department_ids: string[];
+  managed_departments?: Department[];
+  departments?: Department[];
 }
 
 export interface AdminUserListResponse {
@@ -1114,6 +1146,33 @@ export async function changeUserRole(id: string, role: AdminUserRole): Promise<U
     `/users/${id}/role`,
     { role },
   );
+
+  return unwrapResponse(response.data);
+}
+
+export async function listDepartments(): Promise<DepartmentListResponse> {
+  const response = await apiClient.get<ApiEnvelope<DepartmentListResponse> | DepartmentListResponse>(
+    "/admin/departments",
+  );
+
+  return unwrapResponse(response.data);
+}
+
+export async function getManagedDepartments(id: string): Promise<ManagedDepartmentsResponse> {
+  const response = await apiClient.get<
+    ApiEnvelope<ManagedDepartmentsResponse> | ManagedDepartmentsResponse
+  >(`/admin/users/${id}/managed-departments`);
+
+  return unwrapResponse(response.data);
+}
+
+export async function replaceManagedDepartments(
+  id: string,
+  departmentIds: string[],
+): Promise<ManagedDepartmentsResponse> {
+  const response = await apiClient.put<
+    ApiEnvelope<ManagedDepartmentsResponse> | ManagedDepartmentsResponse
+  >(`/admin/users/${id}/managed-departments`, { department_ids: departmentIds });
 
   return unwrapResponse(response.data);
 }

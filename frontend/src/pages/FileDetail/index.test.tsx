@@ -151,9 +151,9 @@ function setAdminSession() {
     accessToken: "test-token",
     user: {
       id: "admin-1",
-      name: "知识管理员",
+      name: "部门管理员",
       email: "admin@company.com",
-      role: "knowledge_admin",
+      role: "dept_admin",
     },
   });
 }
@@ -208,7 +208,7 @@ describe("FileDetailPage", () => {
     expect(await screen.findByText(/培训/)).toBeInTheDocument();
   });
 
-  it("renders category and tags card", async () => {
+  it("renders category and tags card without visibility metadata", async () => {
     vi.mocked(getDocument).mockResolvedValue(baseFile);
 
     renderFileDetail();
@@ -217,6 +217,7 @@ describe("FileDetailPage", () => {
     expect(await screen.findByText("制度文档")).toBeInTheDocument();
     expect(screen.getByText("制度")).toBeInTheDocument();
     expect(screen.getByText("人事")).toBeInTheDocument();
+    expect(screen.queryByText("可见范围")).not.toBeInTheDocument();
   });
 
   it("hides analysis card when there is no analysis record", async () => {

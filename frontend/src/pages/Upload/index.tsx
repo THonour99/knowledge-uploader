@@ -6,7 +6,6 @@ import {
   Form,
   Input,
   Progress,
-  Select,
   Space,
   Switch,
   Upload,
@@ -56,7 +55,6 @@ interface QueueItem {
 interface UploadFormValues {
   file?: UploadFile[];
   description?: string;
-  visibility: KnowledgeFile["visibility"];
   submitAfterUpload: boolean;
   aiAnalyze: boolean;
 }
@@ -188,7 +186,7 @@ export default function UploadPage() {
           {
             file: item.file,
             description: values.description,
-            visibility: values.visibility,
+            visibility: "private",
             submitAfterUpload,
             aiAnalysisEnabled,
           },
@@ -266,7 +264,6 @@ export default function UploadPage() {
         className="upload-workspace"
         layout="vertical"
         initialValues={{
-          visibility: "private",
           submitAfterUpload: true,
           aiAnalyze: true,
         }}
@@ -433,15 +430,6 @@ export default function UploadPage() {
             </Space>
           }
         >
-          <Form.Item label="可见范围" name="visibility">
-            <Select
-              options={[
-                { label: "仅自己", value: "private" },
-                { label: "同部门", value: "department" },
-                { label: "全公司", value: "company" },
-              ]}
-            />
-          </Form.Item>
           <Form.Item label="说明" name="description">
             <Input.TextArea
               rows={5}

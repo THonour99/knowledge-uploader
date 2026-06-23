@@ -100,12 +100,6 @@ const defaultDatasetValues: DatasetFormValues = {
   enabled: true,
 };
 
-const visibilityOptions: Array<{ label: string; value: Category["default_visibility"] }> = [
-  { label: "仅自己", value: "private" },
-  { label: "同部门", value: "department" },
-  { label: "全公司", value: "company" },
-];
-
 const statusOptions = [
   { label: "状态：全部", value: "all" },
   { label: "已启用", value: "enabled" },
@@ -130,7 +124,7 @@ function toCategoryCreatePayload(values: CategoryFormValues): CategoryPayload {
     default_dataset_id: values.default_dataset_id?.trim() || null,
     allow_employee_select: values.allow_employee_select,
     allow_ai_recommend: values.allow_ai_recommend,
-    default_visibility: values.default_visibility,
+    default_visibility: "private",
     keywords: parseKeywords(values.keywords),
     classification_prompt: values.classification_prompt?.trim() || null,
     ai_analysis_enabled: values.ai_analysis_enabled,
@@ -148,7 +142,7 @@ function toCategoryUpdatePayload(values: CategoryFormValues): Partial<CategoryPa
     default_dataset_id: values.default_dataset_id?.trim() || null,
     allow_employee_select: values.allow_employee_select,
     allow_ai_recommend: values.allow_ai_recommend,
-    default_visibility: values.default_visibility,
+    default_visibility: "private",
     keywords: parseKeywords(values.keywords),
     classification_prompt: values.classification_prompt?.trim() || null,
     ai_analysis_enabled: values.ai_analysis_enabled,
@@ -163,7 +157,7 @@ function toCategoryFormValues(category: Category): CategoryFormValues {
     code: category.code,
     description: category.description ?? "",
     default_dataset_id: category.default_dataset_id ?? "",
-    default_visibility: category.default_visibility,
+    default_visibility: "private",
     keywords: category.keywords.join(", "),
     classification_prompt: category.classification_prompt ?? "",
     require_review: category.require_review,
@@ -454,14 +448,6 @@ export default function DatasetConfigPage() {
       ),
     },
     {
-      title: "默认可见范围",
-      dataIndex: ["category", "default_visibility"],
-      key: "default_visibility",
-      width: 130,
-      render: (value: Category["default_visibility"]) =>
-        visibilityOptions.find((option) => option.value === value)?.label ?? value,
-    },
-    {
       title: "是否允许员工选择",
       dataIndex: ["category", "allow_employee_select"],
       key: "allow_employee_select",
@@ -635,7 +621,7 @@ export default function DatasetConfigPage() {
           loading={categoriesQuery.isLoading || datasetsQuery.isLoading}
           pagination={{ pageSize: 20, showSizeChanger: false }}
           locale={{ emptyText: "暂无分类映射" }}
-          scroll={{ x: 1250 }}
+          scroll={{ x: 1120 }}
         />
       </Card>
 
@@ -672,9 +658,6 @@ export default function DatasetConfigPage() {
           </Form.Item>
 
           <div className="form-grid form-grid--two">
-            <Form.Item label="默认可见范围" name="default_visibility">
-              <Select options={visibilityOptions} />
-            </Form.Item>
             <Form.Item label="默认 Dataset ID" name="default_dataset_id">
               <Input maxLength={128} />
             </Form.Item>

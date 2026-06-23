@@ -81,7 +81,7 @@ export const appRoutes: AppRoute[] = [
   {
     path: "/dashboard",
     element: routeElement(DashboardPage),
-    roles: [Roles.KNOWLEDGE_ADMIN, Roles.SYSTEM_ADMIN],
+    roles: [Roles.SYSTEM_ADMIN],
     nav: { label: "仪表盘", icon: <DashboardOutlined /> },
   },
   {
@@ -97,7 +97,7 @@ export const appRoutes: AppRoute[] = [
   {
     path: "/files",
     element: routeElement(FileManagementPage),
-    roles: [Roles.KNOWLEDGE_ADMIN, Roles.SYSTEM_ADMIN],
+    roles: [Roles.DEPT_ADMIN, Roles.SYSTEM_ADMIN],
     nav: { label: "文件管理", icon: <FolderOpenOutlined /> },
   },
   {
@@ -119,7 +119,7 @@ export const appRoutes: AppRoute[] = [
   {
     path: "/statistics",
     element: routeElement(StatisticsPage),
-    roles: [Roles.KNOWLEDGE_ADMIN, Roles.SYSTEM_ADMIN],
+    roles: [Roles.SYSTEM_ADMIN],
     nav: { label: "统计分析", icon: <BarChartOutlined /> },
   },
   {
@@ -137,13 +137,13 @@ export const appRoutes: AppRoute[] = [
   {
     path: "/audit-logs",
     element: routeElement(AuditLogsPage),
-    roles: [Roles.KNOWLEDGE_ADMIN, Roles.SYSTEM_ADMIN],
+    roles: [Roles.SYSTEM_ADMIN],
     nav: { label: "操作日志", icon: <AuditOutlined /> },
   },
   {
     path: "/task-logs",
     element: routeElement(TaskLogsPage),
-    roles: [Roles.KNOWLEDGE_ADMIN, Roles.SYSTEM_ADMIN],
+    roles: [Roles.DEPT_ADMIN, Roles.SYSTEM_ADMIN],
     nav: { label: "任务日志", icon: <OrderedListOutlined /> },
   },
   {

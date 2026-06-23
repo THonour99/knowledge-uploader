@@ -23,8 +23,11 @@ function getHeaderTitle(pathname: string): string {
 }
 
 function formatRole(role?: string): string {
-  if (role === "system_admin" || role === "knowledge_admin") {
-    return "管理员";
+  if (role === "system_admin") {
+    return "系统管理员";
+  }
+  if (role === "dept_admin") {
+    return "部门管理员";
   }
   if (role === "employee") {
     return "员工";

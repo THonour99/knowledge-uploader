@@ -3,7 +3,7 @@ import { createJSONStorage, persist } from "zustand/middleware";
 
 export const Roles = {
   EMPLOYEE: "employee",
-  KNOWLEDGE_ADMIN: "knowledge_admin",
+  DEPT_ADMIN: "dept_admin",
   SYSTEM_ADMIN: "system_admin",
 } as const;
 
@@ -41,6 +41,6 @@ export const useAuthStore = create<AuthState>()(
 
 export const defaultRouteForRole: Record<Role, string> = {
   employee: "/my-files",
-  knowledge_admin: "/dashboard",
+  dept_admin: "/files",
   system_admin: "/dashboard",
 };

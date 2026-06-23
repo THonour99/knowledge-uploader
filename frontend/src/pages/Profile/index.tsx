@@ -9,7 +9,7 @@ import { colors, spacing } from "../../theme/tokens";
 
 const ROLE_LABELS: Record<string, string> = {
   [Roles.EMPLOYEE]: "普通员工",
-  [Roles.KNOWLEDGE_ADMIN]: "知识库管理员",
+  [Roles.DEPT_ADMIN]: "部门管理员",
   [Roles.SYSTEM_ADMIN]: "系统管理员",
 };
 

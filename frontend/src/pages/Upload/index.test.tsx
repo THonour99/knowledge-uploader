@@ -374,12 +374,11 @@ describe("UploadPage rendering", () => {
     expect(btn).not.toBeDisabled();
   });
 
-  it("has a visibility select rendered", () => {
+  it("does not render a visibility selector", () => {
     renderWithProviders(<UploadPage />);
 
-    // AntD Select renders as a combobox role.
-    const comboboxes = screen.getAllByRole("combobox");
-    expect(comboboxes.length).toBeGreaterThan(0);
+    expect(screen.queryByText("可见范围")).not.toBeInTheDocument();
+    expect(screen.queryByRole("combobox")).not.toBeInTheDocument();
   });
 
   it("draft button is present", () => {

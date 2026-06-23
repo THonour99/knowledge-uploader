@@ -341,7 +341,7 @@ export default function FileDetailPage() {
   const navigate = useNavigate();
   const { id } = useParams();
   const role = useAuthStore((state) => state.user?.role ?? null);
-  const isAdmin = role === Roles.KNOWLEDGE_ADMIN || role === Roles.SYSTEM_ADMIN;
+  const isAdmin = role === Roles.DEPT_ADMIN || role === Roles.SYSTEM_ADMIN;
   const fileQuery = useQuery({
     queryKey: ["documents", id],
     queryFn: () => getDocument(id ?? ""),
@@ -401,7 +401,6 @@ export default function FileDetailPage() {
               </Descriptions.Item>
               <Descriptions.Item label="文件大小">{formatFileSize(file.size)}</Descriptions.Item>
               <Descriptions.Item label="MIME">{file.mime_type}</Descriptions.Item>
-              <Descriptions.Item label="可见范围">{file.visibility}</Descriptions.Item>
               <Descriptions.Item label="AI 分析">
                 {file.ai_analysis_enabled_at_upload ? "已启用" : "上传时跳过"}
               </Descriptions.Item>

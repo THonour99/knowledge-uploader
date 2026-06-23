@@ -1,5 +1,6 @@
-import { useCallback, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import {
+  ApartmentOutlined,
   ExclamationCircleOutlined,
   LockOutlined,
   MailOutlined,
@@ -29,10 +30,14 @@ import {
   type AdminUserItem,
   type AdminUserListQuery,
   type AdminUserRole,
+  type Department,
   changeUserRole,
   disableUser,
   enableUser,
+  getManagedDepartments,
   listAdminUsers,
+  listDepartments,
+  replaceManagedDepartments,
   resetUserPassword,
 } from "../../api/client";
 import { StatusTag } from "../../components/StatusTag";
@@ -41,14 +46,14 @@ import "./styles.css";
 
 const roleLabels: Record<AdminUserRole, string> = {
   system_admin: "系统管理员",
-  knowledge_admin: "知识管理员",
+  dept_admin: "部门管理员",
   employee: "普通员工",
 };
 
 const roleOptions = [
   { label: "角色：全部", value: "" },
   { label: "系统管理员", value: "system_admin" },
-  { label: "知识管理员", value: "knowledge_admin" },
+  { label: "部门管理员", value: "dept_admin" },
   { label: "普通员工", value: "employee" },
 ];
 
@@ -62,13 +67,13 @@ const statusOptions = [
 
 const changeRoleOptions = [
   { label: "系统管理员", value: "system_admin" },
-  { label: "知识管理员", value: "knowledge_admin" },
+  { label: "部门管理员", value: "dept_admin" },
   { label: "普通员工", value: "employee" },
 ];
 
 const roleDistribution = [
   { label: "普通员工", percent: 82 },
-  { label: "知识管理员", percent: 12 },
+  { label: "部门管理员", percent: 12 },
   { label: "系统管理员", percent: 6 },
 ];
 
@@ -83,6 +88,12 @@ interface ResetModalState {
   open: boolean;
   userId: string;
   userName: string;
+}
+
+interface ManagedDepartmentsModalState {
+  open: boolean;
+  user: AdminUserItem | null;
+  selectedDepartmentIds: string[];
 }
 
 export default function UsersPage() {
@@ -107,6 +118,12 @@ export default function UsersPage() {
     userId: "",
     userName: "",
   });
+  const [managedDepartmentsModal, setManagedDepartmentsModal] =
+    useState<ManagedDepartmentsModalState>({
+      open: false,
+      user: null,
+      selectedDepartmentIds: [],
+    });
   const [actionLoading, setActionLoading] = useState<Record<string, boolean>>({});
 
   const queryParams: AdminUserListQuery = {
@@ -125,9 +142,49 @@ export default function UsersPage() {
   const users = usersQuery.data?.items ?? [];
   const total = usersQuery.data?.total ?? 0;
 
+  const departmentsQuery = useQuery({
+    queryKey: ["admin-departments"],
+    queryFn: listDepartments,
+    enabled: managedDepartmentsModal.open,
+  });
+  const managedDepartmentsQuery = useQuery({
+    queryKey: ["admin-users", managedDepartmentsModal.user?.id, "managed-departments"],
+    queryFn: () => getManagedDepartments(managedDepartmentsModal.user?.id ?? ""),
+    enabled: managedDepartmentsModal.open && Boolean(managedDepartmentsModal.user?.id),
+  });
+  const departmentOptions = useMemo(
+    () =>
+      (departmentsQuery.data?.items ?? [])
+        .filter((department: Department) => department.status === "active")
+        .map((department: Department) => ({
+          label: `${department.name} (${department.code})`,
+          value: department.id,
+        })),
+    [departmentsQuery.data?.items],
+  );
+  const loadedManagedDepartmentIds = useMemo(
+    () =>
+      managedDepartmentsQuery.data?.managed_department_ids ??
+      managedDepartmentsQuery.data?.managed_departments?.map((department) => department.id) ??
+      managedDepartmentsQuery.data?.departments?.map((department) => department.id) ??
+      [],
+    [managedDepartmentsQuery.data],
+  );
+
   const invalidate = useCallback(() => {
     void queryClient.invalidateQueries({ queryKey: ["admin-users", queryParams] });
   }, [queryClient, queryParams]);
+
+  useEffect(() => {
+    if (!managedDepartmentsModal.open || !managedDepartmentsQuery.isSuccess) {
+      return;
+    }
+
+    setManagedDepartmentsModal((prev) => ({
+      ...prev,
+      selectedDepartmentIds: loadedManagedDepartmentIds,
+    }));
+  }, [loadedManagedDepartmentIds, managedDepartmentsModal.open, managedDepartmentsQuery.isSuccess]);
 
   const handleSearch = useCallback((value: string) => {
     setSearch(value);
@@ -221,6 +278,38 @@ export default function UsersPage() {
     setResetModal({ open: true, userId: record.id, userName: record.name });
   }, []);
 
+  const openManagedDepartmentsModal = useCallback((record: AdminUserItem) => {
+    setManagedDepartmentsModal({
+      open: true,
+      user: record,
+      selectedDepartmentIds: record.managed_department_ids ?? [],
+    });
+  }, []);
+
+  const handleManagedDepartmentsChange = useCallback((departmentIds: string[]) => {
+    setManagedDepartmentsModal((prev) => ({ ...prev, selectedDepartmentIds: departmentIds }));
+  }, []);
+
+  const handleSaveManagedDepartments = useCallback(async () => {
+    const userId = managedDepartmentsModal.user?.id;
+    if (!userId) {
+      return;
+    }
+
+    setActionLoading((prev) => ({ ...prev, [`managed-${userId}`]: true }));
+    try {
+      await replaceManagedDepartments(userId, managedDepartmentsModal.selectedDepartmentIds);
+      message.success("管辖部门已更新");
+      setManagedDepartmentsModal({ open: false, user: null, selectedDepartmentIds: [] });
+      invalidate();
+      void queryClient.invalidateQueries({ queryKey: ["admin-users", userId, "managed-departments"] });
+    } catch (err) {
+      message.error(err instanceof Error ? err.message : "操作失败");
+    } finally {
+      setActionLoading((prev) => ({ ...prev, [`managed-${userId}`]: false }));
+    }
+  }, [invalidate, managedDepartmentsModal, message, queryClient]);
+
   const handleResetPassword = useCallback(async () => {
     setActionLoading((prev) => ({ ...prev, [`reset-${resetModal.userId}`]: true }));
     try {
@@ -275,7 +364,7 @@ export default function UsersPage() {
       dataIndex: "department",
       key: "department",
       width: 140,
-      render: (value: string | null) => value ?? "-",
+      render: (value: string | null, record) => record.department_name ?? value ?? "-",
     },
     {
       title: "上传统计",
@@ -295,7 +384,7 @@ export default function UsersPage() {
     {
       title: "操作",
       key: "actions",
-      width: 220,
+      width: 310,
       fixed: "right" as const,
       render: (_, record) => {
         const isDisabled = record.status === "disabled";
@@ -333,6 +422,18 @@ export default function UsersPage() {
             >
               改角色
             </Button>
+            {record.role === "dept_admin" ? (
+              <Button
+                type="text"
+                size="small"
+                icon={<ApartmentOutlined />}
+                loading={actionLoading[`managed-${record.id}`]}
+                onClick={() => openManagedDepartmentsModal(record)}
+                aria-label="管辖部门"
+              >
+                管辖部门
+              </Button>
+            ) : null}
             <Button
               type="text"
               size="small"
@@ -397,7 +498,7 @@ export default function UsersPage() {
               showTotal: (t) => `共 ${t} 条`,
               onChange: (p) => setPage(p),
             }}
-            scroll={{ x: 980 }}
+            scroll={{ x: 1080 }}
             locale={{ emptyText: "暂无用户数据" }}
           />
         </Card>
@@ -417,7 +518,7 @@ export default function UsersPage() {
           <div className="users-permission-summary">
             <Typography.Text strong>权限策略</Typography.Text>
             <Typography.Text type="secondary">
-              系统管理员可配置 Dataset、AI 与系统参数；知识管理员负责审核和同步；普通员工仅能上传与查看本人文件。
+              系统管理员可配置组织、Dataset、AI 与系统参数；部门管理员只处理管辖部门的文件审核、同步和任务日志；普通员工仅能上传与查看本人文件。
             </Typography.Text>
           </div>
         </Card>
@@ -447,6 +548,42 @@ export default function UsersPage() {
             onChange={(value: AdminUserRole) =>
               setRoleModal((prev) => ({ ...prev, selectedRole: value }))
             }
+          />
+        </Space>
+      </Modal>
+
+      {/* Managed departments modal */}
+      <Modal
+        title="配置管辖部门"
+        open={managedDepartmentsModal.open}
+        onCancel={() =>
+          setManagedDepartmentsModal({ open: false, user: null, selectedDepartmentIds: [] })
+        }
+        onOk={() => void handleSaveManagedDepartments()}
+        confirmLoading={
+          Boolean(managedDepartmentsModal.user?.id) &&
+          actionLoading[`managed-${managedDepartmentsModal.user?.id}`]
+        }
+        okText="保存"
+        cancelText="取消"
+        destroyOnClose
+      >
+        <Space direction="vertical" style={{ width: "100%" }}>
+          <Typography.Text type="secondary">
+            为 <Typography.Text strong>{managedDepartmentsModal.user?.name ?? "用户"}</Typography.Text>{" "}
+            选择可管理的部门。未选择任何部门时，该部门管理员看不到部门范围内的文件和任务。
+          </Typography.Text>
+          <Select
+            className="users-managed-departments-select"
+            mode="multiple"
+            showSearch
+            optionFilterProp="label"
+            placeholder="选择管辖部门"
+            style={{ width: "100%" }}
+            loading={departmentsQuery.isLoading || managedDepartmentsQuery.isLoading}
+            value={managedDepartmentsModal.selectedDepartmentIds}
+            options={departmentOptions}
+            onChange={handleManagedDepartmentsChange}
           />
         </Space>
       </Modal>

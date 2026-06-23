@@ -64,12 +64,6 @@ const defaultFormValues: CategoryFormValues = {
   auto_sync_enabled: false,
 };
 
-const visibilityOptions: Array<{ label: string; value: Category["default_visibility"] }> = [
-  { label: "仅自己", value: "private" },
-  { label: "同部门", value: "department" },
-  { label: "全公司", value: "company" },
-];
-
 function parseKeywords(value?: string): string[] {
   return (value ?? "")
     .split(/[,，\n]/)
@@ -87,7 +81,7 @@ function toCreatePayload(values: CategoryFormValues): CategoryPayload {
     default_dataset_id: values.default_dataset_id?.trim() || null,
     allow_employee_select: values.allow_employee_select,
     allow_ai_recommend: values.allow_ai_recommend,
-    default_visibility: values.default_visibility,
+    default_visibility: "private",
     keywords: parseKeywords(values.keywords),
     classification_prompt: values.classification_prompt?.trim() || null,
     ai_analysis_enabled: values.ai_analysis_enabled,
@@ -105,7 +99,7 @@ function toUpdatePayload(values: CategoryFormValues): Partial<CategoryPayload> {
     default_dataset_id: values.default_dataset_id?.trim() || null,
     allow_employee_select: values.allow_employee_select,
     allow_ai_recommend: values.allow_ai_recommend,
-    default_visibility: values.default_visibility,
+    default_visibility: "private",
     keywords: parseKeywords(values.keywords),
     classification_prompt: values.classification_prompt?.trim() || null,
     ai_analysis_enabled: values.ai_analysis_enabled,
@@ -120,7 +114,7 @@ function toFormValues(category: Category): CategoryFormValues {
     code: category.code,
     description: category.description ?? "",
     default_dataset_id: category.default_dataset_id ?? "",
-    default_visibility: category.default_visibility,
+    default_visibility: "private",
     keywords: category.keywords.join(", "),
     classification_prompt: category.classification_prompt ?? "",
     require_review: category.require_review,
@@ -447,9 +441,6 @@ export default function CategoriesPage() {
           </Form.Item>
 
           <div className="form-grid form-grid--two">
-            <Form.Item label="默认可见范围" name="default_visibility">
-              <Select options={visibilityOptions} />
-            </Form.Item>
             <Form.Item label="关联知识库" name="default_dataset_id">
               <Select
                 options={datasetOptions}

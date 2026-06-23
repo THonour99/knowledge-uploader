@@ -7,9 +7,14 @@ import { afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 import {
   type AdminUserItem,
   type AdminUserListResponse,
+  type DepartmentListResponse,
+  type ManagedDepartmentsResponse,
   changeUserRole,
   disableUser,
+  getManagedDepartments,
   listAdminUsers,
+  listDepartments,
+  replaceManagedDepartments,
   resetUserPassword,
 } from "../../api/client";
 import type * as ApiClientModule from "../../api/client";
@@ -25,6 +30,9 @@ vi.mock("../../api/client", async () => {
     changeUserRole: vi.fn(),
     resetUserPassword: vi.fn(),
     disableUser: vi.fn(),
+    listDepartments: vi.fn(),
+    getManagedDepartments: vi.fn(),
+    replaceManagedDepartments: vi.fn(),
   };
 });
 
@@ -45,9 +53,13 @@ const mockUser2: AdminUserItem = {
   id: "user-002",
   name: "李雪",
   email: "lixue@company.com",
-  role: "knowledge_admin",
+  role: "dept_admin",
   status: "active",
   department: "技术支持部",
+  department_id: "dept-support",
+  department_name: "技术支持部",
+  department_code: "support",
+  managed_department_ids: ["dept-support"],
   email_verified: true,
   created_at: "2026-01-02T00:00:00Z",
   upload_count: 126,
@@ -135,7 +147,7 @@ describe("UsersPage", () => {
 
     // Role labels
     expect(screen.getAllByText("系统管理员").length).toBeGreaterThan(0);
-    expect(screen.getAllByText("知识管理员").length).toBeGreaterThan(0);
+    expect(screen.getAllByText("部门管理员").length).toBeGreaterThan(0);
     expect(screen.getAllByText("普通员工").length).toBeGreaterThan(0);
 
     // Department column
@@ -209,6 +221,9 @@ describe("UsersPage", () => {
       role: "employee",
       status: mockUser2.status,
       email_verified: mockUser2.email_verified,
+      department_id: mockUser2.department_id,
+      department_name: mockUser2.department_name,
+      department_code: mockUser2.department_code,
       department: mockUser2.department,
       phone: null,
     });
@@ -248,6 +263,61 @@ describe("UsersPage", () => {
 
     await waitFor(() => {
       expect(changeUserRole).toHaveBeenCalledWith("user-002", "employee");
+    });
+  });
+
+
+  it("opens managed department modal for dept admins and saves current scope", async () => {
+    const departments: DepartmentListResponse = {
+      items: [
+        {
+          id: "dept-support",
+          name: "技术支持部",
+          code: "support",
+          status: "active",
+          created_at: "2026-06-01T00:00:00Z",
+          updated_at: "2026-06-01T00:00:00Z",
+        },
+        {
+          id: "dept-hr",
+          name: "人事行政部",
+          code: "hr",
+          status: "active",
+          created_at: "2026-06-01T00:00:00Z",
+          updated_at: "2026-06-01T00:00:00Z",
+        },
+      ],
+      total: 2,
+    };
+    const managed: ManagedDepartmentsResponse = {
+      user_id: "user-002",
+      managed_department_ids: ["dept-support"],
+    };
+
+    vi.mocked(listAdminUsers).mockResolvedValue(mockUsersResponse);
+    vi.mocked(listDepartments).mockResolvedValue(departments);
+    vi.mocked(getManagedDepartments).mockResolvedValue(managed);
+    vi.mocked(replaceManagedDepartments).mockResolvedValue(managed);
+
+    renderWithProviders(<UsersPage />);
+
+    await screen.findByText("李雪");
+    const managedButtons = screen.getAllByRole("button", { name: "管辖部门" });
+    expect(managedButtons).toHaveLength(1);
+    fireEvent.click(managedButtons[0]);
+
+    expect(await screen.findByText("配置管辖部门")).toBeInTheDocument();
+    await waitFor(() => {
+      expect(listDepartments).toHaveBeenCalled();
+      expect(getManagedDepartments).toHaveBeenCalledWith("user-002");
+    });
+    expect(await screen.findByText("技术支持部 (support)")).toBeInTheDocument();
+
+    const okButton = document.querySelector(".ant-modal-footer .ant-btn-primary") as HTMLElement;
+    fireEvent.click(okButton);
+
+    await waitFor(() => {
+      expect(replaceManagedDepartments).toHaveBeenCalledWith("user-002", ["dept-support"]);
     });
   });
 
