@@ -277,6 +277,17 @@ async def _create_department(
         return department.id
 
 
+async def _disable_department(*, department_id: uuid.UUID) -> None:
+    from app.core.database import AsyncSessionFactory
+    from app.modules.department.models import Department
+
+    async with AsyncSessionFactory() as session:
+        department = await session.get(Department, department_id)
+        assert department is not None
+        department.status = "disabled"
+        await session.commit()
+
+
 async def _create_user(
     *,
     email: str,
@@ -849,3 +860,59 @@ async def test_revoked_managed_department_blocks_old_file_and_task_ids(
     _assert_hidden_or_forbidden(after_approve)
     _assert_hidden_or_forbidden(after_task)
     _assert_hidden_or_forbidden(after_retry)
+
+
+@pytest.mark.asyncio
+async def test_disabled_managed_department_blocks_old_file_delete_and_submit_ids(
+    p0_client: AsyncClient,
+) -> None:
+    finance_id = await _create_department(name="Disabled Finance", code="disabled-finance")
+    uploader_id = await _create_user(
+        email="disabled-owner@company.com",
+        department_id=finance_id,
+        department="Disabled Finance",
+    )
+    admin_id = await _create_user(email="disabled-admin@company.com", role="dept_admin")
+    await _assign_managed_departments(user_id=admin_id, department_ids=[finance_id])
+    token = await _login(p0_client, email="disabled-admin@company.com")
+    detail_file_id = await _create_file(
+        uploader_id=uploader_id,
+        department_id=finance_id,
+        department="Disabled Finance",
+    )
+    delete_file_id = await _create_file(
+        uploader_id=uploader_id,
+        department_id=finance_id,
+        department="Disabled Finance",
+    )
+    submit_file_id = await _create_file(
+        uploader_id=uploader_id,
+        department_id=finance_id,
+        department="Disabled Finance",
+        status="uploaded",
+    )
+
+    before_detail = await p0_client.get(f"/api/files/{detail_file_id}", headers=_auth(token))
+    before_profile = await p0_client.get("/api/auth/me", headers=_auth(token))
+    await _disable_department(department_id=finance_id)
+    after_profile = await p0_client.get("/api/auth/me", headers=_auth(token))
+    after_review_list = await p0_client.get("/api/review/files", headers=_auth(token))
+    after_detail = await p0_client.get(f"/api/files/{detail_file_id}", headers=_auth(token))
+    after_delete = await p0_client.delete(f"/api/files/{delete_file_id}", headers=_auth(token))
+    after_submit = await p0_client.post(
+        f"/api/files/{submit_file_id}/submit-review",
+        headers=_auth(token),
+    )
+
+    assert before_detail.status_code == 200, before_detail.text
+    assert before_profile.status_code == 200, before_profile.text
+    assert before_profile.json()["data"]["managed_department_ids"] == [str(finance_id)]
+    assert await _managed_department_ids(user_id=admin_id) == {finance_id}
+    assert after_profile.status_code == 200, after_profile.text
+    assert after_profile.json()["data"]["managed_department_ids"] == []
+    assert after_review_list.status_code == 200, after_review_list.text
+    assert after_review_list.json()["data"]["total"] == 0
+    assert after_review_list.json()["data"]["items"] == []
+    _assert_hidden_or_forbidden(after_detail)
+    _assert_hidden_or_forbidden(after_delete)
+    _assert_hidden_or_forbidden(after_submit)

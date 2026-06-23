@@ -21,6 +21,7 @@ _DEPARTMENTS = Table(
     Column("id", PG_UUID(as_uuid=True), primary_key=True),
     Column("name", String(100), nullable=False),
     Column("code", String(50), nullable=False),
+    Column("status", String(40), nullable=False),
 )
 
 _USER_MANAGED_DEPARTMENTS = Table(
@@ -173,7 +174,12 @@ class SqlUserIdentityStore:
     async def _managed_department_ids(self, user_id: uuid.UUID) -> list[uuid.UUID]:
         result = await self._session.execute(
             select(_USER_MANAGED_DEPARTMENTS.c.department_id)
+            .join(
+                _DEPARTMENTS,
+                _USER_MANAGED_DEPARTMENTS.c.department_id == _DEPARTMENTS.c.id,
+            )
             .where(_USER_MANAGED_DEPARTMENTS.c.user_id == user_id)
+            .where(_DEPARTMENTS.c.status == "active")
             .order_by(_USER_MANAGED_DEPARTMENTS.c.department_id.asc())
         )
         return list(result.scalars())
