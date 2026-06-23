@@ -202,3 +202,14 @@ invoke build-arm64 --version=0.1.0
 - 发现 AI 反复犯同样错误 → 加入 §4-§10 对应规则
 - 不写"建议"类规则，只写"必须 / 禁止"
 - 详细 path 特定规则在 `.claude/rules/` 中按 paths frontmatter 加载，不要塞到此文件
+
+## 17. 完成门（Definition of Done）
+
+权威标准见 `docs/quality/definition-of-done.md`。硬规则：
+
+- **完成判定权不在执行者手里**。改了 `backend/app/**` / `frontend/src/**` 后，主代理不得自称"完成"。
+- "完成" = 通过**四方独立审查**且全绿：事实层（`invoke review`）+ `quality-reviewer` + `security-auditor` + `red-team`。
+- 审计查"该做的做了没"，红队"写会失败的 pytest 弄坏它"——两者不可互替；红队发现必须有**跑红测试**为证（杜绝幻觉漏洞）。
+- 改了源码 → PostToolUse 写 `.claude/artifacts/gate-state/pending.json`；主代理想结束 → Stop hook（`adversarial-gate.ps1`）检测到标记就打回，要求先跑 `/ship-gate`；四方全绿后 ship-gate 清除标记才放行。
+- 绕过完成门的权力**只在人手里**（人工创建 `.claude/artifacts/gate-state/override`）；主代理不得自我放行。
+- 红队攻击测试常驻 `backend/app/tests/red_team/`，纳入 CI（防回归）。
