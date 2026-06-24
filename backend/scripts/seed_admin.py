@@ -5,6 +5,7 @@ import asyncio
 import os
 import sys
 from dataclasses import dataclass
+from importlib import import_module
 from pathlib import Path
 
 from sqlalchemy import select
@@ -17,6 +18,12 @@ from app.core.database import AsyncSessionFactory, engine  # noqa: E402
 from app.core.security import hash_password  # noqa: E402
 from app.modules.audit.models import AuditLog  # noqa: E402
 from app.modules.user.models import User  # noqa: E402
+
+# Register every ORM model (e.g. Department) via the shared aggregation point so
+# SQLAlchemy can resolve cross-module foreign keys such as users.department_id ->
+# departments during flush. Reusing app.db.models keeps this future-proof: any new
+# table/foreign key added there is picked up here without touching this script.
+import_module("app.db.models")
 
 
 @dataclass(frozen=True)
