@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import uuid
+from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from typing import Protocol
@@ -327,7 +328,9 @@ class RagflowTaskService:
         file = await self._repository.get_file_for_update(file_id)
         if file is None:
             raise exceptions.file_not_found()
-        self._require_scope_for_file(scope=scope, file=file)
+        self._require_scope_for_file(
+            scope=scope, file=file, on_out_of_scope=exceptions.file_not_found
+        )
         if file.status not in MANUAL_SYNC_SOURCE_STATUSES or file.review_status != "approved":
             raise exceptions.file_not_syncable()
         if (
@@ -877,9 +880,12 @@ class RagflowTaskService:
         *,
         scope: DepartmentAccessScope,
         file: RagflowSyncFileRecord,
+        on_out_of_scope: Callable[[], Exception] = exceptions.task_not_found,
     ) -> None:
+        # 越权伪装成"资源不存在": task 入口抛 task_not_found, file 入口(manual_sync)抛
+        # file_not_found, 使越权与不存在返回同一 404, 消除跨部门存在性枚举 oracle
         if not scope.covers_department(file.department_id):
-            raise exceptions.permission_denied()
+            raise on_out_of_scope()
 
     async def _bundle(self, task: SyncTask) -> SyncTaskBundle:
         return SyncTaskBundle(task=task, logs=await self._repository.list_logs(task.id))

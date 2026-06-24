@@ -709,8 +709,10 @@ class ReviewService:
         scope: DepartmentAccessScope,
         file: ReviewFileRecord,
     ) -> None:
+        # 越权访问他部门文件统一伪装成不存在(404), 避免 403/404 差异泄露存在性;
+        # 自审拒绝(本人上传)仍走下方 403, 因 owner 已知文件存在, 非信息泄露
         if not scope.covers_department(file.department_id):
-            raise exceptions.permission_denied()
+            raise exceptions.file_not_found()
 
     async def _require_review_decision_permission(
         self,

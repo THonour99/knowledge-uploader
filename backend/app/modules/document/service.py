@@ -338,7 +338,8 @@ class DocumentService:
             if current_user.role not in ADMIN_ROLES:
                 raise exceptions.file_not_found()
             if not self._can_admin_access_file(current_user=current_user, file=file):
-                raise exceptions.permission_denied()
+                # 越权访问他部门文件统一伪装成不存在(404), 避免 403/404 差异泄露存在性
+                raise exceptions.file_not_found()
 
         analysis = await self._repository.get_analysis_for_file(file.id)
         result = FileDetailResult(
@@ -446,7 +447,8 @@ class DocumentService:
             if not is_admin:
                 raise exceptions.file_not_found()
             if not self._can_admin_access_file(current_user=current_user, file=file):
-                raise exceptions.permission_denied()
+                # 越权删他部门文件统一伪装成不存在(404), 消除存在性枚举 oracle
+                raise exceptions.file_not_found()
         if not is_admin and await get_config("upload.allow_user_delete") is not True:
             raise exceptions.permission_denied()
         previous_status = file.status
@@ -590,7 +592,8 @@ class DocumentService:
 
     def _require_scope_for_file(self, *, scope: DepartmentAccessScope, file: File) -> None:
         if not scope.covers_department(file.department_id):
-            raise exceptions.permission_denied()
+            # 越权统一伪装成不存在(404), 与 get/delete 路径一致, 避免存在性泄露
+            raise exceptions.file_not_found()
 
     def _require_admin(self, current_user: AuthUserRecord) -> None:
         if current_user.role not in ADMIN_ROLES:
