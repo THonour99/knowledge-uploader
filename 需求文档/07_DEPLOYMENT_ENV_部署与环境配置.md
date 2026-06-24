@@ -23,7 +23,6 @@ services:
   worker-document:
   worker-ai:
   worker-ragflow:
-  worker-statistics:
   worker-notification:
   scheduler:
 
@@ -45,7 +44,6 @@ services:
 | worker-document | 文本抽取、文件预处理 |
 | worker-ai | AI 摘要、分类、标签、敏感检测 |
 | worker-ragflow | RAGFlow 上传、解析、状态轮询 |
-| worker-statistics | 统计快照、报表聚合 |
 | worker-notification | 邮件通知 |
 | scheduler | 定时任务 |
 | postgres | 业务数据库 |
@@ -177,7 +175,6 @@ SMTP_TLS=true
 document_queue
 ai_queue
 ragflow_queue
-statistics_queue
 notification_queue
 ```
 
@@ -189,7 +186,6 @@ notification_queue
 
 AI 慢：扩容 `worker-ai`。  
 RAGFlow 同步慢：扩容 `worker-ragflow`。  
-统计慢：扩容 `worker-statistics`。  
 API 压力大：扩容 `backend-api`。
 
 不需要改变架构。

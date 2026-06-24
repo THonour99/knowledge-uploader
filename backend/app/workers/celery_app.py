@@ -19,7 +19,6 @@ celery_app.conf.task_routes = {
     "document.*": {"queue": "document_queue"},
     "ai.*": {"queue": "ai_queue"},
     "ragflow.*": {"queue": "ragflow_queue"},
-    "statistics.*": {"queue": "statistics_queue"},
     "notification.*": {"queue": "notification_queue"},
 }
 celery_app.conf.imports = (

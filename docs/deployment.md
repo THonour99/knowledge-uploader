@@ -15,7 +15,6 @@
 | `worker-document` | 文档预处理队列 |
 | `worker-ai` | AI 分析队列 |
 | `worker-ragflow` | RAGFlow 上传、解析、轮询队列 |
-| `worker-statistics` | 统计快照和聚合队列 |
 | `worker-notification` | 邮件通知队列 |
 | `scheduler` | Celery Beat 定时任务 |
 | `postgres` | 业务数据库 |
@@ -224,7 +223,6 @@ docker compose -f docker-compose.yml -f docker-compose.arm64.yml build
 | 文档预处理慢 | `worker-document` |
 | AI 分析慢 | `worker-ai` |
 | RAGFlow 同步慢 | `worker-ragflow` |
-| 统计慢 | `worker-statistics` |
 | 邮件积压 | `worker-notification` |
 
 扩容 Worker 不改变业务模块边界，模块通信仍通过 outbox、RabbitMQ 和 Celery task。

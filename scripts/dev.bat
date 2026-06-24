@@ -114,7 +114,7 @@ if errorlevel 1 (
 
 echo.
 echo Freeing Docker app containers that conflict with local dev ports...
-docker compose -f "%DEV_COMPOSE_FILE%" -f "%DEV_COMPOSE_OVERRIDE%" stop nginx frontend backend-api outbox-dispatcher worker-document worker-ai worker-ragflow worker-statistics worker-notification scheduler >nul 2>&1
+docker compose -f "%DEV_COMPOSE_FILE%" -f "%DEV_COMPOSE_OVERRIDE%" stop nginx frontend backend-api outbox-dispatcher worker-document worker-ai worker-ragflow worker-notification scheduler >nul 2>&1
 
 echo.
 echo Running database migrations with local backend environment...

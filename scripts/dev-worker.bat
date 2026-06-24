@@ -68,4 +68,4 @@ if /I not "%MODE%"=="worker" (
 )
 
 echo Starting Celery worker with Windows-friendly solo pool...
-"%PYTHON_CMD%" -m celery -A app.workers.celery_app worker --loglevel=info --pool=solo --queues=document_queue,ai_queue,ragflow_queue,statistics_queue,notification_queue
+"%PYTHON_CMD%" -m celery -A app.workers.celery_app worker --loglevel=info --pool=solo --queues=document_queue,ai_queue,ragflow_queue,notification_queue

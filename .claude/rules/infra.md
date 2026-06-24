@@ -18,7 +18,7 @@ paths:
 - 本机开发用 amd64 native；CI 用 buildx + QEMU 构建 arm64
 - 禁用 `latest` tag，所有镜像锁具体版本
 
-## 2. 服务清单（12 个）
+## 2. 服务清单（13 个）
 
 ```text
 nginx                ← 反向代理 + 静态资源
@@ -27,7 +27,6 @@ backend-api          ← FastAPI 主服务
 worker-document      ← Celery worker, queue=document
 worker-ai            ← Celery worker, queue=ai
 worker-ragflow       ← Celery worker, queue=ragflow
-worker-statistics    ← Celery worker, queue=statistics
 worker-notification  ← Celery worker, queue=notification
 scheduler            ← Celery beat
 outbox-dispatcher    ← Outbox → RabbitMQ 投递器
@@ -37,8 +36,9 @@ redis                ← Celery result + 缓存 + 锁 + 限流
 minio                ← 对象存储
 ```
 
-- 应用服务（前 10 个）必须共用同一个 backend 镜像，只是启动命令不同
+- 应用服务（前 9 个）必须共用同一个 backend 镜像，只是启动命令不同
 - 基础设施服务（后 4 个）用官方镜像
+- 统计走 API 实时查询，无独立 worker（原 worker-statistics 已移除）
 
 ## 3. 环境变量管理
 

@@ -13,8 +13,6 @@ services:
     platform: linux/arm64
   worker-ragflow:
     platform: linux/arm64
-  worker-statistics:
-    platform: linux/arm64
   worker-notification:
     platform: linux/arm64
   scheduler:

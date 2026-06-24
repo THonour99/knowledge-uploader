@@ -59,7 +59,6 @@
         │ worker-document                 │
         │ worker-ai                       │
         │ worker-ragflow                  │
-        │ worker-statistics               │
         │ worker-notification             │
         └───────┬───────────┬─────────────┘
                 ↓           ↓
@@ -128,7 +127,6 @@ backend-api
 worker-document
 worker-ai
 worker-ragflow
-worker-statistics
 worker-notification
 scheduler
 ```
