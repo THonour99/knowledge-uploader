@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import os
-from collections.abc import AsyncGenerator
+from collections.abc import AsyncGenerator, Awaitable, Callable
 from uuid import UUID
 
 import pytest
@@ -451,6 +451,56 @@ async def test_ragflow_delete_worker_deletes_remote_document(
     ]
 
 
+@pytest.mark.parametrize(
+    ("task_type", "task_status"),
+    [
+        ("ragflow_upload", "queued"),
+        ("ragflow_upload", "running"),
+        ("ragflow_status_check", "queued"),
+        ("ragflow_status_check", "running"),
+    ],
+)
+async def test_ragflow_delete_worker_does_not_claim_non_delete_task_id(
+    lifecycle_client: AsyncClient,
+    monkeypatch: pytest.MonkeyPatch,
+    task_type: str,
+    task_status: str,
+) -> None:
+    from app.core.database import AsyncSessionFactory
+    from app.modules.ragflow import tasks
+    from app.modules.ragflow.models import SyncTask
+
+    uploader_id = await _create_user(
+        email=f"r4-delete-{task_type}-{task_status}@company.com",
+        password="password123",
+    )
+    file_id = await _create_file(uploader_id=uploader_id)
+    async with AsyncSessionFactory() as session:
+        task = SyncTask(
+            file_id=file_id,
+            task_type=task_type,
+            status=task_status,
+            retry_count=0,
+            max_retry_count=3,
+        )
+        session.add(task)
+        await session.commit()
+        await session.refresh(task)
+        task_id = task.id
+    client = FakeDeleteRagflowClient()
+    _patch_ragflow_client(monkeypatch, client)
+
+    await tasks.run_ragflow_delete_task_async(str(task_id))
+
+    async with AsyncSessionFactory() as session:
+        task = await session.get(SyncTask, task_id)
+        assert task is not None
+
+    assert task.status == task_status
+    assert task.finished_at is None
+    assert client.deletes == []
+
+
 async def test_ragflow_delete_worker_treats_remote_404_as_success(
     lifecycle_client: AsyncClient,
     monkeypatch: pytest.MonkeyPatch,
@@ -664,6 +714,80 @@ async def test_admin_manual_sync_failed_file_creates_task(
     )
 
     assert response.status_code == 200
+    assert response.json()["data"]["status"] == "queued"
+
+
+async def test_manual_sync_requires_allowlist_for_runtime_api_key(
+    lifecycle_client: AsyncClient,
+    monkeypatch: pytest.MonkeyPatch,
+    set_secret_system_config: Callable[[str, str], Awaitable[None]],
+) -> None:
+    from app.core.config import get_settings
+    from app.core.database import AsyncSessionFactory
+    from app.modules.document.models import File
+    from app.modules.ragflow.models import SyncTask
+
+    monkeypatch.delenv("RAGFLOW_ALLOWED_DATASET_IDS", raising=False)
+    get_settings.cache_clear()
+    await set_secret_system_config("ragflow.api_key", "sk-runtime-manual-abcd")
+    token = await _create_admin_token(lifecycle_client)
+    uploader_id = await _create_user(
+        email="r4-manual-sync-runtime-key@company.com",
+        password="password123",
+    )
+    file_id = await _create_file(
+        uploader_id=uploader_id,
+        status_value="approved",
+        review_status="approved",
+        ragflow_document_id=None,
+    )
+
+    response = await lifecycle_client.post(
+        f"/api/admin/files/{file_id}/sync",
+        headers={"Authorization": f"Bearer {token}"},
+    )
+
+    assert response.status_code == 400
+    assert response.json()["message"] == "ragflow dataset id is not allowed"
+    async with AsyncSessionFactory() as session:
+        file = await session.get(File, file_id)
+        task_result = await session.execute(select(SyncTask).where(SyncTask.file_id == file_id))
+        tasks = list(task_result.scalars())
+        assert file is not None
+
+    assert file.status == "approved"
+    assert tasks == []
+
+
+async def test_manual_sync_allows_runtime_api_key_when_dataset_is_allowed(
+    lifecycle_client: AsyncClient,
+    monkeypatch: pytest.MonkeyPatch,
+    set_secret_system_config: Callable[[str, str], Awaitable[None]],
+) -> None:
+    from app.core.config import get_settings
+
+    monkeypatch.setenv("RAGFLOW_ALLOWED_DATASET_IDS", "ragflow-r4-dataset")
+    get_settings.cache_clear()
+    await set_secret_system_config("ragflow.api_key", "sk-runtime-manual-allowed")
+    token = await _create_admin_token(lifecycle_client)
+    uploader_id = await _create_user(
+        email="r4-manual-sync-runtime-allowed@company.com",
+        password="password123",
+    )
+    file_id = await _create_file(
+        uploader_id=uploader_id,
+        status_value="approved",
+        review_status="approved",
+        ragflow_document_id=None,
+    )
+
+    response = await lifecycle_client.post(
+        f"/api/admin/files/{file_id}/sync",
+        headers={"Authorization": f"Bearer {token}"},
+    )
+
+    assert response.status_code == 200
+    assert response.json()["data"]["task_type"] == "ragflow_upload"
     assert response.json()["data"]["status"] == "queued"
 
 

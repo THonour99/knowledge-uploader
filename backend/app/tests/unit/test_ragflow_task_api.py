@@ -1525,6 +1525,66 @@ async def test_ragflow_upload_worker_enforces_dataset_allowlist(
     assert client.uploads == []
 
 
+async def test_ragflow_upload_worker_requires_allowlist_for_runtime_api_key(
+    task_client: AsyncClient,
+    monkeypatch: pytest.MonkeyPatch,
+    set_secret_system_config: Callable[[str, str], Awaitable[None]],
+) -> None:
+    from app.core.config import get_settings
+    from app.core.database import AsyncSessionFactory
+    from app.modules.ragflow import tasks
+    from app.modules.ragflow.models import SyncTask
+    from app.modules.ragflow.tasks import create_ragflow_upload_sync_task
+
+    token = await _create_admin_token(task_client)
+    uploader_id = await _create_user(
+        email="phase5-runtime-key-allowlist@company.com",
+        password="password123",
+    )
+    _, mapping_id = await _create_category_and_mapping(
+        task_client,
+        token,
+        ragflow_dataset_id="ragflow-runtime-no-allowlist",
+        ragflow_dataset_name="运行时 Key 知识库",
+    )
+    monkeypatch.delenv("RAGFLOW_ALLOWED_DATASET_IDS", raising=False)
+    get_settings.cache_clear()
+    await set_secret_system_config("ragflow.api_key", "sk-runtime-worker-abcd")
+    file_id = await _create_file(
+        uploader_id=uploader_id,
+        status_value="queued",
+        review_status="approved",
+        dataset_mapping_id=UUID(mapping_id),
+        ragflow_dataset_id="ragflow-runtime-no-allowlist",
+    )
+    async with AsyncSessionFactory() as session:
+        task_id = await create_ragflow_upload_sync_task(session=session, file_id=file_id)
+        await session.commit()
+
+    storage = _FakeReadableStorage(b"must not be read")
+    client = _FakeRagflowClient()
+    monkeypatch.setattr(tasks, "build_document_storage", lambda _settings: storage)
+
+    async def _fake_build_ragflow_client() -> object:
+        return client
+
+    monkeypatch.setattr(
+        tasks, "build_ragflow_client_from_runtime_config", _fake_build_ragflow_client
+    )
+
+    with pytest.raises(RuntimeError, match="RagflowSyncPreconditionError"):
+        await tasks.run_ragflow_upload_task_async(str(task_id))
+
+    async with AsyncSessionFactory() as session:
+        result = await session.execute(select(SyncTask).where(SyncTask.id == task_id))
+        task = result.scalar_one()
+
+    assert task.status == "failed"
+    assert task.error_message == "RagflowSyncPreconditionError"
+    assert storage.reads == []
+    assert client.uploads == []
+
+
 async def test_duplicate_running_worker_message_does_not_complete_task(
     task_client: AsyncClient,
 ) -> None:

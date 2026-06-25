@@ -66,16 +66,20 @@ for module_name in list(sys.modules):
         del sys.modules[module_name]
 
 SetSystemConfig = Callable[[str, object], Awaitable[None]]
+SetSecretSystemConfig = Callable[[str, str], Awaitable[None]]
 
 
 @pytest.fixture(autouse=True)
 def clear_runtime_config_cache() -> Generator[None, None, None]:
     """隔离 runtime_config 进程内 TTL 缓存, 防止配置值在测试间污染。"""
     from app.core import runtime_config
+    from app.core.config import get_settings
 
     runtime_config.invalidate()
+    get_settings.cache_clear()
     yield
     runtime_config.invalidate()
+    get_settings.cache_clear()
 
 
 @pytest.fixture
@@ -112,6 +116,46 @@ def set_system_config() -> SetSystemConfig:
                 )
             else:
                 row.value = value
+            await session.commit()
+        runtime_config.invalidate(key)
+
+    return _set
+
+
+@pytest.fixture
+def set_secret_system_config() -> SetSecretSystemConfig:
+    """向 system_configs 表 upsert 一个加密 secret 配置值。"""
+
+    async def _set(key: str, value: str) -> None:
+        from sqlalchemy import select
+
+        from app.core import runtime_config
+        from app.core.config import get_settings
+        from app.core.database import AsyncSessionFactory
+        from app.core.security import encrypt_secret
+        from app.modules.config.defaults import DEFINITIONS_BY_KEY
+        from app.modules.config.models import SystemConfig
+
+        definition = DEFINITIONS_BY_KEY[key]
+        if not definition.is_secret:
+            raise ValueError(f"config key is not secret: {key}")
+        encrypted_value = encrypt_secret(value, get_settings().encryption_key)
+        async with AsyncSessionFactory() as session:
+            result = await session.execute(select(SystemConfig).where(SystemConfig.key == key))
+            row = result.scalar_one_or_none()
+            if row is None:
+                session.add(
+                    SystemConfig(
+                        key=key,
+                        group=definition.group,
+                        value=encrypted_value,
+                        value_type=definition.value_type,
+                        is_secret=definition.is_secret,
+                        description=definition.description,
+                    )
+                )
+            else:
+                row.value = encrypted_value
             await session.commit()
         runtime_config.invalidate(key)
 

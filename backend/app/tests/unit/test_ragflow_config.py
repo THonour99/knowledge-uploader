@@ -361,6 +361,7 @@ async def test_sync_task_build_ragflow_client_uses_runtime_config(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """build_ragflow_client_from_runtime_config() passes DB config values to HttpRagflowClient."""
+    import app.core.ragflow_runtime as ragflow_runtime
     import app.modules.ragflow.tasks as tasks_module
 
     constructed_kwargs: dict[str, Any] = {}
@@ -378,7 +379,7 @@ async def test_sync_task_build_ragflow_client_uses_runtime_config(
             "ragflow.sync_timeout_seconds": 77,
         }.get(key)
 
-    monkeypatch.setattr(tasks_module, "get_config", _fake_get_config)
+    monkeypatch.setattr(ragflow_runtime, "get_config", _fake_get_config)
 
     await tasks_module.build_ragflow_client_from_runtime_config()
 
@@ -391,6 +392,7 @@ async def test_sync_task_build_ragflow_client_falls_back_to_settings(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """When runtime_config returns None, env-derived settings are used as fallback."""
+    import app.core.ragflow_runtime as ragflow_runtime
     import app.modules.ragflow.tasks as tasks_module
 
     constructed_kwargs: dict[str, Any] = {}
@@ -405,7 +407,7 @@ async def test_sync_task_build_ragflow_client_falls_back_to_settings(
     async def _fake_get_config(_key: str) -> object | None:
         return None
 
-    monkeypatch.setattr(tasks_module, "get_config", _fake_get_config)
+    monkeypatch.setattr(ragflow_runtime, "get_config", _fake_get_config)
 
     from app.core.config import get_settings
 

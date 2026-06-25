@@ -356,8 +356,39 @@ async def test_dept_admin_cannot_update_configs(config_client: AsyncClient) -> N
     assert items["upload.max_file_size_mb"]["value"] == 50
 
 
+async def test_system_admin_cannot_set_ragflow_api_key_without_dataset_allowlist(
+    config_client: AsyncClient,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from app.core.config import get_settings
+
+    monkeypatch.delenv("RAGFLOW_ALLOWED_DATASET_IDS", raising=False)
+    get_settings.cache_clear()
+    await _create_user(
+        email="config-no-allowlist-admin@company.com",
+        password="password123",
+        role="system_admin",
+    )
+    token = await _login(
+        config_client,
+        email="config-no-allowlist-admin@company.com",
+        password="password123",
+    )
+
+    response = await config_client.put(
+        "/api/admin/configs/ragflow",
+        headers={"Authorization": f"Bearer {token}"},
+        json={"items": {"ragflow.api_key": "sk-runtime-secret-abcd"}},
+    )
+
+    assert response.status_code == 400
+    assert response.json()["error_code"] == "VALIDATION_ERROR"
+    assert response.json()["message"] == "invalid config value for key: ragflow.api_key"
+
+
 async def test_secret_config_masked_in_response_and_encrypted_in_db(
     config_client: AsyncClient,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     from app.core.config import get_settings
     from app.core.database import AsyncSessionFactory
@@ -366,6 +397,8 @@ async def test_secret_config_masked_in_response_and_encrypted_in_db(
     from app.modules.config.models import SystemConfig
 
     plaintext = "sk-config-secret-abcd"
+    monkeypatch.setenv("RAGFLOW_ALLOWED_DATASET_IDS", "config-dataset")
+    get_settings.cache_clear()
     await _create_user(
         email="config-secret-admin@company.com",
         password="password123",

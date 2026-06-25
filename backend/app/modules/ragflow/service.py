@@ -18,6 +18,10 @@ from app.core.audit import record_admin_audit_log
 from app.core.config import get_settings
 from app.core.document_state import DocumentStateError, DocumentStateMachine
 from app.core.outbox import OutboxRepository
+from app.core.ragflow_runtime import (
+    is_ragflow_dataset_allowed,
+    resolve_ragflow_runtime_settings,
+)
 from app.core.runtime_config import get_config
 from app.modules.user.schemas import AuthUserRecord
 
@@ -338,6 +342,12 @@ class RagflowTaskService:
             and await block_critical_sensitive_sync()
         ):
             raise exceptions.sync_blocked_by_sensitive_policy()
+        try:
+            dataset_id = self._require_dataset_id(file)
+        except RagflowSyncPreconditionError as exc:
+            raise exceptions.file_not_syncable() from exc
+        if not await self._is_dataset_id_allowed(dataset_id):
+            raise exceptions.dataset_not_allowed()
         active_task = await self._repository.get_active_task(
             file_id=file_id,
             task_type=RAGFLOW_UPLOAD_TASK,
@@ -390,9 +400,16 @@ class RagflowTaskService:
             )
             raise
 
-    async def claim_running(self, task_id: uuid.UUID) -> bool:
+    async def claim_running(
+        self,
+        task_id: uuid.UUID,
+        *,
+        expected_task_types: set[str] | None = None,
+    ) -> bool:
         task = await self._get_task_for_update_or_raise(task_id)
         if task.status != "queued":
+            return False
+        if expected_task_types is not None and task.task_type not in expected_task_types:
             return False
         task.status = "running"
         task.started_at = datetime.now(UTC)
@@ -553,6 +570,8 @@ class RagflowTaskService:
         task = await self._get_task_for_update_or_raise(task_id)
         if task.status != "running":
             return task
+        if task.task_type != RAGFLOW_DELETE_TASK:
+            return task
 
         file = await self._repository.get_file_for_update(task.file_id)
         if file is None:
@@ -574,7 +593,7 @@ class RagflowTaskService:
             await self._session.commit()
             return await self.mark_succeeded(task_id)
 
-        dataset_id = self._require_dataset_id(file)
+        dataset_id = await self._require_dataset_id_allowed(file)
         await self._repository.add_log(
             task_id=task.id,
             status=task.status,
@@ -676,11 +695,7 @@ class RagflowTaskService:
         mapping = await self._repository.get_dataset_mapping(file.dataset_mapping_id)
         if mapping is None or not mapping.enabled or mapping.ragflow_dataset_id != dataset_id:
             raise RagflowSyncPreconditionError
-        settings = get_settings()
-        allowed_dataset_ids = _normalized_dataset_ids(settings.ragflow_allowed_dataset_ids)
-        if settings.ragflow_api_key.strip() and not allowed_dataset_ids:
-            raise RagflowSyncPreconditionError
-        if allowed_dataset_ids and dataset_id not in allowed_dataset_ids:
+        if not await self._is_dataset_id_allowed(dataset_id):
             raise RagflowSyncPreconditionError
         return dataset_id
 
@@ -688,6 +703,16 @@ class RagflowTaskService:
         if file.ragflow_dataset_id is None or not file.ragflow_dataset_id.strip():
             raise RagflowSyncPreconditionError
         return file.ragflow_dataset_id
+
+    async def _require_dataset_id_allowed(self, file: RagflowSyncFileRecord) -> str:
+        dataset_id = self._require_dataset_id(file)
+        if not await self._is_dataset_id_allowed(dataset_id):
+            raise RagflowSyncPreconditionError
+        return dataset_id
+
+    async def _is_dataset_id_allowed(self, dataset_id: str) -> bool:
+        runtime_settings = await resolve_ragflow_runtime_settings()
+        return is_ragflow_dataset_allowed(dataset_id, runtime_settings)
 
     async def _ensure_ai_sync_policy_allows(self, file: RagflowSyncFileRecord) -> None:
         if (
@@ -983,7 +1008,3 @@ def _raise_if_parse_not_terminal(parse_status: RagflowDocumentStatus) -> None:
         raise RagflowParseFailedError
     if not _is_success_run(run):
         raise RagflowParsePendingError
-
-
-def _normalized_dataset_ids(raw_value: str) -> set[str]:
-    return {item.strip() for item in raw_value.split(",") if item.strip()}

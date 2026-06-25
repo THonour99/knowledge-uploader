@@ -113,10 +113,10 @@ Remove-Item Env:\SEED_ADMIN_PASSWORD
 Compose 默认：
 
 ```env
-UVICORN_FORWARDED_ALLOW_IPS=*
+UVICORN_FORWARDED_ALLOW_IPS=127.0.0.1
 ```
 
-默认值适用于当前编排：公网入口是 `nginx`，后端宿主机端口默认只绑定 `127.0.0.1`。共享环境和生产环境如能固定反代来源 IP，应把 `UVICORN_FORWARDED_ALLOW_IPS` 收窄为精确 IP 列表，例如：
+默认值选择安全失效模式：后端不会信任任意来源的 `X-Forwarded-For`。Compose 入口 Nginx 会用 `$remote_addr` 覆盖客户端传入的 `X-Forwarded-For`，避免登录限流和审计 IP 被客户端伪造。共享环境和生产环境如能固定反代来源 IP，应把 `UVICORN_FORWARDED_ALLOW_IPS` 配置为精确 IP 列表，例如：
 
 ```env
 UVICORN_FORWARDED_ALLOW_IPS=127.0.0.1,172.18.0.5

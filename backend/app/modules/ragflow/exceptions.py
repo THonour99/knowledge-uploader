@@ -70,6 +70,14 @@ def file_not_syncable() -> RagflowTaskError:
     )
 
 
+def dataset_not_allowed() -> RagflowTaskError:
+    return RagflowTaskError(
+        ErrorCode.VALIDATION_ERROR,
+        "ragflow dataset id is not allowed",
+        status.HTTP_400_BAD_REQUEST,
+    )
+
+
 def sync_blocked_by_sensitive_policy() -> RagflowTaskError:
     return RagflowTaskError(
         ErrorCode.VALIDATION_ERROR,

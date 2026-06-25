@@ -10,6 +10,10 @@ from app.core.audit import record_admin_audit_log
 from app.core.config import get_settings
 from app.core.document_state import DocumentStateError, DocumentStateMachine
 from app.core.outbox import OutboxRepository
+from app.core.ragflow_runtime import (
+    is_ragflow_dataset_allowed,
+    resolve_ragflow_runtime_settings,
+)
 from app.core.runtime_config import get_config
 from app.modules.user.schemas import AuthUserRecord
 
@@ -894,8 +898,8 @@ class ReviewService:
         target_type: str,
         target_id: uuid.UUID,
     ) -> None:
-        allowed_dataset_ids = normalized_csv(get_settings().ragflow_allowed_dataset_ids)
-        if not allowed_dataset_ids or dataset_id in allowed_dataset_ids:
+        runtime_settings = await resolve_ragflow_runtime_settings()
+        if is_ragflow_dataset_allowed(dataset_id, runtime_settings):
             return
         await self._session.rollback()
         await self._record_admin_audit(
@@ -906,7 +910,7 @@ class ReviewService:
             context=context,
             metadata_json={
                 "ragflow_dataset_id": dataset_id,
-                "allowed_dataset_ids_count": len(allowed_dataset_ids),
+                "allowed_dataset_ids_count": len(runtime_settings.allowed_dataset_ids),
             },
         )
         await self._session.commit()
@@ -926,7 +930,3 @@ def clean_optional_text(value: str | None) -> str | None:
         return None
     cleaned = value.strip()
     return cleaned or None
-
-
-def normalized_csv(raw_value: str) -> set[str]:
-    return {item.strip() for item in raw_value.split(",") if item.strip()}

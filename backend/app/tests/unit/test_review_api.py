@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import os
-from collections.abc import AsyncGenerator
+from collections.abc import AsyncGenerator, Awaitable, Callable
 from uuid import UUID
 
 import pytest
@@ -767,6 +767,150 @@ async def test_system_admin_reviews_file_and_audit_log_is_written(
     assert outbox_events[-1].payload["file_id"] == str(file_id)
     assert outbox_events[-1].payload["status"] == "queued"
     assert outbox_events[-1].payload["ragflow_dataset_id"] == "ragflow-policy"
+
+
+async def test_runtime_ragflow_api_key_requires_dataset_allowlist_for_review_paths(
+    review_client: AsyncClient,
+    monkeypatch: pytest.MonkeyPatch,
+    set_secret_system_config: Callable[[str, str], Awaitable[None]],
+) -> None:
+    from app.core.config import get_settings
+    from app.core.database import AsyncSessionFactory
+    from app.modules.document.models import File
+    from app.modules.review.models import DatasetMapping
+
+    monkeypatch.delenv("RAGFLOW_ALLOWED_DATASET_IDS", raising=False)
+    get_settings.cache_clear()
+    await set_secret_system_config("ragflow.api_key", "sk-runtime-review-abcd")
+    uploader_id = await _create_user(
+        email="runtime-allowlist-uploader@company.com",
+        password="password123",
+    )
+    await _create_user(
+        email="runtime-allowlist-admin@company.com",
+        password="password123",
+        role="system_admin",
+    )
+    token = await _login(
+        review_client,
+        email="runtime-allowlist-admin@company.com",
+        password="password123",
+    )
+    category = (
+        await review_client.post(
+            "/api/categories",
+            headers={"Authorization": f"Bearer {token}"},
+            json={"name": "运行时 Key", "code": "runtime-key"},
+        )
+    ).json()["data"]
+
+    create_response = await review_client.post(
+        "/api/datasets",
+        headers={"Authorization": f"Bearer {token}"},
+        json={
+            "name": "Blocked Runtime Dataset",
+            "category_id": category["id"],
+            "ragflow_dataset_id": "runtime-blocked",
+            "ragflow_dataset_name": "Blocked",
+            "enabled": True,
+        },
+    )
+    async with AsyncSessionFactory() as session:
+        legacy_mapping = DatasetMapping(
+            name="Legacy Runtime Dataset",
+            category_id=UUID(category["id"]),
+            ragflow_dataset_id="legacy-runtime-dataset",
+            ragflow_dataset_name="Legacy",
+            enabled=True,
+        )
+        session.add(legacy_mapping)
+        await session.commit()
+        await session.refresh(legacy_mapping)
+        mapping_id = legacy_mapping.id
+    update_response = await review_client.patch(
+        f"/api/datasets/{mapping_id}",
+        headers={"Authorization": f"Bearer {token}"},
+        json={"ragflow_dataset_id": "runtime-updated"},
+    )
+    file_id = await _create_file(uploader_id=uploader_id, status_value="pending_review")
+    approve_response = await review_client.post(
+        f"/api/files/{file_id}/approve",
+        headers={"Authorization": f"Bearer {token}"},
+        json={"category_id": category["id"], "dataset_mapping_id": str(mapping_id)},
+    )
+
+    assert create_response.status_code == 400
+    assert update_response.status_code == 400
+    assert approve_response.status_code == 400
+    assert create_response.json()["message"] == "ragflow dataset id is not allowed"
+    assert update_response.json()["message"] == "ragflow dataset id is not allowed"
+    assert approve_response.json()["message"] == "ragflow dataset id is not allowed"
+    async with AsyncSessionFactory() as session:
+        file = await session.get(File, file_id)
+        mapping = await session.get(DatasetMapping, mapping_id)
+        assert file is not None
+        assert mapping is not None
+
+    assert file.status == "pending_review"
+    assert file.dataset_mapping_id is None
+    assert mapping.ragflow_dataset_id == "legacy-runtime-dataset"
+
+
+async def test_runtime_ragflow_api_key_allows_dataset_in_allowlist_for_review_paths(
+    review_client: AsyncClient,
+    monkeypatch: pytest.MonkeyPatch,
+    set_secret_system_config: Callable[[str, str], Awaitable[None]],
+) -> None:
+    from app.core.config import get_settings
+
+    monkeypatch.setenv("RAGFLOW_ALLOWED_DATASET_IDS", "runtime-allowed")
+    get_settings.cache_clear()
+    await set_secret_system_config("ragflow.api_key", "sk-runtime-review-allowed")
+    uploader_id = await _create_user(
+        email="runtime-allowed-uploader@company.com",
+        password="password123",
+    )
+    await _create_user(
+        email="runtime-allowed-admin@company.com",
+        password="password123",
+        role="system_admin",
+    )
+    token = await _login(
+        review_client,
+        email="runtime-allowed-admin@company.com",
+        password="password123",
+    )
+    category = (
+        await review_client.post(
+            "/api/categories",
+            headers={"Authorization": f"Bearer {token}"},
+            json={"name": "运行时允许", "code": "runtime-allowed"},
+        )
+    ).json()["data"]
+    dataset_response = await review_client.post(
+        "/api/datasets",
+        headers={"Authorization": f"Bearer {token}"},
+        json={
+            "name": "Runtime Allowed Dataset",
+            "category_id": category["id"],
+            "ragflow_dataset_id": "runtime-allowed",
+            "ragflow_dataset_name": "Allowed",
+            "enabled": True,
+        },
+    )
+    dataset = dataset_response.json()["data"]
+    file_id = await _create_file(uploader_id=uploader_id, status_value="pending_review")
+    approve_response = await review_client.post(
+        f"/api/files/{file_id}/approve",
+        headers={"Authorization": f"Bearer {token}"},
+        json={"category_id": category["id"], "dataset_mapping_id": dataset["id"]},
+    )
+
+    assert dataset_response.status_code == 201
+    assert approve_response.status_code == 200
+    approved = approve_response.json()["data"]
+    assert approved["status"] == "queued"
+    assert approved["ragflow_dataset_id"] == "runtime-allowed"
 
 
 async def test_review_rejects_dataset_mapping_removed_from_allowlist(
