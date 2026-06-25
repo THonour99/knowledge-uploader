@@ -18,7 +18,7 @@ Phase 5 implements the real RAGFlow sync boundary behind the Phase 4 task queue:
 
 ## Configuration
 
-The following RAGFlow settings are defined consistently in `Settings`, `docker-compose.yml`, `.env.example`, and `knowledge_uploader_docs/07_DEPLOYMENT_ENV_部署与环境配置.md`:
+The following RAGFlow settings are defined consistently in `Settings`, `docker-compose.yml`, `.env.example`, and `需求文档/07_DEPLOYMENT_ENV_部署与环境配置.md`:
 
 ```env
 RAGFLOW_BASE_URL=http://ragflow:9380
@@ -139,7 +139,7 @@ Authenticated external upload was not run because the API key was provided in ch
 - `backend/app/tests/unit/test_ragflow_client.py`
 - `backend/app/tests/unit/test_ragflow_task_api.py`
 - `docker-compose.yml`
-- `knowledge_uploader_docs/07_DEPLOYMENT_ENV_部署与环境配置.md`
+- `需求文档/07_DEPLOYMENT_ENV_部署与环境配置.md`
 - `nginx/default.conf`
 
 ## Residual Risk

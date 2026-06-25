@@ -8,12 +8,12 @@
 
 ## 2. 必读文档（按优先级）
 
-1. `knowledge_uploader_docs/02_ARCHITECTURE_最终架构设计.md` — 架构定版
-2. `knowledge_uploader_docs/03_BACKEND_SPEC_后端开发规范.md` — 后端模块边界
-3. `knowledge_uploader_docs/05_DATABASE_API_SPEC_数据库与API规范.md` — 表与 API
-4. `knowledge_uploader_docs/07_DEPLOYMENT_ENV_部署与环境配置.md` — 12 个服务
-5. `knowledge_uploader_docs/08_TASK_BREAKDOWN_开发任务拆解.md` — 9 阶段任务
-6. `knowledge_platform_design_package/design.md` — UI 视觉权威源（实施后位于 `docs/design/`）
+1. `需求文档/02_ARCHITECTURE_最终架构设计.md` — 架构定版
+2. `需求文档/03_BACKEND_SPEC_后端开发规范.md` — 后端模块边界
+3. `需求文档/05_DATABASE_API_SPEC_数据库与API规范.md` — 表与 API
+4. `需求文档/07_DEPLOYMENT_ENV_部署与环境配置.md` — 12 个服务
+5. `需求文档/08_TASK_BREAKDOWN_开发任务拆解.md` — 9 阶段任务
+6. `docs/design/design.md` — UI 视觉权威源
 7. `docs/spark/2026-06-04-p0-implementation-supplement.md` — 跨平台 / 事件总线 / 目录 / 版本锁 / 前端设计落地
 
 ## 3. 项目根与目录
@@ -22,7 +22,7 @@
 - 后端：`backend/`
 - 前端：`frontend/`
 - 配置：`docker-compose.yml` + `nginx/` + `deploy/`
-- 文档：`knowledge_uploader_docs/`（spec）、`knowledge_platform_design_package/`（设计稿，将迁移到 `docs/design/`）、`docs/spark/`（补充 spec）
+- 文档：`需求文档/`（spec）、`docs/design/`（设计稿）、`docs/spark/`（补充 spec）
 
 ## 4. 架构红线（不可逾越）
 
@@ -111,7 +111,7 @@ modules/<module>/
 - 覆盖：core / utils / repository 必有单测；每个 API 至少 1 happy + 1 failure
 - E2E：上传 → 审核 → RAGFlow 同步全链路（mock RAGFlow + mock LLM）
 - 测试不依赖外网（CI 无外网）
-- 命令：`invoke test`
+- 命令：日常聚焦用 `invoke test-backend -k "..."` / `invoke test-frontend`；提交前用 `invoke check`；发布前用 `invoke ship`。
 
 ## 12. 提交规范
 
@@ -154,7 +154,7 @@ test(ai): 补全 Prompt 模板渲染单测
 
 ## 13. 阶段化开发（不可跳）
 
-按 `knowledge_uploader_docs/08_TASK_BREAKDOWN.md` 9 阶段顺序推进。每阶段必须：
+按 `需求文档/08_TASK_BREAKDOWN_开发任务拆解.md` 9 阶段顺序推进。每阶段必须：
 
 - `invoke up` 能起所有容器
 - `/api/system/health` 返回 200
@@ -174,10 +174,17 @@ invoke logs --service=backend-api
 invoke migrate --msg="add users"   # 创建迁移
 invoke migrate                      # 升级到最新
 
-# 测试与质量
-invoke test
-invoke test -k "test_login"
-invoke lint
+# 日常聚焦测试与质量
+invoke test-backend -k "test_login"
+invoke test-frontend
+invoke lint-backend
+invoke lint-frontend
+
+# 聚合门禁
+invoke check
+invoke ship
+
+# 格式化
 invoke fmt
 
 # 跨架构
@@ -208,7 +215,7 @@ invoke build-arm64 --version=0.1.0
 权威标准见 `docs/quality/definition-of-done.md`。硬规则：
 
 - **完成判定权不在执行者手里**。改了 `backend/app/**` / `frontend/src/**` 后，主代理不得自称"完成"。
-- "完成" = 通过**四方独立审查**且全绿：事实层（`invoke review`）+ `quality-reviewer` + `security-auditor` + `red-team`。
+- "完成" = 通过**四方独立审查**且全绿：事实层（`invoke check` / `invoke check-arm64`，或聚合入口 `invoke ship`）+ `quality-reviewer` + `security-auditor` + `red-team`。
 - 审计查"该做的做了没"，红队"写会失败的 pytest 弄坏它"——两者不可互替；红队发现必须有**跑红测试**为证（杜绝幻觉漏洞）。
 - 改了源码 → PostToolUse 写 `.claude/artifacts/gate-state/pending.json`；主代理想结束 → Stop hook（`adversarial-gate.ps1`）检测到标记就打回，要求先跑 `/ship-gate`；四方全绿后 ship-gate 清除标记才放行。
 - 绕过完成门的权力**只在人手里**（人工创建 `.claude/artifacts/gate-state/override`）；主代理不得自我放行。

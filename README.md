@@ -6,7 +6,7 @@
 
 ## 当前交付
 
-本仓库已按 `knowledge_uploader_docs/08_TASK_BREAKDOWN_开发任务拆解.md` 推进到阶段 9，包含：
+本仓库已按 `需求文档/08_TASK_BREAKDOWN_开发任务拆解.md` 推进到阶段 9，包含：
 
 - FastAPI 后端、React + TypeScript 前端、Nginx 反向代理。
 - PostgreSQL 16、RabbitMQ、Redis、MinIO、Celery Worker、Outbox Dispatcher、Scheduler 的 Docker Compose 编排。
@@ -180,23 +180,30 @@ invoke logs --service=backend-api
 invoke migrate
 invoke migrate --msg="add users"
 
-# 质量与测试
-invoke lint
-invoke test
+# 日常聚焦检查
+invoke lint-backend
+invoke test-backend -k "test_login"
+invoke lint-frontend
+invoke test-frontend
+
+# 提交前与发布前门禁
+invoke check
+invoke ship
+
+# 格式化与 ARM64
 invoke fmt
 invoke check-arm64
-
-# ARM64 镜像
 invoke build-arm64 --version=0.1.0
 ```
 
 ## 文档索引
 
 - `docs/api.md`：当前 API 端点、认证、响应 envelope 和权限边界。
+- `docs/development.md`：开发命令分层、目录职责和本地/CI 门禁关系。
 - `docs/deployment.md`：Compose 服务、环境变量、RAGFlow、AI、生产部署和 ARM64 注意事项。
 - `docs/testing.md`：主要流程测试覆盖矩阵和验收命令。
 - `docs/faq.md`：端口、迁移、MinIO、RAGFlow、AI、前端构建等常见问题。
-- `knowledge_uploader_docs/`：阶段规格与架构文档。
+- `需求文档/`：阶段规格与架构文档。
 - `AGENTS.md`：项目级 AI 工程师规则。
 
 ## 关键约束

@@ -543,7 +543,7 @@ Vitest 覆盖较薄，**仅 3 个测试文件**：
 - 前端：`frontend/src/pages/`（14 页面）、`frontend/src/router/`、`frontend/src/store/`、`frontend/src/api/client.ts`、`frontend/src/theme/`、`frontend/src/components/StatusTag`
 - 测试：`backend/app/tests/unit/`、`backend/app/tests/e2e/`、`frontend/src/**/*.test.{ts,tsx}`
 - 安全/红线：JWT/Argon2/Fernet、`app/core/audit.py`、`app/core/events.py`、`app/workers/outbox_dispatcher.py`、`app/modules/ragflow/sync_locks.py`、`DocumentStateMachine`
-- spec：CLAUDE.md §1-§16 + `knowledge_uploader_docs/02-08`（按 spec 期望反查实现）
+- spec：CLAUDE.md §1-§16 + `需求文档/02-08`（按 spec 期望反查实现）
 
 ### 8.3 未覆盖部分（已知盲区）
 
@@ -561,10 +561,10 @@ Vitest 覆盖较薄，**仅 3 个测试文件**：
 ### 8.4 审计依据 spec 文档
 
 - `CLAUDE.md` §1-§16（项目级规则）
-- `knowledge_uploader_docs/02_ARCHITECTURE_最终架构设计.md`
-- `knowledge_uploader_docs/03_BACKEND_SPEC_后端开发规范.md`
-- `knowledge_uploader_docs/05_DATABASE_API_SPEC_数据库与API规范.md`
-- `knowledge_uploader_docs/07_DEPLOYMENT_ENV_部署与环境配置.md`
-- `knowledge_uploader_docs/08_TASK_BREAKDOWN_开发任务拆解.md`
+- `需求文档/02_ARCHITECTURE_最终架构设计.md`
+- `需求文档/03_BACKEND_SPEC_后端开发规范.md`
+- `需求文档/05_DATABASE_API_SPEC_数据库与API规范.md`
+- `需求文档/07_DEPLOYMENT_ENV_部署与环境配置.md`
+- `需求文档/08_TASK_BREAKDOWN_开发任务拆解.md`
 - `docs/spark/2026-06-04-p0-implementation-supplement.md`（按 §3 引用）
 - `.claude/rules/backend.md` / `frontend.md` / `infra.md` / `tests.md`（按 §16 路径约定）

@@ -17,11 +17,11 @@
 - Create: `README.md`
 - Create: `pyproject.toml`
 - Create: `tasks.py`
-- Create: `docs/design/` from `knowledge_platform_design_package/`
+- Create or verify: `docs/design/` as the current design source
 
 - [ ] **Step 1: Add configuration and task-runner files**
 
-Create root environment defaults from `knowledge_uploader_docs/07_DEPLOYMENT_ENV_部署与环境配置.md` and `docs/spark/2026-06-04-p0-implementation-supplement.md`.
+Create root environment defaults from `需求文档/07_DEPLOYMENT_ENV_部署与环境配置.md` and `docs/spark/2026-06-04-p0-implementation-supplement.md`.
 
 - [ ] **Step 2: Add README**
 
@@ -29,7 +29,7 @@ Document the phase 0 purpose, service graph, and commands: `invoke up`, `invoke 
 
 - [ ] **Step 3: Copy design assets**
 
-Copy `knowledge_platform_design_package/design.md` to `docs/design/design.md` and copy all PNG files to `docs/design/images/`, preserving the original package.
+Ensure `docs/design/design.md` exists and PNG files are available under `docs/design/images/`.
 
 - [ ] **Step 4: Verify root config**
 
@@ -216,4 +216,4 @@ Use a focused commit message matching `type(scope):中文描述`.
 
 - Phase 0 only creates runnable scaffolding. Auth, file upload, review, RAGFlow sync, AI analysis, statistics, audit, and E2E behavior remain for phases 1-9.
 - The existing untracked `.agents/`, `.codex/`, and `AGENTS.md` files are treated as user/project rule assets and must not be reverted.
-- `knowledge_platform_design_package/` remains in place; phase 0 copies it into `docs/design/` for implementation use.
+- Design assets now live in `docs/design/` for implementation use.

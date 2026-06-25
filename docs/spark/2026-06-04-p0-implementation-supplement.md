@@ -1,11 +1,11 @@
 # P0 实施补充 Spec
 
-> **本文档不替代任何已有文档，仅补足 `knowledge_uploader_docs/` 10 份文档的 4 个明显缺口与 4 个内部不一致。**
+> **本文档不替代任何已有文档，仅补足 `需求文档/` 10 份文档的 4 个明显缺口与 4 个内部不一致。**
 
 - 文档版本：v1.0
 - 日期：2026-06-04
 - 项目代号：Knowledge Uploader
-- 上游文档：`knowledge_uploader_docs/01` ~ `knowledge_uploader_docs/10`
+- 上游文档：`需求文档/01` ~ `需求文档/10`
 - 触发原因：用户明确"本机 Windows 开发 → DGX Spark (ARM64) 部署"的跨架构约束，原文档未覆盖
 - 适用范围：项目实施前（阶段 0）必读；阶段 0~9 全程引用
 
@@ -15,7 +15,7 @@
 
 ```text
 ┌──────────────────────────────────────────────────────┐
-│   knowledge_uploader_docs/  (上游 10 份, v1.0)        │
+│   需求文档/  (上游 10 份, v1.0)        │
 │   ├── 01 PRD                                          │
 │   ├── 02 ARCHITECTURE          ← 架构最终版本           │
 │   ├── 03 BACKEND_SPEC          ← 后端模块规范           │
@@ -31,7 +31,7 @@
                           │ 补充而非替代
                           │
 ┌──────────────────────────────────────────────────────┐
-│   knowledge_platform_design_package/  (UI 权威源)     │
+│   docs/design/  (UI 权威源)                         │
 │   ├── design.md                ← 视觉/布局/组件/路由     │
 │   └── images/                  ← 12 张高保真原稿        │
 │         01_dashboard.png ~ 12_system_settings.png    │
@@ -73,12 +73,12 @@
 | 模块间通信 | 03 提模块边界但无约束 | **禁止跨模块直接 import service**；只能走事件总线/共享 schemas/core | 详见 §4 |
 | 行尾 | 未指定 | **全仓库 LF**，通过 `.gitattributes` 强制 | |
 | 编码 | 未指定 | **PYTHONUTF8=1**，全仓库 UTF-8 无 BOM | |
-| 工程目录 | `knowledge_uploader_docs/` | 项目根目录改名 **`knowledge_uploader/`**（详见 §4.1） | |
-| UI 权威源 | 04_FRONTEND_SPEC（文字描述） | `knowledge_platform_design_package/`（高保真原稿 + design.md） | 视觉/布局/组件/路由以 design 包为准；详见 §9 |
+| 工程目录 | `需求文档/` | 当前项目根为 **`E:\知识库系统搭建\RAGFlow\`**（详见 §4.2） | |
+| UI 权威源 | 04_FRONTEND_SPEC（文字描述） | `docs/design/`（高保真原稿 + design.md） | 视觉/布局/组件/路由以 design 包为准；详见 §9 |
 | 前端页面数 | 04_FRONTEND_SPEC 16 个 | design.md **12 个**（AI 配置子页合并、统计合并、ForgotPassword/ResetPassword 暂列后续） | 与 design.md 对齐；详见 §7.5 |
 | 设计色板 | 未指定 | **#1677FF 主色** + Ant Design 5 默认色系（design.md §2.2） | 锁定 |
 | 前端组件库 | Ant Design | Ant Design **5 + @ant-design/pro-components**（design 包的 KPI 卡 / 表格 / 表单基于 Pro 组件） | |
-| 设计包位置 | — | 阶段 0 实施时 `mv knowledge_platform_design_package/ knowledge_uploader/docs/design/` | |
+| 设计包位置 | — | 当前实现为 `docs/design/` | |
 
 **不变更的部分**（上游文档已确定）：
 - 模块化单体 + 多 Worker 容器部署
@@ -730,7 +730,7 @@ Queue:    knowledge.events.dlq (绑定 #.#)
 ### 4.1 仓库总目录
 
 ```text
-knowledge_uploader/                   ← 项目根（注意不是 knowledge_uploader_docs/）
+RAGFlow/                             ← 当前项目根（即本仓库根）
 ├── .gitattributes                    ← §2.4
 ├── .editorconfig                     ← §2.4
 ├── .gitignore
@@ -803,12 +803,11 @@ knowledge_uploader/                   ← 项目根（注意不是 knowledge_upl
         └── gitea-actions.yml
 ```
 
-### 4.2 项目根改名说明
+### 4.2 当前项目根说明
 
-**当前**：`E:\知识库系统搭建\RAGFlow\` 下有 `knowledge_uploader_docs/`，但没有代码根。
-**实施时**：在 `E:\知识库系统搭建\RAGFlow\` 下新建 `knowledge_uploader/` 作为代码根；`knowledge_uploader_docs/` 保留为文档区，可考虑后续 mv 进 `knowledge_uploader/docs/spec/`。
+**当前实现**：`E:\知识库系统搭建\RAGFlow\` 就是项目根，`backend/`、`frontend/`、`docs/`、`需求文档/` 与 `docker-compose.yml` 均位于该根目录下。
 
-阶段 0 不强制迁移文档目录，避免改路径影响现有引用。
+后续工作不得再新建嵌套的 `knowledge_uploader` 子目录作为代码根；历史文档中的嵌套根目录设想已废弃。
 
 ### 4.3 `backend/app/core/` —— 共享内核
 
@@ -990,7 +989,7 @@ CI 阶段 ruff 检查自动阻止违规。
 
 ### 4.11 前端目录细化
 
-> 路由与页面以 `knowledge_platform_design_package/design.md` §3 §7.1 为准（12 个页面），不再按 04_FRONTEND_SPEC §2 的 16 个。
+> 路由与页面以 `docs/design/design.md` §3 §7.1 为准（12 个页面），不再按 04_FRONTEND_SPEC §2 的 16 个。
 
 ```text
 frontend/src/
@@ -1074,7 +1073,7 @@ frontend/src/
 
 ## 5. CLAUDE.md 内容草案 [缺口 4]
 
-**位置**：`knowledge_uploader/CLAUDE.md`（项目根，与 `backend/`、`frontend/` 同级）
+**位置**：`CLAUDE.md`（项目根，与 `backend/`、`frontend/` 同级）
 
 **内容**：见下方完整草案。实施时直接复制为 `CLAUDE.md`。
 
@@ -1089,11 +1088,11 @@ frontend/src/
 
 ## 2. 必读文档（按优先级）
 
-1. `knowledge_uploader_docs/02_ARCHITECTURE_最终架构设计.md` — 架构定版
-2. `knowledge_uploader_docs/03_BACKEND_SPEC_后端开发规范.md` — 后端模块边界
-3. `knowledge_uploader_docs/05_DATABASE_API_SPEC_数据库与API规范.md` — 表与 API
-4. `knowledge_uploader_docs/07_DEPLOYMENT_ENV_部署与环境配置.md` — 11 个服务
-5. `knowledge_uploader_docs/08_TASK_BREAKDOWN_开发任务拆解.md` — 9 阶段任务
+1. `需求文档/02_ARCHITECTURE_最终架构设计.md` — 架构定版
+2. `需求文档/03_BACKEND_SPEC_后端开发规范.md` — 后端模块边界
+3. `需求文档/05_DATABASE_API_SPEC_数据库与API规范.md` — 表与 API
+4. `需求文档/07_DEPLOYMENT_ENV_部署与环境配置.md` — 11 个服务
+5. `需求文档/08_TASK_BREAKDOWN_开发任务拆解.md` — 9 阶段任务
 6. `docs/spark/2026-06-04-p0-implementation-supplement.md` — 跨平台/事件总线/目录结构/版本锁
 
 ## 3. 架构红线（不可逾越）
@@ -1471,7 +1470,7 @@ invoke==2.2.0
 
 ### 8.1 仓库与规范
 
-- [ ] 在 `E:\知识库系统搭建\RAGFlow\` 下创建 `knowledge_uploader/` 项目根
+- [x] 使用 `E:\知识库系统搭建\RAGFlow\` 作为当前项目根
 - [ ] `git init`
 - [ ] `.gitattributes` 写入（§2.4 模板）
 - [ ] `.editorconfig` 写入（§2.4 模板）
@@ -1482,7 +1481,7 @@ invoke==2.2.0
 - [ ] `README.md`（简介 + 启动命令）
 - [ ] `pyproject.toml`（ruff + mypy + pytest 配置）
 - [ ] `tasks.py`（invoke 任务，§2.8 模板）
-- [ ] 迁移 design 包：`mv knowledge_platform_design_package/ knowledge_uploader/docs/design/`
+- [x] 设计资料位于 `docs/design/`
 
 ### 8.2 后端骨架
 
@@ -1546,14 +1545,14 @@ invoke==2.2.0
 
 ## 9. 前端设计实现指南 [整合 design 包]
 
-> 本章整合 `knowledge_platform_design_package/`，把视觉与交互规范落地为可执行的前端实现约定。设计稿是视觉权威源，本章是工程权威源。
+> 本章整合 `docs/design/`，把视觉与交互规范落地为可执行的前端实现约定。设计稿是视觉权威源，本章是工程权威源。
 
 ### 9.1 设计权威源与维护
 
 | 资产 | 位置（阶段 0 后） | 性质 |
 |---|---|---|
-| `design.md` | `knowledge_uploader/docs/design/design.md` | 视觉/交互规范文档 |
-| `images/*.png` | `knowledge_uploader/docs/design/images/` | 12 张高保真原稿（仅参考方向） |
+| `design.md` | `docs/design/design.md` | 视觉/交互规范文档 |
+| `images/*.png` | `docs/design/images/` | 12 张高保真原稿（仅参考方向） |
 | `theme/tokens.ts` | `frontend/src/theme/tokens.ts` | 设计 token 代码化 |
 | `theme/antd-theme.ts` | `frontend/src/theme/antd-theme.ts` | Ant Design 主题对接 |
 
@@ -1883,7 +1882,7 @@ design.md §8.3 已规定：
 | 版本 | 日期 | 修改 |
 |---|---|---|
 | v1.0 | 2026-06-04 | 初版。覆盖跨平台跨架构、域事件总线、文件级目录、CLAUDE.md、版本锁、上游不一致修正、阶段 0 checklist |
-| v1.1 | 2026-06-04 | 整合 `knowledge_platform_design_package/`。新增 §9 前端设计实现指南、§7.5 / §7.6 前端不一致修正、§1 决策摘要 5 项新增、§4.11 前端结构对齐 12 路由 + 全局 Layout、§8 checklist 加入设计 token / Layout 实现项 |
+| v1.1 | 2026-06-04 | 整合 `docs/design/`。新增 §9 前端设计实现指南、§7.5 / §7.6 前端不一致修正、§1 决策摘要 5 项新增、§4.11 前端结构对齐 12 路由 + 全局 Layout、§8 checklist 加入设计 token / Layout 实现项 |
 
 ---
 

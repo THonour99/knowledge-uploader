@@ -8,29 +8,57 @@
 
 ## 命令
 
-完整验收命令：
+推荐入口：
+
+```powershell
+# 日常后端开发
+invoke lint-backend
+invoke test-backend -k "config or health"
+
+# 日常前端开发
+invoke lint-frontend
+invoke test-frontend
+
+# 提交前事实层门禁
+invoke check
+
+# 发布/合并前事实层门禁
+invoke ship
+```
+
+Invoke 门禁等价展开命令：
 
 ```powershell
 docker compose run --rm backend-api ruff check app
 python scripts/check_module_boundaries.py
 docker compose run --rm backend-api mypy app
 docker compose run --rm backend-api pytest -q
-npm --prefix frontend test -- --run
 npm --prefix frontend run lint
+npm --prefix frontend run test:run
+python scripts/check_arm64_wheels.py backend/requirements.txt backend/requirements-dev.txt
+```
+
+阶段验收附加命令：
+
+```powershell
 npm --prefix frontend run build
 docker compose up -d --build
 docker compose exec backend-api alembic upgrade head
 curl http://localhost:18000/api/system/health
 ```
 
-常用封装：
+`invoke test` 和 `invoke lint` 保留为兼容聚合入口；新开发和排错优先使用 backend/frontend 细分入口。
 
-```powershell
-invoke lint
-invoke test
-invoke up
-invoke migrate
-```
+## 测试目录
+
+| 路径 | 职责 |
+|---|---|
+| `backend/app/tests/unit/` | 单模块或轻量 API/Service 回归。 |
+| `backend/app/tests/integration/` | 需要多个模块或外部依赖替身的集成测试。 |
+| `backend/app/tests/e2e/` | 上传、审核、RAGFlow 同步等端到端链路。 |
+| `backend/app/tests/red_team/` | 对抗性测试，验证已知漏洞和权限边界不可绕过。 |
+| `frontend/src/**/*.test.{ts,tsx}` | 前端组件、页面和交互测试。 |
+| `frontend/e2e/` | 浏览器验收脚本。 |
 
 ## 覆盖矩阵
 

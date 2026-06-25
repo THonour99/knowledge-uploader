@@ -7,7 +7,7 @@ PR：https://github.com/THonour99/knowledge-uploader/pull/12
 
 ## 目标
 
-按 `knowledge_uploader_docs/08_TASK_BREAKDOWN_开发任务拆解.md` 阶段 9 要求交付：
+按 `需求文档/08_TASK_BREAKDOWN_开发任务拆解.md` 阶段 9 要求交付：
 
 - README
 - `.env.example`

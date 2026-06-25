@@ -7,7 +7,7 @@ if errorlevel 1 exit /b 1
 
 if /I "%~1"=="check" (
     echo This script runs the full Docker-oriented verification when called without check.
-    echo Commands: python -m invoke up, migrate, lint, test
+    echo Commands: python -m invoke up, migrate, check
     exit /b 0
 )
 
@@ -18,8 +18,5 @@ if errorlevel 1 exit /b 1
 python -m invoke migrate
 if errorlevel 1 exit /b 1
 
-python -m invoke lint
-if errorlevel 1 exit /b 1
-
-python -m invoke test
+python -m invoke check
 exit /b %errorlevel%

@@ -113,7 +113,7 @@ modules/<module>/
 - 覆盖：core / utils / repository 必有单测；每个 API 至少 1 happy + 1 failure
 - E2E：上传 → 审核 → RAGFlow 同步全链路（mock RAGFlow + mock LLM）
 - 测试不依赖外网（CI 无外网）
-- 命令：`invoke test`
+- 命令：日常聚焦用 `invoke test-backend -k "..."` / `invoke test-frontend`；提交前用 `invoke check`；发布前用 `invoke ship`。
 
 ## 12. 提交规范
 
@@ -176,10 +176,17 @@ invoke logs --service=backend-api
 invoke migrate --msg="add users"   # 创建迁移
 invoke migrate                      # 升级到最新
 
-# 测试与质量
-invoke test
-invoke test -k "test_login"
-invoke lint
+# 日常聚焦测试与质量
+invoke test-backend -k "test_login"
+invoke test-frontend
+invoke lint-backend
+invoke lint-frontend
+
+# 聚合门禁
+invoke check
+invoke ship
+
+# 格式化
 invoke fmt
 
 # 跨架构
