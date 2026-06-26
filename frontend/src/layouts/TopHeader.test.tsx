@@ -1,11 +1,16 @@
 import type { CSSProperties, ReactNode } from "react";
 import { App as AntdApp, ConfigProvider } from "antd";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { MemoryRouter } from "react-router-dom";
 import { afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 
-import { getSystemHealth, listNotifications, type NotificationListResponse } from "../api/client";
+import {
+  getSystemHealth,
+  getSystemReadiness,
+  listNotifications,
+  type NotificationListResponse,
+} from "../api/client";
 import type * as ApiClientModule from "../api/client";
 import { useAuthStore } from "../store/auth.store";
 import { themeCssVariables } from "../theme/tokens";
@@ -17,6 +22,7 @@ vi.mock("../api/client", async () => {
   return {
     ...actual,
     getSystemHealth: vi.fn(),
+    getSystemReadiness: vi.fn(),
     listNotifications: vi.fn(),
     logout: vi.fn(),
   };
@@ -102,6 +108,15 @@ afterEach(() => {
 describe("TopHeader", () => {
   it("renders notification status and unread notification preview", async () => {
     vi.mocked(getSystemHealth).mockResolvedValue({ status: "ok" });
+    vi.mocked(getSystemReadiness).mockResolvedValue({
+      status: "ok",
+      dependencies: {
+        database: { status: "ok" },
+        rabbitmq: { status: "ok" },
+        redis: { status: "ok" },
+        minio: { status: "ok" },
+      },
+    });
     vi.mocked(listNotifications).mockResolvedValue(mockNotifications);
     useAuthStore.setState({
       accessToken: "token",
@@ -119,7 +134,11 @@ describe("TopHeader", () => {
       expect(listNotifications).toHaveBeenCalledWith({ page: 1, page_size: 5 });
     });
 
-    expect(await screen.findByText("API 已连接")).toBeInTheDocument();
+    const statusBar = screen.getByLabelText("顶部状态栏");
+    expect(await within(statusBar).findByText("API")).toBeInTheDocument();
+    expect(statusBar).toHaveTextContent("队列");
+    expect(statusBar).toHaveTextContent("存储");
+    expect(within(statusBar).getAllByText("正常")).toHaveLength(3);
     expect(screen.getByText("API /api")).toBeInTheDocument();
     expect(screen.getByText("仪表盘")).toBeInTheDocument();
     expect(screen.getByText("王明")).toBeInTheDocument();

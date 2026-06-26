@@ -1,9 +1,7 @@
 import { useEffect, useMemo, useState } from "react";
 import {
   BellOutlined,
-  CheckCircleOutlined,
   DownOutlined,
-  ExclamationCircleOutlined,
   LeftOutlined,
   LogoutOutlined,
   ProfileOutlined,
@@ -15,9 +13,18 @@ import { useQuery } from "@tanstack/react-query";
 import dayjs from "dayjs";
 import { useLocation, useNavigate } from "react-router-dom";
 
-import { getApiBaseUrl, getSystemHealth, listNotifications, logout } from "../api/client";
+import {
+  getApiBaseUrl,
+  getSystemHealth,
+  getSystemReadiness,
+  listNotifications,
+  logout,
+} from "../api/client";
+import { StatusTag } from "../components/StatusTag";
 import { appNavigationRoutes, utilityNavigation } from "../router/routes";
 import { useAuthStore } from "../store/auth.store";
+
+type HealthStatusValue = "ok" | "error" | "unknown";
 
 function getHeaderTitle(pathname: string): string {
   if (pathname.startsWith("/files/")) {
@@ -53,6 +60,33 @@ function formatNotificationTime(value: string): string {
   return createdAt.format("MM-DD HH:mm");
 }
 
+function resolveApiHealth(
+  status: string | undefined,
+  isError: boolean,
+  isPending: boolean,
+): HealthStatusValue {
+  if (isError) {
+    return "error";
+  }
+  if (isPending) {
+    return "unknown";
+  }
+  return status === "ok" ? "ok" : "unknown";
+}
+
+function resolveDependencyHealth(
+  status: string | undefined,
+  isError: boolean,
+): HealthStatusValue {
+  if (isError) {
+    return "error";
+  }
+  if (status === "ok" || status === "error") {
+    return status;
+  }
+  return "unknown";
+}
+
 export function TopHeader() {
   const navigate = useNavigate();
   const location = useLocation();
@@ -81,16 +115,39 @@ export function TopHeader() {
     staleTime: 30_000,
     refetchInterval: 60_000,
   });
+  const readinessQuery = useQuery({
+    queryKey: ["system", "readiness", "top-header"],
+    queryFn: getSystemReadiness,
+    enabled: Boolean(user),
+    staleTime: 30_000,
+    refetchInterval: 60_000,
+  });
   const notifications = notificationsQuery.data?.items ?? [];
   const unreadCount = notificationsQuery.data?.unread_count ?? 0;
   const apiBaseUrl = getApiBaseUrl();
-  const apiStatus = healthQuery.isError
-    ? { label: "API 异常", tone: "danger" }
-    : healthQuery.isFetching && !healthQuery.data
-      ? { label: "检测中", tone: "warning" }
-      : healthQuery.data?.status === "ok"
-        ? { label: "API 已连接", tone: "success" }
-        : { label: "API 未知", tone: "warning" };
+  const serviceStatusItems = [
+    {
+      key: "api",
+      label: "API",
+      value: resolveApiHealth(healthQuery.data?.status, healthQuery.isError, healthQuery.isPending),
+    },
+    {
+      key: "queue",
+      label: "队列",
+      value: resolveDependencyHealth(
+        readinessQuery.data?.dependencies["rabbitmq"]?.status,
+        readinessQuery.isError,
+      ),
+    },
+    {
+      key: "storage",
+      label: "存储",
+      value: resolveDependencyHealth(
+        readinessQuery.data?.dependencies["minio"]?.status,
+        readinessQuery.isError,
+      ),
+    },
+  ];
 
   const notificationMenuItems: MenuProps["items"] = useMemo(() => {
     if (notifications.length === 0) {
@@ -175,10 +232,14 @@ export function TopHeader() {
         onSearch={() => message.info("搜索功能待实现")}
       />
       <div className="top-header__status" aria-label="顶部状态栏">
-        <span className={`top-header__status-pill top-header__status-pill--${apiStatus.tone}`}>
-          {apiStatus.tone === "success" ? <CheckCircleOutlined /> : <ExclamationCircleOutlined />}
-          {apiStatus.label}
-        </span>
+        <div className="top-header__status-group" aria-label="服务状态">
+          {serviceStatusItems.map((item) => (
+            <span className="top-header__status-item" key={item.key}>
+              <span className="top-header__status-label">{item.label}</span>
+              <StatusTag kind="health" value={item.value} variant="dot" />
+            </span>
+          ))}
+        </div>
         <Typography.Text type="secondary" className="top-header__api-base">
           API {apiBaseUrl}
         </Typography.Text>
