@@ -173,6 +173,11 @@ describe("FileDetailPage", () => {
     expect(screen.getByText("这是一份员工手册的摘要。")).toBeInTheDocument();
     expect(screen.getByText("中风险")).toBeInTheDocument();
 
+    const statusRegion = screen.getByRole("region", { name: "文档运行状态" });
+    expect(statusRegion).toHaveTextContent("文档治理");
+    expect(statusRegion).toHaveTextContent("同步健康");
+    expect(statusRegion).toHaveTextContent("制度文档");
+
     fireEvent.click(screen.getByText("提取文本预览"));
     expect(await screen.findByText("员工手册提取文本前五百字……")).toBeInTheDocument();
   });
@@ -199,7 +204,7 @@ describe("FileDetailPage", () => {
     renderFileDetail();
 
     expect(await screen.findByText("88 分")).toBeInTheDocument();
-    expect(screen.getByText("优秀")).toBeInTheDocument();
+    expect(screen.getAllByText("优秀").length).toBeGreaterThan(0);
     expect(screen.getAllByText("即将过期").length).toBeGreaterThan(0);
     expect(screen.getByText("检测到 1 个相似文档")).toBeInTheDocument();
     expect(screen.getByText("similar-file-1")).toBeInTheDocument();
@@ -214,7 +219,7 @@ describe("FileDetailPage", () => {
     renderFileDetail();
 
     expect(await screen.findByText("分类与标签")).toBeInTheDocument();
-    expect(await screen.findByText("制度文档")).toBeInTheDocument();
+    expect((await screen.findAllByText("制度文档")).length).toBeGreaterThan(0);
     expect(screen.getByText("制度")).toBeInTheDocument();
     expect(screen.getByText("人事")).toBeInTheDocument();
     expect(screen.queryByText("可见范围")).not.toBeInTheDocument();
