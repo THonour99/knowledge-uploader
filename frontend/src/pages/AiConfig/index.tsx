@@ -495,8 +495,26 @@ function ProvidersPanel({
     },
   ];
 
+  const testedProviders = providers.filter(
+    (provider) => provider.enabled && provider.last_test_status === "success",
+  ).length;
+  const failedProviders = providers.filter(
+    (provider) => provider.enabled && provider.last_test_status === "failed",
+  ).length;
+
   return (
-    <Card className="document-panel table-card" title="模型供应商">
+    <Card className="document-panel table-card">
+      <div className="table-section-header">
+        <span className="table-section-header__copy">
+          <Typography.Title level={4} className="table-section-header__title">
+            模型供应商
+          </Typography.Title>
+          <Typography.Text className="table-section-header__meta">
+            当前维护 {providers.length} 个供应商，{testedProviders} 个已通过测试
+          </Typography.Text>
+        </span>
+        <StatusTag kind="health" value={failedProviders > 0 ? "error" : "ok"} variant="dot" />
+      </div>
       <Table<AiProviderConfig>
         rowKey="id"
         columns={columns}
@@ -581,8 +599,23 @@ function PromptTemplatesPanel({ templates }: { templates: AiPromptTemplate[] }) 
     },
   ];
 
+  const enabledTemplates = countEnabled(templates);
+  const defaultTemplates = templates.filter((template) => template.is_default).length;
+
   return (
-    <Card className="document-panel table-card" title="Prompt 模板">
+    <Card className="document-panel table-card">
+      <div className="table-section-header">
+        <span className="table-section-header__copy">
+          <Typography.Title level={4} className="table-section-header__title">
+            Prompt 模板
+          </Typography.Title>
+          <Typography.Text className="table-section-header__meta">
+            当前维护 {templates.length} 个模板，{defaultTemplates} 个默认模板，{enabledTemplates}{" "}
+            个启用
+          </Typography.Text>
+        </span>
+        <StatusTag kind="health" value={defaultTemplates > 0 ? "ok" : "unknown"} variant="dot" />
+      </div>
       <Table<AiPromptTemplate>
         rowKey="id"
         columns={columns}
@@ -657,8 +690,23 @@ function SensitiveRulesPanel({ rules }: { rules: AiSensitiveRule[] }) {
     },
   ];
 
+  const enabledRules = countEnabled(rules);
+  const ruleHits = rules.reduce((total, rule) => total + rule.hit_count, 0);
+
   return (
-    <Card className="document-panel table-card" title="敏感规则">
+    <Card className="document-panel table-card">
+      <div className="table-section-header">
+        <span className="table-section-header__copy">
+          <Typography.Title level={4} className="table-section-header__title">
+            敏感规则
+          </Typography.Title>
+          <Typography.Text className="table-section-header__meta">
+            当前维护 {rules.length} 条规则，{enabledRules} 条启用，{compactNumber.format(ruleHits)}{" "}
+            次累计命中
+          </Typography.Text>
+        </span>
+        <StatusTag kind="risk" value={ruleHits > 0 ? "high" : "low"} variant="dot" />
+      </div>
       <Table<AiSensitiveRule>
         rowKey="id"
         columns={columns}

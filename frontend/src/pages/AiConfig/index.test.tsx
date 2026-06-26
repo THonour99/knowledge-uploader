@@ -160,6 +160,18 @@ describe("AiConfigPage", () => {
     expect(screen.getAllByText("AI 总开关").length).toBeGreaterThan(0);
     expect(screen.getByText("文档摘要")).toBeInTheDocument();
     expect(screen.getByText("敏感检测")).toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole("tab", { name: "模型供应商" }));
+    expect(screen.getByRole("heading", { name: "模型供应商" })).toBeInTheDocument();
+    expect(screen.getByText("当前维护 1 个供应商，1 个已通过测试")).toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole("tab", { name: "Prompt 模板" }));
+    expect(screen.getByRole("heading", { name: "Prompt 模板" })).toBeInTheDocument();
+    expect(screen.getByText("当前维护 1 个模板，1 个默认模板，1 个启用")).toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole("tab", { name: "敏感规则" }));
+    expect(screen.getByRole("heading", { name: "敏感规则" })).toBeInTheDocument();
+    expect(screen.getByText("当前维护 1 条规则，1 条启用，356 次累计命中")).toBeInTheDocument();
   });
 
   it("tests a provider connection from the provider tab", async () => {
