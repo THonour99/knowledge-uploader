@@ -10,6 +10,8 @@ import {
 } from "@ant-design/icons";
 import { Typography } from "antd";
 
+import { StatusTag } from "../components/StatusTag";
+
 interface AuthLayoutProps {
   title: string;
   description: string;
@@ -40,6 +42,29 @@ const authFeatures = [
   },
 ];
 
+const authStatusItems = [
+  {
+    icon: <SafetyCertificateOutlined />,
+    title: "安全认证",
+    description: "邮箱验证与登录保护",
+  },
+  {
+    icon: <DatabaseOutlined />,
+    title: "对象存储",
+    description: "上传文件统一入库",
+  },
+  {
+    icon: <FileTextOutlined />,
+    title: "审核链路",
+    description: "文档状态全程可追踪",
+  },
+  {
+    icon: <CloudUploadOutlined />,
+    title: "RAGFlow 同步",
+    description: "审核通过后进入知识库",
+  },
+];
+
 export function AuthLayout({ title, description, children, footer }: AuthLayoutProps) {
   return (
     <main className="auth-page">
@@ -59,6 +84,21 @@ export function AuthLayout({ title, description, children, footer }: AuthLayoutP
             让企业知识持续沉淀与同步
           </Typography.Paragraph>
         </div>
+
+        <section className="auth-status-strip" aria-label="平台状态概览">
+          {authStatusItems.map((item) => (
+            <div className="auth-status-item" key={item.title}>
+              <span className="auth-status-item__icon">{item.icon}</span>
+              <span className="auth-status-item__body">
+                <span className="auth-status-item__topline">
+                  <Typography.Text type="secondary">{item.title}</Typography.Text>
+                  <StatusTag kind="health" value="ok" variant="dot" />
+                </span>
+                <strong>{item.description}</strong>
+              </span>
+            </div>
+          ))}
+        </section>
 
         <div className="auth-feature-list">
           {authFeatures.map((feature) => (
