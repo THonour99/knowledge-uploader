@@ -40,6 +40,7 @@ import {
   replaceManagedDepartments,
   resetUserPassword,
 } from "../../api/client";
+import { KpiCard } from "../../components/KpiCard";
 import { StatusTag } from "../../components/StatusTag";
 import { PageContainer } from "../../layouts/PageContainer";
 import "./styles.css";
@@ -142,6 +143,14 @@ export default function UsersPage() {
   const users = usersQuery.data?.items ?? [];
   const total = usersQuery.data?.total ?? 0;
 
+  const pageStats = useMemo(
+    () => ({
+      active: users.filter((user) => user.status === "active").length,
+      pending: users.filter((user) => user.status === "pending_email_verification").length,
+      disabledOrLocked: users.filter((user) => user.status === "disabled" || user.status === "locked").length,
+    }),
+    [users],
+  );
   const departmentsQuery = useQuery({
     queryKey: ["admin-departments"],
     queryFn: listDepartments,
@@ -454,6 +463,36 @@ export default function UsersPage() {
       title="用户管理"
       description="管理员工账号、权限角色、邮箱验证与登录状态。"
     >
+      <div className="users-kpi-grid">
+        <KpiCard
+          icon={<TeamOutlined />}
+          title="用户总数"
+          value={total}
+          description="平台账号总量"
+          tone="primary"
+        />
+        <KpiCard
+          icon={<UserSwitchOutlined />}
+          title="当前页活跃"
+          value={pageStats.active}
+          description="状态正常账号"
+          tone="success"
+        />
+        <KpiCard
+          icon={<MailOutlined />}
+          title="当前页待激活"
+          value={pageStats.pending}
+          description="邮箱验证待完成"
+          tone="warning"
+        />
+        <KpiCard
+          icon={<LockOutlined />}
+          title="当前页禁用/锁定"
+          value={pageStats.disabledOrLocked}
+          description="需要管理员处理"
+          tone="danger"
+        />
+      </div>
       <div className="users-main-grid">
         <Card className="users-panel table-card" title="账号列表">
           <div className="filter-toolbar filter-toolbar--management">

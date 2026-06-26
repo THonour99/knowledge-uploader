@@ -7,7 +7,12 @@
 }
 
 .ai-config-tabs-card .ant-tabs-nav {
-  margin-bottom: 12px;
+  margin-bottom: 16px;
+  padding: 0 4px;
+}
+
+.ai-config-tabs-card .ant-tabs-tab {
+  font-weight: 600;
 }
 
 .ai-config-panel-stack {
@@ -24,6 +29,8 @@
 .ai-config-switch-card {
   border-color: var(--ku-border);
   border-radius: var(--ku-radius-card);
+  background: linear-gradient(180deg, #ffffff 0%, #fbfdff 100%);
+  box-shadow: var(--ku-shadow-card);
 }
 
 .ai-config-switch-card .ant-card-body {
@@ -76,7 +83,14 @@
   padding: 12px;
   border: 1px solid var(--ku-border);
   border-radius: var(--ku-radius-control);
-  background: var(--ku-bg-card);
+  background: #fbfdff;
+  transition: border-color 0.2s ease, box-shadow 0.2s ease, transform 0.2s ease;
+}
+
+.ai-config-feature-row:hover {
+  transform: translateY(-1px);
+  border-color: rgba(22, 119, 255, 0.28);
+  box-shadow: var(--ku-shadow-xs);
 }
 
 .ai-config-provider-cell {

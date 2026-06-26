@@ -40,6 +40,7 @@ import {
   testRagflowConnection,
   updateConfigs,
 } from "../../api/client";
+import { KpiCard, type KpiTone } from "../../components/KpiCard";
 import { StatusTag } from "../../components/StatusTag";
 import { PageContainer } from "../../layouts/PageContainer";
 import "./styles.css";
@@ -100,7 +101,7 @@ interface SettingsStatusCard {
   value: string;
   description: string;
   icon: ReactNode;
-  tone: "primary" | "success" | "warning" | "purple";
+  tone: KpiTone;
 }
 
 interface PolicyRow {
@@ -271,25 +272,6 @@ const serviceColumns: ColumnsType<ServiceRow> = [
     render: (value: number) => <Progress percent={value} size="small" />,
   },
 ];
-
-// ── Small components ──────────────────────────────────────────────────────────
-
-function SettingsStatusCardView({ card }: { card: SettingsStatusCard }) {
-  return (
-    <Card className="settings-status-card">
-      <div className="settings-status-card__body">
-        <span className={`settings-status-card__icon settings-status-card__icon--${card.tone}`}>
-          {card.icon}
-        </span>
-        <span className="settings-status-card__copy">
-          <Typography.Text type="secondary">{card.title}</Typography.Text>
-          <Typography.Title level={3}>{card.value}</Typography.Title>
-          <Typography.Text type="secondary">{card.description}</Typography.Text>
-        </span>
-      </div>
-    </Card>
-  );
-}
 
 // ── Generic config form field renderer ───────────────────────────────────────
 
@@ -690,7 +672,14 @@ export default function SettingsPage() {
     >
       <div className="settings-status-grid">
         {statusCards.map((card) => (
-          <SettingsStatusCardView key={card.title} card={card} />
+          <KpiCard
+            key={card.title}
+            icon={card.icon}
+            title={card.title}
+            value={card.value}
+            description={card.description}
+            tone={card.tone}
+          />
         ))}
       </div>
 

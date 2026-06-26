@@ -1,6 +1,7 @@
 .kpi-card {
   border-color: var(--ku-border);
   border-radius: var(--ku-radius-card);
+  background: linear-gradient(180deg, #ffffff 0%, #fbfdff 100%);
   box-shadow: var(--ku-shadow-card);
   transition:
     box-shadow 0.2s ease,
@@ -35,27 +36,33 @@
 }
 
 .kpi-card--primary .kpi-card__icon {
-  background: var(--ku-color-primary);
+  background: var(--ku-color-primary-light);
+  color: var(--ku-color-primary);
 }
 
 .kpi-card--success .kpi-card__icon {
-  background: var(--ku-color-success);
+  background: var(--ku-color-success-light);
+  color: var(--ku-color-success);
 }
 
 .kpi-card--warning .kpi-card__icon {
-  background: var(--ku-color-orange);
+  background: var(--ku-color-warning-light);
+  color: var(--ku-color-orange);
 }
 
 .kpi-card--danger .kpi-card__icon {
-  background: var(--ku-color-danger);
+  background: var(--ku-color-danger-light);
+  color: var(--ku-color-danger);
 }
 
 .kpi-card--purple .kpi-card__icon {
-  background: var(--ku-color-purple);
+  background: var(--ku-color-purple-light);
+  color: var(--ku-color-purple);
 }
 
 .kpi-card--info .kpi-card__icon {
-  background: var(--ku-color-info);
+  background: var(--ku-color-info-light);
+  color: var(--ku-color-info);
 }
 
 .kpi-card__spark {

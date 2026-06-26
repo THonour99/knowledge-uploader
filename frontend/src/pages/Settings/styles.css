@@ -1,6 +1,9 @@
 .settings-page-actions {
   justify-content: flex-end;
 }
+.settings-status-grid .kpi-card .ant-card-body {
+  min-height: 116px;
+}
 
 .settings-status-grid {
   display: grid;

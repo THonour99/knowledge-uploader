@@ -55,6 +55,13 @@ describe("KpiCard", () => {
     expect(screen.getByText("87.6%")).toBeInTheDocument();
   });
 
+  it("renders a non-numeric display value as-is", () => {
+    renderCard(
+      <KpiCard icon={null} title="系统版本" value="v0.9.0" tone="info" />,
+    );
+    expect(screen.getByText("系统版本")).toBeInTheDocument();
+    expect(screen.getByText("v0.9.0")).toBeInTheDocument();
+  });
   it("shows an upward delta as good (green) when rising is positive", () => {
     const { container } = renderCard(
       <KpiCard icon={null} title="同步" value={100} tone="success" deltaPct={12.3} />,

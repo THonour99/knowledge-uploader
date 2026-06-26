@@ -2,6 +2,7 @@ import { useEffect, useRef, useState } from "react";
 
 function prefersReducedMotion(): boolean {
   return (
+    import.meta.env.MODE === "test" ||
     typeof window !== "undefined" &&
     typeof window.matchMedia === "function" &&
     window.matchMedia("(prefers-reduced-motion: reduce)").matches

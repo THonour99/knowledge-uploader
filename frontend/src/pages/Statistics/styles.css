@@ -14,110 +14,15 @@
   margin-bottom: var(--ku-spacing-section);
 }
 
+.statistics-kpi-grid .kpi-card .ant-card-body {
+  min-height: 122px;
+}
+
 .statistics-kpi-grid {
   display: grid;
   grid-template-columns: repeat(5, minmax(0, 1fr));
   gap: var(--ku-spacing-section);
   margin-bottom: var(--ku-spacing-section);
-}
-
-.statistics-kpi-card {
-  overflow: hidden;
-  border-color: var(--ku-border);
-  border-radius: var(--ku-radius-card);
-}
-
-.statistics-kpi-card .ant-card-body {
-  position: relative;
-  min-height: 112px;
-  padding: 20px;
-}
-
-.statistics-kpi-card__body {
-  display: flex;
-  align-items: flex-start;
-  gap: 14px;
-  min-width: 0;
-}
-
-.statistics-kpi-card__content {
-  min-width: 0;
-}
-
-.statistics-kpi-card__icon {
-  display: inline-flex;
-  flex: 0 0 42px;
-  align-items: center;
-  justify-content: center;
-  width: 42px;
-  height: 42px;
-  border-radius: 10px;
-  color: var(--ku-bg-card);
-  font-size: 22px;
-}
-
-.statistics-kpi-card__icon--primary {
-  background: var(--ku-color-primary);
-}
-
-.statistics-kpi-card__icon--success {
-  background: var(--ku-color-success);
-}
-
-.statistics-kpi-card__icon--purple {
-  background: var(--ku-color-purple);
-}
-
-.statistics-kpi-card__icon--warning {
-  background: var(--ku-color-orange);
-}
-
-.statistics-kpi-card__icon--danger {
-  background: var(--ku-color-danger);
-}
-
-.statistics-kpi-card__value.ant-typography {
-  margin: 2px 0;
-  font-size: 24px;
-  line-height: 1.2;
-}
-
-.statistics-kpi-card__sparkline {
-  position: absolute;
-  right: 18px;
-  bottom: 18px;
-  width: 62px;
-  height: 22px;
-  opacity: 0.9;
-}
-
-.statistics-kpi-card__sparkline::before {
-  display: block;
-  width: 100%;
-  height: 100%;
-  clip-path: polygon(0 74%, 18% 46%, 34% 58%, 52% 22%, 72% 38%, 100% 0, 100% 100%, 0 100%);
-  background: currentColor;
-  content: "";
-}
-
-.statistics-kpi-card__sparkline--primary {
-  color: var(--ku-color-primary);
-}
-
-.statistics-kpi-card__sparkline--success {
-  color: var(--ku-color-success);
-}
-
-.statistics-kpi-card__sparkline--purple {
-  color: var(--ku-color-purple);
-}
-
-.statistics-kpi-card__sparkline--warning {
-  color: var(--ku-color-orange);
-}
-
-.statistics-kpi-card__sparkline--danger {
-  color: var(--ku-color-danger);
 }
 
 .statistics-main-grid {
@@ -349,10 +254,6 @@
 @media (max-width: 640px) {
   .statistics-filter-bar .filter-toolbar__control {
     flex: 1 1 100%;
-  }
-
-  .statistics-kpi-card__sparkline {
-    display: none;
   }
 
   .statistics-expiry-summary {

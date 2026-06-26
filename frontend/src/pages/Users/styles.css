@@ -1,6 +1,9 @@
 .users-page-actions {
   justify-content: flex-end;
 }
+.users-kpi-grid .kpi-card .ant-card-body {
+  min-height: 116px;
+}
 
 .users-kpi-grid {
   display: grid;
@@ -9,60 +12,9 @@
   margin-bottom: var(--ku-spacing-section);
 }
 
-.users-kpi-card,
 .users-panel {
   border-color: var(--ku-border);
   border-radius: var(--ku-radius-card);
-}
-
-.users-kpi-card .ant-card-body {
-  min-height: 116px;
-  padding: 20px;
-}
-
-.users-kpi-card__body {
-  display: flex;
-  gap: 14px;
-  align-items: flex-start;
-}
-
-.users-kpi-card__icon {
-  display: inline-flex;
-  flex: 0 0 42px;
-  align-items: center;
-  justify-content: center;
-  width: 42px;
-  height: 42px;
-  border-radius: 10px;
-  color: var(--ku-bg-card);
-  font-size: 22px;
-}
-
-.users-kpi-card__icon--primary {
-  background: var(--ku-color-primary);
-}
-
-.users-kpi-card__icon--success {
-  background: var(--ku-color-success);
-}
-
-.users-kpi-card__icon--warning {
-  background: var(--ku-color-orange);
-}
-
-.users-kpi-card__icon--purple {
-  background: var(--ku-color-purple);
-}
-
-.users-kpi-card__copy {
-  display: flex;
-  min-width: 0;
-  flex-direction: column;
-  gap: 2px;
-}
-
-.users-kpi-card__copy .ant-typography {
-  margin: 0;
 }
 
 .users-main-grid {

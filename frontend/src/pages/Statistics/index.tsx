@@ -27,7 +27,6 @@ import type { ColumnsType } from "antd/es/table";
 import dayjs, { type Dayjs } from "dayjs";
 import ReactECharts from "echarts-for-react";
 import { useMemo, useState } from "react";
-import type { ReactNode } from "react";
 
 import {
   exportStatistics,
@@ -47,6 +46,7 @@ import {
   type StatisticsTrendPoint,
   type StatisticsUserRow,
 } from "../../api/client";
+import { KpiCard } from "../../components/KpiCard";
 import { StatusTag } from "../../components/StatusTag";
 import { PageContainer } from "../../layouts/PageContainer";
 import "./styles.css";
@@ -120,38 +120,6 @@ function makeDownload(blob: Blob, filename: string): void {
   link.click();
   link.remove();
   window.URL.revokeObjectURL(url);
-}
-
-function KpiCard({
-  icon,
-  title,
-  value,
-  subtitle,
-  tone,
-}: {
-  icon: ReactNode;
-  title: string;
-  value: string;
-  subtitle: string;
-  tone: "primary" | "success" | "purple" | "warning" | "danger";
-}) {
-  return (
-    <Card className="statistics-kpi-card">
-      <div className="statistics-kpi-card__body">
-        <span className={`statistics-kpi-card__icon statistics-kpi-card__icon--${tone}`}>
-          {icon}
-        </span>
-        <span className="statistics-kpi-card__content">
-          <Typography.Text type="secondary">{title}</Typography.Text>
-          <Typography.Title level={3} className="statistics-kpi-card__value">
-            {value}
-          </Typography.Title>
-          <Typography.Text type="secondary">{subtitle}</Typography.Text>
-        </span>
-      </div>
-      <span className={`statistics-kpi-card__sparkline statistics-kpi-card__sparkline--${tone}`} />
-    </Card>
-  );
 }
 
 function cssVar(name: string, fallback = ""): string {
@@ -571,36 +539,43 @@ export default function StatisticsPage() {
         <KpiCard
           icon={<FileTextOutlined />}
           title="总上传文件数"
-          value={formatNumber(overview?.total_files ?? 0)}
-          subtitle={`总容量 ${formatSize(overview?.total_file_size ?? 0)}`}
+          value={overview?.total_files ?? 0}
+          formatter={formatNumber}
+          description={`总容量 ${formatSize(overview?.total_file_size ?? 0)}`}
+          trend={trends.map((point) => point.total_files)}
           tone="primary"
         />
         <KpiCard
           icon={<TeamOutlined />}
           title="上传人数"
-          value={formatNumber(overview?.active_uploaders ?? 0)}
-          subtitle="有上传记录的用户"
+          value={overview?.active_uploaders ?? 0}
+          formatter={formatNumber}
+          description="有上传记录的用户"
           tone="success"
         />
         <KpiCard
           icon={<CheckCircleOutlined />}
           title="同步成功率"
-          value={formatPercent(overview?.sync_success_rate ?? 0)}
-          subtitle={`${formatNumber(overview?.synced_files ?? 0)} 个文件已同步`}
+          value={overview?.sync_success_rate ?? 0}
+          formatter={formatPercent}
+          description={`${formatNumber(overview?.synced_files ?? 0)} 个文件已同步`}
+          trend={trends.map((point) => point.synced_files)}
           tone="purple"
         />
         <KpiCard
           icon={<ClockCircleOutlined />}
           title="待审核数量"
-          value={formatNumber(overview?.pending_review_files ?? 0)}
-          subtitle={`${formatNumber(overview?.sensitive_files ?? 0)} 个敏感风险`}
+          value={overview?.pending_review_files ?? 0}
+          formatter={formatNumber}
+          description={`${formatNumber(overview?.sensitive_files ?? 0)} 个敏感风险`}
           tone="warning"
         />
         <KpiCard
           icon={<WarningOutlined />}
           title="失败任务数"
-          value={formatNumber(overview?.failed_tasks ?? 0)}
-          subtitle={`${formatNumber(overview?.failed_files ?? 0)} 个文件失败`}
+          value={overview?.failed_tasks ?? 0}
+          formatter={formatNumber}
+          description={`${formatNumber(overview?.failed_files ?? 0)} 个文件失败`}
           tone="danger"
         />
       </div>

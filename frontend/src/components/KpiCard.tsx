@@ -13,8 +13,8 @@ export interface KpiCardProps {
   icon: ReactNode;
   title: string;
   /** 主数值(用于滚动动画) */
-  value: number;
-  /** 数值格式化,默认千分位整数(动画过程自动取整) */
+  value: number | string;
+  /** 数值格式化,默认千分位整数(动画过程自动取整);字符串值会原样展示 */
   formatter?: (value: number) => string;
   /** 副描述,渲染在 footer 末尾 */
   description?: ReactNode;
@@ -57,8 +57,10 @@ export function KpiCard(props: KpiCardProps) {
     deltaPositiveIsGood = true,
     onClick,
   } = props;
-  const animated = useCountUp(value);
+  const isNumericValue = typeof value === "number";
+  const animated = useCountUp(isNumericValue ? value : 0);
   const clickable = Boolean(onClick);
+  const displayValue = isNumericValue ? formatter(animated) : value;
 
   const hasDelta = deltaPct !== null && deltaPct !== undefined && Number.isFinite(deltaPct);
   const deltaUp = hasDelta && deltaPct! >= 0;
@@ -79,7 +81,7 @@ export function KpiCard(props: KpiCardProps) {
         {title}
       </Typography.Text>
       <Typography.Title level={3} className="kpi-card__value">
-        {formatter(animated)}
+        {displayValue}
       </Typography.Title>
       <div className="kpi-card__footer">
         {hasDelta ? (
