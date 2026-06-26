@@ -52,13 +52,43 @@ const categories: CategoryListResponse = {
       created_at: "2026-06-01T00:00:00Z",
       updated_at: "2026-06-01T00:00:00Z",
     },
+    {
+      id: "cat-2",
+      name: "产品资料",
+      code: "product",
+      description: null,
+      parent_id: null,
+      require_review: false,
+      default_dataset_id: null,
+      allow_employee_select: false,
+      allow_ai_recommend: true,
+      default_visibility: "company",
+      keywords: [],
+      classification_prompt: null,
+      ai_analysis_enabled: true,
+      sensitive_detection_enabled: true,
+      auto_sync_enabled: true,
+      created_at: "2026-06-01T00:00:00Z",
+      updated_at: "2026-06-01T00:00:00Z",
+    },
   ],
-  total: 1,
+  total: 2,
 };
 
 const mappings: DatasetMappingListResponse = {
-  items: [],
-  total: 0,
+  items: [
+    {
+      id: "mapping-1",
+      name: "制度文档 Dataset",
+      category_id: "cat-1",
+      ragflow_dataset_id: "ds-policy",
+      ragflow_dataset_name: "policy-dataset",
+      enabled: true,
+      created_at: "2026-06-01T00:00:00Z",
+      updated_at: "2026-06-01T00:00:00Z",
+    },
+  ],
+  total: 1,
 };
 
 beforeAll(() => {
@@ -115,6 +145,15 @@ describe("DatasetConfigPage", () => {
     renderWithProviders(<DatasetConfigPage />);
 
     expect(await screen.findByText("制度文档")).toBeInTheDocument();
+    const policyStatus = screen.getByRole("region", { name: "Dataset 配置总览" });
+    expect(policyStatus).toHaveTextContent("Dataset 配置总览");
+    expect(policyStatus).toHaveTextContent("1/2 分类已绑定");
+    expect(policyStatus).toHaveTextContent("1 个待绑定，0 个禁用映射");
+    expect(policyStatus).toHaveTextContent("1 类需要审核");
+    expect(policyStatus).toHaveTextContent("1 类开启自动同步");
+    expect(policyStatus).toHaveTextContent("1 类员工可选");
+    expect(policyStatus).toHaveTextContent("2 类允许 AI 推荐分类");
+    expect(policyStatus).toHaveTextContent("1 个映射生效");
     expect(screen.queryByText("默认可见范围")).not.toBeInTheDocument();
 
     fireEvent.click(screen.getByRole("button", { name: /新增分类/ }));
