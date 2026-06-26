@@ -74,15 +74,10 @@ const changeRoleOptions = [
   { label: "普通员工", value: "employee" },
 ];
 
-const roleDistribution = [
-  { label: "普通员工", percent: 82 },
-  { label: "部门管理员", percent: 12 },
-  { label: "系统管理员", percent: 6 },
-];
-
 interface RoleModalState {
   open: boolean;
   userId: string;
+  userName: string;
   currentRole: AdminUserRole;
   selectedRole: AdminUserRole;
 }
@@ -220,6 +215,7 @@ export default function UsersPage() {
   const [roleModal, setRoleModal] = useState<RoleModalState>({
     open: false,
     userId: "",
+    userName: "",
     currentRole: "employee",
     selectedRole: "employee",
   });
@@ -267,6 +263,29 @@ export default function UsersPage() {
         .length,
     };
   }, [users]);
+
+  const roleDistribution = useMemo(() => {
+    const roleCounts = users.reduce<Record<AdminUserRole, number>>(
+      (acc, user) => {
+        acc[user.role] += 1;
+        return acc;
+      },
+      { system_admin: 0, dept_admin: 0, employee: 0 },
+    );
+
+    return changeRoleOptions.map((option) => {
+      const role = option.value as AdminUserRole;
+      const count = roleCounts[role];
+      const percent = users.length > 0 ? Math.round((count / users.length) * 100) : 0;
+
+      return {
+        label: roleLabels[role],
+        count,
+        percent,
+      };
+    });
+  }, [users]);
+
   const departmentsQuery = useQuery({
     queryKey: ["admin-departments"],
     queryFn: listDepartments,
@@ -380,6 +399,7 @@ export default function UsersPage() {
     setRoleModal({
       open: true,
       userId: record.id,
+      userName: record.name,
       currentRole: record.role,
       selectedRole: record.role,
     });
@@ -427,7 +447,9 @@ export default function UsersPage() {
       message.success("管辖部门已更新");
       setManagedDepartmentsModal({ open: false, user: null, selectedDepartmentIds: [] });
       invalidate();
-      void queryClient.invalidateQueries({ queryKey: ["admin-users", userId, "managed-departments"] });
+      void queryClient.invalidateQueries({
+        queryKey: ["admin-users", userId, "managed-departments"],
+      });
     } catch (err) {
       message.error(err instanceof Error ? err.message : "操作失败");
     } finally {
@@ -499,9 +521,7 @@ export default function UsersPage() {
         <Space direction="vertical" size={0}>
           <Typography.Text>{record.upload_count}</Typography.Text>
           <Typography.Text type="secondary" style={{ fontSize: 11 }}>
-            {record.last_upload_at
-              ? dayjs(record.last_upload_at).format("YYYY-MM-DD")
-              : "从未上传"}
+            {record.last_upload_at ? dayjs(record.last_upload_at).format("YYYY-MM-DD") : "从未上传"}
           </Typography.Text>
         </Space>
       ),
@@ -575,10 +595,7 @@ export default function UsersPage() {
   ];
 
   return (
-    <PageContainer
-      title="用户管理"
-      description="管理员工账号、权限角色、邮箱验证与登录状态。"
-    >
+    <PageContainer title="用户管理" description="管理员工账号、权限角色、邮箱验证与登录状态。">
       <div className="users-kpi-grid">
         <KpiCard
           icon={<TeamOutlined />}
@@ -625,7 +642,20 @@ export default function UsersPage() {
       />
 
       <div className="users-main-grid">
-        <Card className="users-panel table-card" title="账号列表">
+        <Card className="users-panel table-card">
+          <div className="table-section-header users-table-header">
+            <span className="table-section-header__copy">
+              <Typography.Title level={4} className="table-section-header__title">
+                账号治理列表
+              </Typography.Title>
+              <Typography.Text className="table-section-header__meta">
+                当前显示 {users.length} 个账号，共 {total} 条记录，{pageStats.disabledOrLocked}{" "}
+                个需处理
+              </Typography.Text>
+            </span>
+            <StatusTag kind="health" value={usersQuery.isError ? "error" : "ok"} variant="dot" />
+          </div>
+
           <div className="filter-toolbar filter-toolbar--management">
             <Input
               className="filter-toolbar__search"
@@ -673,12 +703,30 @@ export default function UsersPage() {
           />
         </Card>
 
-        <Card className="users-panel" title="角色分布">
+        <Card className="users-panel users-role-panel">
+          <section className="users-role-panel__header" role="region" aria-label="角色权限概览">
+            <span className="users-role-panel__icon">
+              <SafetyCertificateOutlined />
+            </span>
+            <span className="users-role-panel__copy">
+              <Typography.Text strong>角色权限概览</Typography.Text>
+              <Typography.Text type="secondary">
+                {`当前页 ${users.length} 个账号，部门管理员覆盖 ${pageStats.managedDeptAdmin}/${pageStats.deptAdmin}`}
+              </Typography.Text>
+            </span>
+            <StatusTag
+              kind="health"
+              value={pageStats.deptAdmin === pageStats.managedDeptAdmin ? "ok" : "unknown"}
+              variant="dot"
+            />
+          </section>
+
           <div className="users-role-distribution">
             {roleDistribution.map((item) => (
               <div className="users-role-row" key={item.label}>
                 <span className="users-role-row__header">
                   <Typography.Text strong>{item.label}</Typography.Text>
+                  <Typography.Text type="secondary">{item.count} 人</Typography.Text>
                 </span>
                 <Progress percent={item.percent} showInfo={false} />
               </div>
@@ -688,7 +736,8 @@ export default function UsersPage() {
           <div className="users-permission-summary">
             <Typography.Text strong>权限策略</Typography.Text>
             <Typography.Text type="secondary">
-              系统管理员可配置组织、Dataset、AI 与系统参数；部门管理员只处理管辖部门的文件审核、同步和任务日志；普通员工仅能上传与查看本人文件。
+              系统管理员可配置组织、Dataset、AI
+              与系统参数；部门管理员只处理管辖部门的文件审核、同步和任务日志；普通员工仅能上传与查看本人文件。
             </Typography.Text>
           </div>
         </Card>
@@ -705,9 +754,26 @@ export default function UsersPage() {
         cancelText="取消"
         destroyOnClose
       >
-        <Space direction="vertical" style={{ width: "100%" }}>
+        <div className="user-modal-stack">
+          <section className="user-modal-summary" role="region" aria-label="角色变更摘要">
+            <span className="user-modal-summary__icon">
+              <UserSwitchOutlined />
+            </span>
+            <span className="user-modal-summary__copy">
+              <Typography.Text strong>{roleModal.userName || "当前用户"}</Typography.Text>
+              <Typography.Text type="secondary">
+                {roleLabels[roleModal.currentRole]} 至 {roleLabels[roleModal.selectedRole]}
+              </Typography.Text>
+            </span>
+            <span className="user-modal-summary__metric">
+              <strong>权限</strong>
+              <small>即时生效</small>
+            </span>
+          </section>
           <Typography.Text type="secondary">
-            <ExclamationCircleOutlined style={{ marginRight: 6, color: "var(--ku-color-warning)" }} />
+            <ExclamationCircleOutlined
+              style={{ marginRight: 6, color: "var(--ku-color-warning)" }}
+            />
             角色变更将立即生效，请确认操作。
           </Typography.Text>
           <Select
@@ -719,7 +785,7 @@ export default function UsersPage() {
               setRoleModal((prev) => ({ ...prev, selectedRole: value }))
             }
           />
-        </Space>
+        </div>
       </Modal>
 
       {/* Managed departments modal */}
@@ -738,9 +804,25 @@ export default function UsersPage() {
         cancelText="取消"
         destroyOnClose
       >
-        <Space direction="vertical" style={{ width: "100%" }}>
+        <div className="user-modal-stack">
+          <section className="user-modal-summary" role="region" aria-label="部门管辖摘要">
+            <span className="user-modal-summary__icon">
+              <ApartmentOutlined />
+            </span>
+            <span className="user-modal-summary__copy">
+              <Typography.Text strong>
+                {managedDepartmentsModal.user?.name ?? "当前部门管理员"}
+              </Typography.Text>
+              <Typography.Text type="secondary">部门管理员可见范围</Typography.Text>
+            </span>
+            <span className="user-modal-summary__metric">
+              <strong>{managedDepartmentsModal.selectedDepartmentIds.length}</strong>
+              <small>管辖部门</small>
+            </span>
+          </section>
           <Typography.Text type="secondary">
-            为 <Typography.Text strong>{managedDepartmentsModal.user?.name ?? "用户"}</Typography.Text>{" "}
+            为{" "}
+            <Typography.Text strong>{managedDepartmentsModal.user?.name ?? "用户"}</Typography.Text>{" "}
             选择可管理的部门。未选择任何部门时，该部门管理员看不到部门范围内的文件和任务。
           </Typography.Text>
           <Select
@@ -755,7 +837,7 @@ export default function UsersPage() {
             options={departmentOptions}
             onChange={handleManagedDepartmentsChange}
           />
-        </Space>
+        </div>
       </Modal>
 
       {/* Reset password modal */}
@@ -769,13 +851,25 @@ export default function UsersPage() {
         cancelText="取消"
         destroyOnClose
       >
-        <Space>
-          <TeamOutlined />
+        <div className="user-modal-stack">
+          <section className="user-modal-summary" role="region" aria-label="密码重置摘要">
+            <span className="user-modal-summary__icon">
+              <MailOutlined />
+            </span>
+            <span className="user-modal-summary__copy">
+              <Typography.Text strong>{resetModal.userName || "当前用户"}</Typography.Text>
+              <Typography.Text type="secondary">发送一次性密码重置邮件</Typography.Text>
+            </span>
+            <span className="user-modal-summary__metric">
+              <strong>邮箱</strong>
+              <small>验证链接</small>
+            </span>
+          </section>
           <Typography.Text>
             确定要向 <Typography.Text strong>{resetModal.userName}</Typography.Text>{" "}
             发送密码重置邮件吗？该用户将收到重置链接。
           </Typography.Text>
-        </Space>
+        </div>
       </Modal>
     </PageContainer>
   );

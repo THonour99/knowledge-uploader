@@ -156,6 +156,13 @@ describe("UsersPage", () => {
     expect(governance).toHaveTextContent("1 个禁用/锁定");
     expect(governance).toHaveTextContent("当前列表未应用筛选条件");
 
+    expect(screen.getByRole("heading", { name: "账号治理列表" })).toBeInTheDocument();
+    expect(screen.getByText("当前显示 3 个账号，共 3 条记录，1 个需处理")).toBeInTheDocument();
+    const roleOverview = screen.getByRole("region", { name: "角色权限概览" });
+    expect(roleOverview).toHaveTextContent("当前页 3 个账号");
+    expect(roleOverview).toHaveTextContent("部门管理员覆盖 1/1");
+    expect(screen.getAllByText("1 人")).toHaveLength(3);
+
     // Role labels
     expect(screen.getAllByText("系统管理员").length).toBeGreaterThan(0);
     expect(screen.getAllByText("部门管理员").length).toBeGreaterThan(0);
@@ -249,6 +256,9 @@ describe("UsersPage", () => {
 
     // Wait for modal to open
     await screen.findByText("变更用户角色");
+    const roleSummary = screen.getByRole("region", { name: "角色变更摘要" });
+    expect(roleSummary).toHaveTextContent("李雪");
+    expect(roleSummary).toHaveTextContent("部门管理员 至 部门管理员");
 
     // Select new role via Ant Design Select in the modal
     const roleSelect = document.querySelector(
@@ -259,6 +269,7 @@ describe("UsersPage", () => {
 
     const employeeOption = await screen.findByTitle("普通员工");
     fireEvent.click(employeeOption);
+    expect(roleSummary).toHaveTextContent("部门管理员 至 普通员工");
 
     // Click OK button in modal footer
     const footerButtons = document.querySelectorAll(
@@ -276,7 +287,6 @@ describe("UsersPage", () => {
       expect(changeUserRole).toHaveBeenCalledWith("user-002", "employee");
     });
   });
-
 
   it("opens managed department modal for dept admins and saves current scope", async () => {
     const departments: DepartmentListResponse = {
@@ -318,6 +328,9 @@ describe("UsersPage", () => {
     fireEvent.click(managedButtons[0]);
 
     expect(await screen.findByText("配置管辖部门")).toBeInTheDocument();
+    const managedSummary = screen.getByRole("region", { name: "部门管辖摘要" });
+    expect(managedSummary).toHaveTextContent("李雪");
+    expect(managedSummary).toHaveTextContent("1管辖部门");
     await waitFor(() => {
       expect(listDepartments).toHaveBeenCalled();
       expect(getManagedDepartments).toHaveBeenCalledWith("user-002");
@@ -346,18 +359,17 @@ describe("UsersPage", () => {
 
     // Wait for the modal footer OK button to appear (modal is now open)
     await waitFor(() => {
-      const footerButtons = document.querySelectorAll(
-        ".ant-modal-footer .ant-btn-primary",
-      );
+      const footerButtons = document.querySelectorAll(".ant-modal-footer .ant-btn-primary");
       expect(footerButtons.length).toBeGreaterThan(0);
     });
 
     // The modal should show the user name (appears in both table and modal)
     expect(screen.getAllByText("张维").length).toBeGreaterThanOrEqual(2);
+    const resetSummary = screen.getByRole("region", { name: "密码重置摘要" });
+    expect(resetSummary).toHaveTextContent("张维");
+    expect(resetSummary).toHaveTextContent("发送一次性密码重置邮件");
 
-    const okButton = document.querySelector(
-      ".ant-modal-footer .ant-btn-primary",
-    ) as HTMLElement;
+    const okButton = document.querySelector(".ant-modal-footer .ant-btn-primary") as HTMLElement;
     fireEvent.click(okButton);
 
     await waitFor(() => {
@@ -375,9 +387,11 @@ describe("UsersPage", () => {
     // Find role filter Select combobox — look for the one with role options
     const comboboxes = screen.getAllByRole("combobox");
     // The role filter combobox should be the first one after search
-    const roleCombobox = comboboxes.find(
-      (el) => el.getAttribute("aria-label") === "角色筛选" || el.closest(".users-role-filter") !== null,
-    ) ?? comboboxes[0];
+    const roleCombobox =
+      comboboxes.find(
+        (el) =>
+          el.getAttribute("aria-label") === "角色筛选" || el.closest(".users-role-filter") !== null,
+      ) ?? comboboxes[0];
 
     fireEvent.mouseDown(roleCombobox);
 
