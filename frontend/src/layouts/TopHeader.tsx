@@ -1,16 +1,20 @@
+import { useEffect, useMemo, useState } from "react";
 import {
   BellOutlined,
+  CheckCircleOutlined,
   DownOutlined,
   LeftOutlined,
   LogoutOutlined,
-  UserOutlined,
   ProfileOutlined,
+  UserOutlined,
 } from "@ant-design/icons";
 import { App as AntdApp, Avatar, Badge, Button, Dropdown, Input, Space, Typography } from "antd";
 import type { MenuProps } from "antd";
+import { useQuery } from "@tanstack/react-query";
+import dayjs from "dayjs";
 import { useLocation, useNavigate } from "react-router-dom";
 
-import { logout } from "../api/client";
+import { listNotifications, logout } from "../api/client";
 import { appNavigationRoutes, utilityNavigation } from "../router/routes";
 import { useAuthStore } from "../store/auth.store";
 
@@ -19,7 +23,9 @@ function getHeaderTitle(pathname: string): string {
     return utilityNavigation.fileDetail.label;
   }
 
-  return appNavigationRoutes.find((route) => route.path === pathname)?.nav?.label ?? "知识库贡献平台";
+  return (
+    appNavigationRoutes.find((route) => route.path === pathname)?.nav?.label ?? "知识库贡献平台"
+  );
 }
 
 function formatRole(role?: string): string {
@@ -35,6 +41,17 @@ function formatRole(role?: string): string {
   return "未登录";
 }
 
+function formatNotificationTime(value: string): string {
+  const createdAt = dayjs(value);
+  if (!createdAt.isValid()) {
+    return "刚刚";
+  }
+  if (createdAt.isSame(dayjs(), "day")) {
+    return createdAt.format("HH:mm");
+  }
+  return createdAt.format("MM-DD HH:mm");
+}
+
 export function TopHeader() {
   const navigate = useNavigate();
   const location = useLocation();
@@ -42,6 +59,63 @@ export function TopHeader() {
   const user = useAuthStore((state) => state.user);
   const clearSession = useAuthStore((state) => state.clearSession);
   const headerTitle = getHeaderTitle(location.pathname);
+  const [now, setNow] = useState(() => dayjs());
+
+  useEffect(() => {
+    const timer = window.setInterval(() => setNow(dayjs()), 60_000);
+    return () => window.clearInterval(timer);
+  }, []);
+
+  const notificationsQuery = useQuery({
+    queryKey: ["notifications", "top-header", user?.id],
+    queryFn: () => listNotifications({ page: 1, page_size: 5 }),
+    enabled: Boolean(user),
+    staleTime: 30_000,
+    refetchInterval: 60_000,
+  });
+  const notifications = notificationsQuery.data?.items ?? [];
+  const unreadCount = notificationsQuery.data?.unread_count ?? 0;
+  const notificationStatus = notificationsQuery.isError
+    ? { label: "通知异常", tone: "danger" }
+    : notificationsQuery.isFetching
+      ? { label: "刷新中", tone: "warning" }
+      : { label: "通知正常", tone: "success" };
+
+  const notificationMenuItems: MenuProps["items"] = useMemo(() => {
+    if (notifications.length === 0) {
+      return [
+        {
+          key: "empty",
+          disabled: true,
+          label: <span className="top-header-notification-empty">暂无通知</span>,
+        },
+      ];
+    }
+
+    return notifications.map((notification) => ({
+      key: notification.id,
+      label: (
+        <div
+          className={[
+            "top-header-notification",
+            notification.read_at ? "" : "top-header-notification--unread",
+          ]
+            .filter(Boolean)
+            .join(" ")}
+        >
+          <Typography.Text strong ellipsis>
+            {notification.title}
+          </Typography.Text>
+          <Typography.Text type="secondary" ellipsis>
+            {notification.body}
+          </Typography.Text>
+          <Typography.Text type="secondary" className="top-header-notification__time">
+            {formatNotificationTime(notification.created_at)}
+          </Typography.Text>
+        </div>
+      ),
+    }));
+  }, [notifications]);
 
   const handleLogout = () => {
     void logout()
@@ -52,12 +126,14 @@ export function TopHeader() {
       });
   };
 
-  const items: MenuProps["items"] = [
+  const userMenuItems: MenuProps["items"] = [
     {
       key: "profile",
       icon: <ProfileOutlined />,
       label: "个人中心",
-      onClick: () => { navigate("/profile"); },
+      onClick: () => {
+        navigate("/profile");
+      },
     },
     { type: "divider" },
     {
@@ -71,7 +147,12 @@ export function TopHeader() {
   return (
     <header className="top-header">
       <div className="top-header__context">
-        <Button type="text" icon={<LeftOutlined />} onClick={() => navigate(-1)} aria-label="返回上一页" />
+        <Button
+          type="text"
+          icon={<LeftOutlined />}
+          onClick={() => navigate(-1)}
+          aria-label="返回上一页"
+        />
         <Typography.Text strong className="top-header__page-title">
           {headerTitle}
         </Typography.Text>
@@ -82,11 +163,28 @@ export function TopHeader() {
         allowClear
         onSearch={() => message.info("搜索功能待实现")}
       />
-      <Space size={16} className="top-header__actions">
-        <Badge count={12} size="small">
-          <Button type="text" icon={<BellOutlined />} aria-label="通知" />
-        </Badge>
-        <Dropdown menu={{ items }} trigger={["click"]}>
+      <div className="top-header__status" aria-label="顶部状态栏">
+        <span
+          className={`top-header__status-pill top-header__status-pill--${notificationStatus.tone}`}
+        >
+          <CheckCircleOutlined />
+          {notificationStatus.label}
+        </span>
+        <Typography.Text type="secondary" className="top-header__time">
+          {now.format("YYYY/MM/DD HH:mm")}
+        </Typography.Text>
+      </div>
+      <Space size={12} className="top-header__actions">
+        <Dropdown
+          menu={{ items: notificationMenuItems }}
+          trigger={["click"]}
+          placement="bottomRight"
+        >
+          <Badge count={unreadCount} size="small" overflowCount={99}>
+            <Button type="text" icon={<BellOutlined />} aria-label="通知中心" />
+          </Badge>
+        </Dropdown>
+        <Dropdown menu={{ items: userMenuItems }} trigger={["click"]}>
           <Button type="text" className="top-header__user">
             <Avatar size={28} icon={user?.name ? undefined : <UserOutlined />}>
               {user?.name?.slice(0, 1).toUpperCase()}

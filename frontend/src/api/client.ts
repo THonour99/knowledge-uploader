@@ -67,6 +67,30 @@ export interface UserProfile {
   managed_department_ids?: string[];
 }
 
+export interface NotificationItem {
+  id: string;
+  type: string;
+  title: string;
+  body: string;
+  metadata: Record<string, unknown>;
+  read_at: string | null;
+  created_at: string;
+}
+
+export interface NotificationListResponse {
+  items: NotificationItem[];
+  total: number;
+  unread_count: number;
+  page: number;
+  page_size: number;
+}
+
+export interface NotificationListQuery {
+  page?: number;
+  page_size?: number;
+  unread_only?: boolean;
+}
+
 export interface FileAnalysis {
   status: string;
   summary: string | null;
@@ -991,6 +1015,26 @@ export async function cancelTask(id: string): Promise<SyncTask> {
 
 export async function getMe(): Promise<UserProfile> {
   const response = await apiClient.get<ApiEnvelope<UserProfile> | UserProfile>("/auth/me");
+
+  return unwrapResponse(response.data);
+}
+
+// ── Notification API functions ────────────────────────────────────────────────
+
+export async function listNotifications(
+  params: NotificationListQuery = {},
+): Promise<NotificationListResponse> {
+  const response = await apiClient.get<ApiEnvelope<NotificationListResponse>>("/notifications", {
+    params,
+  });
+
+  return unwrapResponse(response.data);
+}
+
+export async function markNotificationRead(notificationId: string): Promise<NotificationItem> {
+  const response = await apiClient.post<ApiEnvelope<NotificationItem>>(
+    `/notifications/${notificationId}/read`,
+  );
 
   return unwrapResponse(response.data);
 }
