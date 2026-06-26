@@ -151,6 +151,11 @@ export default function MyFilesPage() {
     [uploadConfigQuery.data?.items],
   );
   const files = filesQuery.data?.items ?? [];
+  const approvedCount = files.filter((file) => file.review_status === "approved").length;
+  const pendingReviewCount = files.filter((file) => file.review_status === "pending").length;
+  const syncFailedCount = files.filter((file) => syncStatus(file) === "failed").length;
+  const syncedCount = files.filter((file) => syncStatus(file) === "synced").length;
+  const draftCount = files.filter((file) => canSubmitForReview(file)).length;
 
   const filteredFiles = useMemo(() => {
     return files.filter((file) => {
@@ -187,27 +192,27 @@ export default function MyFilesPage() {
       },
       {
         title: "审核通过",
-        value: files.filter((file) => file.review_status === "approved").length,
+        value: approvedCount,
         description: "可进入同步流程",
         icon: <CheckCircleOutlined />,
         tone: "success",
       },
       {
         title: "待审核",
-        value: files.filter((file) => file.review_status === "pending").length,
+        value: pendingReviewCount,
         description: "等待管理员处理",
         icon: <WarningOutlined />,
         tone: "warning",
       },
       {
         title: "同步失败",
-        value: files.filter((file) => syncStatus(file) === "failed").length,
+        value: syncFailedCount,
         description: "需要重新处理",
         icon: <CloudSyncOutlined />,
         tone: "danger",
       },
     ],
-    [files],
+    [approvedCount, files.length, pendingReviewCount, syncFailedCount],
   );
 
   const tagOptions = useMemo(
@@ -218,6 +223,28 @@ export default function MyFilesPage() {
       })),
     [tagsQuery.data],
   );
+  const activeFilterCount = [
+    keyword.trim(),
+    statusFilter !== "all",
+    reviewFilter !== "all",
+    extensionFilter,
+    tagIdFilter,
+    timeRange?.[0] ?? timeRange?.[1],
+  ].filter(Boolean).length;
+  const uploadPolicyPreview =
+    allowedExtensions.length > 0
+      ? `${allowedExtensions.slice(0, 5).join(" / ")}${
+          allowedExtensions.length > 5 ? ` 等 ${allowedExtensions.length} 类` : ""
+        }`
+      : "等待上传配置";
+  const uploadPolicyStatus = uploadConfigQuery.isLoading
+    ? "unknown"
+    : uploadConfigQuery.isError
+      ? "error"
+      : "ok";
+  const pageHealthStatus =
+    filesQuery.isError || tagsQuery.isError || uploadConfigQuery.isError ? "error" : "ok";
+  const syncHealthStatus = syncFailedCount > 0 ? "failed" : syncedCount > 0 ? "synced" : "not_synced";
 
   // ── table columns ─────────────────────────────────────────────────────────────
   const columns: ColumnsType<KnowledgeFile> = [
@@ -337,6 +364,92 @@ export default function MyFilesPage() {
           />
         ))}
       </div>
+
+      <section className="my-files-status-strip" aria-label="我的知识库状态">
+        <div className="my-files-status-strip__main">
+          <span className="my-files-status-strip__icon">
+            <FileTextOutlined />
+          </span>
+          <span className="my-files-status-strip__copy">
+            <Typography.Text type="secondary">个人知识库</Typography.Text>
+            <Typography.Title level={4} className="my-files-status-strip__title">
+              我的知识库状态
+            </Typography.Title>
+            <Typography.Text type="secondary">
+              共 {files.length} 个上传记录，当前视图 {filteredFiles.length} 个结果
+            </Typography.Text>
+          </span>
+          <StatusTag kind="health" value={pageHealthStatus} variant="dot" />
+        </div>
+
+        <div className="my-files-status-strip__lanes">
+          <div className="my-files-status-lane">
+            <span className="my-files-status-lane__icon">
+              <CloudUploadOutlined />
+            </span>
+            <span className="my-files-status-lane__body">
+              <span className="my-files-status-lane__topline">
+                <Typography.Text type="secondary">上传规范</Typography.Text>
+                <StatusTag kind="health" value={uploadPolicyStatus} variant="dot" />
+              </span>
+              <strong>{allowedExtensions.length} 类格式</strong>
+              <Typography.Text type="secondary">{uploadPolicyPreview}</Typography.Text>
+            </span>
+          </div>
+
+          <div className="my-files-status-lane">
+            <span className="my-files-status-lane__icon my-files-status-lane__icon--success">
+              <CheckCircleOutlined />
+            </span>
+            <span className="my-files-status-lane__body">
+              <span className="my-files-status-lane__topline">
+                <Typography.Text type="secondary">审核进度</Typography.Text>
+                <StatusTag
+                  kind="review"
+                  value={pendingReviewCount > 0 ? "pending" : "approved"}
+                  variant="dot"
+                />
+              </span>
+              <strong>{pendingReviewCount} 个待审核</strong>
+              <Typography.Text type="secondary">
+                {approvedCount} 个已通过，{draftCount} 个可提交
+              </Typography.Text>
+            </span>
+          </div>
+
+          <div className="my-files-status-lane">
+            <span className="my-files-status-lane__icon my-files-status-lane__icon--sync">
+              <CloudSyncOutlined />
+            </span>
+            <span className="my-files-status-lane__body">
+              <span className="my-files-status-lane__topline">
+                <Typography.Text type="secondary">同步健康</Typography.Text>
+                <StatusTag kind="sync" value={syncHealthStatus} variant="dot" />
+              </span>
+              <strong>
+                {syncFailedCount > 0 ? `${syncFailedCount} 个异常` : `${syncedCount} 个完成`}
+              </strong>
+              <Typography.Text type="secondary">RAGFlow 解析与同步结果</Typography.Text>
+            </span>
+          </div>
+
+          <div className="my-files-status-lane">
+            <span className="my-files-status-lane__icon my-files-status-lane__icon--view">
+              <SearchOutlined />
+            </span>
+            <span className="my-files-status-lane__body">
+              <span className="my-files-status-lane__topline">
+                <Typography.Text type="secondary">当前视图</Typography.Text>
+                <StatusTag kind="health" value="ok" variant="dot" />
+              </span>
+              <strong>{activeFilterCount} 个筛选条件</strong>
+              <Typography.Text type="secondary">
+                显示 {filteredFiles.length}/{files.length} 个文件
+              </Typography.Text>
+            </span>
+          </div>
+        </div>
+      </section>
 
       <Card className="document-panel table-card">
         <div className="table-section-header">
