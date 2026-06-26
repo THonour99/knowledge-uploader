@@ -160,6 +160,9 @@ describe("CategoriesPage", () => {
     expect(policyStrip).toHaveTextContent("1 个员工可选分类");
     expect(policyStrip).toHaveTextContent("1 个自动同步");
 
+    expect(screen.getByText("分类策略列表")).toBeInTheDocument();
+    expect(screen.getByText("当前维护 2 个分类，1 个已绑定 Dataset")).toBeInTheDocument();
+
     // Category codes (appear in both name cell and code cell, use getAllBy)
     expect(screen.getAllByText("tech-docs").length).toBeGreaterThan(0);
     expect(screen.getAllByText("hr-files").length).toBeGreaterThan(0);
@@ -195,6 +198,10 @@ describe("CategoriesPage", () => {
     const modalTitles = await screen.findAllByText("新增分类");
     // There should be at least 2: the button text and the modal title
     expect(modalTitles.length).toBeGreaterThanOrEqual(2);
+    const formSummary = await screen.findByRole("region", { name: "分类配置摘要" });
+    expect(formSummary).toHaveTextContent("新建分类策略");
+    expect(formSummary).toHaveTextContent("待配置编码");
+    expect(screen.getByText("策略开关")).toBeInTheDocument();
 
     // Get all visible non-disabled textboxes; they now include modal form inputs
     const textboxes = screen.getAllByRole("textbox").filter((el) => !el.hasAttribute("disabled"));
@@ -213,9 +220,7 @@ describe("CategoriesPage", () => {
     if (footerButtons.length === 0) {
       // Fallback: find by role and check if it's a primary button
       const allButtons = screen.getAllByRole("button");
-      const primaryBtn = allButtons.find((btn) =>
-        btn.className.includes("ant-btn-primary"),
-      );
+      const primaryBtn = allButtons.find((btn) => btn.className.includes("ant-btn-primary"));
       expect(primaryBtn).toBeDefined();
       fireEvent.click(primaryBtn!);
     } else {
@@ -277,9 +282,7 @@ describe("CategoriesPage", () => {
     if (footerButtons.length === 0) {
       // Fallback: find by role and check if it's a primary button
       const allButtons = screen.getAllByRole("button");
-      const primaryBtn = allButtons.find((btn) =>
-        btn.className.includes("ant-btn-primary"),
-      );
+      const primaryBtn = allButtons.find((btn) => btn.className.includes("ant-btn-primary"));
       expect(primaryBtn).toBeDefined();
       fireEvent.click(primaryBtn!);
     } else {

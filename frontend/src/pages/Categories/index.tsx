@@ -515,6 +515,22 @@ export default function CategoriesPage() {
       />
 
       <Card className="document-panel table-card">
+        <div className="table-section-header">
+          <span className="table-section-header__copy">
+            <Typography.Title level={4} className="table-section-header__title">
+              分类策略列表
+            </Typography.Title>
+            <Typography.Text className="table-section-header__meta">
+              当前维护 {categories.length} 个分类，{boundCategoryCount} 个已绑定 Dataset
+            </Typography.Text>
+          </span>
+          <StatusTag
+            kind="health"
+            value={categoriesQuery.isError || datasetsQuery.isError ? "error" : "ok"}
+            variant="dot"
+          />
+        </div>
+
         <div className="config-card-actions">
           <Space wrap>
             <Button type="primary" icon={<PlusOutlined />} onClick={openCreate}>
@@ -553,7 +569,27 @@ export default function CategoriesPage() {
         confirmLoading={categoryMutation.isPending}
         width={720}
         destroyOnHidden
+        className="category-config-modal"
       >
+        <section className="category-form-summary" role="region" aria-label="分类配置摘要">
+          <span className="category-form-summary__icon">
+            <AppstoreOutlined />
+          </span>
+          <span className="category-form-summary__copy">
+            <Typography.Text strong>
+              {editingCategory ? editingCategory.name : "新建分类策略"}
+            </Typography.Text>
+            <Typography.Text type="secondary">
+              {editingCategory ? editingCategory.code : "待配置编码"}
+            </Typography.Text>
+          </span>
+          <StatusTag
+            kind="dataset"
+            value={editingCategory?.default_dataset_id ? "enabled" : "pending"}
+            variant="dot"
+          />
+        </section>
+
         <Form<CategoryFormValues>
           form={form}
           layout="vertical"
@@ -603,25 +639,35 @@ export default function CategoriesPage() {
             <Input.TextArea rows={3} maxLength={2000} showCount />
           </Form.Item>
 
-          <div className="switch-grid">
-            <Form.Item label="需要审核" name="require_review" valuePropName="checked">
-              <Switch />
-            </Form.Item>
-            <Form.Item label="员工可选" name="allow_employee_select" valuePropName="checked">
-              <Switch />
-            </Form.Item>
-            <Form.Item label="AI 可推荐" name="allow_ai_recommend" valuePropName="checked">
-              <Switch />
-            </Form.Item>
-            <Form.Item label="AI 分析" name="ai_analysis_enabled" valuePropName="checked">
-              <Switch />
-            </Form.Item>
-            <Form.Item label="敏感检测" name="sensitive_detection_enabled" valuePropName="checked">
-              <Switch />
-            </Form.Item>
-            <Form.Item label="自动同步" name="auto_sync_enabled" valuePropName="checked">
-              <Switch />
-            </Form.Item>
+          <div className="category-switch-panel">
+            <div className="category-switch-panel__header">
+              <Typography.Text strong>策略开关</Typography.Text>
+              <StatusTag kind="dataset" value="enabled" variant="dot" />
+            </div>
+            <div className="switch-grid category-switch-panel__grid">
+              <Form.Item label="需要审核" name="require_review" valuePropName="checked">
+                <Switch />
+              </Form.Item>
+              <Form.Item label="员工可选" name="allow_employee_select" valuePropName="checked">
+                <Switch />
+              </Form.Item>
+              <Form.Item label="AI 可推荐" name="allow_ai_recommend" valuePropName="checked">
+                <Switch />
+              </Form.Item>
+              <Form.Item label="AI 分析" name="ai_analysis_enabled" valuePropName="checked">
+                <Switch />
+              </Form.Item>
+              <Form.Item
+                label="敏感检测"
+                name="sensitive_detection_enabled"
+                valuePropName="checked"
+              >
+                <Switch />
+              </Form.Item>
+              <Form.Item label="自动同步" name="auto_sync_enabled" valuePropName="checked">
+                <Switch />
+              </Form.Item>
+            </div>
           </div>
         </Form>
       </Modal>
