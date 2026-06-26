@@ -257,6 +257,8 @@ export default function FileManagementPage() {
   const [syncFilter, setSyncFilter] = useState("all");
   const [riskFilter, setRiskFilter] = useState("all");
   const [uploadedRange, setUploadedRange] = useState<[Dayjs, Dayjs] | null>(null);
+  const [bulkApproving, setBulkApproving] = useState(false);
+  const [bulkSyncing, setBulkSyncing] = useState(false);
   // 新增：服务端筛选参数
   const [extensionFilter, setExtensionFilter] = useState<string | undefined>(undefined);
   const [tagIdFilter, setTagIdFilter] = useState<string | undefined>(undefined);
@@ -556,6 +558,68 @@ export default function FileManagementPage() {
     setUploadedRange(null);
     setExtensionFilter(undefined);
     setTagIdFilter(undefined);
+  };
+
+  const handleBulkApprove = async () => {
+    const targets = selectedFiles.filter((file) => file.status === "pending_review");
+
+    if (targets.length === 0) {
+      message.warning("已选文件中没有可批量审核项");
+      return;
+    }
+
+    setBulkApproving(true);
+    try {
+      const results = await Promise.allSettled(
+        targets.map((file) =>
+          approveFile(file.id, {
+            category_id: file.category_id ?? null,
+            dataset_mapping_id: file.dataset_mapping_id ?? null,
+            reason: "批量审核通过",
+          }),
+        ),
+      );
+      const failedCount = results.filter((result) => result.status === "rejected").length;
+      const successCount = targets.length - failedCount;
+
+      if (failedCount > 0) {
+        message.warning(`批量审核完成，成功 ${successCount} 项，失败 ${failedCount} 项`);
+      } else {
+        message.success(`已批量审核 ${successCount} 个文件`);
+      }
+
+      setSelectedRowKeys([]);
+      await refreshFiles();
+    } finally {
+      setBulkApproving(false);
+    }
+  };
+
+  const handleBulkSync = async () => {
+    const targets = selectedFiles.filter((file) => syncableStatuses.has(file.status));
+
+    if (targets.length === 0) {
+      message.warning("已选文件中没有可同步项");
+      return;
+    }
+
+    setBulkSyncing(true);
+    try {
+      const results = await Promise.allSettled(targets.map((file) => syncFile(file.id)));
+      const failedCount = results.filter((result) => result.status === "rejected").length;
+      const successCount = targets.length - failedCount;
+
+      if (failedCount > 0) {
+        message.warning(`批量同步完成，成功 ${successCount} 项，失败 ${failedCount} 项`);
+      } else {
+        message.success(`已创建 ${successCount} 个同步任务`);
+      }
+
+      setSelectedRowKeys([]);
+      await refreshFiles();
+    } finally {
+      setBulkSyncing(false);
+    }
   };
 
   // ── 表格列定义 ────────────────────────────────────────────────────────────────
@@ -1008,16 +1072,37 @@ export default function FileManagementPage() {
             重置筛选
           </Button>
           <Space wrap className="table-actions__right">
-            <Button
-              type="primary"
-              icon={<CheckCircleOutlined />}
-              disabled={selectedRowKeys.length === 0}
+            <Popconfirm
+              title="批量审核通过"
+              description={`将 ${selectedPendingCount} 个待审核文件标记为通过，确认继续？`}
+              onConfirm={() => void handleBulkApprove()}
+              okText="确定"
+              cancelText="取消"
             >
-              批量审核
-            </Button>
-            <Button icon={<CloudSyncOutlined />} disabled={selectedRowKeys.length === 0}>
-              批量同步
-            </Button>
+              <Button
+                type="primary"
+                icon={<CheckCircleOutlined />}
+                disabled={selectedPendingCount === 0}
+                loading={bulkApproving}
+              >
+                批量审核
+              </Button>
+            </Popconfirm>
+            <Popconfirm
+              title="批量同步文件"
+              description={`为 ${selectedSyncableCount} 个可同步文件创建 RAGFlow 同步任务，确认继续？`}
+              onConfirm={() => void handleBulkSync()}
+              okText="确定"
+              cancelText="取消"
+            >
+              <Button
+                icon={<CloudSyncOutlined />}
+                disabled={selectedSyncableCount === 0}
+                loading={bulkSyncing}
+              >
+                批量同步
+              </Button>
+            </Popconfirm>
             <Button icon={<DownloadOutlined />}>导出</Button>
             <Button
               icon={<ReloadOutlined />}

@@ -591,6 +591,108 @@ describe("FileManagementPage — 审核队列摘要", () => {
   });
 });
 
+describe("FileManagementPage — 批量操作", () => {
+  it("批量审核只处理已选的待审核文件", async () => {
+    const pendingFile = makeFile({
+      id: "file-pending",
+      original_name: "pending.pdf",
+      status: "pending_review",
+      review_status: "pending",
+      category_id: "category-1",
+      dataset_mapping_id: "mapping-1",
+    });
+    const approvedFile = makeFile({
+      id: "file-approved",
+      original_name: "approved.pdf",
+      status: "approved",
+      review_status: "approved",
+    });
+    vi.mocked(listReviewFiles).mockResolvedValue({ items: [pendingFile, approvedFile], total: 2 });
+    vi.mocked(listCategories).mockResolvedValue({ items: [], total: 0 });
+    vi.mocked(listDatasetMappings).mockResolvedValue({ items: [], total: 0 });
+    vi.mocked(listTags).mockResolvedValue(emptyTagList);
+    vi.mocked(approveFile).mockResolvedValue({ ...pendingFile, status: "approved" });
+
+    renderWithProviders(<FileManagementPage />);
+
+    await screen.findByText("pending.pdf");
+    await screen.findByText("approved.pdf");
+
+    const rowCheckboxes = screen.getAllByRole("checkbox").slice(1);
+    rowCheckboxes.forEach((checkbox) => fireEvent.click(checkbox));
+
+    fireEvent.click(screen.getByTestId("popconfirm-批量审核通过"));
+
+    await waitFor(() => {
+      expect(approveFile).toHaveBeenCalledTimes(1);
+    });
+    expect(approveFile).toHaveBeenCalledWith("file-pending", {
+      category_id: "category-1",
+      dataset_mapping_id: "mapping-1",
+      reason: "批量审核通过",
+    });
+  });
+
+  it("批量同步只处理已选的可同步文件", async () => {
+    const approvedFile = makeFile({
+      id: "file-approved",
+      original_name: "approved.pdf",
+      status: "approved",
+      review_status: "approved",
+    });
+    const failedFile = makeFile({
+      id: "file-failed",
+      original_name: "failed.pdf",
+      status: "failed",
+      review_status: "approved",
+    });
+    const pendingFile = makeFile({
+      id: "file-pending",
+      original_name: "pending.pdf",
+      status: "pending_review",
+      review_status: "pending",
+    });
+    vi.mocked(listReviewFiles).mockResolvedValue({
+      items: [approvedFile, failedFile, pendingFile],
+      total: 3,
+    });
+    vi.mocked(listCategories).mockResolvedValue({ items: [], total: 0 });
+    vi.mocked(listDatasetMappings).mockResolvedValue({ items: [], total: 0 });
+    vi.mocked(listTags).mockResolvedValue(emptyTagList);
+    vi.mocked(syncFile).mockResolvedValue({
+      id: "task-1",
+      file_id: "file-approved",
+      task_type: "ragflow_upload",
+      status: "queued",
+      retry_count: 0,
+      max_retry_count: 3,
+      error_message: null,
+      started_at: null,
+      finished_at: null,
+      created_at: "2026-06-10T10:00:00Z",
+      updated_at: "2026-06-10T10:00:00Z",
+      logs: [],
+    });
+
+    renderWithProviders(<FileManagementPage />);
+
+    await screen.findByText("approved.pdf");
+    await screen.findByText("failed.pdf");
+    await screen.findByText("pending.pdf");
+
+    const rowCheckboxes = screen.getAllByRole("checkbox").slice(1);
+    rowCheckboxes.forEach((checkbox) => fireEvent.click(checkbox));
+
+    fireEvent.click(screen.getByTestId("popconfirm-批量同步文件"));
+
+    await waitFor(() => {
+      expect(syncFile).toHaveBeenCalledTimes(2);
+    });
+    expect(syncFile).toHaveBeenCalledWith("file-approved");
+    expect(syncFile).toHaveBeenCalledWith("file-failed");
+  });
+});
+
 describe("FileManagementPage — 既有审核测试不回归", () => {
   it("pending_review 文件可点击审核按钮", async () => {
     const file = makeFile({
