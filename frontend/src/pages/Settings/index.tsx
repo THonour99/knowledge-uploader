@@ -488,6 +488,65 @@ function buildPayload(formValues: FormValues, items: ConfigItem[]): Record<strin
   return payload;
 }
 
+function latestConfigUpdatedAt(items: ConfigItem[]): string {
+  const timestamps = items
+    .map((item) => item.updated_at)
+    .filter((value): value is string => Boolean(value));
+
+  if (timestamps.length === 0) {
+    return "暂无";
+  }
+
+  const latest = timestamps.reduce((currentLatest, value) =>
+    Date.parse(value) > Date.parse(currentLatest) ? value : currentLatest,
+  );
+
+  return new Intl.DateTimeFormat("zh-CN", {
+    month: "2-digit",
+    day: "2-digit",
+    hour: "2-digit",
+    minute: "2-digit",
+    hour12: false,
+  }).format(new Date(latest));
+}
+
+function ConfigPanelSummary({ items }: { items: ConfigItem[] }) {
+  const switchCount = items.filter((item) => item.value_type === "bool").length;
+  const secretCount = items.filter((item) => item.is_secret || item.value_type === "secret").length;
+  const listCount = items.filter((item) => item.value_type === "list").length;
+
+  return (
+    <section className="settings-config-summary" aria-label="配置面板摘要">
+      <div className="settings-config-summary__heading">
+        <Typography.Text strong>配置摘要</Typography.Text>
+        <StatusTag kind="health" value={items.length > 0 ? "ok" : "unknown"} variant="dot" />
+      </div>
+      <div className="settings-config-summary__grid">
+        <span className="settings-config-summary__item">
+          <Typography.Text type="secondary">配置项</Typography.Text>
+          <strong>{items.length} 项</strong>
+        </span>
+        <span className="settings-config-summary__item">
+          <Typography.Text type="secondary">开关项</Typography.Text>
+          <strong>{switchCount} 项</strong>
+        </span>
+        <span className="settings-config-summary__item">
+          <Typography.Text type="secondary">密钥项</Typography.Text>
+          <strong>{secretCount} 项</strong>
+        </span>
+        <span className="settings-config-summary__item">
+          <Typography.Text type="secondary">列表项</Typography.Text>
+          <strong>{listCount} 项</strong>
+        </span>
+        <span className="settings-config-summary__item settings-config-summary__item--wide">
+          <Typography.Text type="secondary">最近更新</Typography.Text>
+          <strong>{latestConfigUpdatedAt(items)}</strong>
+        </span>
+      </div>
+    </section>
+  );
+}
+
 // ── Generic config panel ──────────────────────────────────────────────────────
 
 interface ConfigPanelProps {
@@ -568,6 +627,7 @@ function ConfigPanel({ group, cardTitle, dangerConfirm = false }: ConfigPanelPro
 
   return (
     <Card className="settings-panel" title={cardTitle}>
+      <ConfigPanelSummary items={items} />
       <Alert
         type="info"
         showIcon
@@ -664,6 +724,7 @@ function RagflowPanel() {
   return (
     <div className="settings-panel-stack">
       <Card className="settings-panel" title="RAGFlow 配置">
+        <ConfigPanelSummary items={items} />
         <Alert
           type="info"
           showIcon

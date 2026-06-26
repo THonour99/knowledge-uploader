@@ -258,6 +258,26 @@ describe("SettingsPage", () => {
     expect(await screen.findByDisplayValue("知识库平台")).toBeInTheDocument();
   });
 
+  it("renders configuration panel summary metrics", async () => {
+    setupMocks();
+    renderWithProviders(<SettingsPage />);
+
+    await screen.findByDisplayValue("知识库平台");
+
+    const basicSummary = screen.getByRole("region", { name: "配置面板摘要" });
+    expect(basicSummary).toHaveTextContent("配置摘要");
+    expect(basicSummary).toHaveTextContent("配置项");
+    expect(basicSummary).toHaveTextContent("2 项");
+    expect(basicSummary).toHaveTextContent("最近更新");
+
+    fireEvent.click(screen.getByRole("tab", { name: "RAGFlow" }));
+    await screen.findByDisplayValue("http://192.168.4.46:8092");
+
+    const ragflowSummary = screen.getByRole("region", { name: "配置面板摘要" });
+    expect(ragflowSummary).toHaveTextContent("密钥项");
+    expect(ragflowSummary).toHaveTextContent("1 项");
+  });
+
   it("loads upload tab and shows max_file_size_mb field", async () => {
     setupMocks();
     renderWithProviders(<SettingsPage />);
