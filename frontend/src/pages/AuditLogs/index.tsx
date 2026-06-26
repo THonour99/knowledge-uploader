@@ -25,7 +25,9 @@ import type { ColumnsType } from "antd/es/table";
 
 import { type AuditLogItem, type AuditLogQuery, listAuditLogs } from "../../api/client";
 import { KpiCard } from "../../components/KpiCard";
+import { StatusTag } from "../../components/StatusTag";
 import { PageContainer } from "../../layouts/PageContainer";
+import "./styles.css";
 
 const { RangePicker } = DatePicker;
 
@@ -65,6 +67,102 @@ function MetadataViewer({ metadata }: { metadata: Record<string, unknown> | null
     >
       {JSON.stringify(metadata, null, 2)}
     </pre>
+  );
+}
+
+interface AuditTraceStripProps {
+  actionFilter: string;
+  actorCount: number;
+  configActionCount: number;
+  fileActionCount: number;
+  hasDateRange: boolean;
+  pageCount: number;
+  targetTypeFilter: string;
+  total: number;
+}
+
+function AuditTraceStrip({
+  actionFilter,
+  actorCount,
+  configActionCount,
+  fileActionCount,
+  hasDateRange,
+  pageCount,
+  targetTypeFilter,
+  total,
+}: AuditTraceStripProps) {
+  const hasFilters = Boolean(actionFilter || targetTypeFilter.trim() || hasDateRange);
+  const lanes = [
+    {
+      key: "coverage",
+      icon: <AuditOutlined />,
+      title: "审计覆盖",
+      primary: `${pageCount} 条当前页记录`,
+      secondary: `平台匹配 ${total} 条审计事件`,
+      status: pageCount > 0 ? "ok" : "unknown",
+    },
+    {
+      key: "actors",
+      icon: <UserOutlined />,
+      title: "操作主体",
+      primary: `${actorCount} 个操作人`,
+      secondary: "按当前页去重统计",
+      status: actorCount > 0 ? "ok" : "unknown",
+    },
+    {
+      key: "critical",
+      icon: <DatabaseOutlined />,
+      title: "配置审计",
+      primary: `${configActionCount} 条配置变更`,
+      secondary: "覆盖系统、Dataset 与 AI 配置",
+      status: configActionCount > 0 ? "ok" : "unknown",
+    },
+    {
+      key: "files",
+      icon: <FileSearchOutlined />,
+      title: "文件流转",
+      primary: `${fileActionCount} 条文件操作`,
+      secondary: hasFilters ? "当前列表已应用筛选条件" : "当前列表未应用筛选条件",
+      status: fileActionCount > 0 ? "ok" : "unknown",
+    },
+  ];
+
+  return (
+    <section className="audit-trace-strip" role="region" aria-label="审计运行状态">
+      <div className="audit-trace-strip__summary">
+        <span className="audit-trace-strip__icon">
+          <AuditOutlined />
+        </span>
+        <span className="audit-trace-strip__copy">
+          <Typography.Text strong className="audit-trace-strip__title">
+            审计运行状态
+          </Typography.Text>
+          <Typography.Text type="secondary">
+            汇总当前筛选范围内的审计覆盖、操作主体、配置变更和文件流转记录。
+          </Typography.Text>
+        </span>
+        <span className="audit-trace-strip__total">
+          <strong>{total}</strong>
+          <Typography.Text type="secondary">审计事件</Typography.Text>
+        </span>
+      </div>
+
+      <div className="audit-trace-strip__lanes" aria-label="审计运行指标">
+        {lanes.map((lane) => (
+          <div className="audit-trace-lane" key={lane.key}>
+            <span className="audit-trace-lane__icon">{lane.icon}</span>
+            <span className="audit-trace-lane__body">
+              <span className="audit-trace-lane__topline">
+                <Typography.Text strong>{lane.title}</Typography.Text>
+                <StatusTag kind="health" value={lane.status} variant="dot" />
+              </span>
+              <strong>{lane.primary}</strong>
+              <Typography.Text type="secondary">{lane.secondary}</Typography.Text>
+            </span>
+          </div>
+        ))}
+      </div>
+    </section>
   );
 }
 
@@ -246,6 +344,17 @@ export default function AuditLogsPage() {
           tone="info"
         />
       </div>
+
+      <AuditTraceStrip
+        actionFilter={actionFilter}
+        actorCount={pageActorCount}
+        configActionCount={configActionCount}
+        fileActionCount={fileActionCount}
+        hasDateRange={dateRange !== null}
+        pageCount={logs.length}
+        targetTypeFilter={targetTypeFilter}
+        total={total}
+      />
 
       <Card className="audit-logs-panel table-card">
         <div className="filter-toolbar filter-toolbar--audit">

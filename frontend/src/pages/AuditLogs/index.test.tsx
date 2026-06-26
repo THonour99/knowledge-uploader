@@ -136,6 +136,15 @@ describe("AuditLogsPage", () => {
     expect(screen.getByText("192.168.1.100")).toBeInTheDocument();
     expect(screen.getByText("更新了 RAGFlow 连接配置")).toBeInTheDocument();
 
+    const traceStrip = screen.getByRole("region", { name: "审计运行状态" });
+    expect(traceStrip).toHaveTextContent("审计运行状态");
+    expect(traceStrip).toHaveTextContent("2 条当前页记录");
+    expect(traceStrip).toHaveTextContent("平台匹配 2 条审计事件");
+    expect(traceStrip).toHaveTextContent("2 个操作人");
+    expect(traceStrip).toHaveTextContent("1 条配置变更");
+    expect(traceStrip).toHaveTextContent("1 条文件操作");
+    expect(traceStrip).toHaveTextContent("当前列表未应用筛选条件");
+
     // 第二行
     expect(screen.getByText("李四")).toBeInTheDocument();
     expect(screen.getByText("lisi@example.com")).toBeInTheDocument();
