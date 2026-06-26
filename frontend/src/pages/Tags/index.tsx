@@ -482,6 +482,18 @@ export default function TagsPage() {
       />
 
       <Card className="document-panel table-card">
+        <div className="table-section-header">
+          <span className="table-section-header__copy">
+            <Typography.Title level={4} className="table-section-header__title">
+              标签治理列表
+            </Typography.Title>
+            <Typography.Text className="table-section-header__meta">
+              当前显示 {tags.length} 个标签，共 {total} 个治理对象，{unusedTagCount} 个空闲
+            </Typography.Text>
+          </span>
+          <StatusTag kind="health" value={tagsQuery.isError ? "error" : "ok"} variant="dot" />
+        </div>
+
         <div className="config-card-actions">
           <Space wrap>
             <Input.Search
@@ -530,7 +542,25 @@ export default function TagsPage() {
         confirmLoading={tagMutation.isPending}
         destroyOnHidden
         width={480}
+        className="tag-config-modal"
       >
+        <section className="tag-form-summary" role="region" aria-label="标签配置摘要">
+          <span className="tag-form-summary__icon">
+            <TagOutlined />
+          </span>
+          <span className="tag-form-summary__copy">
+            <Typography.Text strong>{editingTag ? editingTag.name : "新建标签"}</Typography.Text>
+            <Typography.Text type="secondary">
+              {editingTag ? `${editingTag.usage_count} 次文件关联` : "待创建标签"}
+            </Typography.Text>
+          </span>
+          <StatusTag
+            kind="dataset"
+            value={editingTag?.enabled === false ? "disabled" : "enabled"}
+            variant="dot"
+          />
+        </section>
+
         <Form<TagFormValues>
           form={tagForm}
           layout="vertical"
@@ -564,12 +594,21 @@ export default function TagsPage() {
         confirmLoading={mergeMutation.isPending}
         destroyOnHidden
         width={480}
+        className="tag-merge-modal"
       >
         {mergingSourceTag && (
-          <Typography.Paragraph type="secondary" style={{ marginBottom: 16 }}>
-            将「{mergingSourceTag.name}」（{mergingSourceTag.usage_count}{" "}
-            个文件关联）合并到目标标签后，所有文件关联将迁移到目标标签，源标签将被删除。
-          </Typography.Paragraph>
+          <section className="tag-merge-summary" role="region" aria-label="标签合并摘要">
+            <span className="tag-merge-summary__icon">
+              <MergeOutlined />
+            </span>
+            <span className="tag-merge-summary__copy">
+              <Typography.Text strong>{mergingSourceTag.name}</Typography.Text>
+              <Typography.Text type="secondary">
+                {mergingSourceTag.usage_count} 个文件关联将迁移到目标标签，源标签会被删除。
+              </Typography.Text>
+            </span>
+            <StatusTag kind="health" value="unknown" variant="dot" />
+          </section>
         )}
         <Form<MergeFormValues>
           form={mergeForm}

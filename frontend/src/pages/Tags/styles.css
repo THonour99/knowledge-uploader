@@ -127,6 +127,44 @@
   max-width: 120px;
 }
 
+.tag-config-modal .ant-modal-body,
+.tag-merge-modal .ant-modal-body {
+  padding-top: 18px;
+}
+
+.tag-form-summary,
+.tag-merge-summary {
+  display: grid;
+  grid-template-columns: 42px minmax(0, 1fr) auto;
+  gap: 12px;
+  align-items: center;
+  margin-bottom: 18px;
+  padding: 14px;
+  border: 1px solid rgba(229, 234, 242, 0.95);
+  border-radius: var(--ku-radius-card);
+  background: linear-gradient(135deg, rgba(230, 244, 255, 0.82), rgba(255, 255, 255, 0.98));
+}
+
+.tag-form-summary__icon,
+.tag-merge-summary__icon {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 42px;
+  height: 42px;
+  border-radius: var(--ku-radius-control);
+  background: var(--ku-color-primary-light);
+  color: var(--ku-color-primary);
+  font-size: 18px;
+}
+
+.tag-form-summary__copy,
+.tag-merge-summary__copy {
+  display: grid;
+  min-width: 0;
+  gap: 4px;
+}
+
 @media (max-width: 1280px) {
   .tags-governance-strip {
     grid-template-columns: minmax(0, 1fr);
@@ -161,5 +199,16 @@
 
   .tags-governance-strip__lanes {
     grid-template-columns: minmax(0, 1fr);
+  }
+
+  .tag-form-summary,
+  .tag-merge-summary {
+    grid-template-columns: 40px minmax(0, 1fr);
+  }
+
+  .tag-form-summary > .status-tag-dot,
+  .tag-merge-summary > .status-tag-dot {
+    grid-column: 2;
+    width: fit-content;
   }
 }

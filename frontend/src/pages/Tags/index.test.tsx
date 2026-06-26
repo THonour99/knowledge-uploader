@@ -158,6 +158,9 @@ describe("TagsPage", () => {
     expect(governance).toHaveTextContent("2 个手动维护标签");
     expect(governance).toHaveTextContent("全部标签视图");
 
+    expect(screen.getByText("标签治理列表")).toBeInTheDocument();
+    expect(screen.getByText("当前显示 3 个标签，共 3 个治理对象，1 个空闲")).toBeInTheDocument();
+
     // Usage counts (usage_count column)
     expect(screen.getByText("12")).toBeInTheDocument();
     expect(screen.getByText("5")).toBeInTheDocument();
@@ -193,6 +196,9 @@ describe("TagsPage", () => {
     // Modal title should appear (button text + modal title = multiple matches)
     const modalTitles = await screen.findAllByText("新增标签");
     expect(modalTitles.length).toBeGreaterThanOrEqual(2);
+    const formSummary = await screen.findByRole("region", { name: "标签配置摘要" });
+    expect(formSummary).toHaveTextContent("新建标签");
+    expect(formSummary).toHaveTextContent("待创建标签");
 
     // Fill in the name field (first non-disabled textbox in the modal)
     const textboxes = screen.getAllByRole("textbox").filter((el) => !el.hasAttribute("disabled"));
@@ -202,9 +208,7 @@ describe("TagsPage", () => {
     clickModalOk();
 
     await waitFor(() => {
-      expect(createTag).toHaveBeenCalledWith(
-        expect.objectContaining({ name: "新标签" }),
-      );
+      expect(createTag).toHaveBeenCalledWith(expect.objectContaining({ name: "新标签" }));
     });
   });
 
@@ -222,6 +226,9 @@ describe("TagsPage", () => {
 
     // Merge modal title should include the source tag name
     await screen.findByText(/合并标签/);
+    const mergeSummary = await screen.findByRole("region", { name: "标签合并摘要" });
+    expect(mergeSummary).toHaveTextContent("财务报告");
+    expect(mergeSummary).toHaveTextContent("12 个文件关联将迁移到目标标签");
 
     // Simulate selecting a target tag: open the select dropdown
     const selectSelectors = document.querySelectorAll(".ant-select-selector");
@@ -264,10 +271,7 @@ describe("TagsPage", () => {
     fireEvent.click(switches[0]);
 
     await waitFor(() => {
-      expect(updateTag).toHaveBeenCalledWith(
-        "tag-1",
-        expect.objectContaining({ enabled: false }),
-      );
+      expect(updateTag).toHaveBeenCalledWith("tag-1", expect.objectContaining({ enabled: false }));
     });
   });
 
