@@ -26,6 +26,22 @@ import { useAuthStore } from "../store/auth.store";
 
 type HealthStatusValue = "ok" | "error" | "unknown";
 
+const GLOBAL_SEARCH_ALIASES: Record<string, string[]> = {
+  "/dashboard": ["运营", "看板", "统计", "概览"],
+  "/upload": ["上传", "贡献", "新增文件"],
+  "/my-files": ["我的文档", "个人文件", "同步状态"],
+  "/files": ["文件审核", "文件管理", "审核", "同步", "RAGFlow"],
+  "/datasets": ["Dataset", "数据集", "分类映射", "RAGFlow 配置"],
+  "/ai-config": ["AI", "模型", "Prompt", "敏感规则"],
+  "/statistics": ["统计", "报表", "贡献排行"],
+  "/users": ["用户", "账号", "权限", "部门"],
+  "/settings": ["设置", "系统配置", "安全", "上传策略"],
+  "/audit-logs": ["审计", "操作日志", "管理员操作"],
+  "/task-logs": ["任务", "队列", "同步任务", "解析任务"],
+  "/categories": ["分类", "知识分类", "目录"],
+  "/tags": ["标签", "关键词"],
+};
+
 function getHeaderTitle(pathname: string): string {
   if (pathname.startsWith("/files/")) {
     return utilityNavigation.fileDetail.label;
@@ -74,10 +90,7 @@ function resolveApiHealth(
   return status === "ok" ? "ok" : "unknown";
 }
 
-function resolveDependencyHealth(
-  status: string | undefined,
-  isError: boolean,
-): HealthStatusValue {
+function resolveDependencyHealth(status: string | undefined, isError: boolean): HealthStatusValue {
   if (isError) {
     return "error";
   }
@@ -125,6 +138,21 @@ export function TopHeader() {
   const notifications = notificationsQuery.data?.items ?? [];
   const unreadCount = notificationsQuery.data?.unread_count ?? 0;
   const apiBaseUrl = getApiBaseUrl();
+  const searchableRoutes = useMemo(
+    () =>
+      appNavigationRoutes
+        .filter((route) => !route.roles || (user?.role ? route.roles.includes(user.role) : false))
+        .map((route) => {
+          const label = route.nav?.label ?? route.path;
+          const aliases = GLOBAL_SEARCH_ALIASES[route.path] ?? [];
+          return {
+            label,
+            path: route.path,
+            keywords: [label, route.path, ...aliases].join(" ").toLowerCase(),
+          };
+        }),
+    [user?.role],
+  );
   const serviceStatusItems = [
     {
       key: "api",
@@ -194,6 +222,27 @@ export function TopHeader() {
       });
   };
 
+  const handleGlobalSearch = (value: string) => {
+    const keyword = value.trim().toLowerCase();
+    if (!keyword) {
+      message.warning("请输入搜索关键词");
+      return;
+    }
+
+    const exactMatch = searchableRoutes.find(
+      (route) => route.label.toLowerCase() === keyword || route.path.toLowerCase() === keyword,
+    );
+    const fuzzyMatch = searchableRoutes.find((route) => route.keywords.includes(keyword));
+    const targetRoute = exactMatch ?? fuzzyMatch;
+
+    if (!targetRoute) {
+      message.warning("未找到匹配页面");
+      return;
+    }
+
+    navigate(targetRoute.path);
+    message.success(`已跳转到${targetRoute.label}`);
+  };
   const userMenuItems: MenuProps["items"] = [
     {
       key: "profile",
@@ -228,8 +277,9 @@ export function TopHeader() {
       <Input.Search
         className="top-header__search"
         placeholder="搜索文件、内容、用户..."
+        aria-label="全局搜索"
         allowClear
-        onSearch={() => message.info("搜索功能待实现")}
+        onSearch={handleGlobalSearch}
       />
       <div className="top-header__status" aria-label="顶部状态栏">
         <div className="top-header__status-group" aria-label="服务状态">

@@ -2,7 +2,7 @@ import type { CSSProperties, ReactNode } from "react";
 import { App as AntdApp, ConfigProvider } from "antd";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { fireEvent, render, screen, waitFor, within } from "@testing-library/react";
-import { MemoryRouter } from "react-router-dom";
+import { MemoryRouter, useLocation } from "react-router-dom";
 import { afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 
 import {
@@ -99,6 +99,10 @@ function renderWithProviders(node: ReactNode, initialEntry = "/dashboard") {
   );
 }
 
+function LocationProbe() {
+  const location = useLocation();
+  return <span data-testid="current-path">{location.pathname}</span>;
+}
 afterEach(() => {
   vi.clearAllMocks();
   window.localStorage.clear();
@@ -149,5 +153,42 @@ describe("TopHeader", () => {
 
     expect(await screen.findByText("文件审核待处理")).toBeInTheDocument();
     expect(screen.getByText("知识库同步失败")).toBeInTheDocument();
+  });
+  it("navigates to matched admin page from global search", async () => {
+    vi.mocked(getSystemHealth).mockResolvedValue({ status: "ok" });
+    vi.mocked(getSystemReadiness).mockResolvedValue({
+      status: "ok",
+      dependencies: {
+        database: { status: "ok" },
+        rabbitmq: { status: "ok" },
+        redis: { status: "ok" },
+        minio: { status: "ok" },
+      },
+    });
+    vi.mocked(listNotifications).mockResolvedValue({ ...mockNotifications, items: [] });
+    useAuthStore.setState({
+      accessToken: "token",
+      user: {
+        id: "user-1",
+        name: "王明",
+        email: "wangming@example.com",
+        role: "system_admin",
+      },
+    });
+
+    renderWithProviders(
+      <>
+        <TopHeader />
+        <LocationProbe />
+      </>,
+    );
+
+    const searchInput = await screen.findByRole("searchbox", { name: "全局搜索" });
+    fireEvent.change(searchInput, { target: { value: "文件管理" } });
+    fireEvent.keyDown(searchInput, { key: "Enter", code: "Enter" });
+
+    await waitFor(() => {
+      expect(screen.getByTestId("current-path")).toHaveTextContent("/files");
+    });
   });
 });
