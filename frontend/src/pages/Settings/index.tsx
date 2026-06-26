@@ -104,6 +104,21 @@ interface SettingsStatusCard {
   tone: KpiTone;
 }
 
+type SettingsTabKey = "basic" | "upload" | "processing" | "security" | "ragflow" | "services";
+
+interface SettingsSummaryItem {
+  key: SettingsTabKey;
+  title: string;
+  meta: string;
+  description: string;
+  icon: ReactNode;
+  tone: KpiTone;
+  status: {
+    kind: "dataset" | "health";
+    value: string;
+  };
+}
+
 interface PolicyRow {
   key: string;
   name: string;
@@ -149,6 +164,63 @@ const statusCards: SettingsStatusCard[] = [
     description: "需要管理员确认",
     icon: <BellOutlined />,
     tone: "warning",
+  },
+];
+
+const settingsSummaryItems: SettingsSummaryItem[] = [
+  {
+    key: "basic",
+    title: "基础参数",
+    meta: "6 项配置",
+    description: "平台名称、语言、时区和通知渠道",
+    icon: <SettingOutlined />,
+    tone: "primary",
+    status: { kind: "dataset", value: "enabled" },
+  },
+  {
+    key: "upload",
+    title: "上传策略",
+    meta: "容量与类型",
+    description: "文件白名单、配额和去重规则",
+    icon: <CloudServerOutlined />,
+    tone: "success",
+    status: { kind: "dataset", value: "enabled" },
+  },
+  {
+    key: "processing",
+    title: "处理链路",
+    meta: "Celery 队列",
+    description: "解析、AI 分析和同步触发策略",
+    icon: <ExperimentOutlined />,
+    tone: "warning",
+    status: { kind: "health", value: "ok" },
+  },
+  {
+    key: "security",
+    title: "安全审计",
+    meta: "强制审计",
+    description: "登录锁定、邮箱验证和敏感阻断",
+    icon: <SafetyCertificateOutlined />,
+    tone: "purple",
+    status: { kind: "dataset", value: "enabled" },
+  },
+  {
+    key: "ragflow",
+    title: "RAGFlow 同步",
+    meta: "密钥加密",
+    description: "连接地址、API Key 和同步重试",
+    icon: <ApiOutlined />,
+    tone: "primary",
+    status: { kind: "dataset", value: "pending" },
+  },
+  {
+    key: "services",
+    title: "服务状态",
+    meta: "4 个依赖",
+    description: "API、PostgreSQL、MinIO 与 RAGFlow",
+    icon: <CheckCircleOutlined />,
+    tone: "success",
+    status: { kind: "health", value: "ok" },
   },
 ];
 
@@ -272,6 +344,59 @@ const serviceColumns: ColumnsType<ServiceRow> = [
     render: (value: number) => <Progress percent={value} size="small" />,
   },
 ];
+
+// ── Configuration command strip ───────────────────────────────────────────────
+
+function SettingsCommandStrip({
+  activeTab,
+  onSelectTab,
+}: {
+  activeTab: SettingsTabKey;
+  onSelectTab: (key: SettingsTabKey) => void;
+}) {
+  return (
+    <section className="settings-command-strip" aria-label="配置运行摘要">
+      <div className="settings-command-strip__main">
+        <span className="settings-command-strip__icon">
+          <SettingOutlined />
+        </span>
+        <span className="settings-command-strip__copy">
+          <Typography.Text strong className="settings-command-strip__title">
+            配置中心
+          </Typography.Text>
+          <Typography.Text type="secondary">
+            汇总平台基础参数、上传策略、安全审计和 RAGFlow 连接状态，点击卡片快速切换配置域。
+          </Typography.Text>
+        </span>
+      </div>
+      <div className="settings-command-strip__cards" aria-label="配置域快捷入口">
+        {settingsSummaryItems.map((item) => (
+          <button
+            aria-pressed={activeTab === item.key}
+            className={`settings-command-card settings-command-card--${item.tone} ${
+              activeTab === item.key ? "settings-command-card--active" : ""
+            }`}
+            key={item.key}
+            onClick={() => onSelectTab(item.key)}
+            type="button"
+          >
+            <span className="settings-command-card__icon">{item.icon}</span>
+            <span className="settings-command-card__body">
+              <span className="settings-command-card__topline">
+                <Typography.Text strong>{item.title}</Typography.Text>
+                <StatusTag kind={item.status.kind} value={item.status.value} variant="dot" />
+              </span>
+              <Typography.Text className="settings-command-card__meta">{item.meta}</Typography.Text>
+              <Typography.Text type="secondary" className="settings-command-card__description">
+                {item.description}
+              </Typography.Text>
+            </span>
+          </button>
+        ))}
+      </div>
+    </section>
+  );
+}
 
 // ── Generic config form field renderer ───────────────────────────────────────
 
@@ -653,6 +778,7 @@ function ServiceSettingsPanel() {
 
 export default function SettingsPage() {
   const queryClient = useQueryClient();
+  const [activeTab, setActiveTab] = useState<SettingsTabKey>("basic");
 
   function handleReload() {
     void queryClient.invalidateQueries({ queryKey: ["configs"] });
@@ -683,8 +809,12 @@ export default function SettingsPage() {
         ))}
       </div>
 
+      <SettingsCommandStrip activeTab={activeTab} onSelectTab={setActiveTab} />
+
       <Tabs
+        activeKey={activeTab}
         className="settings-tabs"
+        onChange={(key) => setActiveTab(key as SettingsTabKey)}
         items={[
           {
             key: "basic",

@@ -233,6 +233,23 @@ describe("SettingsPage", () => {
     expect(screen.getByRole("tab", { name: "RAGFlow" })).toBeInTheDocument();
   });
 
+  it("renders configuration summary strip and switches panels from shortcut cards", async () => {
+    setupMocks();
+    renderWithProviders(<SettingsPage />);
+
+    const summary = await screen.findByRole("region", { name: "配置运行摘要" });
+    expect(summary).toHaveTextContent("配置中心");
+    expect(summary).toHaveTextContent("基础参数");
+    expect(summary).toHaveTextContent("上传策略");
+    expect(summary).toHaveTextContent("RAGFlow 同步");
+    expect(summary).toHaveTextContent("服务状态");
+
+    fireEvent.click(screen.getByRole("button", { name: /服务状态/ }));
+
+    expect(await screen.findByText("服务连接状态")).toBeInTheDocument();
+    expect(screen.getByRole("tab", { name: "服务状态", selected: true })).toBeInTheDocument();
+  });
+
   it("loads and fills basic tab with fetched data", async () => {
     setupMocks();
     renderWithProviders(<SettingsPage />);
