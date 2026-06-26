@@ -224,6 +224,15 @@ describe("TaskLogsPage", () => {
     expect(screen.getByText("同步失败")).toBeInTheDocument();
     expect(screen.getByText("同步中")).toBeInTheDocument();
     expect(screen.getByText("待同步")).toBeInTheDocument();
+
+    const queueStrip = screen.getByRole("region", { name: "任务队列状态" });
+    expect(queueStrip).toHaveTextContent("任务队列状态");
+    expect(queueStrip).toHaveTextContent("2 个活跃任务");
+    expect(queueStrip).toHaveTextContent("1 个运行中，1 个等待消费");
+    expect(queueStrip).toHaveTextContent("1 个失败任务");
+    expect(queueStrip).toHaveTextContent("2 类任务类型");
+    expect(queueStrip).toHaveTextContent("当前页 3 条记录，平台共 3 条");
+    expect(queueStrip).toHaveTextContent("全部任务视图");
   });
 
   it("re-queries when task_type filter changes", async () => {
