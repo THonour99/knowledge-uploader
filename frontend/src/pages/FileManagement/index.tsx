@@ -8,6 +8,7 @@ import {
   Input,
   Modal,
   Popconfirm,
+  Progress,
   Select,
   Space,
   Table,
@@ -395,6 +396,8 @@ export default function FileManagementPage() {
   const selectedSyncableCount = selectedFiles.filter((file) =>
     syncableStatuses.has(file.status),
   ).length;
+  const selectedRatio =
+    filteredFiles.length > 0 ? Math.round((selectedFiles.length / filteredFiles.length) * 100) : 0;
 
   // ── 刷新辅助 ─────────────────────────────────────────────────────────────────
 
@@ -930,9 +933,16 @@ export default function FileManagementPage() {
               <FileProtectOutlined />
             </span>
             <span className="review-command-strip__copy">
-              <Typography.Text strong className="review-command-strip__title">
-                审核队列
-              </Typography.Text>
+              <span className="review-command-strip__title-row">
+                <Typography.Text strong className="review-command-strip__title">
+                  审核队列
+                </Typography.Text>
+                <StatusTag
+                  kind="review"
+                  value={pendingReviewCount > 0 ? "pending" : "approved"}
+                  variant="dot"
+                />
+              </span>
               <Typography.Text type="secondary">
                 基于当前筛选结果汇总待处理文件，选中后可快速判断可审核与可同步范围。
               </Typography.Text>
@@ -964,21 +974,32 @@ export default function FileManagementPage() {
               <strong>{selectedSyncableCount}项</strong>
             </span>
           </div>
-          <Space wrap className="review-command-strip__actions">
-            <Button size="small" onClick={() => setReviewFilter("pending_review")}>
-              只看待审核
-            </Button>
-            <Button size="small" onClick={() => setSyncFilter("failed")}>
-              只看同步失败
-            </Button>
-            <Button
-              size="small"
-              disabled={selectedFiles.length === 0}
-              onClick={() => setSelectedRowKeys([])}
-            >
-              清空选择
-            </Button>
-          </Space>
+          <div className="review-command-strip__action-panel">
+            <div className="review-command-strip__selection" aria-label="选择范围">
+              <span className="review-command-strip__selection-copy">
+                <Typography.Text type="secondary">选中范围</Typography.Text>
+                <strong>
+                  {selectedFiles.length}/{filteredFiles.length}
+                </strong>
+              </span>
+              <Progress percent={selectedRatio} size="small" showInfo={false} />
+            </div>
+            <Space wrap className="review-command-strip__actions">
+              <Button size="small" onClick={() => setReviewFilter("pending_review")}>
+                只看待审核
+              </Button>
+              <Button size="small" onClick={() => setSyncFilter("failed")}>
+                只看同步失败
+              </Button>
+              <Button
+                size="small"
+                disabled={selectedFiles.length === 0}
+                onClick={() => setSelectedRowKeys([])}
+              >
+                清空选择
+              </Button>
+            </Space>
+          </div>
         </div>
 
         {/* ── 表格工具栏 ── */}

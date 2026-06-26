@@ -579,12 +579,15 @@ describe("FileManagementPage — 审核队列摘要", () => {
     expect(queue).toHaveTextContent("待审核1项");
     expect(queue).toHaveTextContent("同步失败1项");
     expect(queue).toHaveTextContent("已选0项");
+    expect(queue).toHaveTextContent("选中范围");
+    expect(queue).toHaveTextContent("0/2");
 
     const rowCheckbox = screen.getAllByRole("checkbox")[1];
     fireEvent.click(rowCheckbox);
 
     expect(queue).toHaveTextContent("已选1项");
     expect(queue).toHaveTextContent("可审核1项");
+    expect(queue).toHaveTextContent("1/2");
   });
 });
 
