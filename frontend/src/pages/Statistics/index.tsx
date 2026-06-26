@@ -242,18 +242,109 @@ function expiryStatusLabel(status: ExpiryStatus): string {
 function normalizeExpiryBreakdown(rows: StatisticsExpiryStatusRow[]): StatisticsExpiryStatusRow[] {
   const rowByStatus = new Map(rows.map((row) => [row.status, row]));
 
-  return expiryStatusOrder.map(
-    (status) => rowByStatus.get(status) ?? { status, count: 0 },
+  return expiryStatusOrder.map((status) => rowByStatus.get(status) ?? { status, count: 0 });
+}
+
+function StatisticsInsightStrip({
+  dateRange,
+  groupBy,
+  totalFiles,
+  pendingReviewFiles,
+  failedTasks,
+  sensitiveFiles,
+  userSampleCount,
+  readyChartCount,
+}: {
+  dateRange: DateRange;
+  groupBy: GroupBy;
+  totalFiles: number;
+  pendingReviewFiles: number;
+  failedTasks: number;
+  sensitiveFiles: number;
+  userSampleCount: number;
+  readyChartCount: number;
+}) {
+  const start = dateRange?.[0]?.format("YYYY-MM-DD") ?? "未设置";
+  const end = dateRange?.[1]?.format("YYYY-MM-DD") ?? "未设置";
+  const groupLabel = groupByOptions.find((option) => option.value === groupBy)?.label ?? "按天";
+  const hasRiskQueue = failedTasks > 0 || pendingReviewFiles > 0 || sensitiveFiles > 0;
+  const lanes = [
+    {
+      key: "window",
+      icon: <ClockCircleOutlined />,
+      title: "统计窗口",
+      primary: `${start} 至 ${end}`,
+      secondary: `${groupLabel}汇总，筛选变化后自动刷新`,
+      status: { kind: "health" as const, value: "ok" },
+    },
+    {
+      key: "coverage",
+      icon: <RiseOutlined />,
+      title: "图表覆盖",
+      primary: `${readyChartCount}/3 张图表有数据`,
+      secondary: `当前范围 ${formatNumber(totalFiles)} 个文件进入统计`,
+      status: { kind: "health" as const, value: readyChartCount === 3 ? "ok" : "unknown" },
+    },
+    {
+      key: "users",
+      icon: <TeamOutlined />,
+      title: "用户样本",
+      primary: `${formatNumber(userSampleCount)} 位贡献用户`,
+      secondary: "明细表按上传总量排序，可继续搜索定位",
+      status: { kind: "health" as const, value: userSampleCount > 0 ? "ok" : "unknown" },
+    },
+    {
+      key: "risk",
+      icon: <WarningOutlined />,
+      title: "治理队列",
+      primary: `${formatNumber(failedTasks)} 个失败任务`,
+      secondary: `${formatNumber(pendingReviewFiles)} 个待审核，${formatNumber(sensitiveFiles)} 个敏感风险`,
+      status: { kind: "sync" as const, value: hasRiskQueue ? "failed" : "succeeded" },
+    },
+  ];
+
+  return (
+    <section className="statistics-insight-strip" role="region" aria-label="统计报表状态">
+      <div className="statistics-insight-strip__main">
+        <span className="statistics-insight-strip__icon">
+          <FileTextOutlined />
+        </span>
+        <span className="statistics-insight-strip__copy">
+          <Typography.Text strong className="statistics-insight-strip__title">
+            统计报表状态
+          </Typography.Text>
+          <Typography.Text type="secondary">
+            统一查看报表窗口、图表覆盖、用户样本和待处理治理队列。
+          </Typography.Text>
+        </span>
+        <span className="statistics-insight-strip__total">
+          <strong>{formatNumber(totalFiles)}</strong>
+          <Typography.Text type="secondary">统计文件</Typography.Text>
+        </span>
+      </div>
+      <div className="statistics-insight-strip__lanes" aria-label="统计报表指标">
+        {lanes.map((lane) => (
+          <div className="statistics-insight-lane" key={lane.key}>
+            <span className="statistics-insight-lane__icon">{lane.icon}</span>
+            <span className="statistics-insight-lane__body">
+              <span className="statistics-insight-lane__topline">
+                <Typography.Text strong>{lane.title}</Typography.Text>
+                <StatusTag kind={lane.status.kind} value={lane.status.value} variant="dot" />
+              </span>
+              <strong>{lane.primary}</strong>
+              <Typography.Text type="secondary">{lane.secondary}</Typography.Text>
+            </span>
+          </div>
+        ))}
+      </div>
+    </section>
   );
 }
 
 export default function StatisticsPage() {
   const { message } = AntdApp.useApp();
   const queryClient = useQueryClient();
-  const [dateRange, setDateRange] = useState<DateRange>([
-    dayjs().subtract(30, "day"),
-    dayjs(),
-  ]);
+  const [dateRange, setDateRange] = useState<DateRange>([dayjs().subtract(30, "day"), dayjs()]);
   const [department, setDepartment] = useState<string | undefined>();
   const [categoryId, setCategoryId] = useState<string | undefined>();
   const [syncStatus, setSyncStatus] = useState<string | undefined>();
@@ -333,6 +424,10 @@ export default function StatisticsPage() {
   const failures = failuresQuery.data?.items ?? [];
   const expiry = expiryQuery.data;
   const expiryBreakdown = normalizeExpiryBreakdown(expiry?.items ?? []);
+  const readyChartCount = [trends.length, departments.length, categories.length].filter(
+    (count) => count > 0,
+  ).length;
+  const userSampleCount = usersQuery.data?.total ?? users.length;
   const isLoading =
     overviewQuery.isLoading ||
     usersQuery.isLoading ||
@@ -431,7 +526,8 @@ export default function StatisticsPage() {
       align: "right",
       render: (value: number, record) => (
         <Typography.Text className="statistics-negative">
-          {formatNumber(value)} ({record.total_files ? ((value / record.total_files) * 100).toFixed(1) : "0.0"}%)
+          {formatNumber(value)} (
+          {record.total_files ? ((value / record.total_files) * 100).toFixed(1) : "0.0"}%)
         </Typography.Text>
       ),
     },
@@ -443,7 +539,8 @@ export default function StatisticsPage() {
       align: "right",
       render: (value: number, record) => (
         <Typography.Text className="statistics-warning">
-          {formatNumber(value)} ({record.total_files ? ((value / record.total_files) * 100).toFixed(1) : "0.0"}%)
+          {formatNumber(value)} (
+          {record.total_files ? ((value / record.total_files) * 100).toFixed(1) : "0.0"}%)
         </Typography.Text>
       ),
     },
@@ -470,11 +567,7 @@ export default function StatisticsPage() {
       description="查看上传趋势、部门贡献、分类分布和用户上传明细。"
       actions={
         <Space wrap className="statistics-page-actions">
-          <RangePicker
-            value={dateRange}
-            onChange={(value) => setDateRange(value)}
-            allowClear
-          />
+          <RangePicker value={dateRange} onChange={(value) => setDateRange(value)} allowClear />
           <Button
             type="primary"
             icon={<DownloadOutlined />}
@@ -535,6 +628,17 @@ export default function StatisticsPage() {
         />
       </div>
 
+      <StatisticsInsightStrip
+        dateRange={dateRange}
+        failedTasks={overview?.failed_tasks ?? 0}
+        groupBy={groupBy}
+        pendingReviewFiles={overview?.pending_review_files ?? 0}
+        readyChartCount={readyChartCount}
+        sensitiveFiles={overview?.sensitive_files ?? 0}
+        totalFiles={overview?.total_files ?? 0}
+        userSampleCount={userSampleCount}
+      />
+
       <div className="statistics-kpi-grid">
         <KpiCard
           icon={<FileTextOutlined />}
@@ -591,7 +695,10 @@ export default function StatisticsPage() {
 
         <Card className="document-panel statistics-chart-card" title="部门贡献排行">
           {departments.length > 0 ? (
-            <ReactECharts option={buildDepartmentOption(departments)} className="statistics-chart" />
+            <ReactECharts
+              option={buildDepartmentOption(departments)}
+              className="statistics-chart"
+            />
           ) : (
             <Empty image={Empty.PRESENTED_IMAGE_SIMPLE} description="暂无部门数据" />
           )}
@@ -614,7 +721,9 @@ export default function StatisticsPage() {
                   <span className="statistics-user-cell__avatar">{user.user_name.slice(0, 1)}</span>
                   <span className="statistics-ranking-row__name">
                     <Typography.Text strong>{user.user_name}</Typography.Text>
-                    <Typography.Text type="secondary">{user.department ?? "未设置"}</Typography.Text>
+                    <Typography.Text type="secondary">
+                      {user.department ?? "未设置"}
+                    </Typography.Text>
                   </span>
                   <Typography.Text>{formatNumber(user.total_files)}</Typography.Text>
                 </div>
@@ -660,18 +769,24 @@ export default function StatisticsPage() {
                       <div className="statistics-failure-row__header">
                         <Typography.Text>{failure.reason}</Typography.Text>
                         <Typography.Text type="secondary">
-                          {formatNumber(failure.failed_tasks)} ({formatNumber(failure.failed_files)} 文件)
+                          {formatNumber(failure.failed_tasks)} ({formatNumber(failure.failed_files)}{" "}
+                          文件)
                         </Typography.Text>
                       </div>
                       <span className="statistics-failure-row__track">
-                        <span className="statistics-failure-row__bar" style={{ width: `${ratio}%` }} />
+                        <span
+                          className="statistics-failure-row__bar"
+                          style={{ width: `${ratio}%` }}
+                        />
                       </span>
                     </div>
                   );
                 })}
                 <div className="statistics-failure-total">
                   <Typography.Text strong>总计</Typography.Text>
-                  <Typography.Text>{formatNumber(overview?.failed_tasks ?? 0)} 个任务</Typography.Text>
+                  <Typography.Text>
+                    {formatNumber(overview?.failed_tasks ?? 0)} 个任务
+                  </Typography.Text>
                 </div>
               </div>
             ) : (
@@ -708,9 +823,7 @@ export default function StatisticsPage() {
                 <div className="statistics-expiry-summary">
                   <div>
                     <Typography.Text type="secondary">过期规则文件</Typography.Text>
-                    <Typography.Title level={4}>
-                      {formatNumber(expiry.total)}
-                    </Typography.Title>
+                    <Typography.Title level={4}>{formatNumber(expiry.total)}</Typography.Title>
                   </div>
                   <div>
                     <Typography.Text type="secondary">即将过期</Typography.Text>

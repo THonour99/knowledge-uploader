@@ -151,8 +151,20 @@ const categories: StatisticsCategoryListResponse = {
 const trends: StatisticsTrendResponse = {
   group_by: "day",
   items: [
-    { period: "2026-06-01", total_files: 1024, synced_files: 860, failed_files: 20, pending_review_files: 144 },
-    { period: "2026-06-02", total_files: 890, synced_files: 790, failed_files: 18, pending_review_files: 82 },
+    {
+      period: "2026-06-01",
+      total_files: 1024,
+      synced_files: 860,
+      failed_files: 20,
+      pending_review_files: 144,
+    },
+    {
+      period: "2026-06-02",
+      total_files: 890,
+      synced_files: 790,
+      failed_files: 18,
+      pending_review_files: 82,
+    },
   ],
 };
 
@@ -260,7 +272,7 @@ describe("StatisticsPage", () => {
     renderWithProviders(<StatisticsPage />);
 
     expect(await screen.findByRole("heading", { name: "统计分析" })).toBeInTheDocument();
-    expect(await screen.findByText("18,560")).toBeInTheDocument();
+    expect((await screen.findAllByText("18,560")).length).toBeGreaterThan(0);
     expect(screen.getByText("236")).toBeInTheDocument();
     expect(screen.getByText("92.4%")).toBeInTheDocument();
     expect(screen.getByText("上传趋势")).toBeInTheDocument();
@@ -273,6 +285,14 @@ describe("StatisticsPage", () => {
     expect(screen.getAllByText("已过期").length).toBeGreaterThan(0);
     expect(screen.getAllByText("李明").length).toBeGreaterThan(0);
     expect(screen.getByText("RuntimeError")).toBeInTheDocument();
+    const reportStatus = screen.getByRole("region", { name: "统计报表状态" });
+    expect(reportStatus).toHaveTextContent("统计报表状态");
+    expect(reportStatus).toHaveTextContent("3/3 张图表有数据");
+    expect(reportStatus).toHaveTextContent("18,560 个文件进入统计");
+    expect(reportStatus).toHaveTextContent("2 位贡献用户");
+    expect(reportStatus).toHaveTextContent("162 个失败任务");
+    expect(reportStatus).toHaveTextContent("1,240 个待审核，37 个敏感风险");
+    expect(reportStatus).toHaveTextContent("同步失败");
   });
 
   it("filters the user table locally and exports with current query filters", async () => {
@@ -292,7 +312,9 @@ describe("StatisticsPage", () => {
 
     await waitFor(() => {
       expect(exportStatistics).toHaveBeenCalledWith(expect.objectContaining({ group_by: "day" }));
-      expect(getStatisticsExpiry).toHaveBeenCalledWith(expect.objectContaining({ group_by: "day" }));
+      expect(getStatisticsExpiry).toHaveBeenCalledWith(
+        expect.objectContaining({ group_by: "day" }),
+      );
     });
   });
 
@@ -303,7 +325,7 @@ describe("StatisticsPage", () => {
     renderWithProviders(<StatisticsPage />);
 
     expect(await screen.findByRole("heading", { name: "统计分析" })).toBeInTheDocument();
-    expect(await screen.findByText("18,560")).toBeInTheDocument();
+    expect((await screen.findAllByText("18,560")).length).toBeGreaterThan(0);
     expect(await screen.findByText("过期统计接口暂不可用")).toBeInTheDocument();
   });
 });
