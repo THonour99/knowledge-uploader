@@ -15,6 +15,7 @@ import {
 import {
   CheckCircleOutlined,
   DatabaseOutlined,
+  FilterOutlined,
   MergeOutlined,
   PlusOutlined,
   ReloadOutlined,
@@ -37,7 +38,9 @@ import {
   updateTag,
 } from "../../api/client";
 import { KpiCard } from "../../components/KpiCard";
+import { StatusTag } from "../../components/StatusTag";
 import { PageContainer } from "../../layouts/PageContainer";
+import "./styles.css";
 
 // ── Form value types ──────────────────────────────────────────────────────────
 
@@ -50,6 +53,102 @@ interface MergeFormValues {
   target_tag_id: string;
 }
 
+interface TagGovernanceStripProps {
+  attachedFileCount: number;
+  disabledCount: number;
+  enabledCount: number;
+  hasSearch: boolean;
+  manualCount: number;
+  pageCount: number;
+  systemGeneratedCount: number;
+  total: number;
+  unusedCount: number;
+}
+
+function TagGovernanceStrip({
+  attachedFileCount,
+  disabledCount,
+  enabledCount,
+  hasSearch,
+  manualCount,
+  pageCount,
+  systemGeneratedCount,
+  total,
+  unusedCount,
+}: TagGovernanceStripProps) {
+  const lanes = [
+    {
+      key: "health",
+      icon: <CheckCircleOutlined />,
+      title: "标签健康",
+      primary: `${enabledCount} 个启用标签`,
+      secondary: `${disabledCount} 个停用，平台共 ${total} 个标签`,
+      status: disabledCount > 0 ? "unknown" : "ok",
+    },
+    {
+      key: "coverage",
+      icon: <DatabaseOutlined />,
+      title: "文件覆盖",
+      primary: `${attachedFileCount} 次文件关联`,
+      secondary: `${unusedCount} 个空闲标签可清理或合并`,
+      status: unusedCount > 0 ? "unknown" : "ok",
+    },
+    {
+      key: "source",
+      icon: <TagOutlined />,
+      title: "来源治理",
+      primary: `${systemGeneratedCount} 个系统标签`,
+      secondary: `${manualCount} 个手动维护标签`,
+      status: pageCount > 0 ? "ok" : "unknown",
+    },
+    {
+      key: "filters",
+      icon: <FilterOutlined />,
+      title: "筛选视图",
+      primary: hasSearch ? "已按关键字筛选" : "全部标签视图",
+      secondary: hasSearch ? "当前结果来自搜索条件" : "展示完整标签治理范围",
+      status: hasSearch ? "ok" : "unknown",
+    },
+  ];
+
+  return (
+    <section className="tags-governance-strip" role="region" aria-label="标签治理状态">
+      <div className="tags-governance-strip__summary">
+        <span className="tags-governance-strip__icon">
+          <TagOutlined />
+        </span>
+        <span className="tags-governance-strip__copy">
+          <Typography.Text strong className="tags-governance-strip__title">
+            标签治理状态
+          </Typography.Text>
+          <Typography.Text type="secondary">
+            汇总当前标签库的启用状态、文件覆盖、来源构成和筛选范围。
+          </Typography.Text>
+        </span>
+        <span className="tags-governance-strip__total">
+          <strong>{total}</strong>
+          <Typography.Text type="secondary">标签总量</Typography.Text>
+        </span>
+      </div>
+
+      <div className="tags-governance-strip__lanes" aria-label="标签治理指标">
+        {lanes.map((lane) => (
+          <div className="tags-governance-lane" key={lane.key}>
+            <span className="tags-governance-lane__icon">{lane.icon}</span>
+            <span className="tags-governance-lane__body">
+              <span className="tags-governance-lane__topline">
+                <Typography.Text strong>{lane.title}</Typography.Text>
+                <StatusTag kind="health" value={lane.status} variant="dot" />
+              </span>
+              <strong>{lane.primary}</strong>
+              <Typography.Text type="secondary">{lane.secondary}</Typography.Text>
+            </span>
+          </div>
+        ))}
+      </div>
+    </section>
+  );
+}
 // ── Tags page ─────────────────────────────────────────────────────────────────
 
 export default function TagsPage() {
@@ -86,6 +185,10 @@ export default function TagsPage() {
   const enabledTagCount = tags.filter((tag) => tag.enabled).length;
   const systemGeneratedCount = tags.filter((tag) => tag.is_system_generated).length;
   const unusedTagCount = tags.filter((tag) => tag.usage_count === 0).length;
+  const disabledTagCount = tags.length - enabledTagCount;
+  const manualTagCount = tags.length - systemGeneratedCount;
+  const attachedFileCount = tags.reduce((sum, tag) => sum + tag.usage_count, 0);
+  const hasSearch = Boolean(search.trim());
 
   const refreshTags = async () => {
     await queryClient.invalidateQueries({ queryKey: ["tags"] });
@@ -215,9 +318,9 @@ export default function TagsPage() {
       key: "name",
       width: 160,
       render: (value: string) => (
-        <span style={{ display: "inline-flex", alignItems: "center", gap: 6 }}>
-          <TagOutlined style={{ color: "var(--ku-color-primary)", flexShrink: 0 }} />
-          <Typography.Text strong style={{ maxWidth: 120 }} ellipsis title={value}>
+        <span className="tags-name-cell">
+          <TagOutlined className="tags-name-cell__icon" />
+          <Typography.Text strong className="tags-name-cell__text" ellipsis title={value}>
             {value}
           </Typography.Text>
         </span>
@@ -365,6 +468,18 @@ export default function TagsPage() {
           tone="warning"
         />
       </div>
+
+      <TagGovernanceStrip
+        attachedFileCount={attachedFileCount}
+        disabledCount={disabledTagCount}
+        enabledCount={enabledTagCount}
+        hasSearch={hasSearch}
+        manualCount={manualTagCount}
+        pageCount={tags.length}
+        systemGeneratedCount={systemGeneratedCount}
+        total={total}
+        unusedCount={unusedTagCount}
+      />
 
       <Card className="document-panel table-card">
         <div className="config-card-actions">

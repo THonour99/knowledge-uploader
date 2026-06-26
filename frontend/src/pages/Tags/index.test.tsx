@@ -148,6 +148,16 @@ describe("TagsPage", () => {
     expect(screen.getByText("技术规范")).toBeInTheDocument();
     expect(screen.getByText("空标签")).toBeInTheDocument();
 
+    const governance = screen.getByRole("region", { name: "标签治理状态" });
+    expect(governance).toHaveTextContent("标签治理状态");
+    expect(governance).toHaveTextContent("2 个启用标签");
+    expect(governance).toHaveTextContent("1 个停用，平台共 3 个标签");
+    expect(governance).toHaveTextContent("17 次文件关联");
+    expect(governance).toHaveTextContent("1 个空闲标签可清理或合并");
+    expect(governance).toHaveTextContent("1 个系统标签");
+    expect(governance).toHaveTextContent("2 个手动维护标签");
+    expect(governance).toHaveTextContent("全部标签视图");
+
     // Usage counts (usage_count column)
     expect(screen.getByText("12")).toBeInTheDocument();
     expect(screen.getByText("5")).toBeInTheDocument();
