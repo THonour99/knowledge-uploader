@@ -14,6 +14,17 @@ export type StatusKind =
   | "health";
 type StatusTone = keyof typeof statusTagColors;
 
+const statusKindLabels: Record<StatusKind, string> = {
+  file: "文件状态",
+  review: "审核状态",
+  sync: "同步状态",
+  risk: "风险等级",
+  user: "用户状态",
+  dataset: "Dataset 状态",
+  expiry: "有效期状态",
+  health: "健康状态",
+};
+
 export interface StatusTagProps {
   kind: StatusKind;
   value: string;
@@ -104,10 +115,15 @@ export function StatusTag({ kind, value, processing = false, variant = "tag" }: 
   const meta = statusMap[kind][value] ?? { label: value, color: "default" };
   const color = statusTagColors[meta.color];
   const isProcessing = processing || meta.processing === true;
+  const ariaLabel = `${statusKindLabels[kind]}：${meta.label}`;
 
   if (variant === "dot") {
     return (
-      <span className={`status-tag-dot status-tag-dot--${meta.color}`}>
+      <span
+        aria-label={ariaLabel}
+        className={`status-tag-dot status-tag-dot--${meta.color}`}
+        title={ariaLabel}
+      >
         {meta.label}
       </span>
     );
@@ -115,7 +131,9 @@ export function StatusTag({ kind, value, processing = false, variant = "tag" }: 
 
   return (
     <Tag
+      aria-label={ariaLabel}
       style={{ "--status-color": color } as CSSProperties}
+      title={ariaLabel}
       className={[
         "status-tag",
         `status-tag--${meta.color}`,

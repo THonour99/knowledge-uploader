@@ -2035,8 +2035,16 @@ a {
   display: inline-flex;
   align-items: center;
   gap: 6px;
+  width: fit-content;
+  min-height: 24px;
+  padding: 2px 9px;
+  border: 1px solid color-mix(in srgb, currentColor 16%, transparent);
+  border-radius: 999px;
+  background: color-mix(in srgb, currentColor 7%, white);
   color: var(--ku-text-disabled);
-  font-weight: 500;
+  font-size: 12px;
+  font-weight: 600;
+  line-height: 18px;
 }
 
 .status-tag-dot::before {
