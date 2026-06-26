@@ -33,11 +33,13 @@ import {
   type CategoryPayload,
   type DatasetMapping,
   type DatasetMappingPayload,
+  type RagflowConnectionTestResult,
   createCategory,
   createDatasetMapping,
   disableDatasetMapping,
   listCategories,
   listDatasetMappings,
+  testRagflowConnection,
   updateCategory,
   updateDatasetMapping,
 } from "../../api/client";
@@ -196,6 +198,44 @@ function mappingStatus(mapping?: DatasetMapping): DatasetConfigRow["status"] {
   return mapping.enabled ? "enabled" : "disabled";
 }
 
+function connectionStatus(
+  result: RagflowConnectionTestResult | undefined,
+  isPending: boolean,
+): {
+  tone: "info" | "success" | "warning" | "danger";
+  label: string;
+  detail: string;
+} {
+  if (isPending) {
+    return {
+      tone: "warning",
+      label: "检测中",
+      detail: "正在向 RAGFlow 发送连接测试请求",
+    };
+  }
+  if (!result) {
+    return {
+      tone: "info",
+      label: "待测试",
+      detail: "使用系统配置中的 RAGFlow 地址和 API Key 进行只读探测",
+    };
+  }
+  if (result.ok) {
+    return {
+      tone: "success",
+      label: "连接正常",
+      detail:
+        result.latency_ms === null ? "服务已响应，未返回耗时" : `服务响应 ${result.latency_ms} ms`,
+    };
+  }
+
+  return {
+    tone: "danger",
+    label: "连接异常",
+    detail: result.error ?? "RAGFlow 未返回可用错误详情",
+  };
+}
+
 export default function DatasetConfigPage() {
   const { message } = AntdApp.useApp();
   const queryClient = useQueryClient();
@@ -326,6 +366,25 @@ export default function DatasetConfigPage() {
       message.error(error.message);
     },
   });
+
+  const connectionMutation = useMutation({
+    mutationFn: testRagflowConnection,
+    onSuccess: (result) => {
+      if (result.ok) {
+        message.success(
+          result.latency_ms === null
+            ? "RAGFlow 连接正常"
+            : `RAGFlow 连接正常，响应 ${result.latency_ms} ms`,
+        );
+        return;
+      }
+      message.error(result.error ?? "RAGFlow 连接异常");
+    },
+    onError: (error) => {
+      message.error(error.message);
+    },
+  });
+  const connection = connectionStatus(connectionMutation.data, connectionMutation.isPending);
 
   const openCreateCategory = () => {
     setEditingCategory(null);
@@ -527,6 +586,44 @@ export default function DatasetConfigPage() {
           tone="purple"
         />
       </div>
+
+      <Card className="document-panel dataset-health-card">
+        <div className="dataset-health-card__main">
+          <span className="dataset-health-card__icon">
+            <DatabaseOutlined />
+          </span>
+          <span className="dataset-health-card__copy">
+            <Typography.Title level={3} className="dataset-health-card__title">
+              RAGFlow 连接状态
+            </Typography.Title>
+            <Typography.Text type="secondary">
+              在编辑分类映射前验证 RAGFlow 服务可达，减少后续同步失败。
+            </Typography.Text>
+          </span>
+        </div>
+        <div
+          className={`dataset-health-card__result dataset-health-card__result--${connection.tone}`}
+          aria-live="polite"
+        >
+          {connection.tone === "success" ? <CheckCircleOutlined /> : <ExclamationCircleOutlined />}
+          <span>
+            <Typography.Text strong className="dataset-health-card__label">
+              {connection.label}
+            </Typography.Text>
+            <Typography.Text type="secondary" className="dataset-health-card__detail">
+              {connection.detail}
+            </Typography.Text>
+          </span>
+        </div>
+        <Button
+          type="primary"
+          icon={<ReloadOutlined />}
+          loading={connectionMutation.isPending}
+          onClick={() => connectionMutation.mutate()}
+        >
+          测试连接
+        </Button>
+      </Card>
 
       <Card className="document-panel table-card">
         <div className="config-card-actions">

@@ -9,6 +9,7 @@ import {
   type DatasetMappingListResponse,
   listCategories,
   listDatasetMappings,
+  testRagflowConnection,
 } from "../../api/client";
 import type * as ApiClientModule from "../../api/client";
 import { themeCssVariables } from "../../theme/tokens";
@@ -26,6 +27,7 @@ vi.mock("../../api/client", async () => {
     createDatasetMapping: vi.fn(),
     updateDatasetMapping: vi.fn(),
     disableDatasetMapping: vi.fn(),
+    testRagflowConnection: vi.fn(),
   };
 });
 
@@ -119,5 +121,26 @@ describe("DatasetConfigPage", () => {
     await screen.findAllByText("新增分类");
 
     expect(screen.queryByText("默认可见范围")).not.toBeInTheDocument();
+  });
+
+  it("tests the RAGFlow connection from the Dataset panel", async () => {
+    vi.mocked(listCategories).mockResolvedValue(categories);
+    vi.mocked(listDatasetMappings).mockResolvedValue(mappings);
+    vi.mocked(testRagflowConnection).mockResolvedValue({
+      ok: true,
+      latency_ms: 42,
+      error: null,
+    });
+
+    renderWithProviders(<DatasetConfigPage />);
+
+    expect(await screen.findByText("RAGFlow 连接状态")).toBeInTheDocument();
+    expect(screen.getByText("待测试")).toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole("button", { name: /测试连接/ }));
+
+    expect(await screen.findByText("连接正常")).toBeInTheDocument();
+    expect(screen.getByText("服务响应 42 ms")).toBeInTheDocument();
+    expect(testRagflowConnection).toHaveBeenCalledTimes(1);
   });
 });

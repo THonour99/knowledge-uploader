@@ -740,6 +740,92 @@ a {
   margin-bottom: 16px;
 }
 
+.dataset-health-card .ant-card-body {
+  display: flex;
+  gap: 18px;
+  align-items: center;
+  justify-content: space-between;
+}
+
+.dataset-health-card__main {
+  display: flex;
+  flex: 1 1 auto;
+  gap: 14px;
+  align-items: center;
+  min-width: 0;
+}
+
+.dataset-health-card__icon {
+  display: inline-flex;
+  flex: 0 0 44px;
+  align-items: center;
+  justify-content: center;
+  width: 44px;
+  height: 44px;
+  border-radius: 12px;
+  background: var(--ku-color-primary-light);
+  color: var(--ku-color-primary);
+  font-size: 22px;
+}
+
+.dataset-health-card__copy {
+  display: grid;
+  gap: 4px;
+  min-width: 0;
+}
+
+.dataset-health-card__title.ant-typography {
+  margin: 0;
+  font-size: 16px;
+  line-height: 1.35;
+}
+
+.dataset-health-card__result {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr);
+  gap: 8px 10px;
+  align-items: flex-start;
+  min-width: 260px;
+  max-width: 380px;
+  padding: 12px 14px;
+  border: 1px solid var(--ku-border);
+  border-radius: var(--ku-radius-control);
+  background: var(--ku-bg-base);
+}
+
+.dataset-health-card__result > .anticon {
+  margin-top: 3px;
+}
+
+.dataset-health-card__result--info {
+  border-color: rgba(59, 130, 246, 0.22);
+  background: rgba(230, 244, 255, 0.72);
+  color: var(--ku-color-info);
+}
+
+.dataset-health-card__result--success {
+  border-color: rgba(22, 163, 74, 0.22);
+  background: rgba(22, 163, 74, 0.08);
+  color: var(--ku-color-success);
+}
+
+.dataset-health-card__result--warning {
+  border-color: rgba(245, 158, 11, 0.26);
+  background: rgba(245, 158, 11, 0.08);
+  color: var(--ku-color-warning);
+}
+
+.dataset-health-card__result--danger {
+  border-color: rgba(239, 68, 68, 0.24);
+  background: rgba(239, 68, 68, 0.08);
+  color: var(--ku-color-danger);
+}
+
+.dataset-health-card__label,
+.dataset-health-card__detail {
+  display: block;
+}
+
 .table-link-button {
   height: auto;
   padding: 0;
@@ -1463,6 +1549,16 @@ a {
 
   .config-card-actions {
     justify-content: flex-start;
+  }
+
+  .dataset-health-card .ant-card-body {
+    align-items: stretch;
+    flex-direction: column;
+  }
+
+  .dataset-health-card__result {
+    min-width: 0;
+    max-width: none;
   }
 
   .form-grid--two,
