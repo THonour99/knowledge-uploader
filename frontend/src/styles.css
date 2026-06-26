@@ -246,9 +246,21 @@ a {
   color: var(--ku-color-danger);
 }
 
+.top-header__api-base,
 .top-header__time {
   font-size: 12px;
   white-space: nowrap;
+}
+
+.top-header__api-base {
+  max-width: 180px;
+  overflow: hidden;
+  padding: 4px 8px;
+  border: 1px solid var(--ku-border);
+  border-radius: 999px;
+  background: var(--ku-bg-base);
+  color: var(--ku-text-secondary);
+  text-overflow: ellipsis;
 }
 
 .top-header-notification {

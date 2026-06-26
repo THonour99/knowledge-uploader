@@ -1195,9 +1195,9 @@ export async function changeUserRole(id: string, role: AdminUserRole): Promise<U
 }
 
 export async function listDepartments(): Promise<DepartmentListResponse> {
-  const response = await apiClient.get<ApiEnvelope<DepartmentListResponse> | DepartmentListResponse>(
-    "/admin/departments",
-  );
+  const response = await apiClient.get<
+    ApiEnvelope<DepartmentListResponse> | DepartmentListResponse
+  >("/admin/departments");
 
   return unwrapResponse(response.data);
 }
@@ -1291,6 +1291,20 @@ export interface DependencyHealth {
 export interface SystemReadiness {
   status: DependencyStatus;
   dependencies: Record<string, DependencyHealth>;
+}
+
+export interface SystemHealth {
+  status: string;
+}
+
+export function getApiBaseUrl(): string {
+  return apiClient.defaults.baseURL ?? "/api";
+}
+
+export async function getSystemHealth(): Promise<SystemHealth> {
+  const response = await apiClient.get<ApiEnvelope<SystemHealth> | SystemHealth>("/system/health");
+
+  return unwrapResponse(response.data);
 }
 
 /**

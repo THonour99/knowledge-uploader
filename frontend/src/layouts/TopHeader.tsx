@@ -3,6 +3,7 @@ import {
   BellOutlined,
   CheckCircleOutlined,
   DownOutlined,
+  ExclamationCircleOutlined,
   LeftOutlined,
   LogoutOutlined,
   ProfileOutlined,
@@ -14,7 +15,7 @@ import { useQuery } from "@tanstack/react-query";
 import dayjs from "dayjs";
 import { useLocation, useNavigate } from "react-router-dom";
 
-import { listNotifications, logout } from "../api/client";
+import { getApiBaseUrl, getSystemHealth, listNotifications, logout } from "../api/client";
 import { appNavigationRoutes, utilityNavigation } from "../router/routes";
 import { useAuthStore } from "../store/auth.store";
 
@@ -73,13 +74,23 @@ export function TopHeader() {
     staleTime: 30_000,
     refetchInterval: 60_000,
   });
+  const healthQuery = useQuery({
+    queryKey: ["system", "health", "top-header"],
+    queryFn: getSystemHealth,
+    enabled: Boolean(user),
+    staleTime: 30_000,
+    refetchInterval: 60_000,
+  });
   const notifications = notificationsQuery.data?.items ?? [];
   const unreadCount = notificationsQuery.data?.unread_count ?? 0;
-  const notificationStatus = notificationsQuery.isError
-    ? { label: "通知异常", tone: "danger" }
-    : notificationsQuery.isFetching
-      ? { label: "刷新中", tone: "warning" }
-      : { label: "通知正常", tone: "success" };
+  const apiBaseUrl = getApiBaseUrl();
+  const apiStatus = healthQuery.isError
+    ? { label: "API 异常", tone: "danger" }
+    : healthQuery.isFetching && !healthQuery.data
+      ? { label: "检测中", tone: "warning" }
+      : healthQuery.data?.status === "ok"
+        ? { label: "API 已连接", tone: "success" }
+        : { label: "API 未知", tone: "warning" };
 
   const notificationMenuItems: MenuProps["items"] = useMemo(() => {
     if (notifications.length === 0) {
@@ -164,12 +175,13 @@ export function TopHeader() {
         onSearch={() => message.info("搜索功能待实现")}
       />
       <div className="top-header__status" aria-label="顶部状态栏">
-        <span
-          className={`top-header__status-pill top-header__status-pill--${notificationStatus.tone}`}
-        >
-          <CheckCircleOutlined />
-          {notificationStatus.label}
+        <span className={`top-header__status-pill top-header__status-pill--${apiStatus.tone}`}>
+          {apiStatus.tone === "success" ? <CheckCircleOutlined /> : <ExclamationCircleOutlined />}
+          {apiStatus.label}
         </span>
+        <Typography.Text type="secondary" className="top-header__api-base">
+          API {apiBaseUrl}
+        </Typography.Text>
         <Typography.Text type="secondary" className="top-header__time">
           {now.format("YYYY/MM/DD HH:mm")}
         </Typography.Text>
