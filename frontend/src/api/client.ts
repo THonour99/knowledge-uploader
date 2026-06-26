@@ -1236,3 +1236,27 @@ export async function syncFile(id: string): Promise<SyncTask> {
 
   return unwrapResponse(response.data);
 }
+
+export type DependencyStatus = "ok" | "error";
+
+export interface DependencyHealth {
+  status: DependencyStatus;
+  detail?: string;
+}
+
+export interface SystemReadiness {
+  status: DependencyStatus;
+  dependencies: Record<string, DependencyHealth>;
+}
+
+/**
+ * 系统就绪探针（database / redis / rabbitmq / minio 真实健康）。
+ * 后端在依赖异常时返回 503，但仍带结构化 body，因此放行 503 以便展示具体异常项。
+ */
+export async function getSystemReadiness(): Promise<SystemReadiness> {
+  const response = await apiClient.get<SystemReadiness>("/system/ready", {
+    validateStatus: (status) => status === 200 || status === 503,
+  });
+
+  return response.data;
+}

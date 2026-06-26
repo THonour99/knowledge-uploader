@@ -35,7 +35,7 @@ import {
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import dayjs, { type Dayjs } from "dayjs";
 import { useMemo, useState } from "react";
-import type { Key, ReactNode } from "react";
+import type { Key } from "react";
 import type { ColumnsType } from "antd/es/table";
 import type { FormInstance } from "antd/es/form";
 
@@ -56,6 +56,7 @@ import {
   syncFile,
   updateFileClassification,
 } from "../../api/client";
+import { KpiCard } from "../../components/KpiCard";
 import { StatusTag } from "../../components/StatusTag";
 import { PageContainer } from "../../layouts/PageContainer";
 import { allowedExtensionsFromConfig } from "../../utils/uploadConfig";
@@ -139,39 +140,6 @@ function fileTypeMeta(fileName: string) {
     return { icon: <FilePptOutlined />, className: "file-title-cell__icon--ppt" };
   }
   return { icon: <FileOutlined />, className: "file-title-cell__icon--default" };
-}
-
-// ── 子组件 ────────────────────────────────────────────────────────────────────
-
-function MetricCard({
-  icon,
-  title,
-  value,
-  trend,
-  tone,
-}: {
-  icon: ReactNode;
-  title: string;
-  value: number;
-  trend: string;
-  tone?: "success" | "warning" | "danger" | "purple" | "info";
-}) {
-  return (
-    <Card className="metric-card">
-      <Space size={16}>
-        <span className={tone ? `metric-card__icon metric-card__icon--${tone}` : "metric-card__icon"}>
-          {icon}
-        </span>
-        <span>
-          <Typography.Text type="secondary">{title}</Typography.Text>
-          <Typography.Title level={3} className="metric-card__value">
-            {value}
-          </Typography.Title>
-          <Typography.Text type="secondary">{trend}</Typography.Text>
-        </span>
-      </Space>
-    </Card>
-  );
 }
 
 // ── 主页面 ────────────────────────────────────────────────────────────────────
@@ -715,32 +683,32 @@ export default function FileManagementPage() {
       description="管理平台内所有文件的审核与同步状态，保障数据质量与合规安全。"
     >
       <div className="metric-grid">
-        <MetricCard
+        <KpiCard
           icon={<FileProtectOutlined />}
           title="待审核"
           value={files.filter((file) => file.status === "pending_review").length}
-          trend="较昨日保持稳定"
+          description="较昨日保持稳定"
           tone="warning"
         />
-        <MetricCard
+        <KpiCard
           icon={<SafetyOutlined />}
           title="高风险文件"
           value={files.filter((file) => riskLevel(file) === "high").length}
-          trend="敏感审核队列"
+          description="敏感审核队列"
           tone="danger"
         />
-        <MetricCard
+        <KpiCard
           icon={<CloudSyncOutlined />}
           title="同步失败"
           value={files.filter((file) => syncStatus(file) === "failed").length}
-          trend="需人工处理"
+          description="需人工处理"
           tone="purple"
         />
-        <MetricCard
+        <KpiCard
           icon={<FileAddOutlined />}
           title="今日新增"
           value={files.filter((file) => dayjs(file.uploaded_at).isSame(dayjs(), "day")).length}
-          trend="当日上传"
+          description="当日上传"
           tone="info"
         />
       </div>

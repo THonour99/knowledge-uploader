@@ -15,11 +15,11 @@
   margin-bottom: var(--ku-spacing-section);
 }
 
-.dashboard-metric-card,
+/* 面板:轻微阴影 + 1px 边框,对齐设计稿「白色卡片 / 悬浮」质感 */
 .dashboard-panel {
   border-color: var(--ku-border);
   border-radius: var(--ku-radius-card);
-  box-shadow: none;
+  box-shadow: var(--ku-shadow-card);
 }
 
 .dashboard-panel .ant-card-head {
@@ -36,85 +36,59 @@
   padding: 20px 24px 24px;
 }
 
-.dashboard-metric-card .ant-card-body {
-  min-height: 120px;
-  padding: 20px;
+/* 入场动效:逐项渐显上浮。fill-mode 用 backwards —— 只填充动画前,
+   动画后回归默认态,避免锁住 transform 而破坏卡片 hover 上浮。 */
+@keyframes dashboard-fade-in-up {
+  from {
+    opacity: 0;
+    transform: translateY(8px);
+  }
+
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
 }
 
-.dashboard-metric-card__body {
-  display: flex;
-  gap: 14px;
-  align-items: flex-start;
+.dashboard-kpi-grid > *,
+.dashboard-content-grid > .dashboard-panel {
+  animation: dashboard-fade-in-up 0.4s ease backwards;
 }
 
-.dashboard-metric-card__icon {
-  display: inline-flex;
-  flex: 0 0 42px;
-  align-items: center;
-  justify-content: center;
-  width: 42px;
-  height: 42px;
-  border-radius: 10px;
-  color: var(--ku-bg-card);
-  font-size: 22px;
+.dashboard-kpi-grid > *:nth-child(2) {
+  animation-delay: 0.06s;
 }
 
-.dashboard-metric-card__icon--primary {
-  background: var(--ku-color-primary);
+.dashboard-kpi-grid > *:nth-child(3) {
+  animation-delay: 0.12s;
 }
 
-.dashboard-metric-card__icon--success {
-  background: var(--ku-color-success);
+.dashboard-kpi-grid > *:nth-child(4) {
+  animation-delay: 0.18s;
 }
 
-.dashboard-metric-card__icon--warning {
-  background: var(--ku-color-orange);
+.dashboard-kpi-grid > *:nth-child(5) {
+  animation-delay: 0.24s;
 }
 
-.dashboard-metric-card__icon--danger {
-  background: var(--ku-color-danger);
+.dashboard-content-grid > .dashboard-panel:nth-child(2) {
+  animation-delay: 0.08s;
 }
 
-.dashboard-metric-card__icon--purple {
-  background: var(--ku-color-purple);
+.dashboard-content-grid > .dashboard-panel:nth-child(3) {
+  animation-delay: 0.16s;
 }
 
-.dashboard-metric-card__content {
-  min-width: 0;
+.dashboard-content-grid > .dashboard-panel:nth-child(4) {
+  animation-delay: 0.24s;
 }
 
-.dashboard-metric-card__value.ant-typography {
-  margin: 4px 0 2px;
-  font-size: 24px;
-  line-height: 1.2;
+.dashboard-content-grid > .dashboard-panel:nth-child(5) {
+  animation-delay: 0.32s;
 }
 
-.dashboard-metric-card__delta {
-  font-size: 12px;
-}
-
-.dashboard-text--primary {
-  color: var(--ku-color-primary);
-}
-
-.dashboard-text--success {
-  color: var(--ku-color-success);
-}
-
-.dashboard-text--warning {
-  color: var(--ku-color-orange);
-}
-
-.dashboard-text--danger {
-  color: var(--ku-color-danger);
-}
-
-.dashboard-text--purple {
-  color: var(--ku-color-purple);
-}
-
-.dashboard-text--cyan {
-  color: var(--ku-color-cyan);
+.dashboard-content-grid > .dashboard-panel:nth-child(6) {
+  animation-delay: 0.4s;
 }
 
 .dashboard-content-grid {
@@ -187,10 +161,10 @@
 
 .dashboard-ranking-row__rank {
   display: inline-flex;
-  align-items: center;
-  justify-content: center;
   width: 22px;
   height: 22px;
+  align-items: center;
+  justify-content: center;
   border-radius: 50%;
   background: var(--ku-color-warning-light);
   color: var(--ku-color-orange);
@@ -294,96 +268,6 @@
   text-align: right;
 }
 
-.dashboard-file-cell {
-  display: flex;
-  align-items: center;
-  gap: 10px;
-  min-width: 0;
-}
-
-.dashboard-file-cell__icon {
-  display: inline-flex;
-  flex: 0 0 34px;
-  align-items: center;
-  justify-content: center;
-  width: 34px;
-  height: 34px;
-  border-radius: 10px;
-  background: var(--ku-color-primary-light);
-  color: var(--ku-color-primary);
-}
-
-.dashboard-file-cell__copy {
-  display: flex;
-  min-width: 0;
-  flex-direction: column;
-}
-
-.dashboard-activity-list {
-  display: grid;
-  gap: 12px;
-}
-
-.dashboard-todo-strip {
-  display: grid;
-  grid-template-columns: repeat(3, minmax(0, 1fr));
-  gap: 8px;
-  margin-bottom: 14px;
-  padding-bottom: 14px;
-  border-bottom: 1px solid var(--ku-border);
-}
-
-.dashboard-todo-strip > div {
-  min-width: 0;
-  padding: 10px 12px;
-  border-radius: var(--ku-radius-control);
-  background: var(--ku-bg-base);
-}
-
-.dashboard-todo-strip .ant-typography {
-  margin: 0;
-}
-
-.dashboard-todo-strip h4.ant-typography {
-  margin-top: 3px;
-  font-size: 20px;
-  line-height: 1.15;
-}
-
-.dashboard-activity-row {
-  display: grid;
-  grid-template-columns: 10px minmax(0, 1fr);
-  gap: 10px;
-  align-items: flex-start;
-}
-
-.dashboard-activity-row__dot {
-  width: 8px;
-  height: 8px;
-  margin-top: 6px;
-  border-radius: 50%;
-  background: currentColor;
-  box-shadow: 0 0 0 4px currentColor;
-  opacity: 0.22;
-}
-
-.dashboard-activity-row__copy {
-  display: flex;
-  min-width: 0;
-  flex-direction: column;
-  gap: 2px;
-}
-
-.dashboard-activity-row__copy .ant-typography {
-  line-height: 1.35;
-}
-
-.dashboard-activity-row__copy .ant-typography:nth-child(2) {
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
 .dashboard-quick-stats {
   display: grid;
   grid-template-columns: repeat(4, minmax(0, 1fr));
@@ -392,11 +276,11 @@
 
 .dashboard-quick-stat {
   display: grid;
-  gap: 5px;
   min-height: 104px;
+  align-content: center;
+  gap: 5px;
   padding: 4px 18px;
   border-right: 1px solid var(--ku-border);
-  align-content: center;
 }
 
 .dashboard-quick-stat:first-child {
@@ -424,17 +308,17 @@
 
 .dashboard-failure-row__header {
   display: flex;
+  min-width: 0;
   justify-content: space-between;
   gap: 8px;
-  min-width: 0;
 }
 
 .dashboard-failure-row__track {
   display: block;
+  overflow: hidden;
   height: 6px;
   border-radius: 4px;
   background: var(--ku-bg-base);
-  overflow: hidden;
 }
 
 .dashboard-failure-row__bar {
@@ -447,12 +331,19 @@
 
 .dashboard-health-list {
   display: grid;
-  gap: 18px;
+  gap: 14px;
 }
 
 .dashboard-health-row {
-  display: grid;
-  gap: 8px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.dashboard-health-row--overall {
+  padding-bottom: 12px;
+  border-bottom: 1px solid var(--ku-border);
 }
 
 @media (max-width: 1280px) {
@@ -498,7 +389,6 @@
 }
 
 @media (max-width: 640px) {
-  .dashboard-todo-strip,
   .dashboard-quick-stats {
     grid-template-columns: minmax(0, 1fr);
   }
@@ -512,5 +402,12 @@
 
   .dashboard-quick-stat:last-child {
     border-bottom: 0;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .dashboard-kpi-grid > *,
+  .dashboard-content-grid > .dashboard-panel {
+    animation: none;
   }
 }

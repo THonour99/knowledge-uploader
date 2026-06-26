@@ -1,97 +1,72 @@
-import type { ReactNode } from "react";
 import {
   BarChartOutlined,
-  CheckCircleOutlined,
   ClockCircleOutlined,
   CloudSyncOutlined,
   CloudUploadOutlined,
   DownloadOutlined,
   FileDoneOutlined,
-  FileTextOutlined,
   ReloadOutlined,
   RiseOutlined,
   TeamOutlined,
   WarningOutlined,
 } from "@ant-design/icons";
-import {
-  Avatar,
-  Button,
-  Card,
-  Empty,
-  Progress,
-  Skeleton,
-  Space,
-  Typography,
-} from "antd";
+import { App as AntdApp, Avatar, Button, Card, Progress, Skeleton, Space, Typography } from "antd";
 import type { EChartsOption } from "echarts";
 import ReactECharts from "echarts-for-react";
-import { useMemo } from "react";
-import { useQuery } from "@tanstack/react-query";
+import { useMemo, useState } from "react";
+import { useNavigate } from "react-router-dom";
+import { useQuery, useQueryClient } from "@tanstack/react-query";
 
 import {
+  exportStatistics,
   getStatisticsCategories,
   getStatisticsFailures,
   getStatisticsOverview,
   getStatisticsTrends,
   getStatisticsUsers,
+  getSystemReadiness,
   type StatisticsCategoryRow,
   type StatisticsFailureRow,
   type StatisticsTrendPoint,
   type StatisticsUserRow,
 } from "../../api/client";
+import { KpiCard } from "../../components/KpiCard";
+import { QueryBoundary } from "../../components/QueryBoundary";
 import { StatusTag } from "../../components/StatusTag";
 import { PageContainer } from "../../layouts/PageContainer";
+import { downloadBlob } from "../../utils/download";
+import { formatDateTime, formatNumber, formatPercent } from "../../utils/format";
 import "./styles.css";
 
 // ---------------------------------------------------------------------------
-// Formatting helpers
+// Constants & helpers
 // ---------------------------------------------------------------------------
 
-const numberFormatter = new Intl.NumberFormat("zh-CN");
+// 分类明细色块顺序与饼图色板一致(warning 对应 --ku-color-orange,与饼图第三色相同)。
+const CATEGORY_SWATCH_TONES = ["primary", "success", "warning", "purple", "cyan"] as const;
 
-function formatNumber(value: number): string {
-  return numberFormatter.format(value);
-}
-
-function formatPercent(value: number): string {
-  return `${(value * 100).toFixed(1)}%`;
-}
+const DEPENDENCY_LABELS: Record<string, string> = {
+  database: "数据库",
+  redis: "缓存 Redis",
+  rabbitmq: "消息队列",
+  minio: "对象存储",
+};
 
 function cssVar(name: string, fallback = ""): string {
   return getComputedStyle(document.documentElement).getPropertyValue(name).trim() || fallback;
 }
 
-// ---------------------------------------------------------------------------
-// Metric card
-// ---------------------------------------------------------------------------
-
-interface MetricCardProps {
-  title: string;
-  value: string;
-  description: string;
-  icon: ReactNode;
-  tone: "primary" | "success" | "warning" | "danger" | "purple";
-}
-
-function DashboardMetricCard({ title, value, description, icon, tone }: MetricCardProps) {
-  return (
-    <Card className="dashboard-metric-card">
-      <div className="dashboard-metric-card__body">
-        <span className={`dashboard-metric-card__icon dashboard-metric-card__icon--${tone}`}>
-          {icon}
-        </span>
-        <span className="dashboard-metric-card__content">
-          <Typography.Text type="secondary">{title}</Typography.Text>
-          <Typography.Title level={3} className="dashboard-metric-card__value">
-            {value}
-          </Typography.Title>
-          <Typography.Text className={`dashboard-metric-card__delta dashboard-text--${tone}`}>
-            {description}
-          </Typography.Text>
-        </span>
-      </div>
-    </Card>
-  );
+// 环比:序列最后一期 vs 前一期的百分比变化;不足两点或前值为 0 则不展示,避免误导。
+function periodDelta(series: number[]): number | null {
+  if (series.length < 2) {
+    return null;
+  }
+  const last = series[series.length - 1];
+  const prev = series[series.length - 2];
+  if (prev === 0) {
+    return null;
+  }
+  return ((last - prev) / prev) * 100;
 }
 
 // ---------------------------------------------------------------------------
@@ -110,6 +85,8 @@ function buildTrendOption(points: StatisticsTrendPoint[]): EChartsOption {
     grid: { top: 28, right: 20, bottom: 28, left: 42 },
     tooltip: { trigger: "axis" },
     legend: { top: 0, right: 0, itemWidth: 10, itemHeight: 10 },
+    animationDuration: 700,
+    animationEasing: "cubicOut",
     xAxis: {
       type: "category",
       boundaryGap: false,
@@ -128,19 +105,34 @@ function buildTrendOption(points: StatisticsTrendPoint[]): EChartsOption {
         name: "上传",
         type: "line",
         smooth: true,
+        showSymbol: false,
         data: points.map((p) => p.total_files),
-        areaStyle: { color: "rgba(22, 119, 255, 0.12)" },
+        areaStyle: {
+          color: {
+            type: "linear",
+            x: 0,
+            y: 0,
+            x2: 0,
+            y2: 1,
+            colorStops: [
+              { offset: 0, color: "rgba(22, 119, 255, 0.18)" },
+              { offset: 1, color: "rgba(22, 119, 255, 0)" },
+            ],
+          },
+        },
       },
       {
         name: "同步",
         type: "line",
         smooth: true,
+        showSymbol: false,
         data: points.map((p) => p.synced_files),
       },
       {
         name: "待审",
         type: "line",
         smooth: true,
+        showSymbol: false,
         data: points.map((p) => p.pending_review_files),
       },
     ],
@@ -148,6 +140,8 @@ function buildTrendOption(points: StatisticsTrendPoint[]): EChartsOption {
 }
 
 function buildCategoryOption(rows: StatisticsCategoryRow[]): EChartsOption {
+  const cardColor = cssVar("--ku-bg-card", "#ffffff");
+
   return {
     color: [
       cssVar("--ku-color-primary", "#1677ff"),
@@ -156,7 +150,7 @@ function buildCategoryOption(rows: StatisticsCategoryRow[]): EChartsOption {
       cssVar("--ku-color-purple", "#7c3aed"),
       cssVar("--ku-color-cyan", "#06b6d4"),
     ],
-    tooltip: { trigger: "item" },
+    tooltip: { trigger: "item", formatter: "{b}: {c} 条 ({d}%)" },
     series: [
       {
         name: "分类占比",
@@ -165,6 +159,8 @@ function buildCategoryOption(rows: StatisticsCategoryRow[]): EChartsOption {
         center: ["50%", "50%"],
         label: { show: false },
         labelLine: { show: false },
+        itemStyle: { borderRadius: 4, borderColor: cardColor, borderWidth: 2 },
+        emphasis: { scale: true, scaleSize: 6 },
         data: rows.map((row) => ({ value: row.total_files, name: row.category_name })),
       },
     ],
@@ -213,6 +209,11 @@ function FailureRow({ row, maxTasks }: { row: StatisticsFailureRow; maxTasks: nu
 // ---------------------------------------------------------------------------
 
 export default function DashboardPage() {
+  const navigate = useNavigate();
+  const queryClient = useQueryClient();
+  const { message } = AntdApp.useApp();
+  const [exporting, setExporting] = useState(false);
+
   const overviewQuery = useQuery({
     queryKey: ["dashboard", "overview"],
     queryFn: () => getStatisticsOverview({}),
@@ -239,18 +240,30 @@ export default function DashboardPage() {
     queryFn: () => getStatisticsFailures({}),
   });
 
-  const isLoading =
-    overviewQuery.isLoading ||
-    usersQuery.isLoading ||
-    categoriesQuery.isLoading ||
-    trendsQuery.isLoading ||
-    failuresQuery.isLoading;
+  const readinessQuery = useQuery({
+    queryKey: ["dashboard", "readiness"],
+    queryFn: getSystemReadiness,
+  });
+
+  const isFetching =
+    overviewQuery.isFetching ||
+    usersQuery.isFetching ||
+    categoriesQuery.isFetching ||
+    trendsQuery.isFetching ||
+    failuresQuery.isFetching ||
+    readinessQuery.isFetching;
 
   const overview = overviewQuery.data;
   const users = usersQuery.data?.items ?? [];
   const categories = categoriesQuery.data?.items ?? [];
   const trends = trendsQuery.data?.items ?? [];
   const failures = failuresQuery.data?.items ?? [];
+  const readiness = readinessQuery.data;
+
+  const trendTotals = trends.map((point) => point.total_files);
+  const trendSynced = trends.map((point) => point.synced_files);
+  const trendPending = trends.map((point) => point.pending_review_files);
+  const trendFailed = trends.map((point) => point.failed_files);
 
   const maxUserFiles = useMemo(
     () => (users.length > 0 ? Math.max(...users.map((u) => u.total_files)) : 1),
@@ -267,9 +280,34 @@ export default function DashboardPage() {
 
   const categoryTotal = categories.reduce((acc, row) => acc + row.total_files, 0);
 
-  const syncSuccessRateStr = overview
-    ? formatPercent(overview.sync_success_rate)
-    : "-";
+  const syncSuccessRateStr = formatPercent(overview?.sync_success_rate);
+
+  function handleRefresh() {
+    void queryClient.invalidateQueries({ queryKey: ["dashboard"] });
+  }
+
+  async function handleExport() {
+    setExporting(true);
+    try {
+      const blob = await exportStatistics({});
+      downloadBlob(blob, `知识库统计报表_${formatDateTime(new Date(), "YYYYMMDD_HHmm")}.csv`);
+      message.success("报表已开始下载");
+    } catch (error) {
+      message.error(error instanceof Error ? error.message : "导出失败");
+    } finally {
+      setExporting(false);
+    }
+  }
+
+  const kpiSkeleton = (
+    <div className="dashboard-kpi-grid">
+      {Array.from({ length: 5 }).map((_, index) => (
+        <Card key={index} className="kpi-card">
+          <Skeleton active title={false} paragraph={{ rows: 2 }} />
+        </Card>
+      ))}
+    </div>
+  );
 
   return (
     <PageContainer
@@ -278,53 +316,86 @@ export default function DashboardPage() {
       description="汇总上传、审核、AI 分析与 RAGFlow 同步关键指标。"
       actions={
         <Space className="dashboard-page-actions" wrap>
-          <Button icon={<ReloadOutlined />} loading={isLoading}>
+          <Button icon={<ReloadOutlined />} loading={isFetching} onClick={handleRefresh}>
             刷新
           </Button>
-          <Button type="primary" icon={<DownloadOutlined />}>
+          <Button
+            type="primary"
+            icon={<DownloadOutlined />}
+            loading={exporting}
+            onClick={() => void handleExport()}
+          >
             导出报表
           </Button>
         </Space>
       }
     >
       {/* KPI 指标卡 */}
-      <div className="dashboard-kpi-grid">
-        <DashboardMetricCard
-          title="文件总数"
-          value={isLoading ? "-" : formatNumber(overview?.total_files ?? 0)}
-          description={`今日新增 ${formatNumber(overview?.active_uploaders ?? 0)} 位上传者`}
-          icon={<CloudUploadOutlined />}
-          tone="primary"
-        />
-        <DashboardMetricCard
-          title="已同步 RAGFlow"
-          value={isLoading ? "-" : formatNumber(overview?.synced_files ?? 0)}
-          description={`成功率 ${syncSuccessRateStr}`}
-          icon={<CloudSyncOutlined />}
-          tone="success"
-        />
-        <DashboardMetricCard
-          title="待审核"
-          value={isLoading ? "-" : formatNumber(overview?.pending_review_files ?? 0)}
-          description={`含 ${formatNumber(overview?.sensitive_files ?? 0)} 个敏感风险`}
-          icon={<ClockCircleOutlined />}
-          tone="warning"
-        />
-        <DashboardMetricCard
-          title="失败任务"
-          value={isLoading ? "-" : formatNumber(overview?.failed_tasks ?? 0)}
-          description="需管理员介入"
-          icon={<WarningOutlined />}
-          tone="danger"
-        />
-        <DashboardMetricCard
-          title="风险文件"
-          value={isLoading ? "-" : formatNumber(overview?.sensitive_files ?? 0)}
-          description={`已拒绝 ${formatNumber(overview?.rejected_files ?? 0)} 个`}
-          icon={<FileDoneOutlined />}
-          tone="purple"
-        />
-      </div>
+      <QueryBoundary
+        isLoading={overviewQuery.isLoading}
+        isError={overviewQuery.isError}
+        error={overviewQuery.error}
+        onRetry={() => void overviewQuery.refetch()}
+        skeleton={kpiSkeleton}
+        errorTitle="运营指标加载失败"
+      >
+        <div className="dashboard-kpi-grid">
+          <KpiCard
+            icon={<CloudUploadOutlined />}
+            title="文件总数"
+            value={overview?.total_files ?? 0}
+            description={`活跃上传者 ${formatNumber(overview?.active_uploaders ?? 0)} 位`}
+            tone="primary"
+            trend={trendTotals}
+            deltaPct={periodDelta(trendTotals)}
+            deltaLabel="环比上期"
+            onClick={() => navigate("/files")}
+          />
+          <KpiCard
+            icon={<CloudSyncOutlined />}
+            title="已同步 RAGFlow"
+            value={overview?.synced_files ?? 0}
+            description={`成功率 ${syncSuccessRateStr}`}
+            tone="success"
+            trend={trendSynced}
+            deltaPct={periodDelta(trendSynced)}
+            deltaLabel="环比上期"
+            onClick={() => navigate("/files")}
+          />
+          <KpiCard
+            icon={<ClockCircleOutlined />}
+            title="待审核"
+            value={overview?.pending_review_files ?? 0}
+            description="等待管理员处理"
+            tone="warning"
+            trend={trendPending}
+            deltaPct={periodDelta(trendPending)}
+            deltaLabel="环比上期"
+            deltaPositiveIsGood={false}
+            onClick={() => navigate("/files")}
+          />
+          <KpiCard
+            icon={<WarningOutlined />}
+            title="失败任务"
+            value={overview?.failed_tasks ?? 0}
+            description="需管理员介入"
+            tone="danger"
+            trend={trendFailed}
+            deltaPct={periodDelta(trendFailed)}
+            deltaLabel="环比上期"
+            deltaPositiveIsGood={false}
+            onClick={() => navigate("/task-logs")}
+          />
+          <KpiCard
+            icon={<FileDoneOutlined />}
+            title="风险文件"
+            value={overview?.sensitive_files ?? 0}
+            description={`已拒绝 ${formatNumber(overview?.rejected_files ?? 0)} 个`}
+            tone="purple"
+            onClick={() => navigate("/files")}
+          />
+        </div>
+      </QueryBoundary>
 
       <div className="dashboard-content-grid">
         {/* 上传趋势图 */}
@@ -337,53 +408,41 @@ export default function DashboardPage() {
             </Space>
           }
         >
-          {trendsQuery.isLoading ? (
-            <Skeleton active paragraph={{ rows: 6 }} />
-          ) : trends.length > 0 ? (
+          <QueryBoundary
+            isLoading={trendsQuery.isLoading}
+            isError={trendsQuery.isError}
+            error={trendsQuery.error}
+            onRetry={() => void trendsQuery.refetch()}
+            isEmpty={trends.length === 0}
+            emptyDescription="暂无趋势数据"
+            skeletonRows={6}
+            errorTitle="趋势数据加载失败"
+          >
             <ReactECharts option={trendOption} className="dashboard-chart" />
-          ) : (
-            <Empty image={Empty.PRESENTED_IMAGE_SIMPLE} description="暂无趋势数据" />
-          )}
+          </QueryBoundary>
         </Card>
 
-        {/* 待办摘要 + 失败任务列表 */}
+        {/* 失败任务列表 */}
         <Card
           className="dashboard-panel dashboard-activity-card dashboard-span-4"
           title="最近失败任务"
         >
-          {failuresQuery.isLoading ? (
-            <Skeleton active paragraph={{ rows: 4 }} />
-          ) : failures.length > 0 ? (
-            <>
-              <div className="dashboard-todo-strip">
-                <div>
-                  <Typography.Text type="secondary">待审核</Typography.Text>
-                  <Typography.Title level={4}>
-                    {formatNumber(overview?.pending_review_files ?? 0)}
-                  </Typography.Title>
-                </div>
-                <div>
-                  <Typography.Text type="secondary">高风险</Typography.Text>
-                  <Typography.Title level={4}>
-                    {formatNumber(overview?.sensitive_files ?? 0)}
-                  </Typography.Title>
-                </div>
-                <div>
-                  <Typography.Text type="secondary">失败</Typography.Text>
-                  <Typography.Title level={4}>
-                    {formatNumber(overview?.failed_tasks ?? 0)}
-                  </Typography.Title>
-                </div>
-              </div>
-              <div className="dashboard-failure-list">
-                {failures.map((row) => (
-                  <FailureRow key={row.reason} row={row} maxTasks={maxFailedTasks} />
-                ))}
-              </div>
-            </>
-          ) : (
-            <Empty image={Empty.PRESENTED_IMAGE_SIMPLE} description="暂无失败任务" />
-          )}
+          <QueryBoundary
+            isLoading={failuresQuery.isLoading}
+            isError={failuresQuery.isError}
+            error={failuresQuery.error}
+            onRetry={() => void failuresQuery.refetch()}
+            isEmpty={failures.length === 0}
+            emptyDescription="暂无失败任务"
+            skeletonRows={4}
+            errorTitle="失败任务加载失败"
+          >
+            <div className="dashboard-failure-list">
+              {failures.map((row) => (
+                <FailureRow key={row.reason} row={row} maxTasks={maxFailedTasks} />
+              ))}
+            </div>
+          </QueryBoundary>
         </Card>
 
         {/* 用户上传排行 */}
@@ -396,17 +455,22 @@ export default function DashboardPage() {
             </Space>
           }
         >
-          {usersQuery.isLoading ? (
-            <Skeleton active paragraph={{ rows: 5 }} />
-          ) : users.length > 0 ? (
+          <QueryBoundary
+            isLoading={usersQuery.isLoading}
+            isError={usersQuery.isError}
+            error={usersQuery.error}
+            onRetry={() => void usersQuery.refetch()}
+            isEmpty={users.length === 0}
+            emptyDescription="暂无上传记录"
+            skeletonRows={5}
+            errorTitle="排行数据加载失败"
+          >
             <div className="dashboard-ranking-list">
               {users.slice(0, 6).map((user) => (
                 <UserRankingRow key={user.user_id} user={user} maxFiles={maxUserFiles} />
               ))}
             </div>
-          ) : (
-            <Empty image={Empty.PRESENTED_IMAGE_SIMPLE} description="暂无上传记录" />
-          )}
+          </QueryBoundary>
         </Card>
 
         {/* 知识分类占比 */}
@@ -419,9 +483,16 @@ export default function DashboardPage() {
             </Space>
           }
         >
-          {categoriesQuery.isLoading ? (
-            <Skeleton active paragraph={{ rows: 5 }} />
-          ) : categories.length > 0 ? (
+          <QueryBoundary
+            isLoading={categoriesQuery.isLoading}
+            isError={categoriesQuery.isError}
+            error={categoriesQuery.error}
+            onRetry={() => void categoriesQuery.refetch()}
+            isEmpty={categories.length === 0}
+            emptyDescription="暂无分类数据"
+            skeletonRows={5}
+            errorTitle="分类数据加载失败"
+          >
             <div className="dashboard-category-layout">
               <div className="dashboard-category-visual">
                 <ReactECharts option={categoryOption} className="dashboard-category-chart" />
@@ -431,15 +502,19 @@ export default function DashboardPage() {
                 </div>
               </div>
               <div className="dashboard-category-details">
-                {categories.map((row) => {
+                {categories.map((row, index) => {
+                  const tone = CATEGORY_SWATCH_TONES[index % CATEGORY_SWATCH_TONES.length];
                   const percent =
-                    categoryTotal > 0
-                      ? Math.round((row.total_files / categoryTotal) * 100)
-                      : 0;
+                    categoryTotal > 0 ? Math.round((row.total_files / categoryTotal) * 100) : 0;
                   return (
-                    <div className="dashboard-category-row" key={row.category_id ?? row.category_name}>
+                    <div
+                      className="dashboard-category-row"
+                      key={row.category_id ?? row.category_name}
+                    >
                       <div className="dashboard-category-row__header">
-                        <span className="dashboard-category-row__swatch dashboard-category-row__swatch--primary" />
+                        <span
+                          className={`dashboard-category-row__swatch dashboard-category-row__swatch--${tone}`}
+                        />
                         <Typography.Text strong>{row.category_name}</Typography.Text>
                         <Typography.Text type="secondary">{row.total_files} 条</Typography.Text>
                         <Typography.Text className="dashboard-category-row__percent">
@@ -452,9 +527,7 @@ export default function DashboardPage() {
                 })}
               </div>
             </div>
-          ) : (
-            <Empty image={Empty.PRESENTED_IMAGE_SIMPLE} description="暂无分类数据" />
-          )}
+          </QueryBoundary>
         </Card>
 
         {/* 概览文件状态 */}
@@ -462,66 +535,71 @@ export default function DashboardPage() {
           className="dashboard-panel dashboard-efficiency-card dashboard-span-8"
           title="文件状态概览"
         >
-          <div className="dashboard-quick-stats">
-            <div className="dashboard-quick-stat">
-              <Typography.Text type="secondary">总文件数</Typography.Text>
-              <Typography.Title level={4}>
-                {formatNumber(overview?.total_files ?? 0)}
-              </Typography.Title>
-              <Typography.Text type="secondary">知识库全部文档</Typography.Text>
+          <QueryBoundary
+            isLoading={overviewQuery.isLoading}
+            isError={overviewQuery.isError}
+            error={overviewQuery.error}
+            onRetry={() => void overviewQuery.refetch()}
+            skeletonRows={3}
+            errorTitle="文件状态加载失败"
+          >
+            <div className="dashboard-quick-stats">
+              <div className="dashboard-quick-stat">
+                <Typography.Text type="secondary">总文件数</Typography.Text>
+                <Typography.Title level={4}>
+                  {formatNumber(overview?.total_files ?? 0)}
+                </Typography.Title>
+                <Typography.Text type="secondary">知识库全部文档</Typography.Text>
+              </div>
+              <div className="dashboard-quick-stat">
+                <Typography.Text type="secondary">已同步成功</Typography.Text>
+                <Typography.Title level={4}>
+                  {formatNumber(overview?.synced_files ?? 0)}
+                </Typography.Title>
+                <Typography.Text type="secondary">同步成功率 {syncSuccessRateStr}</Typography.Text>
+              </div>
+              <div className="dashboard-quick-stat">
+                <Typography.Text type="secondary">待审核</Typography.Text>
+                <Typography.Title level={4}>
+                  {formatNumber(overview?.pending_review_files ?? 0)}
+                </Typography.Title>
+                <Typography.Text type="secondary">等待管理员处理</Typography.Text>
+              </div>
+              <div className="dashboard-quick-stat">
+                <Typography.Text type="secondary">失败 / 风险</Typography.Text>
+                <Typography.Title level={4}>
+                  {formatNumber(overview?.failed_files ?? 0)} /{" "}
+                  {formatNumber(overview?.sensitive_files ?? 0)}
+                </Typography.Title>
+                <Typography.Text type="secondary">需关注处理</Typography.Text>
+              </div>
             </div>
-            <div className="dashboard-quick-stat">
-              <Typography.Text type="secondary">已同步成功</Typography.Text>
-              <Typography.Title level={4}>
-                {formatNumber(overview?.synced_files ?? 0)}
-              </Typography.Title>
-              <Typography.Text type="secondary">同步成功率 {syncSuccessRateStr}</Typography.Text>
-            </div>
-            <div className="dashboard-quick-stat">
-              <Typography.Text type="secondary">待审核</Typography.Text>
-              <Typography.Title level={4}>
-                {formatNumber(overview?.pending_review_files ?? 0)}
-              </Typography.Title>
-              <Typography.Text type="secondary">等待管理员处理</Typography.Text>
-            </div>
-            <div className="dashboard-quick-stat">
-              <Typography.Text type="secondary">失败 / 风险</Typography.Text>
-              <Typography.Title level={4}>
-                {formatNumber(overview?.failed_files ?? 0)} /{" "}
-                {formatNumber(overview?.sensitive_files ?? 0)}
-              </Typography.Title>
-              <Typography.Text type="secondary">需关注处理</Typography.Text>
-            </div>
-          </div>
+          </QueryBoundary>
         </Card>
 
         {/* 系统状态 */}
         <Card className="dashboard-panel dashboard-health-card dashboard-span-4" title="系统状态">
-          <div className="dashboard-health-list">
-            <div className="dashboard-health-row">
-              <Space>
-                <span className="dashboard-text--success">
-                  <CheckCircleOutlined />
-                </span>
-                <Typography.Text strong>RAGFlow 连接</Typography.Text>
-              </Space>
-              <StatusTag kind="sync" value={overview ? "synced" : "not_synced"} />
+          <QueryBoundary
+            isLoading={readinessQuery.isLoading}
+            isError={readinessQuery.isError}
+            error={readinessQuery.error}
+            onRetry={() => void readinessQuery.refetch()}
+            skeletonRows={4}
+            errorTitle="系统状态加载失败"
+          >
+            <div className="dashboard-health-list">
+              <div className="dashboard-health-row dashboard-health-row--overall">
+                <Typography.Text strong>整体状态</Typography.Text>
+                <StatusTag kind="health" value={readiness?.status ?? "unknown"} />
+              </div>
+              {Object.entries(readiness?.dependencies ?? {}).map(([key, dep]) => (
+                <div className="dashboard-health-row" key={key}>
+                  <Typography.Text>{DEPENDENCY_LABELS[key] ?? key}</Typography.Text>
+                  <StatusTag kind="health" value={dep.status} />
+                </div>
+              ))}
             </div>
-            <div className="dashboard-health-row">
-              <Space>
-                <span className="dashboard-text--primary">
-                  <FileTextOutlined />
-                </span>
-                <Typography.Text strong>文件同步率</Typography.Text>
-              </Space>
-              <Progress
-                percent={
-                  overview ? Math.round(overview.sync_success_rate * 100) : 0
-                }
-                size="small"
-              />
-            </div>
-          </div>
+          </QueryBoundary>
         </Card>
       </div>
     </PageContainer>

@@ -1,20 +1,24 @@
 import type { CSSProperties, ReactNode } from "react";
 import { App as AntdApp, ConfigProvider } from "antd";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { render, screen, waitFor } from "@testing-library/react";
+import { fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { MemoryRouter } from "react-router-dom";
 import { afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 
 import {
+  exportStatistics,
   getStatisticsCategories,
   getStatisticsFailures,
   getStatisticsOverview,
   getStatisticsTrends,
   getStatisticsUsers,
+  getSystemReadiness,
   type StatisticsCategoryListResponse,
   type StatisticsFailureListResponse,
   type StatisticsOverviewResponse,
   type StatisticsTrendResponse,
   type StatisticsUserListResponse,
+  type SystemReadiness,
 } from "../../api/client";
 import type * as ApiClientModule from "../../api/client";
 import { themeCssVariables } from "../../theme/tokens";
@@ -36,6 +40,8 @@ vi.mock("../../api/client", async () => {
     getStatisticsCategories: vi.fn(),
     getStatisticsTrends: vi.fn(),
     getStatisticsFailures: vi.fn(),
+    getSystemReadiness: vi.fn(),
+    exportStatistics: vi.fn(),
   };
 });
 
@@ -132,6 +138,16 @@ const mockFailures: StatisticsFailureListResponse = {
   ],
 };
 
+const mockReadiness: SystemReadiness = {
+  status: "ok",
+  dependencies: {
+    database: { status: "ok" },
+    redis: { status: "ok" },
+    rabbitmq: { status: "ok" },
+    minio: { status: "error", detail: "TimeoutError" },
+  },
+};
+
 beforeAll(() => {
   Object.defineProperty(window, "matchMedia", {
     writable: true,
@@ -167,7 +183,9 @@ function renderWithProviders(node: ReactNode) {
     <ConfigProvider>
       <AntdApp>
         <QueryClientProvider client={queryClient}>
-          <div style={themeCssVariables as CSSProperties}>{node}</div>
+          <MemoryRouter>
+            <div style={themeCssVariables as CSSProperties}>{node}</div>
+          </MemoryRouter>
         </QueryClientProvider>
       </AntdApp>
     </ConfigProvider>,
@@ -180,6 +198,7 @@ function mockAllApis() {
   vi.mocked(getStatisticsCategories).mockResolvedValue(mockCategories);
   vi.mocked(getStatisticsTrends).mockResolvedValue(mockTrends);
   vi.mocked(getStatisticsFailures).mockResolvedValue(mockFailures);
+  vi.mocked(getSystemReadiness).mockResolvedValue(mockReadiness);
 }
 
 afterEach(() => {
@@ -267,9 +286,45 @@ describe("DashboardPage", () => {
     vi.mocked(getStatisticsCategories).mockResolvedValue(mockCategories);
     vi.mocked(getStatisticsTrends).mockResolvedValue(mockTrends);
     vi.mocked(getStatisticsFailures).mockResolvedValue({ total: 0, items: [] });
+    vi.mocked(getSystemReadiness).mockResolvedValue(mockReadiness);
 
     renderWithProviders(<DashboardPage />);
 
     expect(await screen.findByText("暂无失败任务")).toBeInTheDocument();
+  });
+
+  it("renders real dependency health from the readiness API", async () => {
+    mockAllApis();
+
+    renderWithProviders(<DashboardPage />);
+
+    // 真实依赖名称（不再是伪造的 "RAGFlow 连接"）
+    expect(await screen.findByText("数据库")).toBeInTheDocument();
+    expect(screen.getByText("缓存 Redis")).toBeInTheDocument();
+    expect(screen.getByText("消息队列")).toBeInTheDocument();
+    expect(screen.getByText("对象存储")).toBeInTheDocument();
+    // minio 探针返回 error，应渲染“异常”
+    expect(screen.getAllByText("异常").length).toBeGreaterThan(0);
+  });
+
+  it("calls exportStatistics when the export button is clicked", async () => {
+    mockAllApis();
+    vi.mocked(exportStatistics).mockResolvedValue(new Blob(["csv"], { type: "text/csv" }));
+
+    const createObjectURL = vi.fn(() => "blob:mock");
+    const revokeObjectURL = vi.fn();
+    vi.stubGlobal("URL", { createObjectURL, revokeObjectURL });
+    const clickSpy = vi
+      .spyOn(HTMLAnchorElement.prototype, "click")
+      .mockImplementation(() => undefined);
+
+    renderWithProviders(<DashboardPage />);
+
+    fireEvent.click(await screen.findByRole("button", { name: /导出报表/ }));
+
+    await waitFor(() => expect(exportStatistics).toHaveBeenCalledTimes(1));
+    expect(clickSpy).toHaveBeenCalled();
+
+    vi.unstubAllGlobals();
   });
 });

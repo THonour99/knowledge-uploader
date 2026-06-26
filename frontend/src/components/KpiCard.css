@@ -1,0 +1,124 @@
+.kpi-card {
+  border-color: var(--ku-border);
+  border-radius: var(--ku-radius-card);
+  box-shadow: var(--ku-shadow-card);
+  transition:
+    box-shadow 0.2s ease,
+    transform 0.2s ease,
+    border-color 0.2s ease;
+}
+
+.kpi-card .ant-card-body {
+  display: flex;
+  min-height: 132px;
+  flex-direction: column;
+  gap: 6px;
+  padding: 18px 20px;
+}
+
+.kpi-card__top {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.kpi-card__icon {
+  display: inline-flex;
+  width: 42px;
+  height: 42px;
+  align-items: center;
+  justify-content: center;
+  border-radius: 12px;
+  color: var(--ku-bg-card);
+  font-size: 22px;
+}
+
+.kpi-card--primary .kpi-card__icon {
+  background: var(--ku-color-primary);
+}
+
+.kpi-card--success .kpi-card__icon {
+  background: var(--ku-color-success);
+}
+
+.kpi-card--warning .kpi-card__icon {
+  background: var(--ku-color-orange);
+}
+
+.kpi-card--danger .kpi-card__icon {
+  background: var(--ku-color-danger);
+}
+
+.kpi-card--purple .kpi-card__icon {
+  background: var(--ku-color-purple);
+}
+
+.kpi-card--info .kpi-card__icon {
+  background: var(--ku-color-info);
+}
+
+.kpi-card__spark {
+  flex: 0 0 auto;
+  margin-top: 4px;
+}
+
+.kpi-card__title {
+  font-size: 13px;
+}
+
+.kpi-card__value.ant-typography {
+  margin: 0;
+  font-size: 28px;
+  font-weight: 700;
+  line-height: 1.15;
+}
+
+.kpi-card__footer {
+  display: flex;
+  min-height: 20px;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+}
+
+.kpi-card__delta {
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+  font-size: 12px;
+  font-weight: 600;
+}
+
+.kpi-card__delta--good {
+  color: var(--ku-color-success);
+}
+
+.kpi-card__delta--bad {
+  color: var(--ku-color-danger);
+}
+
+.kpi-card__delta-label,
+.kpi-card__description {
+  font-size: 12px;
+}
+
+.kpi-card--clickable {
+  cursor: pointer;
+}
+
+.kpi-card--clickable:hover {
+  transform: translateY(-2px);
+  border-color: var(--ku-color-primary);
+  box-shadow: var(--ku-shadow-card-hover);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .kpi-card {
+    transition: none;
+  }
+
+  .kpi-card--clickable:hover {
+    transform: none;
+  }
+}

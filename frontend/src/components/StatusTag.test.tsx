@@ -27,4 +27,12 @@ describe("StatusTag", () => {
 
     expect(screen.getByText("即将过期")).toBeInTheDocument();
   });
+
+  it("renders health status labels", () => {
+    render(<StatusTag kind="health" value="ok" />);
+    expect(screen.getByText("正常")).toBeInTheDocument();
+
+    render(<StatusTag kind="health" value="error" />);
+    expect(screen.getByText("异常")).toBeInTheDocument();
+  });
 });

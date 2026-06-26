@@ -1,8 +1,17 @@
+import type { CSSProperties } from "react";
 import { Tag } from "antd";
 
 import { statusTagColors } from "../theme/tokens";
 
-export type StatusKind = "file" | "review" | "sync" | "risk" | "user" | "dataset" | "expiry";
+export type StatusKind =
+  | "file"
+  | "review"
+  | "sync"
+  | "risk"
+  | "user"
+  | "dataset"
+  | "expiry"
+  | "health";
 type StatusTone = keyof typeof statusTagColors;
 
 export interface StatusTagProps {
@@ -84,6 +93,11 @@ const statusMap: Record<StatusKind, Record<string, StatusMeta>> = {
     expired: { label: "已过期", color: "danger" },
     never: { label: "长期有效", color: "default" },
   },
+  health: {
+    ok: { label: "正常", color: "success" },
+    error: { label: "异常", color: "danger" },
+    unknown: { label: "未知", color: "default" },
+  },
 };
 
 export function StatusTag({ kind, value, processing = false, variant = "tag" }: StatusTagProps) {
@@ -101,9 +115,10 @@ export function StatusTag({ kind, value, processing = false, variant = "tag" }: 
 
   return (
     <Tag
-      color={color}
+      style={{ "--status-color": color } as CSSProperties}
       className={[
         "status-tag",
+        `status-tag--${meta.color}`,
         meta.italic ? "status-tag--italic" : "",
         isProcessing ? "status-tag--processing" : "",
       ]
