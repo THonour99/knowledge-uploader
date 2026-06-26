@@ -12,7 +12,14 @@ import {
   Table,
   Typography,
 } from "antd";
-import { MergeOutlined, PlusOutlined, ReloadOutlined, TagOutlined } from "@ant-design/icons";
+import {
+  CheckCircleOutlined,
+  DatabaseOutlined,
+  MergeOutlined,
+  PlusOutlined,
+  ReloadOutlined,
+  TagOutlined,
+} from "@ant-design/icons";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useState } from "react";
 import type { ColumnsType } from "antd/es/table";
@@ -29,6 +36,7 @@ import {
   mergeTag,
   updateTag,
 } from "../../api/client";
+import { KpiCard } from "../../components/KpiCard";
 import { PageContainer } from "../../layouts/PageContainer";
 
 // ── Form value types ──────────────────────────────────────────────────────────
@@ -75,6 +83,9 @@ export default function TagsPage() {
 
   const tags = tagsQuery.data?.items ?? [];
   const total = tagsQuery.data?.total ?? 0;
+  const enabledTagCount = tags.filter((tag) => tag.enabled).length;
+  const systemGeneratedCount = tags.filter((tag) => tag.is_system_generated).length;
+  const unusedTagCount = tags.filter((tag) => tag.usage_count === 0).length;
 
   const refreshTags = async () => {
     await queryClient.invalidateQueries({ queryKey: ["tags"] });
@@ -113,8 +124,7 @@ export default function TagsPage() {
   // ── Enable toggle mutation ────────────────────────────────────────────────
 
   const toggleMutation = useMutation({
-    mutationFn: ({ id, enabled }: { id: string; enabled: boolean }) =>
-      updateTag(id, { enabled }),
+    mutationFn: ({ id, enabled }: { id: string; enabled: boolean }) => updateTag(id, { enabled }),
     onSuccess: async () => {
       await refreshTags();
     },
@@ -233,9 +243,7 @@ export default function TagsPage() {
       key: "usage_count",
       width: 100,
       align: "right" as const,
-      render: (value: number) => (
-        <Typography.Text>{value.toLocaleString()}</Typography.Text>
-      ),
+      render: (value: number) => <Typography.Text>{value.toLocaleString()}</Typography.Text>,
     },
     {
       title: "来源",
@@ -259,9 +267,7 @@ export default function TagsPage() {
           checked={value}
           size="small"
           loading={toggleMutation.isPending}
-          onChange={(checked) =>
-            toggleMutation.mutate({ id: record.id, enabled: checked })
-          }
+          onChange={(checked) => toggleMutation.mutate({ id: record.id, enabled: checked })}
         />
       ),
     },
@@ -328,10 +334,38 @@ export default function TagsPage() {
   // ── Render ────────────────────────────────────────────────────────────────
 
   return (
-    <PageContainer
-      title="标签管理"
-      description="管理文档标签，合并重复标签，控制标签启用状态。"
-    >
+    <PageContainer title="标签管理" description="管理文档标签，合并重复标签，控制标签启用状态。">
+      <div className="metric-grid">
+        <KpiCard
+          icon={<TagOutlined />}
+          title="标签总数"
+          value={total}
+          description="当前标签库规模"
+          tone="primary"
+        />
+        <KpiCard
+          icon={<CheckCircleOutlined />}
+          title="启用标签"
+          value={enabledTagCount}
+          description="可用于文件关联"
+          tone="success"
+        />
+        <KpiCard
+          icon={<DatabaseOutlined />}
+          title="系统标签"
+          value={systemGeneratedCount}
+          description="AI 或规则生成"
+          tone="info"
+        />
+        <KpiCard
+          icon={<MergeOutlined />}
+          title="空闲标签"
+          value={unusedTagCount}
+          description="可合并或清理"
+          tone="warning"
+        />
+      </div>
+
       <Card className="document-panel table-card">
         <div className="config-card-actions">
           <Space wrap>
@@ -344,11 +378,7 @@ export default function TagsPage() {
               allowClear
               style={{ width: 240 }}
             />
-            <Button
-              type="primary"
-              icon={<PlusOutlined />}
-              onClick={openCreate}
-            >
+            <Button type="primary" icon={<PlusOutlined />} onClick={openCreate}>
               新增标签
             </Button>
             <Button
@@ -422,8 +452,8 @@ export default function TagsPage() {
       >
         {mergingSourceTag && (
           <Typography.Paragraph type="secondary" style={{ marginBottom: 16 }}>
-            将「{mergingSourceTag.name}」（{mergingSourceTag.usage_count} 个文件关联）合并到目标标签后，
-            所有文件关联将迁移到目标标签，源标签将被删除。
+            将「{mergingSourceTag.name}」（{mergingSourceTag.usage_count}{" "}
+            个文件关联）合并到目标标签后，所有文件关联将迁移到目标标签，源标签将被删除。
           </Typography.Paragraph>
         )}
         <Form<MergeFormValues>

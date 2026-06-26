@@ -3,6 +3,8 @@ import {
   ClockCircleOutlined,
   CloseCircleOutlined,
   CheckCircleOutlined,
+  OrderedListOutlined,
+  ReloadOutlined,
   SyncOutlined,
 } from "@ant-design/icons";
 import {
@@ -31,6 +33,7 @@ import {
   type SyncTaskLog,
   type TaskListQuery,
 } from "../../api/client";
+import { KpiCard } from "../../components/KpiCard";
 import { StatusTag } from "../../components/StatusTag";
 import { PageContainer } from "../../layouts/PageContainer";
 import { colors } from "../../theme/tokens";
@@ -123,13 +126,7 @@ function TaskDetailDrawer({ taskId, open, onClose }: TaskDetailDrawerProps) {
   });
 
   return (
-    <Drawer
-      title="任务详情"
-      open={open}
-      onClose={onClose}
-      width={520}
-      destroyOnClose
-    >
+    <Drawer title="任务详情" open={open} onClose={onClose} width={520} destroyOnClose>
       {isLoading || !task ? (
         <Typography.Text type="secondary">加载中…</Typography.Text>
       ) : (
@@ -144,17 +141,16 @@ function TaskDetailDrawer({ taskId, open, onClose }: TaskDetailDrawerProps) {
             <Descriptions.Item label="重试次数">
               {task.retry_count} / {task.max_retry_count}
             </Descriptions.Item>
-            <Descriptions.Item label="开始时间">{formatDatetime(task.started_at)}</Descriptions.Item>
-            <Descriptions.Item label="结束时间">{formatDatetime(task.finished_at)}</Descriptions.Item>
+            <Descriptions.Item label="开始时间">
+              {formatDatetime(task.started_at)}
+            </Descriptions.Item>
+            <Descriptions.Item label="结束时间">
+              {formatDatetime(task.finished_at)}
+            </Descriptions.Item>
           </Descriptions>
 
           {task.error_message ? (
-            <Alert
-              type="error"
-              message="失败原因"
-              description={task.error_message}
-              showIcon
-            />
+            <Alert type="error" message="失败原因" description={task.error_message} showIcon />
           ) : null}
 
           {task.logs.length > 0 ? (
@@ -191,10 +187,15 @@ export default function TaskLogsPage() {
   const [drawerTaskId, setDrawerTaskId] = useState<string | null>(null);
   const [drawerOpen, setDrawerOpen] = useState(false);
 
-  const { data, isLoading } = useQuery({
+  const tasksQuery = useQuery({
     queryKey: ["tasks", filters],
     queryFn: () => listTasks(filters),
   });
+  const tasks = tasksQuery.data?.items ?? [];
+  const totalTasks = tasksQuery.data?.total ?? 0;
+  const runningTasks = tasks.filter((task) => task.status === "running").length;
+  const failedTasks = tasks.filter((task) => task.status === "failed").length;
+  const queuedTasks = tasks.filter((task) => task.status === "queued").length;
 
   const retryMutation = useMutation({
     mutationFn: (id: string) => retryTask(id),
@@ -246,9 +247,7 @@ export default function TaskLogsPage() {
       dataIndex: "status",
       key: "status",
       width: 120,
-      render: (status: string) => (
-        <StatusTag kind="sync" value={toSyncKindValue(status)} />
-      ),
+      render: (status: string) => <StatusTag kind="sync" value={toSyncKindValue(status)} />,
     },
     {
       title: "重试次数",
@@ -278,7 +277,11 @@ export default function TaskLogsPage() {
       width: 160,
       render: (_: unknown, record: SyncTask) => (
         <Space size="small">
-          <Button size="small" onClick={() => openDetail(record.id)} data-testid={`detail-${record.id}`}>
+          <Button
+            size="small"
+            onClick={() => openDetail(record.id)}
+            data-testid={`detail-${record.id}`}
+          >
             详情
           </Button>
           {record.status === "failed" ? (
@@ -293,7 +296,7 @@ export default function TaskLogsPage() {
               </Button>
             </Popconfirm>
           ) : null}
-          {(record.status === "queued" || record.status === "running") ? (
+          {record.status === "queued" || record.status === "running" ? (
             <Popconfirm
               title="确认取消该任务？"
               okText="确认"
@@ -311,36 +314,73 @@ export default function TaskLogsPage() {
   ];
 
   return (
-    <PageContainer title="任务日志">
-      <Card>
-        <Space style={{ marginBottom: 16 }} wrap>
+    <PageContainer
+      title="任务日志"
+      description="追踪 RAGFlow 同步、解析与 AI 分析任务的队列状态和执行记录。"
+    >
+      <div className="metric-grid">
+        <KpiCard
+          icon={<OrderedListOutlined />}
+          title="任务总数"
+          value={totalTasks}
+          description="满足当前筛选条件"
+          tone="primary"
+        />
+        <KpiCard
+          icon={<SyncOutlined />}
+          title="运行中"
+          value={runningTasks}
+          description="正在执行任务"
+          tone="info"
+        />
+        <KpiCard
+          icon={<CloseCircleOutlined />}
+          title="失败任务"
+          value={failedTasks}
+          description="需要重试或排查"
+          tone="danger"
+        />
+        <KpiCard
+          icon={<ClockCircleOutlined />}
+          title="队列中"
+          value={queuedTasks}
+          description="等待 Worker 消费"
+          tone="warning"
+        />
+      </div>
+
+      <Card className="document-panel table-card">
+        <div className="filter-toolbar">
           <Select
+            className="filter-toolbar__control"
             placeholder="任务类型"
             style={{ width: 180 }}
             options={TASK_TYPE_OPTIONS}
             value={filters.task_type ?? ""}
-            onChange={(v: string) =>
-              setFilters((prev) => ({ ...prev, task_type: v || undefined }))
-            }
+            onChange={(v: string) => setFilters((prev) => ({ ...prev, task_type: v || undefined }))}
           />
           <Select
+            className="filter-toolbar__control"
             placeholder="状态"
             style={{ width: 160 }}
             options={TASK_STATUS_OPTIONS}
             value={filters.status ?? ""}
-            onChange={(v: string) =>
-              setFilters((prev) => ({ ...prev, status: v || undefined }))
-            }
+            onChange={(v: string) => setFilters((prev) => ({ ...prev, status: v || undefined }))}
           />
-        </Space>
+          <Button
+            icon={<ReloadOutlined />}
+            loading={tasksQuery.isFetching}
+            onClick={() => void tasksQuery.refetch()}
+          />
+        </div>
 
         <Table<SyncTask>
           rowKey="id"
-          loading={isLoading}
-          dataSource={data?.items ?? []}
+          loading={tasksQuery.isLoading}
+          dataSource={tasks}
           columns={columns}
           pagination={{
-            total: data?.total ?? 0,
+            total: totalTasks,
             pageSize: 20,
             showSizeChanger: false,
             showTotal: (total) => `共 ${total} 条`,
@@ -349,11 +389,7 @@ export default function TaskLogsPage() {
         />
       </Card>
 
-      <TaskDetailDrawer
-        taskId={drawerTaskId}
-        open={drawerOpen}
-        onClose={closeDrawer}
-      />
+      <TaskDetailDrawer taskId={drawerTaskId} open={drawerOpen} onClose={closeDrawer} />
     </PageContainer>
   );
 }

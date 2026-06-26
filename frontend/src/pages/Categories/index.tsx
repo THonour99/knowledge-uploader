@@ -13,8 +13,11 @@ import {
 } from "antd";
 import {
   AppstoreOutlined,
+  CheckCircleOutlined,
+  CloudSyncOutlined,
   PlusOutlined,
   ReloadOutlined,
+  RobotOutlined,
 } from "@ant-design/icons";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useState } from "react";
@@ -29,6 +32,7 @@ import {
   listDatasetMappings,
   updateCategory,
 } from "../../api/client";
+import { KpiCard } from "../../components/KpiCard";
 import { StatusTag } from "../../components/StatusTag";
 import { PageContainer } from "../../layouts/PageContainer";
 
@@ -150,6 +154,9 @@ export default function CategoriesPage() {
     label: dm.name,
     value: dm.id,
   }));
+  const boundCategoryCount = categories.filter((category) => category.default_dataset_id).length;
+  const aiEnabledCount = categories.filter((category) => category.ai_analysis_enabled).length;
+  const autoSyncCount = categories.filter((category) => category.auto_sync_enabled).length;
 
   const refreshCategories = async () => {
     await queryClient.invalidateQueries({ queryKey: ["categories"] });
@@ -220,11 +227,7 @@ export default function CategoriesPage() {
             <Typography.Text strong className="single-line-text" title={value}>
               {value}
             </Typography.Text>
-            <Typography.Text
-              type="secondary"
-              className="single-line-text"
-              title={record.code}
-            >
+            <Typography.Text type="secondary" className="single-line-text" title={record.code}>
               {record.code}
             </Typography.Text>
           </span>
@@ -352,11 +355,7 @@ export default function CategoriesPage() {
       width: 100,
       fixed: "right" as const,
       render: (_: unknown, record) => (
-        <Button
-          type="link"
-          className="table-link-button"
-          onClick={() => openEdit(record)}
-        >
+        <Button type="link" className="table-link-button" onClick={() => openEdit(record)}>
           编辑
         </Button>
       ),
@@ -368,14 +367,41 @@ export default function CategoriesPage() {
       title="分类管理"
       description="管理文档分类，配置 AI 分析、敏感检测和自动同步行为。"
     >
+      <div className="metric-grid">
+        <KpiCard
+          icon={<AppstoreOutlined />}
+          title="分类总数"
+          value={categories.length}
+          description="全部文档分类"
+          tone="primary"
+        />
+        <KpiCard
+          icon={<CheckCircleOutlined />}
+          title="已绑定 Dataset"
+          value={boundCategoryCount}
+          description="配置默认知识库"
+          tone="success"
+        />
+        <KpiCard
+          icon={<RobotOutlined />}
+          title="AI 启用分类"
+          value={aiEnabledCount}
+          description="允许自动分析"
+          tone="info"
+        />
+        <KpiCard
+          icon={<CloudSyncOutlined />}
+          title="自动同步分类"
+          value={autoSyncCount}
+          description="审核后自动入库"
+          tone="purple"
+        />
+      </div>
+
       <Card className="document-panel table-card">
         <div className="config-card-actions">
           <Space wrap>
-            <Button
-              type="primary"
-              icon={<PlusOutlined />}
-              onClick={openCreate}
-            >
+            <Button type="primary" icon={<PlusOutlined />} onClick={openCreate}>
               新增分类
             </Button>
             <Button
@@ -465,39 +491,19 @@ export default function CategoriesPage() {
             <Form.Item label="需要审核" name="require_review" valuePropName="checked">
               <Switch />
             </Form.Item>
-            <Form.Item
-              label="员工可选"
-              name="allow_employee_select"
-              valuePropName="checked"
-            >
+            <Form.Item label="员工可选" name="allow_employee_select" valuePropName="checked">
               <Switch />
             </Form.Item>
-            <Form.Item
-              label="AI 可推荐"
-              name="allow_ai_recommend"
-              valuePropName="checked"
-            >
+            <Form.Item label="AI 可推荐" name="allow_ai_recommend" valuePropName="checked">
               <Switch />
             </Form.Item>
-            <Form.Item
-              label="AI 分析"
-              name="ai_analysis_enabled"
-              valuePropName="checked"
-            >
+            <Form.Item label="AI 分析" name="ai_analysis_enabled" valuePropName="checked">
               <Switch />
             </Form.Item>
-            <Form.Item
-              label="敏感检测"
-              name="sensitive_detection_enabled"
-              valuePropName="checked"
-            >
+            <Form.Item label="敏感检测" name="sensitive_detection_enabled" valuePropName="checked">
               <Switch />
             </Form.Item>
-            <Form.Item
-              label="自动同步"
-              name="auto_sync_enabled"
-              valuePropName="checked"
-            >
+            <Form.Item label="自动同步" name="auto_sync_enabled" valuePropName="checked">
               <Switch />
             </Form.Item>
           </div>

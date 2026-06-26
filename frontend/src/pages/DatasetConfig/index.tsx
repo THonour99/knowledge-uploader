@@ -26,7 +26,6 @@ import {
 } from "@ant-design/icons";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useMemo, useState } from "react";
-import type { ReactNode } from "react";
 import type { ColumnsType } from "antd/es/table";
 
 import {
@@ -42,6 +41,7 @@ import {
   updateCategory,
   updateDatasetMapping,
 } from "../../api/client";
+import { KpiCard } from "../../components/KpiCard";
 import { StatusTag } from "../../components/StatusTag";
 import { PageContainer } from "../../layouts/PageContainer";
 
@@ -194,37 +194,6 @@ function mappingStatus(mapping?: DatasetMapping): DatasetConfigRow["status"] {
     return "pending";
   }
   return mapping.enabled ? "enabled" : "disabled";
-}
-
-function MetricCard({
-  icon,
-  title,
-  value,
-  subtitle,
-  tone,
-}: {
-  icon: ReactNode;
-  title: string;
-  value: number;
-  subtitle: string;
-  tone?: "success" | "warning" | "danger" | "purple" | "info";
-}) {
-  return (
-    <Card className="metric-card">
-      <Space size={16}>
-        <span className={tone ? `metric-card__icon metric-card__icon--${tone}` : "metric-card__icon"}>
-          {icon}
-        </span>
-        <span>
-          <Typography.Text type="secondary">{title}</Typography.Text>
-          <Typography.Title level={3} className="metric-card__value">
-            {value}
-          </Typography.Title>
-          <Typography.Text type="secondary">{subtitle}</Typography.Text>
-        </span>
-      </Space>
-    </Card>
-  );
 }
 
 export default function DatasetConfigPage() {
@@ -404,7 +373,11 @@ export default function DatasetConfigPage() {
             <Typography.Text strong className="single-line-text" title={record.category.name}>
               {record.category.name}
             </Typography.Text>
-            <Typography.Text type="secondary" className="single-line-text" title={record.category.code}>
+            <Typography.Text
+              type="secondary"
+              className="single-line-text"
+              title={record.category.code}
+            >
               {record.category.code}
             </Typography.Text>
           </span>
@@ -472,15 +445,27 @@ export default function DatasetConfigPage() {
 
         return (
           <Space size={8}>
-            <Button type="link" className="table-link-button" onClick={() => openEditCategory(record.category)}>
+            <Button
+              type="link"
+              className="table-link-button"
+              onClick={() => openEditCategory(record.category)}
+            >
               编辑分类
             </Button>
             {mapping ? (
-              <Button type="link" className="table-link-button" onClick={() => openEditDataset(mapping)}>
+              <Button
+                type="link"
+                className="table-link-button"
+                onClick={() => openEditDataset(mapping)}
+              >
                 编辑映射
               </Button>
             ) : (
-              <Button type="link" className="table-link-button" onClick={() => openCreateDataset(record.category.id)}>
+              <Button
+                type="link"
+                className="table-link-button"
+                onClick={() => openCreateDataset(record.category.id)}
+              >
                 绑定
               </Button>
             )}
@@ -496,11 +481,7 @@ export default function DatasetConfigPage() {
                   })
                 }
               >
-                <Button
-                  type="link"
-                  danger={mapping.enabled}
-                  className="table-link-button"
-                >
+                <Button type="link" danger={mapping.enabled} className="table-link-button">
                   {mapping.enabled ? "禁用" : "启用"}
                 </Button>
               </Popconfirm>
@@ -517,32 +498,32 @@ export default function DatasetConfigPage() {
       description="配置知识库分类与 RAGFlow Dataset 的映射关系，控制审核、AI 分析和自动同步行为。"
     >
       <div className="metric-grid">
-        <MetricCard
+        <KpiCard
           icon={<AppstoreOutlined />}
           title="已配置分类数"
           value={categories.length}
-          subtitle="全部分类"
+          description="全部分类"
           tone="info"
         />
-        <MetricCard
+        <KpiCard
           icon={<CheckCircleOutlined />}
           title="启用映射数"
           value={enabledMappings.length}
-          subtitle="映射已生效"
+          description="映射已生效"
           tone="success"
         />
-        <MetricCard
+        <KpiCard
           icon={<ExclamationCircleOutlined />}
           title="待完善映射"
           value={rows.filter((row) => row.status === "pending").length}
-          subtitle="未绑定 Dataset"
+          description="未绑定 Dataset"
           tone="warning"
         />
-        <MetricCard
+        <KpiCard
           icon={<StopOutlined />}
           title="禁用映射数"
           value={disabledMappings.length}
-          subtitle="已禁用映射"
+          description="已禁用映射"
           tone="purple"
         />
       </div>
@@ -641,7 +622,11 @@ export default function DatasetConfigPage() {
           onFinish={(values) => categoryMutation.mutate(values)}
         >
           <div className="form-grid form-grid--two">
-            <Form.Item label="分类名称" name="name" rules={[{ required: true, message: "请输入分类名称" }]}>
+            <Form.Item
+              label="分类名称"
+              name="name"
+              rules={[{ required: true, message: "请输入分类名称" }]}
+            >
               <Input maxLength={80} />
             </Form.Item>
             <Form.Item
@@ -709,10 +694,18 @@ export default function DatasetConfigPage() {
           initialValues={defaultDatasetValues}
           onFinish={(values) => datasetMutation.mutate(values)}
         >
-          <Form.Item label="映射名称" name="name" rules={[{ required: true, message: "请输入映射名称" }]}>
+          <Form.Item
+            label="映射名称"
+            name="name"
+            rules={[{ required: true, message: "请输入映射名称" }]}
+          >
             <Input maxLength={80} />
           </Form.Item>
-          <Form.Item label="所属分类" name="category_id" rules={[{ required: true, message: "请选择分类" }]}>
+          <Form.Item
+            label="所属分类"
+            name="category_id"
+            rules={[{ required: true, message: "请选择分类" }]}
+          >
             <Select
               options={categoryOptions}
               loading={categoriesQuery.isLoading}

@@ -11,13 +11,20 @@ import {
   Table,
   Typography,
 } from "antd";
-import { ReloadOutlined } from "@ant-design/icons";
+import {
+  AuditOutlined,
+  DatabaseOutlined,
+  FileSearchOutlined,
+  ReloadOutlined,
+  UserOutlined,
+} from "@ant-design/icons";
 import { useQuery } from "@tanstack/react-query";
 import dayjs, { type Dayjs } from "dayjs";
 import { useState } from "react";
 import type { ColumnsType } from "antd/es/table";
 
 import { type AuditLogItem, type AuditLogQuery, listAuditLogs } from "../../api/client";
+import { KpiCard } from "../../components/KpiCard";
 import { PageContainer } from "../../layouts/PageContainer";
 
 const { RangePicker } = DatePicker;
@@ -91,6 +98,9 @@ export default function AuditLogsPage() {
 
   const logs = logsQuery.data?.items ?? [];
   const total = logsQuery.data?.total ?? 0;
+  const pageActorCount = new Set(logs.map((log) => log.actor_id)).size;
+  const configActionCount = logs.filter((log) => log.action.includes("config")).length;
+  const fileActionCount = logs.filter((log) => log.action.startsWith("file.")).length;
 
   const handleActorSearch = (value: string) => {
     setActorFilter(value);
@@ -206,6 +216,37 @@ export default function AuditLogsPage() {
       title="操作日志"
       description="查询管理员与系统操作的完整审计日志，支持按操作人、类型与时间筛选。"
     >
+      <div className="metric-grid">
+        <KpiCard
+          icon={<AuditOutlined />}
+          title="审计日志总数"
+          value={total}
+          description="满足当前筛选条件"
+          tone="primary"
+        />
+        <KpiCard
+          icon={<UserOutlined />}
+          title="当前页操作人"
+          value={pageActorCount}
+          description="去重管理员账号"
+          tone="success"
+        />
+        <KpiCard
+          icon={<DatabaseOutlined />}
+          title="配置变更"
+          value={configActionCount}
+          description="当前页配置类操作"
+          tone="warning"
+        />
+        <KpiCard
+          icon={<FileSearchOutlined />}
+          title="文件操作"
+          value={fileActionCount}
+          description="当前页文件类操作"
+          tone="info"
+        />
+      </div>
+
       <Card className="audit-logs-panel table-card">
         <div className="filter-toolbar filter-toolbar--audit">
           <Input.Search
@@ -296,20 +337,14 @@ export default function AuditLogsPage() {
               <Typography.Text code>{detailRecord.action}</Typography.Text>
             </Descriptions.Item>
             <Descriptions.Item label="对象类型">{detailRecord.target_type}</Descriptions.Item>
-            <Descriptions.Item label="对象 ID">
-              {detailRecord.target_id ?? "-"}
-            </Descriptions.Item>
-            <Descriptions.Item label="IP 地址">
-              {detailRecord.ip_address ?? "-"}
-            </Descriptions.Item>
+            <Descriptions.Item label="对象 ID">{detailRecord.target_id ?? "-"}</Descriptions.Item>
+            <Descriptions.Item label="IP 地址">{detailRecord.ip_address ?? "-"}</Descriptions.Item>
             <Descriptions.Item label="User Agent">
               <Typography.Text style={{ wordBreak: "break-all", fontSize: 12 }}>
                 {detailRecord.user_agent ?? "-"}
               </Typography.Text>
             </Descriptions.Item>
-            <Descriptions.Item label="结果摘要">
-              {detailRecord.reason ?? "-"}
-            </Descriptions.Item>
+            <Descriptions.Item label="结果摘要">{detailRecord.reason ?? "-"}</Descriptions.Item>
             <Descriptions.Item label="元数据">
               <MetadataViewer metadata={detailRecord.metadata} />
             </Descriptions.Item>
