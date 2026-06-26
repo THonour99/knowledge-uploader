@@ -492,6 +492,64 @@ a {
   margin-bottom: var(--ku-spacing-section);
 }
 
+.profile-kpi-grid .kpi-card .ant-card-body {
+  min-height: 116px;
+}
+
+.profile-workspace {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(320px, 0.42fr);
+  gap: var(--ku-spacing-section);
+  align-items: start;
+}
+
+.profile-main {
+  display: grid;
+  min-width: 0;
+  gap: var(--ku-spacing-section);
+}
+
+.profile-password-card {
+  position: sticky;
+  top: 80px;
+}
+
+.profile-security-list {
+  display: grid;
+}
+
+.profile-security-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  padding: 14px 0;
+  border-bottom: 1px solid var(--ku-border);
+}
+
+.profile-security-row:first-child {
+  padding-top: 0;
+}
+
+.profile-security-row:last-child {
+  padding-bottom: 0;
+  border-bottom: 0;
+}
+
+.profile-security-copy {
+  display: grid;
+  min-width: 0;
+  gap: 4px;
+}
+
+.profile-security-copy .ant-typography-secondary {
+  font-size: 12px;
+}
+
+.profile-password-submit {
+  margin-bottom: 0;
+}
+
 .my-files-empty {
   display: grid;
   justify-items: center;
@@ -1270,6 +1328,14 @@ a {
     position: static;
   }
 
+  .profile-workspace {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .profile-password-card {
+    position: static;
+  }
+
   .document-analysis-metrics {
     grid-template-columns: minmax(0, 1fr);
   }
@@ -1341,7 +1407,6 @@ a {
     grid-template-columns: minmax(0, 1fr);
   }
 }
-
 
 /* CPA-style light SaaS chrome shared by dense admin pages. */
 .app-shell .ant-card {
