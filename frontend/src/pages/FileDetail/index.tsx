@@ -332,7 +332,7 @@ function AnalysisCard({ analysis, file, loading }: AnalysisCardProps) {
             <span className="document-analysis-metric__hint">已识别表格数量</span>
           </div>
         </div>
-        <Descriptions column={1} size="middle" labelStyle={{ width: 140 }}>
+        <Descriptions column={1} size="middle" styles={{ label: { width: 140 } }}>
           <Descriptions.Item label="风险等级">
             <StatusTag kind="risk" value={analysis.sensitive_risk_level} />
           </Descriptions.Item>
@@ -497,77 +497,87 @@ export default function FileDetailPage() {
           />
         </div>
       ) : null}
-      <div className="document-workspace">
-        <Card className="document-panel" loading={fileQuery.isLoading}>
-          {file ? (
-            <Descriptions column={1} size="middle" labelStyle={{ width: 140 }}>
-              <Descriptions.Item label="文件状态">
-                <Space wrap>
-                  <StatusTag kind="file" value={file.status} />
-                  <StatusTag kind="review" value={file.review_status} />
-                </Space>
-              </Descriptions.Item>
-              <Descriptions.Item label="文件大小">{formatFileSize(file.size)}</Descriptions.Item>
-              <Descriptions.Item label="MIME">{file.mime_type}</Descriptions.Item>
-              <Descriptions.Item label="AI 分析">
-                {file.ai_analysis_enabled_at_upload ? "已启用" : "上传时跳过"}
-              </Descriptions.Item>
-              <Descriptions.Item label="过期指标">
-                <ExpiryIndicator expiresAt={file.expires_at} status={file.expiry_status} />
-              </Descriptions.Item>
-              <Descriptions.Item label="上传时间">
-                {dayjs(file.uploaded_at).format("YYYY-MM-DD HH:mm")}
-              </Descriptions.Item>
-              <Descriptions.Item label="说明">{file.description ?? "-"}</Descriptions.Item>
-            </Descriptions>
-          ) : null}
-        </Card>
-
-        <Card className="document-panel" title="分类与标签" loading={fileQuery.isLoading}>
-          {file ? (
-            <Descriptions column={1} size="middle" labelStyle={{ width: 140 }}>
-              <Descriptions.Item label="分类">{file.category_name ?? "-"}</Descriptions.Item>
-              <Descriptions.Item label="标签">
-                {file.tags.length > 0 ? (
+      <div className="document-workspace document-workspace--detail">
+        <div className="document-workspace__main">
+          <Card className="document-panel" loading={fileQuery.isLoading}>
+            {file ? (
+              <Descriptions column={1} size="middle" styles={{ label: { width: 140 } }}>
+                <Descriptions.Item label="文件状态">
                   <Space wrap>
-                    {file.tags.map((tag) => (
-                      <Tag key={tag}>{tag}</Tag>
-                    ))}
+                    <StatusTag kind="file" value={file.status} />
+                    <StatusTag kind="review" value={file.review_status} />
                   </Space>
-                ) : (
-                  "暂无标签"
-                )}
-              </Descriptions.Item>
-            </Descriptions>
+                </Descriptions.Item>
+                <Descriptions.Item label="文件大小">{formatFileSize(file.size)}</Descriptions.Item>
+                <Descriptions.Item label="MIME">{file.mime_type}</Descriptions.Item>
+                <Descriptions.Item label="AI 分析">
+                  {file.ai_analysis_enabled_at_upload ? "已启用" : "上传时跳过"}
+                </Descriptions.Item>
+                <Descriptions.Item label="过期指标">
+                  <ExpiryIndicator expiresAt={file.expires_at} status={file.expiry_status} />
+                </Descriptions.Item>
+                <Descriptions.Item label="上传时间">
+                  {dayjs(file.uploaded_at).format("YYYY-MM-DD HH:mm")}
+                </Descriptions.Item>
+                <Descriptions.Item label="说明">{file.description ?? "-"}</Descriptions.Item>
+              </Descriptions>
+            ) : null}
+          </Card>
+
+          {file?.analysis ? (
+            <AnalysisCard analysis={file.analysis} file={file} loading={fileQuery.isLoading} />
           ) : null}
-        </Card>
+        </div>
 
-        {file?.analysis ? (
-          <AnalysisCard analysis={file.analysis} file={file} loading={fileQuery.isLoading} />
-        ) : null}
+        <aside className="document-workspace__side" aria-label="文件处理侧栏">
+          <Card className="document-panel" title="分类与标签" loading={fileQuery.isLoading}>
+            {file ? (
+              <Descriptions column={1} size="middle" styles={{ label: { width: 140 } }}>
+                <Descriptions.Item label="分类">{file.category_name ?? "-"}</Descriptions.Item>
+                <Descriptions.Item label="标签">
+                  {file.tags.length > 0 ? (
+                    <Space wrap>
+                      {file.tags.map((tag) => (
+                        <Tag key={tag}>{tag}</Tag>
+                      ))}
+                    </Space>
+                  ) : (
+                    "暂无标签"
+                  )}
+                </Descriptions.Item>
+              </Descriptions>
+            ) : null}
+          </Card>
 
-        <Card className="document-panel" title="同步信息" loading={fileQuery.isLoading}>
-          {file ? (
-            <Space direction="vertical" size={12} className="document-result">
-              {file.sync_error ? (
-                <Alert type="error" showIcon message="同步失败原因" description={file.sync_error} />
-              ) : null}
-              <Typography.Text>
-                RAGFlow 文档：
-                <Typography.Text code>{file.ragflow_document_id ?? "-"}</Typography.Text>
-              </Typography.Text>
-              <Typography.Text>
-                解析状态：<Typography.Text code>{file.ragflow_parse_status ?? "-"}</Typography.Text>
-              </Typography.Text>
-              <Typography.Text>
-                最近同步：
-                {file.last_sync_at ? dayjs(file.last_sync_at).format("YYYY-MM-DD HH:mm") : "-"}
-              </Typography.Text>
-            </Space>
-          ) : null}
-        </Card>
+          <Card className="document-panel" title="同步信息" loading={fileQuery.isLoading}>
+            {file ? (
+              <Space direction="vertical" size={12} className="document-result">
+                {file.sync_error ? (
+                  <Alert
+                    type="error"
+                    showIcon
+                    message="同步失败原因"
+                    description={file.sync_error}
+                  />
+                ) : null}
+                <Typography.Text>
+                  RAGFlow 文档：
+                  <Typography.Text code>{file.ragflow_document_id ?? "-"}</Typography.Text>
+                </Typography.Text>
+                <Typography.Text>
+                  解析状态：
+                  <Typography.Text code>{file.ragflow_parse_status ?? "-"}</Typography.Text>
+                </Typography.Text>
+                <Typography.Text>
+                  最近同步：
+                  {file.last_sync_at ? dayjs(file.last_sync_at).format("YYYY-MM-DD HH:mm") : "-"}
+                </Typography.Text>
+              </Space>
+            ) : null}
+          </Card>
 
-        {isAdmin ? <TaskTimelineCard tasks={fileTasks} loading={tasksQuery.isLoading} /> : null}
+          {isAdmin ? <TaskTimelineCard tasks={fileTasks} loading={tasksQuery.isLoading} /> : null}
+        </aside>
       </div>
     </PageContainer>
   );

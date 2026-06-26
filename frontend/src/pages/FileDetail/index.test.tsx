@@ -269,6 +269,10 @@ describe("FileDetailPage", () => {
     renderFileDetail();
 
     expect(await screen.findByText("处理日志")).toBeInTheDocument();
+    const processingSidebar = screen.getByRole("complementary", { name: "文件处理侧栏" });
+    expect(processingSidebar).toHaveTextContent("分类与标签");
+    expect(processingSidebar).toHaveTextContent("同步信息");
+    expect(processingSidebar).toHaveTextContent("处理日志");
     await waitFor(() => {
       expect(listTasks).toHaveBeenCalledWith({ file_id: "file-1" });
     });

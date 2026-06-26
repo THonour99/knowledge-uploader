@@ -324,6 +324,24 @@ a {
   gap: var(--ku-spacing-section);
 }
 
+.document-workspace--detail {
+  align-items: start;
+  grid-template-columns: minmax(0, 1fr) minmax(320px, 0.42fr);
+}
+
+.document-workspace__main,
+.document-workspace__side {
+  display: grid;
+  gap: var(--ku-spacing-section);
+  min-width: 0;
+}
+
+.document-workspace__side {
+  position: sticky;
+  top: calc(56px + var(--ku-spacing-page));
+  align-self: start;
+}
+
 .document-panel {
   border-color: rgba(229, 234, 242, 0.95);
   border-radius: var(--ku-radius-card);
@@ -1416,6 +1434,14 @@ a {
   }
 
   .profile-password-card {
+    position: static;
+  }
+
+  .document-workspace--detail {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .document-workspace__side {
     position: static;
   }
 
