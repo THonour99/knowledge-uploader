@@ -60,6 +60,10 @@ export default function ProfilePage() {
   }
 
   const emailVerifiedValue = profile?.email_verified ? "active" : "pending_email_verification";
+  const profileStatusValue = profile?.status ?? "pending_email_verification";
+  const roleLabel = profile ? (ROLE_LABELS[profile.role] ?? profile.role) : "—";
+  const roleScopeLabel = profile ? (ROLE_SCOPE_LABELS[profile.role] ?? "自定义") : "—";
+  const contactHealthValue = profile?.phone ? "ok" : "unknown";
 
   return (
     <PageContainer title="个人中心" description="查看当前账号资料、认证状态与登录安全设置。">
@@ -94,6 +98,84 @@ export default function ProfilePage() {
             tone={profile.phone ? "primary" : "warning"}
           />
         </div>
+      ) : null}
+
+      {profile ? (
+        <section className="profile-status-strip" aria-label="账号运行状态">
+          <div className="profile-status-strip__main">
+            <span className="profile-status-strip__icon">
+              <SafetyCertificateOutlined />
+            </span>
+            <span className="profile-status-strip__copy">
+              <Typography.Text type="secondary">账号治理</Typography.Text>
+              <Typography.Title level={4} className="profile-status-strip__title">
+                账号运行状态
+              </Typography.Title>
+              <Typography.Text type="secondary">
+                {roleLabel} · {profile.department ?? "未登记部门"}
+              </Typography.Text>
+            </span>
+            <StatusTag kind="user" value={profileStatusValue} variant="dot" />
+          </div>
+
+          <div className="profile-status-strip__lanes">
+            <div className="profile-status-lane">
+              <span className="profile-status-lane__icon">
+                <SafetyCertificateOutlined />
+              </span>
+              <span className="profile-status-lane__body">
+                <span className="profile-status-lane__topline">
+                  <Typography.Text type="secondary">账号状态</Typography.Text>
+                  <StatusTag kind="user" value={profileStatusValue} variant="dot" />
+                </span>
+                <strong>{profile.status === "active" ? "访问正常" : "需要处理"}</strong>
+                <Typography.Text type="secondary">当前登录身份与平台访问权限</Typography.Text>
+              </span>
+            </div>
+
+            <div className="profile-status-lane">
+              <span className="profile-status-lane__icon profile-status-lane__icon--mail">
+                <MailOutlined />
+              </span>
+              <span className="profile-status-lane__body">
+                <span className="profile-status-lane__topline">
+                  <Typography.Text type="secondary">邮箱认证</Typography.Text>
+                  <StatusTag kind="user" value={emailVerifiedValue} variant="dot" />
+                </span>
+                <strong>{profile.email_verified ? "公司邮箱已认证" : "等待激活"}</strong>
+                <Typography.Text type="secondary">{profile.email}</Typography.Text>
+              </span>
+            </div>
+
+            <div className="profile-status-lane">
+              <span className="profile-status-lane__icon profile-status-lane__icon--role">
+                <TeamOutlined />
+              </span>
+              <span className="profile-status-lane__body">
+                <span className="profile-status-lane__topline">
+                  <Typography.Text type="secondary">权限范围</Typography.Text>
+                  <StatusTag kind="health" value="ok" variant="dot" />
+                </span>
+                <strong>{roleScopeLabel}</strong>
+                <Typography.Text type="secondary">{roleLabel}</Typography.Text>
+              </span>
+            </div>
+
+            <div className="profile-status-lane">
+              <span className="profile-status-lane__icon profile-status-lane__icon--phone">
+                <PhoneOutlined />
+              </span>
+              <span className="profile-status-lane__body">
+                <span className="profile-status-lane__topline">
+                  <Typography.Text type="secondary">联系方式</Typography.Text>
+                  <StatusTag kind="health" value={contactHealthValue} variant="dot" />
+                </span>
+                <strong>{profile.phone ? "已登记" : "未登记"}</strong>
+                <Typography.Text type="secondary">{profile.phone ?? "用于内部协同通知"}</Typography.Text>
+              </span>
+            </div>
+          </div>
+        </section>
       ) : null}
 
       <div className="profile-workspace">

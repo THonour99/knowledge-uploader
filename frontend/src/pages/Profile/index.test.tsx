@@ -86,10 +86,15 @@ describe("ProfilePage", () => {
     renderWithProviders(<ProfilePage />);
 
     expect(await screen.findByText("张三")).toBeInTheDocument();
-    expect(screen.getByText("zhangsan@example.com")).toBeInTheDocument();
+    expect(screen.getAllByText("zhangsan@example.com").length).toBeGreaterThan(0);
     expect(screen.getByText("技术部")).toBeInTheDocument();
     // Role should be displayed in Chinese
-    expect(screen.getByText("部门管理员")).toBeInTheDocument();
+    expect(screen.getAllByText("部门管理员").length).toBeGreaterThan(0);
+
+    const statusRegion = screen.getByRole("region", { name: "账号运行状态" });
+    expect(statusRegion).toHaveTextContent("账号治理");
+    expect(statusRegion).toHaveTextContent("部门级");
+    expect(statusRegion).toHaveTextContent("公司邮箱已认证");
     // Email verified status tag — kind="user" value="active" renders "正常"
     const verifiedStatusTags = screen.getAllByText("正常");
     expect(verifiedStatusTags.length).toBeGreaterThan(0);
