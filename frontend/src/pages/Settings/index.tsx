@@ -29,7 +29,7 @@ import {
   Typography,
 } from "antd";
 import type { ColumnsType } from "antd/es/table";
-import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import { useMutation, useQueries, useQuery, useQueryClient } from "@tanstack/react-query";
 import type { ReactNode } from "react";
 
 import {
@@ -98,13 +98,13 @@ function getLabel(item: ConfigItem): string {
 
 interface SettingsStatusCard {
   title: string;
-  value: string;
+  value: string | number;
   description: string;
   icon: ReactNode;
   tone: KpiTone;
 }
 
-type SettingsTabKey = "basic" | "upload" | "processing" | "security" | "ragflow" | "services";
+type SettingsTabKey = ConfigGroup | "services";
 
 interface SettingsSummaryItem {
   key: SettingsTabKey;
@@ -136,35 +136,12 @@ interface ServiceRow {
   uptime: number;
 }
 
-const statusCards: SettingsStatusCard[] = [
-  {
-    title: "系统版本",
-    value: "v0.9.0",
-    description: "阶段 9 集成验证",
-    icon: <SettingOutlined />,
-    tone: "primary",
-  },
-  {
-    title: "服务健康",
-    value: "12/12",
-    description: "核心容器运行正常",
-    icon: <CheckCircleOutlined />,
-    tone: "success",
-  },
-  {
-    title: "安全策略",
-    value: "8 项",
-    description: "上传、登录、审计",
-    icon: <SafetyCertificateOutlined />,
-    tone: "purple",
-  },
-  {
-    title: "待处理配置",
-    value: "3",
-    description: "需要管理员确认",
-    icon: <BellOutlined />,
-    tone: "warning",
-  },
+const configOverviewGroups: ConfigGroup[] = [
+  "basic",
+  "upload",
+  "processing",
+  "security",
+  "ragflow",
 ];
 
 const settingsSummaryItems: SettingsSummaryItem[] = [
@@ -349,9 +326,11 @@ const serviceColumns: ColumnsType<ServiceRow> = [
 
 function SettingsCommandStrip({
   activeTab,
+  items,
   onSelectTab,
 }: {
   activeTab: SettingsTabKey;
+  items: SettingsSummaryItem[];
   onSelectTab: (key: SettingsTabKey) => void;
 }) {
   return (
@@ -370,7 +349,7 @@ function SettingsCommandStrip({
         </span>
       </div>
       <div className="settings-command-strip__cards" aria-label="配置域快捷入口">
-        {settingsSummaryItems.map((item) => (
+        {items.map((item) => (
           <button
             aria-pressed={activeTab === item.key}
             className={`settings-command-card settings-command-card--${item.tone} ${
@@ -508,6 +487,25 @@ function latestConfigUpdatedAt(items: ConfigItem[]): string {
     minute: "2-digit",
     hour12: false,
   }).format(new Date(latest));
+}
+
+function hasConfiguredValue(item: ConfigItem): boolean {
+  if (item.is_secret || item.value_type === "secret") {
+    return Boolean(
+      item.masked_value || (typeof item.value === "string" && item.value.trim() !== ""),
+    );
+  }
+  if (item.value_type === "list") {
+    return Array.isArray(item.value) && item.value.length > 0;
+  }
+  if (typeof item.value === "string") {
+    return item.value.trim() !== "";
+  }
+  return item.value !== null && item.value !== undefined;
+}
+
+function isPendingConfigItem(item: ConfigItem): boolean {
+  return !hasConfiguredValue(item);
 }
 
 function ConfigPanelSummary({ items }: { items: ConfigItem[] }) {
@@ -840,6 +838,92 @@ function ServiceSettingsPanel() {
 export default function SettingsPage() {
   const queryClient = useQueryClient();
   const [activeTab, setActiveTab] = useState<SettingsTabKey>("basic");
+  const overviewQueries = useQueries({
+    queries: configOverviewGroups.map((group) => ({
+      queryKey: ["configs", group] as const,
+      queryFn: () => getConfigs(group),
+      staleTime: 30_000,
+    })),
+  });
+  const overviewResults = configOverviewGroups.map((group, index) => ({
+    group,
+    query: overviewQueries[index],
+  }));
+  const loadedGroupCount = overviewResults.filter(({ query }) => Boolean(query.data)).length;
+  const hasOverviewError = overviewResults.some(({ query }) => query.isError);
+  const hasOverviewLoading = overviewResults.some(({ query }) => query.isLoading);
+  const overviewItems = overviewResults.flatMap(({ query }) => query.data?.items ?? []);
+  const pendingConfigCount = overviewItems.filter(isPendingConfigItem).length;
+  const secretConfigCount = overviewItems.filter(
+    (item) => item.is_secret || item.value_type === "secret",
+  ).length;
+  const switchConfigCount = overviewItems.filter((item) => item.value_type === "bool").length;
+  const securityItems =
+    overviewResults.find(({ group }) => group === "security")?.query.data?.items ?? [];
+  const enabledSecuritySwitches = securityItems.filter(
+    (item) => item.value_type === "bool" && item.value === true,
+  ).length;
+  const securitySwitchCount = securityItems.filter((item) => item.value_type === "bool").length;
+  const statusCards: SettingsStatusCard[] = [
+    {
+      title: "配置域",
+      value: `${loadedGroupCount}/${configOverviewGroups.length}`,
+      description: hasOverviewError
+        ? "部分配置读取失败"
+        : hasOverviewLoading
+          ? "配置读取中"
+          : "配置已同步",
+      icon: <SettingOutlined />,
+      tone: hasOverviewError ? "danger" : "primary",
+    },
+    {
+      title: "配置项",
+      value: overviewItems.length,
+      description: `${switchConfigCount} 个开关 / ${secretConfigCount} 个密钥`,
+      icon: <CheckCircleOutlined />,
+      tone: "success",
+    },
+    {
+      title: "安全策略",
+      value:
+        securitySwitchCount > 0
+          ? `${enabledSecuritySwitches}/${securitySwitchCount}`
+          : `${securityItems.length} 项`,
+      description: "邮箱验证、审核与敏感阻断",
+      icon: <SafetyCertificateOutlined />,
+      tone: "purple",
+    },
+    {
+      title: "待处理配置",
+      value: pendingConfigCount,
+      description: pendingConfigCount > 0 ? "需要管理员确认" : "无待处理项",
+      icon: <BellOutlined />,
+      tone: pendingConfigCount > 0 ? "warning" : "info",
+    },
+  ];
+  const commandItems = settingsSummaryItems.map((item) => {
+    if (item.key === "services") {
+      return item;
+    }
+
+    const result = overviewResults.find(({ group }) => group === item.key);
+    const configItems = result?.query.data?.items ?? [];
+    const groupPendingCount = configItems.filter(isPendingConfigItem).length;
+
+    return {
+      ...item,
+      meta: result?.query.isError
+        ? "读取失败"
+        : result?.query.isLoading
+          ? "加载中"
+          : `${configItems.length} 项配置`,
+      status: result?.query.isError
+        ? ({ kind: "health", value: "error" } as const)
+        : groupPendingCount > 0
+          ? ({ kind: "dataset", value: "pending" } as const)
+          : ({ kind: "dataset", value: "enabled" } as const),
+    };
+  });
 
   function handleReload() {
     void queryClient.invalidateQueries({ queryKey: ["configs"] });
@@ -870,7 +954,7 @@ export default function SettingsPage() {
         ))}
       </div>
 
-      <SettingsCommandStrip activeTab={activeTab} onSelectTab={setActiveTab} />
+      <SettingsCommandStrip activeTab={activeTab} items={commandItems} onSelectTab={setActiveTab} />
 
       <Tabs
         activeKey={activeTab}

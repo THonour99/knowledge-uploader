@@ -250,6 +250,21 @@ describe("SettingsPage", () => {
     expect(screen.getByRole("tab", { name: "服务状态", selected: true })).toBeInTheDocument();
   });
 
+  it("drives overview cards and shortcut metadata from fetched config groups", async () => {
+    setupMocks();
+    renderWithProviders(<SettingsPage />);
+
+    expect(await screen.findByText("5/5")).toBeInTheDocument();
+    expect(screen.getByText("配置已同步")).toBeInTheDocument();
+    expect(screen.getByText("11")).toBeInTheDocument();
+    expect(screen.getByText("3 个开关 / 1 个密钥")).toBeInTheDocument();
+    expect(screen.getByText("1/1")).toBeInTheDocument();
+    expect(screen.getByText("无待处理项")).toBeInTheDocument();
+
+    const summary = screen.getByRole("region", { name: "配置运行摘要" });
+    expect(summary).toHaveTextContent("2 项配置");
+    expect(summary).toHaveTextContent("3 项配置");
+  });
   it("loads and fills basic tab with fetched data", async () => {
     setupMocks();
     renderWithProviders(<SettingsPage />);
