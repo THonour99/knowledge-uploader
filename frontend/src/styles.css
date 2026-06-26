@@ -700,6 +700,92 @@ a {
   flex: 0 0 260px;
 }
 
+.review-command-strip {
+  display: grid;
+  grid-template-columns: minmax(240px, 1fr) minmax(360px, 1.45fr) auto;
+  gap: 16px;
+  align-items: center;
+  margin-bottom: 16px;
+  padding: 16px;
+  border: 1px solid rgba(229, 234, 242, 0.95);
+  border-radius: var(--ku-radius-card);
+  background: linear-gradient(135deg, rgba(230, 244, 255, 0.72), rgba(255, 255, 255, 0.96));
+}
+
+.review-command-strip__main {
+  display: flex;
+  gap: 12px;
+  align-items: center;
+  min-width: 0;
+}
+
+.review-command-strip__icon {
+  display: inline-flex;
+  flex: 0 0 40px;
+  align-items: center;
+  justify-content: center;
+  width: 40px;
+  height: 40px;
+  border-radius: 12px;
+  background: var(--ku-bg-card);
+  color: var(--ku-color-primary);
+  font-size: 20px;
+  box-shadow: var(--ku-shadow-card);
+}
+
+.review-command-strip__copy {
+  display: grid;
+  gap: 4px;
+  min-width: 0;
+}
+
+.review-command-strip__title {
+  color: var(--ku-text-primary);
+}
+
+.review-command-strip__stats {
+  display: grid;
+  grid-template-columns: repeat(6, minmax(74px, 1fr));
+  gap: 8px;
+  min-width: 0;
+}
+
+.review-command-strip__stat {
+  display: grid;
+  gap: 2px;
+  min-width: 0;
+  padding: 8px 10px;
+  border: 1px solid rgba(229, 234, 242, 0.88);
+  border-radius: var(--ku-radius-control);
+  background: rgba(255, 255, 255, 0.84);
+}
+
+.review-command-strip__stat strong {
+  color: var(--ku-text-primary);
+  font-size: 16px;
+  line-height: 1.25;
+}
+
+.review-command-strip__stat--warning {
+  border-color: rgba(245, 158, 11, 0.22);
+}
+
+.review-command-strip__stat--danger {
+  border-color: rgba(239, 68, 68, 0.22);
+}
+
+.review-command-strip__stat--purple {
+  border-color: rgba(124, 58, 237, 0.22);
+}
+
+.review-command-strip__stat--info {
+  border-color: rgba(59, 130, 246, 0.22);
+}
+
+.review-command-strip__actions {
+  justify-content: flex-end;
+}
+
 .table-actions {
   display: flex;
   align-items: center;
@@ -1540,6 +1626,18 @@ a {
   .filter-toolbar__range {
     flex: 1 1 100%;
     max-width: none;
+  }
+
+  .review-command-strip {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .review-command-strip__stats {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .review-command-strip__actions {
+    justify-content: flex-start;
   }
 
   .table-actions {

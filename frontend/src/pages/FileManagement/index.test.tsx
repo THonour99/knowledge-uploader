@@ -496,6 +496,43 @@ describe("FileManagementPage — 归档操作", () => {
   });
 });
 
+describe("FileManagementPage — 审核队列摘要", () => {
+  it("shows queue metrics and selected row counts", async () => {
+    const pendingFile = makeFile({
+      id: "file-pending",
+      original_name: "pending.pdf",
+      status: "pending_review",
+      review_status: "pending",
+    });
+    const failedFile = makeFile({
+      id: "file-failed",
+      original_name: "failed.pdf",
+      status: "failed",
+      review_status: "approved",
+    });
+    vi.mocked(listReviewFiles).mockResolvedValue({ items: [pendingFile, failedFile], total: 2 });
+    vi.mocked(listCategories).mockResolvedValue({ items: [], total: 0 });
+    vi.mocked(listDatasetMappings).mockResolvedValue({ items: [], total: 0 });
+    vi.mocked(listTags).mockResolvedValue(emptyTagList);
+
+    renderWithProviders(<FileManagementPage />);
+
+    await screen.findByText("pending.pdf");
+    await screen.findByText("failed.pdf");
+
+    const queue = screen.getByRole("region", { name: "审核队列摘要" });
+    expect(queue).toHaveTextContent("待审核1项");
+    expect(queue).toHaveTextContent("同步失败1项");
+    expect(queue).toHaveTextContent("已选0项");
+
+    const rowCheckbox = screen.getAllByRole("checkbox")[1];
+    fireEvent.click(rowCheckbox);
+
+    expect(queue).toHaveTextContent("已选1项");
+    expect(queue).toHaveTextContent("可审核1项");
+  });
+});
+
 describe("FileManagementPage — 既有审核测试不回归", () => {
   it("pending_review 文件可点击审核按钮", async () => {
     const file = makeFile({

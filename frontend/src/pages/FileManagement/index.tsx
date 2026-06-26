@@ -245,9 +245,9 @@ export default function FileManagementPage() {
 
   const filteredFiles = files.filter((file) => {
     const keyword = searchText.trim().toLowerCase();
-    const categoryName = file.category_id ? categoryNameById.get(file.category_id) ?? "" : "";
+    const categoryName = file.category_id ? (categoryNameById.get(file.category_id) ?? "") : "";
     const datasetName = file.dataset_mapping_id
-      ? mappingById.get(file.dataset_mapping_id)?.name ?? ""
+      ? (mappingById.get(file.dataset_mapping_id)?.name ?? "")
       : "";
     const haystack = [
       file.original_name,
@@ -276,6 +276,23 @@ export default function FileManagementPage() {
           uploadedAt.isBefore(uploadedRange[1].endOf("day"))))
     );
   });
+
+  const selectedKeySet = useMemo(
+    () => new Set(selectedRowKeys.map((key) => String(key))),
+    [selectedRowKeys],
+  );
+  const selectedFiles = filteredFiles.filter((file) => selectedKeySet.has(file.id));
+  const pendingReviewCount = filteredFiles.filter(
+    (file) => file.status === "pending_review",
+  ).length;
+  const highRiskCount = filteredFiles.filter((file) => riskLevel(file) === "high").length;
+  const syncFailedCount = filteredFiles.filter((file) => syncStatus(file) === "failed").length;
+  const selectedPendingCount = selectedFiles.filter(
+    (file) => file.status === "pending_review",
+  ).length;
+  const selectedSyncableCount = selectedFiles.filter((file) =>
+    syncableStatuses.has(file.status),
+  ).length;
 
   // ── 刷新辅助 ─────────────────────────────────────────────────────────────────
 
@@ -497,9 +514,9 @@ export default function FileManagementPage() {
       render: (value: string | null) => (
         <span
           className="single-line-text"
-          title={value ? categoryNameById.get(value) ?? "未知分类" : "未分类"}
+          title={value ? (categoryNameById.get(value) ?? "未知分类") : "未分类"}
         >
-          {value ? categoryNameById.get(value) ?? "未知分类" : "未分类"}
+          {value ? (categoryNameById.get(value) ?? "未知分类") : "未分类"}
         </span>
       ),
     },
@@ -792,6 +809,63 @@ export default function FileManagementPage() {
             value={uploadedRange}
             onChange={(value) => setUploadedRange(value as [Dayjs, Dayjs] | null)}
           />
+        </div>
+
+        <div className="review-command-strip" role="region" aria-label="审核队列摘要">
+          <div className="review-command-strip__main">
+            <span className="review-command-strip__icon">
+              <FileProtectOutlined />
+            </span>
+            <span className="review-command-strip__copy">
+              <Typography.Text strong className="review-command-strip__title">
+                审核队列
+              </Typography.Text>
+              <Typography.Text type="secondary">
+                基于当前筛选结果汇总待处理文件，选中后可快速判断可审核与可同步范围。
+              </Typography.Text>
+            </span>
+          </div>
+          <div className="review-command-strip__stats" aria-label="当前筛选摘要">
+            <span className="review-command-strip__stat review-command-strip__stat--warning">
+              <Typography.Text type="secondary">待审核</Typography.Text>
+              <strong>{pendingReviewCount}项</strong>
+            </span>
+            <span className="review-command-strip__stat review-command-strip__stat--danger">
+              <Typography.Text type="secondary">高风险</Typography.Text>
+              <strong>{highRiskCount}项</strong>
+            </span>
+            <span className="review-command-strip__stat review-command-strip__stat--purple">
+              <Typography.Text type="secondary">同步失败</Typography.Text>
+              <strong>{syncFailedCount}项</strong>
+            </span>
+            <span className="review-command-strip__stat review-command-strip__stat--info">
+              <Typography.Text type="secondary">已选</Typography.Text>
+              <strong>{selectedFiles.length}项</strong>
+            </span>
+            <span className="review-command-strip__stat">
+              <Typography.Text type="secondary">可审核</Typography.Text>
+              <strong>{selectedPendingCount}项</strong>
+            </span>
+            <span className="review-command-strip__stat">
+              <Typography.Text type="secondary">可同步</Typography.Text>
+              <strong>{selectedSyncableCount}项</strong>
+            </span>
+          </div>
+          <Space wrap className="review-command-strip__actions">
+            <Button size="small" onClick={() => setReviewFilter("pending_review")}>
+              只看待审核
+            </Button>
+            <Button size="small" onClick={() => setSyncFilter("failed")}>
+              只看同步失败
+            </Button>
+            <Button
+              size="small"
+              disabled={selectedFiles.length === 0}
+              onClick={() => setSelectedRowKeys([])}
+            >
+              清空选择
+            </Button>
+          </Space>
         </div>
 
         {/* ── 表格工具栏 ── */}
