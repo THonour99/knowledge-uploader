@@ -7,6 +7,7 @@ import {
   Input,
   Modal,
   Popconfirm,
+  Progress,
   Select,
   Space,
   Switch,
@@ -428,6 +429,16 @@ export default function DatasetConfigPage() {
 
     return matchesKeyword && matchesStatus && matchesReview && matchesEmployeeSelect;
   });
+  const boundCategoryCount = rows.filter((row) => Boolean(row.mapping)).length;
+  const pendingRowCount = rows.filter((row) => row.status === "pending").length;
+  const bindingCoverage =
+    categories.length === 0 ? 0 : Math.round((boundCategoryCount / categories.length) * 100);
+  const visibleEnabledCount = filteredRows.filter((row) => row.status === "enabled").length;
+  const visiblePendingCount = filteredRows.filter((row) => row.status === "pending").length;
+  const visibleDisabledCount = filteredRows.filter((row) => row.status === "disabled").length;
+  const visibleReviewRequiredCount = filteredRows.filter(
+    (row) => row.category.require_review,
+  ).length;
 
   const refreshConfig = async () => {
     await Promise.all([
@@ -748,17 +759,74 @@ export default function DatasetConfigPage() {
       <DatasetPolicyStrip
         aiRecommendCount={aiRecommendCount}
         autoSyncCount={autoSyncCount}
-        boundCategoryCount={rows.filter((row) => Boolean(row.mapping)).length}
+        boundCategoryCount={boundCategoryCount}
         disabledMappingCount={disabledMappings.length}
         employeeSelectableCount={employeeSelectableCount}
         enabledMappingCount={enabledMappings.length}
-        pendingMappingCount={rows.filter((row) => row.status === "pending").length}
+        pendingMappingCount={pendingRowCount}
         reviewRequiredCount={reviewRequiredCount}
         totalCategoryCount={categories.length}
         totalMappingCount={datasets.length}
       />
 
       <Card className="document-panel table-card">
+        <section className="dataset-command-strip" role="region" aria-label="Dataset 映射工作台">
+          <div className="dataset-command-strip__main">
+            <span className="dataset-command-strip__icon">
+              <CloudSyncOutlined />
+            </span>
+            <span className="dataset-command-strip__copy">
+              <span className="dataset-command-strip__title-row">
+                <Typography.Text strong className="dataset-command-strip__title">
+                  Dataset 映射工作台
+                </Typography.Text>
+                <StatusTag
+                  kind="dataset"
+                  value={pendingRowCount === 0 ? "enabled" : "pending"}
+                  variant="dot"
+                />
+              </span>
+              <Typography.Text type="secondary">
+                当前筛选 {filteredRows.length} 类，需审核 {visibleReviewRequiredCount} 类。
+              </Typography.Text>
+            </span>
+          </div>
+          <div className="dataset-command-strip__stats" aria-label="当前筛选映射摘要">
+            <span className="dataset-command-strip__stat dataset-command-strip__stat--success">
+              <Typography.Text type="secondary">已启用</Typography.Text>
+              <strong>{visibleEnabledCount}类</strong>
+            </span>
+            <span className="dataset-command-strip__stat dataset-command-strip__stat--warning">
+              <Typography.Text type="secondary">待绑定</Typography.Text>
+              <strong>{visiblePendingCount}类</strong>
+            </span>
+            <span className="dataset-command-strip__stat dataset-command-strip__stat--purple">
+              <Typography.Text type="secondary">已禁用</Typography.Text>
+              <strong>{visibleDisabledCount}类</strong>
+            </span>
+          </div>
+          <div className="dataset-command-strip__action-panel">
+            <div className="dataset-command-strip__coverage" aria-label="绑定覆盖率">
+              <span className="dataset-command-strip__coverage-copy">
+                <Typography.Text type="secondary">绑定覆盖率</Typography.Text>
+                <strong>{bindingCoverage}%</strong>
+              </span>
+              <Progress percent={bindingCoverage} size="small" showInfo={false} />
+            </div>
+            <Space wrap className="dataset-command-strip__actions">
+              <Button size="small" onClick={() => setStatusFilter("pending")}>
+                只看待绑定
+              </Button>
+              <Button size="small" onClick={() => setStatusFilter("enabled")}>
+                只看已启用
+              </Button>
+              <Button size="small" onClick={() => setReviewFilter("required")}>
+                只看需审核
+              </Button>
+            </Space>
+          </div>
+        </section>
+
         <div className="config-card-actions">
           <Space wrap>
             <Button icon={<FolderAddOutlined />} onClick={openCreateCategory}>

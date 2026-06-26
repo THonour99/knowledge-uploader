@@ -154,7 +154,20 @@ describe("DatasetConfigPage", () => {
     expect(policyStatus).toHaveTextContent("1 类员工可选");
     expect(policyStatus).toHaveTextContent("2 类允许 AI 推荐分类");
     expect(policyStatus).toHaveTextContent("1 个映射生效");
+    const mappingWorkbench = screen.getByRole("region", { name: "Dataset 映射工作台" });
+    expect(mappingWorkbench).toHaveTextContent("Dataset 映射工作台");
+    expect(mappingWorkbench).toHaveTextContent("当前筛选 2 类，需审核 1 类");
+    expect(mappingWorkbench).toHaveTextContent("已启用1类");
+    expect(mappingWorkbench).toHaveTextContent("待绑定1类");
+    expect(mappingWorkbench).toHaveTextContent("已禁用0类");
+    expect(mappingWorkbench).toHaveTextContent("绑定覆盖率50%");
     expect(screen.queryByText("默认可见范围")).not.toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole("button", { name: /只看待绑定/ }));
+
+    expect(mappingWorkbench).toHaveTextContent("当前筛选 1 类，需审核 0 类");
+    expect(mappingWorkbench).toHaveTextContent("已启用0类");
+    expect(mappingWorkbench).toHaveTextContent("待绑定1类");
 
     fireEvent.click(screen.getByRole("button", { name: /新增分类/ }));
     await screen.findAllByText("新增分类");
