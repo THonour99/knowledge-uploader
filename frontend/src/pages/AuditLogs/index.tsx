@@ -51,23 +51,7 @@ function MetadataViewer({ metadata }: { metadata: Record<string, unknown> | null
     return <Typography.Text type="secondary">无</Typography.Text>;
   }
 
-  return (
-    <pre
-      style={{
-        background: "var(--ku-bg-base)",
-        padding: 12,
-        borderRadius: "var(--ku-radius-control)",
-        fontSize: 12,
-        overflowX: "auto",
-        maxHeight: 320,
-        margin: 0,
-        whiteSpace: "pre-wrap",
-        wordBreak: "break-all",
-      }}
-    >
-      {JSON.stringify(metadata, null, 2)}
-    </pre>
-  );
+  return <pre className="audit-metadata-viewer">{JSON.stringify(metadata, null, 2)}</pre>;
 }
 
 interface AuditTraceStripProps {
@@ -166,6 +150,45 @@ function AuditTraceStrip({
   );
 }
 
+function AuditDetailOverview({ record }: { record: AuditLogItem }) {
+  return (
+    <section className="audit-detail-overview" role="region" aria-label="审计事件摘要">
+      <span className="audit-detail-overview__icon">
+        <AuditOutlined />
+      </span>
+      <span className="audit-detail-overview__copy">
+        <span className="audit-detail-overview__title-row">
+          <Typography.Text code>{record.action}</Typography.Text>
+          <StatusTag kind="health" value="ok" variant="dot" />
+        </span>
+        <Typography.Text type="secondary">
+          {record.actor_name ?? record.actor_id}
+          {record.actor_email ? ` · ${record.actor_email}` : ""}
+        </Typography.Text>
+      </span>
+      <div className="audit-detail-overview__stats" aria-label="审计事件指标">
+        <span className="audit-detail-overview__stat">
+          <Typography.Text type="secondary">操作时间</Typography.Text>
+          <strong>{dayjs(record.created_at).format("YYYY-MM-DD HH:mm:ss")}</strong>
+        </span>
+        <span className="audit-detail-overview__stat">
+          <Typography.Text type="secondary">操作对象</Typography.Text>
+          <strong>
+            {record.target_type} / {record.target_id ?? "-"}
+          </strong>
+        </span>
+        <span className="audit-detail-overview__stat">
+          <Typography.Text type="secondary">来源 IP</Typography.Text>
+          <strong>{record.ip_address ?? "-"}</strong>
+        </span>
+        <span className="audit-detail-overview__stat">
+          <Typography.Text type="secondary">结果摘要</Typography.Text>
+          <strong>{record.reason ?? "-"}</strong>
+        </span>
+      </div>
+    </section>
+  );
+}
 export default function AuditLogsPage() {
   const [page, setPage] = useState(1);
   const [pageSize] = useState(20);
@@ -357,6 +380,18 @@ export default function AuditLogsPage() {
       />
 
       <Card className="audit-logs-panel table-card">
+        <div className="table-section-header">
+          <span className="table-section-header__copy">
+            <Typography.Title level={4} className="table-section-header__title">
+              审计列表
+            </Typography.Title>
+            <Typography.Text className="table-section-header__meta">
+              当前显示 {logs.length} 条审计事件，共 {total} 条匹配记录
+            </Typography.Text>
+          </span>
+          <StatusTag kind="health" value={logsQuery.isError ? "error" : "ok"} variant="dot" />
+        </div>
+
         <div className="filter-toolbar filter-toolbar--audit">
           <Input.Search
             className="filter-toolbar__search"
@@ -412,7 +447,7 @@ export default function AuditLogsPage() {
           scroll={{ x: 900 }}
         />
 
-        <div style={{ marginTop: 16, textAlign: "right" }}>
+        <div className="audit-logs-pagination">
           <Pagination
             current={page}
             pageSize={pageSize}
@@ -430,34 +465,40 @@ export default function AuditLogsPage() {
         onClose={() => setDetailRecord(null)}
         width={560}
         destroyOnClose
+        className="audit-detail-drawer"
       >
         {detailRecord !== null ? (
-          <Descriptions column={1} size="small" bordered>
-            <Descriptions.Item label="日志 ID">{detailRecord.id}</Descriptions.Item>
-            <Descriptions.Item label="操作时间">
-              {dayjs(detailRecord.created_at).format("YYYY-MM-DD HH:mm:ss")}
-            </Descriptions.Item>
-            <Descriptions.Item label="操作人">
-              {detailRecord.actor_name ?? detailRecord.actor_id}
-              {detailRecord.actor_email ? ` (${detailRecord.actor_email})` : ""}
-            </Descriptions.Item>
-            <Descriptions.Item label="操作人 ID">{detailRecord.actor_id}</Descriptions.Item>
-            <Descriptions.Item label="操作类型">
-              <Typography.Text code>{detailRecord.action}</Typography.Text>
-            </Descriptions.Item>
-            <Descriptions.Item label="对象类型">{detailRecord.target_type}</Descriptions.Item>
-            <Descriptions.Item label="对象 ID">{detailRecord.target_id ?? "-"}</Descriptions.Item>
-            <Descriptions.Item label="IP 地址">{detailRecord.ip_address ?? "-"}</Descriptions.Item>
-            <Descriptions.Item label="User Agent">
-              <Typography.Text style={{ wordBreak: "break-all", fontSize: 12 }}>
-                {detailRecord.user_agent ?? "-"}
-              </Typography.Text>
-            </Descriptions.Item>
-            <Descriptions.Item label="结果摘要">{detailRecord.reason ?? "-"}</Descriptions.Item>
-            <Descriptions.Item label="元数据">
-              <MetadataViewer metadata={detailRecord.metadata} />
-            </Descriptions.Item>
-          </Descriptions>
+          <Space direction="vertical" style={{ width: "100%" }} size="large">
+            <AuditDetailOverview record={detailRecord} />
+            <Descriptions column={1} size="small" bordered>
+              <Descriptions.Item label="日志 ID">{detailRecord.id}</Descriptions.Item>
+              <Descriptions.Item label="操作时间">
+                {dayjs(detailRecord.created_at).format("YYYY-MM-DD HH:mm:ss")}
+              </Descriptions.Item>
+              <Descriptions.Item label="操作人">
+                {detailRecord.actor_name ?? detailRecord.actor_id}
+                {detailRecord.actor_email ? ` (${detailRecord.actor_email})` : ""}
+              </Descriptions.Item>
+              <Descriptions.Item label="操作人 ID">{detailRecord.actor_id}</Descriptions.Item>
+              <Descriptions.Item label="操作类型">
+                <Typography.Text code>{detailRecord.action}</Typography.Text>
+              </Descriptions.Item>
+              <Descriptions.Item label="对象类型">{detailRecord.target_type}</Descriptions.Item>
+              <Descriptions.Item label="对象 ID">{detailRecord.target_id ?? "-"}</Descriptions.Item>
+              <Descriptions.Item label="IP 地址">
+                {detailRecord.ip_address ?? "-"}
+              </Descriptions.Item>
+              <Descriptions.Item label="User Agent">
+                <Typography.Text className="audit-detail-user-agent">
+                  {detailRecord.user_agent ?? "-"}
+                </Typography.Text>
+              </Descriptions.Item>
+              <Descriptions.Item label="结果摘要">{detailRecord.reason ?? "-"}</Descriptions.Item>
+              <Descriptions.Item label="元数据">
+                <MetadataViewer metadata={detailRecord.metadata} />
+              </Descriptions.Item>
+            </Descriptions>
+          </Space>
         ) : null}
       </Drawer>
     </PageContainer>

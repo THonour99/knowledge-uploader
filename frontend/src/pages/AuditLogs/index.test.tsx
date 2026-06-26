@@ -145,6 +145,9 @@ describe("AuditLogsPage", () => {
     expect(traceStrip).toHaveTextContent("1 条文件操作");
     expect(traceStrip).toHaveTextContent("当前列表未应用筛选条件");
 
+    expect(screen.getByText("审计列表")).toBeInTheDocument();
+    expect(screen.getByText("当前显示 2 条审计事件，共 2 条匹配记录")).toBeInTheDocument();
+
     // 第二行
     expect(screen.getByText("李四")).toBeInTheDocument();
     expect(screen.getByText("lisi@example.com")).toBeInTheDocument();
@@ -167,7 +170,12 @@ describe("AuditLogsPage", () => {
     // Ant Design Select 下拉选项渲染在 document.body 末尾的 popup 容器中
     // 使用 getAllByTitle 再筛选出 dropdown 选项（role=option）
     const options = await screen.findAllByTitle("config.update");
-    const dropdownOption = options.find((el) => el.classList.contains("ant-select-item-option-content") || el.getAttribute("role") === "option" || el.closest(".ant-select-dropdown") !== null);
+    const dropdownOption = options.find(
+      (el) =>
+        el.classList.contains("ant-select-item-option-content") ||
+        el.getAttribute("role") === "option" ||
+        el.closest(".ant-select-dropdown") !== null,
+    );
     fireEvent.click(dropdownOption ?? options[options.length - 1]);
 
     await waitFor(() => {
@@ -214,7 +222,13 @@ describe("AuditLogsPage", () => {
     const detailButtons = screen.getAllByRole("button", { name: "详情" });
     fireEvent.click(detailButtons[0]);
 
-    // Drawer 应该打开，显示 metadata 和 user_agent
+    // Drawer 应该打开，显示摘要、metadata 和 user_agent
+    const detailSummary = await screen.findByRole("region", { name: "审计事件摘要" });
+    expect(detailSummary).toHaveTextContent("config.update");
+    expect(detailSummary).toHaveTextContent("张三");
+    expect(detailSummary).toHaveTextContent("SystemConfig / cfg-001");
+    expect(detailSummary).toHaveTextContent("192.168.1.100");
+
     await waitFor(() => {
       // metadata 的 JSON 内容
       expect(screen.getByText(/ragflow_api_key/)).toBeInTheDocument();
