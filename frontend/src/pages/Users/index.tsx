@@ -2,9 +2,11 @@ import { useCallback, useEffect, useMemo, useState } from "react";
 import {
   ApartmentOutlined,
   ExclamationCircleOutlined,
+  FilterOutlined,
   LockOutlined,
   MailOutlined,
   SearchOutlined,
+  SafetyCertificateOutlined,
   TeamOutlined,
   UnlockOutlined,
   UserSwitchOutlined,
@@ -97,6 +99,113 @@ interface ManagedDepartmentsModalState {
   selectedDepartmentIds: string[];
 }
 
+interface UserGovernanceStripProps {
+  activeCount: number;
+  deptAdminCount: number;
+  disabledOrLockedCount: number;
+  managedDeptAdminCount: number;
+  pageCount: number;
+  pendingCount: number;
+  roleFilter: AdminUserRole | "";
+  search: string;
+  statusFilter: string;
+  total: number;
+  verifiedCount: number;
+}
+
+function UserGovernanceStrip({
+  activeCount,
+  deptAdminCount,
+  disabledOrLockedCount,
+  managedDeptAdminCount,
+  pageCount,
+  pendingCount,
+  roleFilter,
+  search,
+  statusFilter,
+  total,
+  verifiedCount,
+}: UserGovernanceStripProps) {
+  const hasFilters = Boolean(search.trim() || roleFilter || statusFilter);
+  const lanes = [
+    {
+      key: "health",
+      icon: <SafetyCertificateOutlined />,
+      title: "账号健康",
+      primary: `${activeCount} 个正常账号`,
+      secondary: `当前视图 ${pageCount} 个账号，平台共 ${total} 条`,
+      status: { kind: "health" as const, value: disabledOrLockedCount > 0 ? "unknown" : "ok" },
+    },
+    {
+      key: "activation",
+      icon: <MailOutlined />,
+      title: "邮箱激活",
+      primary: `${pendingCount} 个待激活`,
+      secondary: `邮箱验证完成 ${verifiedCount}/${pageCount}`,
+      status: {
+        kind: "user" as const,
+        value: pendingCount > 0 ? "pending_email_verification" : "active",
+      },
+    },
+    {
+      key: "permission",
+      icon: <ApartmentOutlined />,
+      title: "权限覆盖",
+      primary: `${deptAdminCount} 个部门管理员`,
+      secondary: `${managedDeptAdminCount} 个已配置管辖部门`,
+      status: {
+        kind: "health" as const,
+        value: deptAdminCount === managedDeptAdminCount ? "ok" : "unknown",
+      },
+    },
+    {
+      key: "queue",
+      icon: <FilterOutlined />,
+      title: "治理队列",
+      primary: `${disabledOrLockedCount} 个禁用/锁定`,
+      secondary: hasFilters ? "当前列表已应用筛选条件" : "当前列表未应用筛选条件",
+      status: { kind: "user" as const, value: disabledOrLockedCount > 0 ? "disabled" : "active" },
+    },
+  ];
+
+  return (
+    <section className="users-governance-strip" role="region" aria-label="账号治理状态">
+      <div className="users-governance-strip__main">
+        <span className="users-governance-strip__icon">
+          <TeamOutlined />
+        </span>
+        <span className="users-governance-strip__copy">
+          <Typography.Text strong className="users-governance-strip__title">
+            账号治理状态
+          </Typography.Text>
+          <Typography.Text type="secondary">
+            汇总当前列表的账号健康、激活进度、权限覆盖和待处理队列。
+          </Typography.Text>
+        </span>
+        <span className="users-governance-strip__total">
+          <strong>{total}</strong>
+          <Typography.Text type="secondary">平台账号</Typography.Text>
+        </span>
+      </div>
+      <div className="users-governance-strip__lanes" aria-label="账号治理指标">
+        {lanes.map((lane) => (
+          <div className="users-governance-lane" key={lane.key}>
+            <span className="users-governance-lane__icon">{lane.icon}</span>
+            <span className="users-governance-lane__body">
+              <span className="users-governance-lane__topline">
+                <Typography.Text strong>{lane.title}</Typography.Text>
+                <StatusTag kind={lane.status.kind} value={lane.status.value} variant="dot" />
+              </span>
+              <strong>{lane.primary}</strong>
+              <Typography.Text type="secondary">{lane.secondary}</Typography.Text>
+            </span>
+          </div>
+        ))}
+      </div>
+    </section>
+  );
+}
+
 export default function UsersPage() {
   const { message, modal } = App.useApp();
   const queryClient = useQueryClient();
@@ -143,14 +252,21 @@ export default function UsersPage() {
   const users = usersQuery.data?.items ?? [];
   const total = usersQuery.data?.total ?? 0;
 
-  const pageStats = useMemo(
-    () => ({
+  const pageStats = useMemo(() => {
+    const deptAdmins = users.filter((user) => user.role === "dept_admin");
+
+    return {
       active: users.filter((user) => user.status === "active").length,
       pending: users.filter((user) => user.status === "pending_email_verification").length,
-      disabledOrLocked: users.filter((user) => user.status === "disabled" || user.status === "locked").length,
-    }),
-    [users],
-  );
+      disabledOrLocked: users.filter(
+        (user) => user.status === "disabled" || user.status === "locked",
+      ).length,
+      verified: users.filter((user) => user.email_verified).length,
+      deptAdmin: deptAdmins.length,
+      managedDeptAdmin: deptAdmins.filter((user) => (user.managed_department_ids?.length ?? 0) > 0)
+        .length,
+    };
+  }, [users]);
   const departmentsQuery = useQuery({
     queryKey: ["admin-departments"],
     queryFn: listDepartments,
@@ -493,6 +609,21 @@ export default function UsersPage() {
           tone="danger"
         />
       </div>
+
+      <UserGovernanceStrip
+        activeCount={pageStats.active}
+        deptAdminCount={pageStats.deptAdmin}
+        disabledOrLockedCount={pageStats.disabledOrLocked}
+        managedDeptAdminCount={pageStats.managedDeptAdmin}
+        pageCount={users.length}
+        pendingCount={pageStats.pending}
+        roleFilter={roleFilter}
+        search={search}
+        statusFilter={statusFilter}
+        total={total}
+        verifiedCount={pageStats.verified}
+      />
+
       <div className="users-main-grid">
         <Card className="users-panel table-card" title="账号列表">
           <div className="filter-toolbar filter-toolbar--management">

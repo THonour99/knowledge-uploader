@@ -145,6 +145,17 @@ describe("UsersPage", () => {
     expect(screen.getByText("lixue@company.com")).toBeInTheDocument();
     expect(screen.getByText("陈晨")).toBeInTheDocument();
 
+    const governance = screen.getByRole("region", { name: "账号治理状态" });
+    expect(governance).toHaveTextContent("账号治理状态");
+    expect(governance).toHaveTextContent("2 个正常账号");
+    expect(governance).toHaveTextContent("当前视图 3 个账号，平台共 3 条");
+    expect(governance).toHaveTextContent("0 个待激活");
+    expect(governance).toHaveTextContent("邮箱验证完成 2/3");
+    expect(governance).toHaveTextContent("1 个部门管理员");
+    expect(governance).toHaveTextContent("1 个已配置管辖部门");
+    expect(governance).toHaveTextContent("1 个禁用/锁定");
+    expect(governance).toHaveTextContent("当前列表未应用筛选条件");
+
     // Role labels
     expect(screen.getAllByText("系统管理员").length).toBeGreaterThan(0);
     expect(screen.getAllByText("部门管理员").length).toBeGreaterThan(0);
@@ -159,7 +170,7 @@ describe("UsersPage", () => {
     expect(screen.getByText("126")).toBeInTheDocument();
 
     // Status tag for disabled user
-    expect(screen.getByText("已禁用")).toBeInTheDocument();
+    expect(screen.getAllByText("已禁用").length).toBeGreaterThan(0);
   });
 
   it("triggers re-query with search param when search input changes", async () => {
