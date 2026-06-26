@@ -12,7 +12,14 @@ import {
   Timeline,
   Typography,
 } from "antd";
-import { ArrowLeftOutlined, CloudUploadOutlined } from "@ant-design/icons";
+import {
+  ArrowLeftOutlined,
+  CloudSyncOutlined,
+  CloudUploadOutlined,
+  FileProtectOutlined,
+  SafetyOutlined,
+  TagsOutlined,
+} from "@ant-design/icons";
 import { useQuery } from "@tanstack/react-query";
 import dayjs from "dayjs";
 import { useNavigate, useParams } from "react-router-dom";
@@ -26,6 +33,7 @@ import {
   getDocument,
   listTasks,
 } from "../../api/client";
+import { KpiCard, type KpiTone } from "../../components/KpiCard";
 import { StatusTag } from "../../components/StatusTag";
 import { PageContainer } from "../../layouts/PageContainer";
 import { Roles, useAuthStore } from "../../store/auth.store";
@@ -82,6 +90,69 @@ function qualityProgressStatus(score: number): "success" | "normal" | "exception
     return "exception";
   }
   return "normal";
+}
+
+function qualityTone(score: number | null): KpiTone {
+  if (score === null) {
+    return "info";
+  }
+  if (score >= 85) {
+    return "success";
+  }
+  if (score < 60) {
+    return "danger";
+  }
+  return "warning";
+}
+
+function syncStatus(file: KnowledgeFile): string {
+  if (file.sync_error || file.ragflow_parse_status === "failed") {
+    return "failed";
+  }
+  if (file.ragflow_parse_status === "parsed") {
+    return "synced";
+  }
+  if (file.ragflow_parse_status === "parsing") {
+    return "syncing";
+  }
+  return file.ragflow_document_id ? "queued" : "not_synced";
+}
+
+function syncMetricLabel(status: string): string {
+  const labels: Record<string, string> = {
+    failed: "异常",
+    synced: "已入库",
+    syncing: "解析中",
+    queued: "待解析",
+    not_synced: "未同步",
+  };
+  return labels[status] ?? status;
+}
+
+function syncMetricTone(status: string): KpiTone {
+  if (status === "failed") {
+    return "danger";
+  }
+  if (status === "synced") {
+    return "success";
+  }
+  if (status === "syncing" || status === "queued") {
+    return "warning";
+  }
+  return "purple";
+}
+
+function syncMetricDescription(file: KnowledgeFile): string {
+  if (file.sync_error) {
+    return "需要人工处理";
+  }
+  if (file.last_sync_at) {
+    return `最近 ${dayjs(file.last_sync_at).format("MM-DD HH:mm")}`;
+  }
+  if (file.ragflow_document_id) {
+    return "远端文档已创建";
+  }
+  return "等待审核通过";
 }
 
 function expiryMeta(expiresAt?: string | null, explicitStatus?: string | null) {
@@ -373,6 +444,11 @@ export default function FileDetailPage() {
 
   const file = fileQuery.data;
   const fileTasks = (tasksQuery.data?.items ?? []).filter((task) => task.file_id === id);
+  const detailQualityScore =
+    file?.analysis && typeof file.analysis.quality_score === "number"
+      ? clampScore(file.analysis.quality_score)
+      : null;
+  const detailSyncStatus = file ? syncStatus(file) : "not_synced";
 
   return (
     <PageContainer
@@ -389,6 +465,38 @@ export default function FileDetailPage() {
         </Space>
       }
     >
+      {file ? (
+        <div className="metric-grid file-detail-kpi-grid">
+          <KpiCard
+            icon={<FileProtectOutlined />}
+            title="文件规格"
+            value={file.extension.toUpperCase()}
+            description={formatFileSize(file.size)}
+            tone="primary"
+          />
+          <KpiCard
+            icon={<TagsOutlined />}
+            title="标签数量"
+            value={file.tags.length}
+            description={file.category_name ? "分类已设置" : "未分类"}
+            tone="info"
+          />
+          <KpiCard
+            icon={<SafetyOutlined />}
+            title="分析质量"
+            value={detailQualityScore === null ? "待评分" : `${detailQualityScore}%`}
+            description={file.analysis ? "R5 质量评分" : "未生成分析"}
+            tone={qualityTone(detailQualityScore)}
+          />
+          <KpiCard
+            icon={<CloudSyncOutlined />}
+            title="RAGFlow"
+            value={syncMetricLabel(detailSyncStatus)}
+            description={syncMetricDescription(file)}
+            tone={syncMetricTone(detailSyncStatus)}
+          />
+        </div>
+      ) : null}
       <div className="document-workspace">
         <Card className="document-panel" loading={fileQuery.isLoading}>
           {file ? (
