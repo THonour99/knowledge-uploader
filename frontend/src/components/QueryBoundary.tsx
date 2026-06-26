@@ -53,29 +53,54 @@ export function QueryBoundary(props: QueryBoundaryProps) {
   } = props;
 
   if (isLoading) {
-    return <>{skeleton ?? <Skeleton active paragraph={{ rows: skeletonRows }} />}</>;
+    return (
+      <>
+        {skeleton ?? (
+          <div
+            aria-label="正在加载数据"
+            aria-live="polite"
+            className="query-boundary-state query-boundary-state--loading"
+            role="status"
+          >
+            <Skeleton active paragraph={{ rows: skeletonRows }} />
+          </div>
+        )}
+      </>
+    );
   }
 
   if (isError) {
     return (
-      <Alert
-        type="error"
-        showIcon
-        message={errorTitle}
-        description={resolveErrorMessage(error)}
-        action={
-          onRetry ? (
-            <Button size="small" icon={<ReloadOutlined />} onClick={onRetry}>
-              重试
-            </Button>
-          ) : undefined
-        }
-      />
+      <div className="query-boundary-state query-boundary-state--error">
+        <Alert
+          className="query-boundary-alert"
+          type="error"
+          showIcon
+          message={errorTitle}
+          description={resolveErrorMessage(error)}
+          action={
+            onRetry ? (
+              <Button size="small" icon={<ReloadOutlined />} onClick={onRetry}>
+                重试
+              </Button>
+            ) : undefined
+          }
+        />
+      </div>
     );
   }
 
   if (isEmpty) {
-    return <Empty image={Empty.PRESENTED_IMAGE_SIMPLE} description={emptyDescription} />;
+    return (
+      <div
+        aria-label="暂无数据"
+        aria-live="polite"
+        className="query-boundary-state query-boundary-state--empty"
+        role="status"
+      >
+        <Empty image={Empty.PRESENTED_IMAGE_SIMPLE} description={emptyDescription} />
+      </div>
+    );
   }
 
   return <>{children}</>;

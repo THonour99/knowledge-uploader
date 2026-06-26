@@ -2101,6 +2101,54 @@ a {
   color: var(--ku-text-disabled);
 }
 
+.query-boundary-state {
+  display: grid;
+  min-height: 180px;
+  align-items: center;
+  padding: 20px;
+  border: 1px dashed rgba(22, 119, 255, 0.18);
+  border-radius: var(--ku-radius-card);
+  background: linear-gradient(180deg, rgba(248, 251, 255, 0.92), rgba(255, 255, 255, 0.96));
+}
+
+.query-boundary-state--loading {
+  min-height: 156px;
+  align-items: stretch;
+}
+
+.query-boundary-state--error {
+  border-style: solid;
+  border-color: rgba(239, 68, 68, 0.18);
+  background: rgba(254, 226, 226, 0.28);
+}
+
+.query-boundary-state--empty {
+  color: var(--ku-text-secondary);
+}
+
+.query-boundary-alert.ant-alert {
+  padding: 0;
+  border: 0;
+  background: transparent;
+}
+
+.query-boundary-alert .ant-alert-message {
+  color: var(--ku-text-primary);
+  font-weight: 700;
+}
+
+.query-boundary-alert .ant-alert-description {
+  color: var(--ku-text-secondary);
+}
+
+.query-boundary-state .ant-empty {
+  margin: 0;
+}
+
+.query-boundary-state .ant-empty-description {
+  color: var(--ku-text-secondary);
+}
+
 .config-layout {
   display: grid;
   grid-template-columns: minmax(0, 1fr);

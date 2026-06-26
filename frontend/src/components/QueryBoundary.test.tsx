@@ -22,22 +22,21 @@ describe("QueryBoundary", () => {
     );
 
     expect(container.querySelector(".ant-skeleton")).toBeInTheDocument();
+    expect(screen.getByRole("status", { name: "正在加载数据" })).toHaveClass(
+      "query-boundary-state--loading",
+    );
     expect(screen.queryByText("内容")).not.toBeInTheDocument();
   });
 
   it("renders error alert with retry button and calls onRetry", () => {
     const onRetry = vi.fn();
-    renderWithProviders(
-      <QueryBoundary
-        isLoading={false}
-        isError
-        error={new Error("接口炸了")}
-        onRetry={onRetry}
-      >
+    const { container } = renderWithProviders(
+      <QueryBoundary isLoading={false} isError error={new Error("接口炸了")} onRetry={onRetry}>
         <div>内容</div>
       </QueryBoundary>,
     );
 
+    expect(container.querySelector(".query-boundary-state--error")).toBeInTheDocument();
     expect(screen.getByText("接口炸了")).toBeInTheDocument();
     expect(screen.queryByText("内容")).not.toBeInTheDocument();
 
@@ -53,6 +52,9 @@ describe("QueryBoundary", () => {
     );
 
     expect(screen.getByText("空空如也")).toBeInTheDocument();
+    expect(screen.getByRole("status", { name: "暂无数据" })).toHaveClass(
+      "query-boundary-state--empty",
+    );
     expect(screen.queryByText("内容")).not.toBeInTheDocument();
   });
 
