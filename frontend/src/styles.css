@@ -138,8 +138,58 @@ a {
 }
 
 .sidebar-footer {
+  display: grid;
+  gap: 10px;
   padding: 12px 12px 20px;
   border-top: 1px solid var(--ku-border);
+}
+
+.sidebar-health {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  min-height: 52px;
+  padding: 10px;
+  border: 1px solid rgba(22, 119, 255, 0.1);
+  border-radius: var(--ku-radius-control);
+  background: linear-gradient(180deg, rgba(255, 255, 255, 0.92) 0%, rgba(234, 245, 255, 0.7) 100%);
+  box-shadow: var(--ku-shadow-xs);
+}
+
+.sidebar-health__icon {
+  display: inline-flex;
+  flex: 0 0 32px;
+  align-items: center;
+  justify-content: center;
+  width: 32px;
+  height: 32px;
+  border-radius: var(--ku-radius-control);
+  background: var(--ku-color-success-light);
+  color: var(--ku-color-success);
+  font-size: 16px;
+}
+
+.sidebar-health__content {
+  display: grid;
+  min-width: 0;
+  gap: 2px;
+}
+
+.sidebar-health__meta {
+  display: inline-flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  min-width: 0;
+  color: var(--ku-text-primary);
+  font-size: 12px;
+  font-weight: 700;
+}
+
+.sidebar-health__text {
+  color: var(--ku-text-secondary);
+  font-size: 12px;
+  line-height: 1.4;
 }
 
 .sidebar-footer .ant-btn {
@@ -155,6 +205,12 @@ a {
 
 .app-shell__sider.ant-layout-sider-collapsed .sidebar-footer {
   padding: 12px 8px 20px;
+}
+
+.app-shell__sider.ant-layout-sider-collapsed .sidebar-health {
+  justify-content: center;
+  min-height: 40px;
+  padding: 4px;
 }
 
 .app-shell__sider.ant-layout-sider-collapsed .sidebar-footer .ant-btn {
