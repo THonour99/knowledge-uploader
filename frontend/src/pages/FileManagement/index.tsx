@@ -16,6 +16,7 @@ import {
 import {
   CheckCircleOutlined,
   CloudSyncOutlined,
+  DatabaseOutlined,
   DeleteOutlined,
   DownloadOutlined,
   FileExcelOutlined,
@@ -142,6 +143,100 @@ function fileTypeMeta(fileName: string) {
   return { icon: <FileOutlined />, className: "file-title-cell__icon--default" };
 }
 
+function FileGovernanceStrip({
+  allowedExtensionCount,
+  activeMappingCount,
+  totalCount,
+  unmappedCount,
+  pendingReviewCount,
+  highRiskCount,
+  syncFailedCount,
+  syncableCount,
+}: {
+  allowedExtensionCount: number;
+  activeMappingCount: number;
+  totalCount: number;
+  unmappedCount: number;
+  pendingReviewCount: number;
+  highRiskCount: number;
+  syncFailedCount: number;
+  syncableCount: number;
+}) {
+  const lanes = [
+    {
+      key: "ingress",
+      icon: <FileProtectOutlined />,
+      title: "准入规则",
+      primary: allowedExtensionCount > 0 ? `${allowedExtensionCount} 类文件白名单` : "读取上传配置",
+      secondary: "文件类型与标签筛选已接入服务端",
+      status: { kind: "health" as const, value: allowedExtensionCount > 0 ? "ok" : "unknown" },
+    },
+    {
+      key: "mapping",
+      icon: <DatabaseOutlined />,
+      title: "分类映射",
+      primary: `${activeMappingCount} 个启用映射`,
+      secondary: unmappedCount > 0 ? `${unmappedCount} 个文件待补 Dataset` : "当前视图已完成映射",
+      status: { kind: "dataset" as const, value: unmappedCount > 0 ? "pending" : "enabled" },
+    },
+    {
+      key: "risk",
+      icon: <SafetyOutlined />,
+      title: "审核风险",
+      primary: `${pendingReviewCount} 个待审核`,
+      secondary: highRiskCount > 0 ? `${highRiskCount} 个高风险文件` : "未发现高风险文件",
+      status: { kind: "risk" as const, value: highRiskCount > 0 ? "high" : "low" },
+    },
+    {
+      key: "sync",
+      icon: <CloudSyncOutlined />,
+      title: "RAGFlow 同步",
+      primary: `${syncableCount} 个可同步`,
+      secondary: syncFailedCount > 0 ? `${syncFailedCount} 个失败重试` : "同步队列可继续处理",
+      status: {
+        kind: "sync" as const,
+        value: syncFailedCount > 0 ? "failed" : syncableCount > 0 ? "queued" : "succeeded",
+      },
+    },
+  ];
+
+  return (
+    <section className="file-governance-strip" role="region" aria-label="文件治理工作台状态">
+      <div className="file-governance-strip__main">
+        <span className="file-governance-strip__icon">
+          <FileProtectOutlined />
+        </span>
+        <span className="file-governance-strip__copy">
+          <Typography.Text strong className="file-governance-strip__title">
+            文件治理工作台
+          </Typography.Text>
+          <Typography.Text type="secondary">
+            将准入白名单、分类映射、审核风险和 RAGFlow 同步状态合并到当前视图。
+          </Typography.Text>
+        </span>
+        <span className="file-governance-strip__count">
+          <strong>{totalCount}</strong>
+          <Typography.Text type="secondary">当前视图文件</Typography.Text>
+        </span>
+      </div>
+      <div className="file-governance-strip__lanes" aria-label="文件治理指标">
+        {lanes.map((lane) => (
+          <div className="file-governance-lane" key={lane.key}>
+            <span className="file-governance-lane__icon">{lane.icon}</span>
+            <span className="file-governance-lane__body">
+              <span className="file-governance-lane__topline">
+                <Typography.Text strong>{lane.title}</Typography.Text>
+                <StatusTag kind={lane.status.kind} value={lane.status.value} variant="dot" />
+              </span>
+              <strong>{lane.primary}</strong>
+              <Typography.Text type="secondary">{lane.secondary}</Typography.Text>
+            </span>
+          </div>
+        ))}
+      </div>
+    </section>
+  );
+}
 // ── 主页面 ────────────────────────────────────────────────────────────────────
 
 export default function FileManagementPage() {
@@ -287,6 +382,13 @@ export default function FileManagementPage() {
   ).length;
   const highRiskCount = filteredFiles.filter((file) => riskLevel(file) === "high").length;
   const syncFailedCount = filteredFiles.filter((file) => syncStatus(file) === "failed").length;
+  const syncableReadyCount = filteredFiles.filter((file) =>
+    syncableStatuses.has(file.status),
+  ).length;
+  const unmappedFileCount = filteredFiles.filter(
+    (file) => !file.dataset_mapping_id && !file.ragflow_dataset_id,
+  ).length;
+  const activeMappingCount = datasets.filter((mapping) => mapping.enabled).length;
   const selectedPendingCount = selectedFiles.filter(
     (file) => file.status === "pending_review",
   ).length;
@@ -729,6 +831,17 @@ export default function FileManagementPage() {
           tone="info"
         />
       </div>
+
+      <FileGovernanceStrip
+        activeMappingCount={activeMappingCount}
+        allowedExtensionCount={allowedExtensions.length}
+        highRiskCount={highRiskCount}
+        pendingReviewCount={pendingReviewCount}
+        syncableCount={syncableReadyCount}
+        syncFailedCount={syncFailedCount}
+        totalCount={filteredFiles.length}
+        unmappedCount={unmappedFileCount}
+      />
 
       <Card className="document-panel table-card">
         {/* ── 筛选栏 ── */}
