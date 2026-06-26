@@ -1,4 +1,4 @@
-import type { ReactNode } from "react";
+import type { KeyboardEvent, ReactNode } from "react";
 import { FallOutlined, RiseOutlined } from "@ant-design/icons";
 import { Card, Typography } from "antd";
 
@@ -65,11 +65,24 @@ export function KpiCard(props: KpiCardProps) {
   const hasDelta = deltaPct !== null && deltaPct !== undefined && Number.isFinite(deltaPct);
   const deltaUp = hasDelta && deltaPct! >= 0;
   const deltaIsGood = deltaPositiveIsGood ? deltaUp : !deltaUp;
+  const handleKeyDown = (event: KeyboardEvent<HTMLDivElement>) => {
+    if (!onClick) {
+      return;
+    }
+
+    if (event.key === "Enter" || event.key === " ") {
+      event.preventDefault();
+      onClick();
+    }
+  };
 
   return (
     <Card
       className={`kpi-card kpi-card--${tone}${clickable ? " kpi-card--clickable" : ""}`}
       onClick={onClick}
+      onKeyDown={clickable ? handleKeyDown : undefined}
+      role={clickable ? "button" : undefined}
+      tabIndex={clickable ? 0 : undefined}
     >
       <div className="kpi-card__top">
         <span className="kpi-card__icon">{icon}</span>

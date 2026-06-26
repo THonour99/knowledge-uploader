@@ -56,9 +56,7 @@ describe("KpiCard", () => {
   });
 
   it("renders a non-numeric display value as-is", () => {
-    renderCard(
-      <KpiCard icon={null} title="系统版本" value="v0.9.0" tone="info" />,
-    );
+    renderCard(<KpiCard icon={null} title="系统版本" value="v0.9.0" tone="info" />);
     expect(screen.getByText("系统版本")).toBeInTheDocument();
     expect(screen.getByText("v0.9.0")).toBeInTheDocument();
   });
@@ -94,7 +92,20 @@ describe("KpiCard", () => {
   it("fires onClick when clickable", () => {
     const onClick = vi.fn();
     renderCard(<KpiCard icon={null} title="可点卡" value={1} tone="primary" onClick={onClick} />);
-    fireEvent.click(screen.getByText("可点卡"));
+    fireEvent.click(screen.getByRole("button", { name: /可点卡/ }));
     expect(onClick).toHaveBeenCalledTimes(1);
+  });
+
+  it("supports keyboard activation when clickable", () => {
+    const onClick = vi.fn();
+    renderCard(<KpiCard icon={null} title="键盘卡" value={1} tone="primary" onClick={onClick} />);
+
+    const card = screen.getByRole("button", { name: /键盘卡/ });
+    expect(card).toHaveAttribute("tabindex", "0");
+
+    fireEvent.keyDown(card, { key: "Enter" });
+    fireEvent.keyDown(card, { key: " " });
+
+    expect(onClick).toHaveBeenCalledTimes(2);
   });
 });

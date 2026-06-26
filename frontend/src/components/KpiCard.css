@@ -120,6 +120,17 @@
   box-shadow: var(--ku-shadow-card-hover);
 }
 
+.kpi-card--clickable:focus-visible {
+  outline: 3px solid rgba(22, 119, 255, 0.18);
+  outline-offset: 2px;
+  border-color: var(--ku-color-primary);
+  box-shadow: var(--ku-shadow-card-hover);
+}
+
+.kpi-card--clickable:active {
+  transform: translateY(0);
+}
+
 @media (prefers-reduced-motion: reduce) {
   .kpi-card {
     transition: none;
