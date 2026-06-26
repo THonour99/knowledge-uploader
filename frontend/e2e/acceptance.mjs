@@ -46,6 +46,30 @@ if (!playwright?.chromium) {
 const browser = await playwright.chromium.launch({ headless: true });
 const page = await browser.newPage({ viewport: { width: 1366, height: 900 } });
 
+await page.route("**/api/system/health", async (route) => {
+  await route.fulfill(jsonResponse({ status: "ok" }));
+});
+
+await page.route("**/api/system/ready", async (route) => {
+  await route.fulfill({
+    status: 200,
+    contentType: "application/json",
+    body: JSON.stringify({
+      status: "ok",
+      dependencies: {
+        database: { status: "ok" },
+        redis: { status: "ok" },
+        rabbitmq: { status: "ok" },
+        minio: { status: "ok" },
+      },
+    }),
+  });
+});
+
+await page.route("**/api/notifications**", async (route) => {
+  await route.fulfill(jsonResponse({ items: [], total: 0, unread_count: 0 }));
+});
+
 await page.route("**/api/admin/configs**", async (route) => {
   await route.fulfill(
     jsonResponse({
@@ -158,12 +182,12 @@ await page.addInitScript(() => {
 });
 
 try {
-  await page.goto(`${baseUrl}/upload`, { waitUntil: "networkidle" });
+  await page.goto(`${baseUrl}/upload`, { waitUntil: "domcontentloaded" });
   await expectVisible(page.getByRole("heading", { name: "上传知识文件" }), "upload page title");
   await expectVisible(page.getByText("上传后提交审核"), "submit-after-upload switch");
   await expectVisible(page.getByText("启用 AI 分析"), "AI analysis switch");
 
-  await page.goto(`${baseUrl}/files/file-e2e`, { waitUntil: "networkidle" });
+  await page.goto(`${baseUrl}/files/file-e2e`, { waitUntil: "domcontentloaded" });
   await expectVisible(
     page.getByRole("heading", { name: "浏览器验收手册.pdf" }),
     "file detail title",
