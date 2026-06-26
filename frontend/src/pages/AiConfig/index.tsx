@@ -23,6 +23,7 @@ import type { ColumnsType } from "antd/es/table";
 import dayjs from "dayjs";
 
 import {
+  type AiConfigResponse,
   type AiFeatureConfig,
   type AiPromptTemplate,
   type AiProviderConfig,
@@ -32,6 +33,7 @@ import {
   testAiProvider,
   updateAiFeature,
 } from "../../api/client";
+import { KpiCard } from "../../components/KpiCard";
 import { StatusTag } from "../../components/StatusTag";
 import { PageContainer } from "../../layouts/PageContainer";
 import "./styles.css";
@@ -86,7 +88,66 @@ const providerStatusValue = (status?: string | null) => {
   return "not_synced";
 };
 
-const formatDateTime = (value?: string | null) => (value ? dayjs(value).format("YYYY-MM-DD HH:mm") : "-");
+const formatDateTime = (value?: string | null) =>
+  value ? dayjs(value).format("YYYY-MM-DD HH:mm") : "-";
+
+const compactNumber = new Intl.NumberFormat("zh-CN", { maximumFractionDigits: 0 });
+
+function countEnabled(items: Array<{ enabled: boolean }>): number {
+  return items.filter((item) => item.enabled).length;
+}
+
+function AiOverview({ config }: { config: AiConfigResponse }) {
+  const enabledFeatures = countEnabled(config.features);
+  const enabledProviders = countEnabled(config.providers);
+  const testedProviders = config.providers.filter(
+    (provider) => provider.enabled && provider.last_test_status === "success",
+  ).length;
+  const enabledPrompts = countEnabled(config.prompt_templates);
+  const defaultPrompts = config.prompt_templates.filter((template) => template.is_default).length;
+  const enabledRules = countEnabled(config.sensitive_rules);
+  const ruleHits = config.sensitive_rules.reduce((total, rule) => total + rule.hit_count, 0);
+
+  return (
+    <div className="metric-grid ai-config-kpi-grid">
+      <KpiCard
+        icon={<ThunderboltOutlined />}
+        title="AI 总开关"
+        value={config.global.ai_analysis_enabled ? "已开启" : "已关闭"}
+        description={config.global.allow_external_llm ? "允许外部模型" : "仅内部模型"}
+        tone={config.global.ai_analysis_enabled ? "success" : "warning"}
+      />
+      <KpiCard
+        icon={<ExperimentOutlined />}
+        title="启用功能"
+        value={`${enabledFeatures}/${config.features.length}`}
+        description="文档分析能力覆盖"
+        tone={enabledFeatures > 0 ? "primary" : "warning"}
+      />
+      <KpiCard
+        icon={<ApiOutlined />}
+        title="可用供应商"
+        value={enabledProviders}
+        description={`${testedProviders} 个最近测试通过`}
+        tone={enabledProviders > 0 ? "success" : "danger"}
+      />
+      <KpiCard
+        icon={<SafetyCertificateOutlined />}
+        title="敏感治理"
+        value={enabledRules}
+        description={`${compactNumber.format(ruleHits)} 次累计命中`}
+        tone={ruleHits > 0 ? "warning" : "purple"}
+      />
+      <KpiCard
+        icon={<FileTextOutlined />}
+        title="Prompt 模板"
+        value={enabledPrompts}
+        description={`${defaultPrompts} 个默认模板`}
+        tone="info"
+      />
+    </div>
+  );
+}
 
 function EmptyBlock({ description }: { description: string }) {
   return (
@@ -218,7 +279,11 @@ function ProvidersPanel({
             <Typography.Text strong className="single-line-text" title={value}>
               {value}
             </Typography.Text>
-            <Typography.Text type="secondary" className="single-line-text" title={record.provider_type}>
+            <Typography.Text
+              type="secondary"
+              className="single-line-text"
+              title={record.provider_type}
+            >
               {record.provider_type}
             </Typography.Text>
           </span>
@@ -256,7 +321,11 @@ function ProvidersPanel({
           <Typography.Text className="single-line-text" title={record.chat_model ?? "-"}>
             对话：{record.chat_model ?? "-"}
           </Typography.Text>
-          <Typography.Text type="secondary" className="single-line-text" title={record.embedding_model ?? "-"}>
+          <Typography.Text
+            type="secondary"
+            className="single-line-text"
+            title={record.embedding_model ?? "-"}
+          >
             向量：{record.embedding_model ?? "-"}
           </Typography.Text>
         </span>
@@ -274,7 +343,9 @@ function ProvidersPanel({
       dataIndex: "enabled",
       key: "enabled",
       width: 100,
-      render: (enabled: boolean) => <StatusTag kind="dataset" value={enabled ? "enabled" : "disabled"} />,
+      render: (enabled: boolean) => (
+        <StatusTag kind="dataset" value={enabled ? "enabled" : "disabled"} />
+      ),
     },
     {
       title: "测试状态",
@@ -346,7 +417,11 @@ function PromptTemplatesPanel({ templates }: { templates: AiPromptTemplate[] }) 
             <Typography.Text strong className="single-line-text" title={value}>
               {value}
             </Typography.Text>
-            <Typography.Text type="secondary" className="single-line-text" title={record.template_key}>
+            <Typography.Text
+              type="secondary"
+              className="single-line-text"
+              title={record.template_key}
+            >
               {record.template_key}
             </Typography.Text>
           </span>
@@ -368,14 +443,18 @@ function PromptTemplatesPanel({ templates }: { templates: AiPromptTemplate[] }) 
       dataIndex: "is_default",
       key: "is_default",
       width: 110,
-      render: (value: boolean) => <StatusTag kind="dataset" value={value ? "required" : "skipped"} />,
+      render: (value: boolean) => (
+        <StatusTag kind="dataset" value={value ? "required" : "skipped"} />
+      ),
     },
     {
       title: "启用",
       dataIndex: "enabled",
       key: "enabled",
       width: 100,
-      render: (value: boolean) => <StatusTag kind="dataset" value={value ? "enabled" : "disabled"} />,
+      render: (value: boolean) => (
+        <StatusTag kind="dataset" value={value ? "enabled" : "disabled"} />
+      ),
     },
     {
       title: "版本",
@@ -450,7 +529,9 @@ function SensitiveRulesPanel({ rules }: { rules: AiSensitiveRule[] }) {
       dataIndex: "enabled",
       key: "enabled",
       width: 100,
-      render: (value: boolean) => <StatusTag kind="dataset" value={value ? "enabled" : "disabled"} />,
+      render: (value: boolean) => (
+        <StatusTag kind="dataset" value={value ? "enabled" : "disabled"} />
+      ),
     },
     {
       title: "命中次数",
@@ -511,7 +592,9 @@ export default function AiConfigPage() {
     mutationFn: (provider: AiProviderConfig) => testAiProvider(provider.id),
     onSuccess: async (result: AiProviderTestResult) => {
       if (result.status === "success") {
-        message.success(`连接测试成功${typeof result.latency_ms === "number" ? `，延迟 ${result.latency_ms}ms` : ""}`);
+        message.success(
+          `连接测试成功${typeof result.latency_ms === "number" ? `，延迟 ${result.latency_ms}ms` : ""}`,
+        );
       } else {
         message.error(result.message || "连接测试失败");
       }
@@ -550,6 +633,8 @@ export default function AiConfigPage() {
         />
       ) : null}
 
+      {config ? <AiOverview config={config} /> : null}
+
       <Card className="document-panel ai-config-tabs-card">
         {isLoading ? (
           <Table
@@ -585,7 +670,9 @@ export default function AiConfigPage() {
                   <ProvidersPanel
                     providers={config.providers}
                     testingProviderId={
-                      providerTestMutation.isPending ? providerTestMutation.variables?.id : undefined
+                      providerTestMutation.isPending
+                        ? providerTestMutation.variables?.id
+                        : undefined
                     }
                     onTest={(provider) => providerTestMutation.mutate(provider)}
                   />

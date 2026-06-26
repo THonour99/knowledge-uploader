@@ -144,7 +144,12 @@ describe("AiConfigPage", () => {
     expect(screen.getByRole("tab", { name: "模型供应商" })).toBeInTheDocument();
     expect(screen.getByRole("tab", { name: "Prompt 模板" })).toBeInTheDocument();
     expect(screen.getByRole("tab", { name: "敏感规则" })).toBeInTheDocument();
-    expect(screen.getByText("AI 总开关")).toBeInTheDocument();
+    expect(screen.getByText("启用功能")).toBeInTheDocument();
+    expect(screen.getByText("1/2")).toBeInTheDocument();
+    expect(screen.getByText("可用供应商")).toBeInTheDocument();
+    expect(screen.getByText("敏感治理")).toBeInTheDocument();
+    expect(screen.getByText("356 次累计命中")).toBeInTheDocument();
+    expect(screen.getAllByText("AI 总开关").length).toBeGreaterThan(0);
     expect(screen.getByText("文档摘要")).toBeInTheDocument();
     expect(screen.getByText("敏感检测")).toBeInTheDocument();
   });
@@ -201,9 +206,12 @@ describe("AiConfigPage", () => {
 
     renderWithProviders(<AiConfigPage />);
 
-    const title = await screen.findByText("AI 总开关");
-    const globalCard = title.closest(".ai-config-switch-card");
-    expect(globalCard).not.toBeNull();
+    await screen.findAllByText("AI 总开关");
+    const globalCard = screen
+      .getAllByText("AI 总开关")
+      .map((element) => element.closest(".ai-config-switch-card"))
+      .find((card): card is HTMLElement => card instanceof HTMLElement);
+    expect(globalCard).toBeDefined();
 
     const switchControl = within(globalCard as HTMLElement).getByRole("switch");
     fireEvent.click(switchControl);
