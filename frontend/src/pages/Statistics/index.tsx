@@ -6,6 +6,7 @@ import {
   DatePicker,
   Empty,
   Input,
+  Progress,
   Select,
   Space,
   Table,
@@ -341,6 +342,98 @@ function StatisticsInsightStrip({
   );
 }
 
+function StatisticsContributionWorkbench({
+  exportLoading,
+  filteredUsers,
+  hasKeyword,
+  onClearKeyword,
+  onExport,
+  totalUsers,
+}: {
+  exportLoading: boolean;
+  filteredUsers: StatisticsUserRow[];
+  hasKeyword: boolean;
+  onClearKeyword: () => void;
+  onExport: () => void;
+  totalUsers: number;
+}) {
+  const visibleTotalFiles = filteredUsers.reduce((total, user) => total + user.total_files, 0);
+  const visibleSyncedFiles = filteredUsers.reduce((total, user) => total + user.synced_files, 0);
+  const visibleFailedFiles = filteredUsers.reduce((total, user) => total + user.failed_files, 0);
+  const visiblePendingReviewFiles = filteredUsers.reduce(
+    (total, user) => total + user.pending_review_files,
+    0,
+  );
+  const syncQualityPercent =
+    visibleTotalFiles === 0 ? 0 : Math.round((visibleSyncedFiles / visibleTotalFiles) * 100);
+  const hasRisk = visibleFailedFiles > 0 || visiblePendingReviewFiles > 0;
+
+  return (
+    <section
+      className="statistics-contribution-workbench"
+      role="region"
+      aria-label="贡献明细工作台"
+    >
+      <div className="statistics-contribution-workbench__main">
+        <span className="statistics-contribution-workbench__icon">
+          <TeamOutlined />
+        </span>
+        <span className="statistics-contribution-workbench__copy">
+          <span className="statistics-contribution-workbench__title-row">
+            <Typography.Text strong className="statistics-contribution-workbench__title">
+              贡献明细工作台
+            </Typography.Text>
+            <StatusTag kind="health" value={hasRisk ? "unknown" : "ok"} variant="dot" />
+          </span>
+          <Typography.Text type="secondary">
+            当前视图 {formatNumber(filteredUsers.length)} 位用户，样本总数{" "}
+            {formatNumber(totalUsers)} 位。
+          </Typography.Text>
+        </span>
+      </div>
+      <div className="statistics-contribution-workbench__stats" aria-label="贡献明细摘要">
+        <span className="statistics-contribution-workbench__stat statistics-contribution-workbench__stat--info">
+          <Typography.Text type="secondary">上传文件</Typography.Text>
+          <strong>{formatNumber(visibleTotalFiles)}</strong>
+        </span>
+        <span className="statistics-contribution-workbench__stat statistics-contribution-workbench__stat--success">
+          <Typography.Text type="secondary">同步成功</Typography.Text>
+          <strong>{formatNumber(visibleSyncedFiles)}</strong>
+        </span>
+        <span className="statistics-contribution-workbench__stat statistics-contribution-workbench__stat--warning">
+          <Typography.Text type="secondary">待审核</Typography.Text>
+          <strong>{formatNumber(visiblePendingReviewFiles)}</strong>
+        </span>
+        <span className="statistics-contribution-workbench__stat statistics-contribution-workbench__stat--danger">
+          <Typography.Text type="secondary">失败文件</Typography.Text>
+          <strong>{formatNumber(visibleFailedFiles)}</strong>
+        </span>
+      </div>
+      <div className="statistics-contribution-workbench__action-panel">
+        <div className="statistics-contribution-workbench__quality" aria-label="当前视图同步质量">
+          <span className="statistics-contribution-workbench__quality-copy">
+            <Typography.Text type="secondary">同步质量</Typography.Text>
+            <strong>{syncQualityPercent}%</strong>
+          </span>
+          <Progress percent={syncQualityPercent} size="small" showInfo={false} />
+        </div>
+        <Space wrap className="statistics-contribution-workbench__actions">
+          <Button size="small" disabled={!hasKeyword} onClick={onClearKeyword}>
+            清空搜索
+          </Button>
+          <Button
+            size="small"
+            icon={<DownloadOutlined />}
+            loading={exportLoading}
+            onClick={onExport}
+          >
+            导出明细
+          </Button>
+        </Space>
+      </div>
+    </section>
+  );
+}
 export default function StatisticsPage() {
   const { message } = AntdApp.useApp();
   const queryClient = useQueryClient();
@@ -737,6 +830,14 @@ export default function StatisticsPage() {
 
       <div className="statistics-bottom-grid">
         <Card className="document-panel table-card statistics-users-card" title="用户上传统计">
+          <StatisticsContributionWorkbench
+            exportLoading={exportMutation.isPending}
+            filteredUsers={filteredUsers}
+            hasKeyword={userKeyword.trim().length > 0}
+            onClearKeyword={() => setUserKeyword("")}
+            onExport={() => exportMutation.mutate()}
+            totalUsers={userSampleCount}
+          />
           <div className="statistics-table-toolbar">
             <Input.Search
               className="statistics-user-search"

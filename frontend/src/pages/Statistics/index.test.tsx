@@ -293,6 +293,14 @@ describe("StatisticsPage", () => {
     expect(reportStatus).toHaveTextContent("162 个失败任务");
     expect(reportStatus).toHaveTextContent("1,240 个待审核，37 个敏感风险");
     expect(reportStatus).toHaveTextContent("同步失败");
+    const contributionWorkbench = screen.getByRole("region", { name: "贡献明细工作台" });
+    expect(contributionWorkbench).toHaveTextContent("贡献明细工作台");
+    expect(contributionWorkbench).toHaveTextContent("当前视图 2 位用户，样本总数 2 位");
+    expect(contributionWorkbench).toHaveTextContent("上传文件2,324");
+    expect(contributionWorkbench).toHaveTextContent("同步成功2,178");
+    expect(contributionWorkbench).toHaveTextContent("待审核56");
+    expect(contributionWorkbench).toHaveTextContent("失败文件90");
+    expect(contributionWorkbench).toHaveTextContent("同步质量94%");
   });
 
   it("filters the user table locally and exports with current query filters", async () => {
@@ -307,6 +315,15 @@ describe("StatisticsPage", () => {
 
     expect(screen.queryByText("李明")).not.toBeInTheDocument();
     expect(screen.getAllByText("王芳").length).toBeGreaterThan(0);
+    const contributionWorkbench = screen.getByRole("region", { name: "贡献明细工作台" });
+    expect(contributionWorkbench).toHaveTextContent("当前视图 1 位用户，样本总数 2 位");
+    expect(contributionWorkbench).toHaveTextContent("上传文件1,076");
+    expect(contributionWorkbench).toHaveTextContent("同步质量93%");
+
+    fireEvent.click(screen.getByRole("button", { name: /清空搜索/ }));
+
+    expect(screen.getAllByText("李明").length).toBeGreaterThan(0);
+    expect(contributionWorkbench).toHaveTextContent("当前视图 2 位用户，样本总数 2 位");
 
     fireEvent.click(screen.getByRole("button", { name: /导出报表/ }));
 
