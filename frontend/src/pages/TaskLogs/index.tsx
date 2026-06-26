@@ -35,6 +35,7 @@ import {
   type TaskListQuery,
 } from "../../api/client";
 import { KpiCard } from "../../components/KpiCard";
+import { QueryBoundary } from "../../components/QueryBoundary";
 import { StatusTag } from "../../components/StatusTag";
 import { PageContainer } from "../../layouts/PageContainer";
 import { colors } from "../../theme/tokens";
@@ -214,67 +215,141 @@ interface TaskDetailDrawerProps {
   onClose: () => void;
 }
 
+function TaskDetailOverview({ task }: { task: SyncTask }) {
+  return (
+    <section className="task-detail-overview" role="region" aria-label="任务执行摘要">
+      <span className="task-detail-overview__icon">
+        <SyncOutlined />
+      </span>
+      <span className="task-detail-overview__copy">
+        <span className="task-detail-overview__title-row">
+          <Typography.Text strong>{task.task_type}</Typography.Text>
+          <StatusTag kind="sync" value={toSyncKindValue(task.status)} />
+        </span>
+        <Typography.Text type="secondary">任务 ID：{task.id}</Typography.Text>
+      </span>
+      <div className="task-detail-overview__stats" aria-label="任务执行指标">
+        <span className="task-detail-overview__stat">
+          <Typography.Text type="secondary">关联文件</Typography.Text>
+          <strong>{task.file_id}</strong>
+        </span>
+        <span className="task-detail-overview__stat">
+          <Typography.Text type="secondary">重试次数</Typography.Text>
+          <strong>
+            {task.retry_count} / {task.max_retry_count}
+          </strong>
+        </span>
+        <span className="task-detail-overview__stat">
+          <Typography.Text type="secondary">开始时间</Typography.Text>
+          <strong>{formatDatetime(task.started_at)}</strong>
+        </span>
+        <span className="task-detail-overview__stat">
+          <Typography.Text type="secondary">结束时间</Typography.Text>
+          <strong>{formatDatetime(task.finished_at)}</strong>
+        </span>
+      </div>
+    </section>
+  );
+}
+
 function TaskDetailDrawer({ taskId, open, onClose }: TaskDetailDrawerProps) {
-  const { data: task, isLoading } = useQuery({
+  const {
+    data: task,
+    isLoading,
+    isError,
+    error,
+    refetch,
+  } = useQuery({
     queryKey: ["task", taskId],
     queryFn: () => getTask(taskId as string),
     enabled: open && taskId !== null,
   });
 
   return (
-    <Drawer title="任务详情" open={open} onClose={onClose} width={520} destroyOnClose>
-      {isLoading || !task ? (
-        <Typography.Text type="secondary">加载中…</Typography.Text>
-      ) : (
-        <Space direction="vertical" style={{ width: "100%" }} size="large">
-          <Descriptions column={1} size="small" bordered>
-            <Descriptions.Item label="任务 ID">{task.id}</Descriptions.Item>
-            <Descriptions.Item label="关联文件">{task.file_id}</Descriptions.Item>
-            <Descriptions.Item label="任务类型">{task.task_type}</Descriptions.Item>
-            <Descriptions.Item label="状态">
-              <StatusTag kind="sync" value={toSyncKindValue(task.status)} />
-            </Descriptions.Item>
-            <Descriptions.Item label="重试次数">
-              {task.retry_count} / {task.max_retry_count}
-            </Descriptions.Item>
-            <Descriptions.Item label="开始时间">
-              {formatDatetime(task.started_at)}
-            </Descriptions.Item>
-            <Descriptions.Item label="结束时间">
-              {formatDatetime(task.finished_at)}
-            </Descriptions.Item>
-          </Descriptions>
+    <Drawer
+      title="任务详情"
+      open={open}
+      onClose={onClose}
+      width={560}
+      destroyOnClose
+      className="task-detail-drawer"
+    >
+      <QueryBoundary
+        isLoading={isLoading}
+        isError={isError}
+        isEmpty={!task}
+        error={error}
+        onRetry={() => void refetch()}
+        skeletonRows={5}
+        emptyDescription="暂无任务详情"
+      >
+        {task ? (
+          <Space direction="vertical" style={{ width: "100%" }} size="large">
+            <TaskDetailOverview task={task} />
+            <Descriptions column={1} size="small" bordered>
+              <Descriptions.Item label="任务 ID">{task.id}</Descriptions.Item>
+              <Descriptions.Item label="关联文件">{task.file_id}</Descriptions.Item>
+              <Descriptions.Item label="任务类型">{task.task_type}</Descriptions.Item>
+              <Descriptions.Item label="状态">
+                <StatusTag kind="sync" value={toSyncKindValue(task.status)} />
+              </Descriptions.Item>
+              <Descriptions.Item label="重试次数">
+                {task.retry_count} / {task.max_retry_count}
+              </Descriptions.Item>
+              <Descriptions.Item label="开始时间">
+                {formatDatetime(task.started_at)}
+              </Descriptions.Item>
+              <Descriptions.Item label="结束时间">
+                {formatDatetime(task.finished_at)}
+              </Descriptions.Item>
+            </Descriptions>
 
-          {task.error_message ? (
-            <Alert type="error" message="失败原因" description={task.error_message} showIcon />
-          ) : null}
-
-          {task.logs.length > 0 ? (
-            <Card title="执行日志" size="small">
-              <Timeline
-                items={task.logs.map((log: SyncTaskLog) => ({
-                  dot: logIcon(log.status),
-                  color: logDotColor(log.status),
-                  children: (
-                    <Space direction="vertical" size={2}>
-                      <Typography.Text type="secondary" style={{ fontSize: 12 }}>
-                        {formatDatetime(log.created_at)}
-                      </Typography.Text>
-                      <Typography.Text>{log.message}</Typography.Text>
-                    </Space>
-                  ),
-                }))}
+            {task.error_message ? (
+              <Alert
+                className="task-detail-error"
+                type="error"
+                message="失败原因"
+                description={task.error_message}
+                showIcon
               />
-            </Card>
-          ) : (
-            <Typography.Text type="secondary">暂无日志记录</Typography.Text>
-          )}
-        </Space>
-      )}
+            ) : null}
+
+            {task.logs.length > 0 ? (
+              <Card
+                title={
+                  <span className="task-detail-log-panel__title">
+                    <OrderedListOutlined />
+                    执行日志
+                  </span>
+                }
+                size="small"
+                className="task-detail-log-panel"
+              >
+                <Timeline
+                  className="task-detail-timeline"
+                  items={task.logs.map((log: SyncTaskLog) => ({
+                    dot: logIcon(log.status),
+                    color: logDotColor(log.status),
+                    children: (
+                      <Space direction="vertical" size={2}>
+                        <Typography.Text type="secondary" style={{ fontSize: 12 }}>
+                          {formatDatetime(log.created_at)}
+                        </Typography.Text>
+                        <Typography.Text>{log.message}</Typography.Text>
+                      </Space>
+                    ),
+                  }))}
+                />
+              </Card>
+            ) : (
+              <Typography.Text type="secondary">暂无日志记录</Typography.Text>
+            )}
+          </Space>
+        ) : null}
+      </QueryBoundary>
     </Drawer>
   );
 }
-
 export default function TaskLogsPage() {
   const { message } = AntdApp.useApp();
   const queryClient = useQueryClient();
@@ -458,6 +533,18 @@ export default function TaskLogsPage() {
       />
 
       <Card className="document-panel table-card">
+        <div className="table-section-header">
+          <span className="table-section-header__copy">
+            <Typography.Title level={4} className="table-section-header__title">
+              任务列表
+            </Typography.Title>
+            <Typography.Text className="table-section-header__meta">
+              当前显示 {tasks.length} 条任务，共 {totalTasks} 条队列记录
+            </Typography.Text>
+          </span>
+          <StatusTag kind="health" value={tasksQuery.isError ? "error" : "ok"} variant="dot" />
+        </div>
+
         <div className="filter-toolbar">
           <Select
             className="filter-toolbar__control"

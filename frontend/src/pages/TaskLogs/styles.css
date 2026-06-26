@@ -111,6 +111,98 @@
   min-width: 0;
 }
 
+.task-detail-drawer .ant-drawer-body {
+  background: linear-gradient(180deg, rgba(248, 251, 255, 0.94), rgba(255, 255, 255, 1));
+}
+
+.task-detail-overview {
+  display: grid;
+  grid-template-columns: 44px minmax(0, 1fr);
+  gap: 14px;
+  align-items: start;
+  padding: 16px;
+  border: 1px solid rgba(229, 234, 242, 0.95);
+  border-radius: var(--ku-radius-card);
+  background: linear-gradient(135deg, rgba(230, 244, 255, 0.82), rgba(255, 255, 255, 0.98));
+  box-shadow: var(--ku-shadow-card);
+}
+
+.task-detail-overview__icon {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 44px;
+  height: 44px;
+  border-radius: var(--ku-radius-control);
+  background: var(--ku-color-primary-light);
+  color: var(--ku-color-primary);
+  font-size: 20px;
+}
+
+.task-detail-overview__copy {
+  display: grid;
+  min-width: 0;
+  gap: 6px;
+}
+
+.task-detail-overview__title-row {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+  justify-content: space-between;
+  min-width: 0;
+}
+
+.task-detail-overview__stats {
+  display: grid;
+  grid-column: 1 / -1;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 10px;
+}
+
+.task-detail-overview__stat {
+  display: grid;
+  gap: 4px;
+  min-width: 0;
+  padding: 10px 12px;
+  border: 1px solid rgba(229, 234, 242, 0.9);
+  border-radius: var(--ku-radius-control);
+  background: rgba(255, 255, 255, 0.82);
+}
+
+.task-detail-overview__stat strong {
+  min-width: 0;
+  color: var(--ku-text-primary);
+  font-size: 13px;
+  line-height: 1.35;
+  overflow-wrap: anywhere;
+}
+
+.task-detail-error.ant-alert {
+  border-color: rgba(239, 68, 68, 0.18);
+  border-radius: var(--ku-radius-card);
+  background: rgba(254, 226, 226, 0.34);
+}
+
+.task-detail-log-panel.ant-card {
+  border-color: rgba(229, 234, 242, 0.95);
+  border-radius: var(--ku-radius-card);
+  background: rgba(255, 255, 255, 0.96);
+  box-shadow: var(--ku-shadow-card);
+}
+
+.task-detail-log-panel__title {
+  display: inline-flex;
+  gap: 8px;
+  align-items: center;
+  color: var(--ku-text-primary);
+}
+
+.task-detail-timeline .ant-timeline-item-content {
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
 @media (max-width: 1280px) {
   .task-queue-strip {
     grid-template-columns: minmax(0, 1fr);
@@ -144,6 +236,10 @@
   }
 
   .task-queue-strip__lanes {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .task-detail-overview__stats {
     grid-template-columns: minmax(0, 1fr);
   }
 }

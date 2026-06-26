@@ -233,6 +233,9 @@ describe("TaskLogsPage", () => {
     expect(queueStrip).toHaveTextContent("2 类任务类型");
     expect(queueStrip).toHaveTextContent("当前页 3 条记录，平台共 3 条");
     expect(queueStrip).toHaveTextContent("全部任务视图");
+
+    expect(screen.getByText("任务列表")).toBeInTheDocument();
+    expect(screen.getByText("当前显示 3 条任务，共 3 条队列记录")).toBeInTheDocument();
   });
 
   it("re-queries when task_type filter changes", async () => {
@@ -303,7 +306,13 @@ describe("TaskLogsPage", () => {
       expect(getTask).toHaveBeenCalledWith("task-1");
     });
 
-    // Drawer content: log messages appear
+    // Drawer content: summary and log messages appear
+    const detailSummary = await screen.findByRole("region", { name: "任务执行摘要" });
+    expect(detailSummary).toHaveTextContent("ragflow_upload");
+    expect(detailSummary).toHaveTextContent("任务 ID：task-1");
+    expect(detailSummary).toHaveTextContent("file-abc");
+    expect(detailSummary).toHaveTextContent("2 / 3");
+
     expect(await screen.findByText("开始上传至 RAGFlow")).toBeInTheDocument();
 
     // "连接 RAGFlow 超时" appears both in the Timeline log and in the Alert error_message
