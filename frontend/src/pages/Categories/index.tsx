@@ -16,6 +16,7 @@ import {
   CheckCircleOutlined,
   CloudSyncOutlined,
   PlusOutlined,
+  SafetyCertificateOutlined,
   ReloadOutlined,
   RobotOutlined,
 } from "@ant-design/icons";
@@ -35,6 +36,7 @@ import {
 import { KpiCard } from "../../components/KpiCard";
 import { StatusTag } from "../../components/StatusTag";
 import { PageContainer } from "../../layouts/PageContainer";
+import "./styles.css";
 
 interface CategoryFormValues {
   name: string;
@@ -130,6 +132,101 @@ function toFormValues(category: Category): CategoryFormValues {
   };
 }
 
+interface CategoryPolicyStripProps {
+  aiEnabledCount: number;
+  allowEmployeeSelectCount: number;
+  autoSyncCount: number;
+  boundCategoryCount: number;
+  requireReviewCount: number;
+  sensitiveDetectionCount: number;
+  total: number;
+  unboundCategoryCount: number;
+}
+
+function CategoryPolicyStrip({
+  aiEnabledCount,
+  allowEmployeeSelectCount,
+  autoSyncCount,
+  boundCategoryCount,
+  requireReviewCount,
+  sensitiveDetectionCount,
+  total,
+  unboundCategoryCount,
+}: CategoryPolicyStripProps) {
+  const lanes = [
+    {
+      key: "binding",
+      icon: <AppstoreOutlined />,
+      title: "Dataset 绑定",
+      primary: `${boundCategoryCount} 个分类已绑定`,
+      secondary: `${unboundCategoryCount} 个分类待绑定知识库`,
+      status: unboundCategoryCount > 0 ? "unknown" : "ok",
+    },
+    {
+      key: "ai",
+      icon: <RobotOutlined />,
+      title: "AI 分析策略",
+      primary: `${aiEnabledCount} 个启用 AI`,
+      secondary: `${sensitiveDetectionCount} 个启用敏感检测`,
+      status: aiEnabledCount > 0 && sensitiveDetectionCount > 0 ? "ok" : "unknown",
+    },
+    {
+      key: "review",
+      icon: <SafetyCertificateOutlined />,
+      title: "审核与可选",
+      primary: `${requireReviewCount} 个需要审核`,
+      secondary: `${allowEmployeeSelectCount} 个员工可选分类`,
+      status: requireReviewCount > 0 ? "ok" : "unknown",
+    },
+    {
+      key: "sync",
+      icon: <CloudSyncOutlined />,
+      title: "同步策略",
+      primary: `${autoSyncCount} 个自动同步`,
+      secondary: `平台共 ${total} 个分类策略`,
+      status: autoSyncCount > 0 ? "ok" : "unknown",
+    },
+  ];
+
+  return (
+    <section className="categories-policy-strip" role="region" aria-label="分类策略状态">
+      <div className="categories-policy-strip__summary">
+        <span className="categories-policy-strip__icon">
+          <AppstoreOutlined />
+        </span>
+        <span className="categories-policy-strip__copy">
+          <Typography.Text strong className="categories-policy-strip__title">
+            分类策略状态
+          </Typography.Text>
+          <Typography.Text type="secondary">
+            汇总分类与 Dataset 绑定、AI 分析、审核可选和同步策略覆盖情况。
+          </Typography.Text>
+        </span>
+        <span className="categories-policy-strip__total">
+          <strong>{total}</strong>
+          <Typography.Text type="secondary">分类策略</Typography.Text>
+        </span>
+      </div>
+
+      <div className="categories-policy-strip__lanes" aria-label="分类策略指标">
+        {lanes.map((lane) => (
+          <div className="categories-policy-lane" key={lane.key}>
+            <span className="categories-policy-lane__icon">{lane.icon}</span>
+            <span className="categories-policy-lane__body">
+              <span className="categories-policy-lane__topline">
+                <Typography.Text strong>{lane.title}</Typography.Text>
+                <StatusTag kind="health" value={lane.status} variant="dot" />
+              </span>
+              <strong>{lane.primary}</strong>
+              <Typography.Text type="secondary">{lane.secondary}</Typography.Text>
+            </span>
+          </div>
+        ))}
+      </div>
+    </section>
+  );
+}
+
 export default function CategoriesPage() {
   const { message } = AntdApp.useApp();
   const queryClient = useQueryClient();
@@ -157,6 +254,14 @@ export default function CategoriesPage() {
   const boundCategoryCount = categories.filter((category) => category.default_dataset_id).length;
   const aiEnabledCount = categories.filter((category) => category.ai_analysis_enabled).length;
   const autoSyncCount = categories.filter((category) => category.auto_sync_enabled).length;
+  const unboundCategoryCount = categories.length - boundCategoryCount;
+  const sensitiveDetectionCount = categories.filter(
+    (category) => category.sensitive_detection_enabled,
+  ).length;
+  const requireReviewCount = categories.filter((category) => category.require_review).length;
+  const allowEmployeeSelectCount = categories.filter(
+    (category) => category.allow_employee_select,
+  ).length;
 
   const refreshCategories = async () => {
     await queryClient.invalidateQueries({ queryKey: ["categories"] });
@@ -397,6 +502,17 @@ export default function CategoriesPage() {
           tone="purple"
         />
       </div>
+
+      <CategoryPolicyStrip
+        aiEnabledCount={aiEnabledCount}
+        allowEmployeeSelectCount={allowEmployeeSelectCount}
+        autoSyncCount={autoSyncCount}
+        boundCategoryCount={boundCategoryCount}
+        requireReviewCount={requireReviewCount}
+        sensitiveDetectionCount={sensitiveDetectionCount}
+        total={categories.length}
+        unboundCategoryCount={unboundCategoryCount}
+      />
 
       <Card className="document-panel table-card">
         <div className="config-card-actions">

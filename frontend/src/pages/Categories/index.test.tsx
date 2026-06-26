@@ -150,6 +150,16 @@ describe("CategoriesPage", () => {
     expect(await screen.findByText("技术文档")).toBeInTheDocument();
     expect(screen.getByText("人事档案")).toBeInTheDocument();
 
+    const policyStrip = screen.getByRole("region", { name: "分类策略状态" });
+    expect(policyStrip).toHaveTextContent("分类策略状态");
+    expect(policyStrip).toHaveTextContent("1 个分类已绑定");
+    expect(policyStrip).toHaveTextContent("1 个分类待绑定知识库");
+    expect(policyStrip).toHaveTextContent("1 个启用 AI");
+    expect(policyStrip).toHaveTextContent("1 个启用敏感检测");
+    expect(policyStrip).toHaveTextContent("1 个需要审核");
+    expect(policyStrip).toHaveTextContent("1 个员工可选分类");
+    expect(policyStrip).toHaveTextContent("1 个自动同步");
+
     // Category codes (appear in both name cell and code cell, use getAllBy)
     expect(screen.getAllByText("tech-docs").length).toBeGreaterThan(0);
     expect(screen.getAllByText("hr-files").length).toBeGreaterThan(0);
