@@ -204,6 +204,98 @@ function FailureRow({ row, maxTasks }: { row: StatisticsFailureRow; maxTasks: nu
   );
 }
 
+type HealthTone = "success" | "warning" | "danger" | "empty";
+
+interface TimelineLane {
+  key: string;
+  label: string;
+  valueOf: (point: StatisticsTrendPoint) => number;
+  toneOf: (value: number) => HealthTone;
+}
+
+const TIMELINE_LANES: TimelineLane[] = [
+  {
+    key: "upload",
+    label: "上传活跃",
+    valueOf: (point) => point.total_files,
+    toneOf: (value) => (value > 0 ? "success" : "empty"),
+  },
+  {
+    key: "synced",
+    label: "同步成功",
+    valueOf: (point) => point.synced_files,
+    toneOf: (value) => (value > 0 ? "success" : "empty"),
+  },
+  {
+    key: "pending",
+    label: "待审积压",
+    valueOf: (point) => point.pending_review_files,
+    toneOf: (value) => (value > 0 ? "warning" : "success"),
+  },
+  {
+    key: "failed",
+    label: "失败文件",
+    valueOf: (point) => point.failed_files,
+    toneOf: (value) => (value > 0 ? "danger" : "success"),
+  },
+];
+
+function DashboardHealthTimeline({ points }: { points: StatisticsTrendPoint[] }) {
+  const visiblePoints = points.slice(-8);
+
+  return (
+    <section className="dashboard-health-timeline" aria-label="运行健康时间线">
+      <div className="dashboard-health-timeline__header">
+        <div>
+          <Typography.Text strong>近周期健康矩阵</Typography.Text>
+          <Typography.Text type="secondary">按上传、同步、待审和失败状态聚合</Typography.Text>
+        </div>
+        <div className="dashboard-health-timeline__legend" aria-label="健康状态图例">
+          <span className="dashboard-health-timeline__legend-item">
+            <i className="dashboard-health-timeline__cell dashboard-health-timeline__cell--success" />
+            正常
+          </span>
+          <span className="dashboard-health-timeline__legend-item">
+            <i className="dashboard-health-timeline__cell dashboard-health-timeline__cell--warning" />
+            关注
+          </span>
+          <span className="dashboard-health-timeline__legend-item">
+            <i className="dashboard-health-timeline__cell dashboard-health-timeline__cell--danger" />
+            失败
+          </span>
+        </div>
+      </div>
+      <div className="dashboard-health-timeline__grid">
+        <span className="dashboard-health-timeline__axis" />
+        {visiblePoints.map((point) => (
+          <span className="dashboard-health-timeline__period" key={point.period}>
+            {point.period}
+          </span>
+        ))}
+        {TIMELINE_LANES.map((lane) => (
+          <div className="dashboard-health-timeline__lane" key={lane.key}>
+            <Typography.Text type="secondary" className="dashboard-health-timeline__lane-label">
+              {lane.label}
+            </Typography.Text>
+            {visiblePoints.map((point) => {
+              const value = lane.valueOf(point);
+              const tone = lane.toneOf(value);
+              return (
+                <span
+                  aria-label={`${point.period} ${lane.label} ${formatNumber(value)}`}
+                  className={`dashboard-health-timeline__cell dashboard-health-timeline__cell--${tone}`}
+                  key={`${lane.key}-${point.period}`}
+                  title={`${point.period} ${lane.label}: ${formatNumber(value)}`}
+                />
+              );
+            })}
+          </div>
+        ))}
+      </div>
+    </section>
+  );
+}
+
 // ---------------------------------------------------------------------------
 // Page
 // ---------------------------------------------------------------------------
@@ -574,6 +666,7 @@ export default function DashboardPage() {
                 <Typography.Text type="secondary">需关注处理</Typography.Text>
               </div>
             </div>
+            <DashboardHealthTimeline points={trends} />
           </QueryBoundary>
         </Card>
 

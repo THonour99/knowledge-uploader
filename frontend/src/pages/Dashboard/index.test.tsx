@@ -125,8 +125,20 @@ const mockCategories: StatisticsCategoryListResponse = {
 const mockTrends: StatisticsTrendResponse = {
   group_by: "day",
   items: [
-    { period: "2026-06-09", total_files: 120, synced_files: 100, failed_files: 5, pending_review_files: 15 },
-    { period: "2026-06-10", total_files: 150, synced_files: 130, failed_files: 3, pending_review_files: 17 },
+    {
+      period: "2026-06-09",
+      total_files: 120,
+      synced_files: 100,
+      failed_files: 5,
+      pending_review_files: 15,
+    },
+    {
+      period: "2026-06-10",
+      total_files: 150,
+      synced_files: 130,
+      failed_files: 3,
+      pending_review_files: 17,
+    },
   ],
 };
 
@@ -241,6 +253,30 @@ describe("DashboardPage", () => {
       });
       expect(hasChartWithPeriod).toBe(true);
     });
+  });
+
+  it("renders health timeline matrix from trend data", async () => {
+    mockAllApis();
+
+    renderWithProviders(<DashboardPage />);
+
+    const timeline = await screen.findByRole("region", { name: "运行健康时间线" });
+    expect(timeline).toHaveTextContent("近周期健康矩阵");
+    expect(timeline).toHaveTextContent("上传活跃");
+    expect(timeline).toHaveTextContent("同步成功");
+    expect(timeline).toHaveTextContent("待审积压");
+    expect(timeline).toHaveTextContent("失败文件");
+
+    expect(screen.getByLabelText("2026-06-10 同步成功 130")).toHaveClass(
+      "dashboard-health-timeline__cell--success",
+    );
+    expect(screen.getByLabelText("2026-06-10 待审积压 17")).toHaveClass(
+      "dashboard-health-timeline__cell--warning",
+    );
+    expect(screen.getByLabelText("2026-06-09 失败文件 5")).toHaveClass(
+      "dashboard-health-timeline__cell--danger",
+    );
+    expect(screen.getByTitle("2026-06-10 同步成功: 130")).toBeInTheDocument();
   });
 
   it("renders user upload ranking from API data", async () => {
