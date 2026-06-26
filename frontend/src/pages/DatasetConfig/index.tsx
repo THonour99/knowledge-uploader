@@ -912,6 +912,21 @@ export default function DatasetConfigPage() {
         confirmLoading={categoryMutation.isPending}
         width={720}
       >
+        <section className="config-modal-summary" role="region" aria-label="分类配置摘要">
+          <span className="config-modal-summary__icon">
+            <AppstoreOutlined />
+          </span>
+          <span className="config-modal-summary__copy">
+            <Typography.Text strong>{editingCategory?.name ?? "新分类策略"}</Typography.Text>
+            <Typography.Text type="secondary">
+              审核、AI 分析、员工入口和同步策略将随分类生效。
+            </Typography.Text>
+          </span>
+          <span className="config-modal-summary__metric">
+            <strong>{editingCategory ? "编辑" : "新增"}</strong>
+            <small>分类</small>
+          </span>
+        </section>
         <Form<CategoryFormValues>
           form={categoryForm}
           layout="vertical"
@@ -985,6 +1000,21 @@ export default function DatasetConfigPage() {
         confirmLoading={datasetMutation.isPending}
         width={620}
       >
+        <section className="config-modal-summary" role="region" aria-label="Dataset 映射摘要">
+          <span className="config-modal-summary__icon">
+            <DatabaseOutlined />
+          </span>
+          <span className="config-modal-summary__copy">
+            <Typography.Text strong>{editingDataset?.name ?? "新 Dataset 映射"}</Typography.Text>
+            <Typography.Text type="secondary">
+              关联分类与 RAGFlow Dataset，控制后续同步目标和启用状态。
+            </Typography.Text>
+          </span>
+          <span className="config-modal-summary__metric">
+            <strong>{editingDataset?.enabled === false ? "禁用" : "启用"}</strong>
+            <small>映射</small>
+          </span>
+        </section>
         <Form<DatasetFormValues>
           form={datasetForm}
           layout="vertical"

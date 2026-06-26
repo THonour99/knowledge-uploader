@@ -171,8 +171,26 @@ describe("DatasetConfigPage", () => {
 
     fireEvent.click(screen.getByRole("button", { name: /新增分类/ }));
     await screen.findAllByText("新增分类");
+    const categorySummary = screen.getByRole("region", { name: "分类配置摘要" });
+    expect(categorySummary).toHaveTextContent("新分类策略");
+    expect(categorySummary).toHaveTextContent("新增分类");
 
     expect(screen.queryByText("默认可见范围")).not.toBeInTheDocument();
+  });
+
+  it("renders Dataset mapping modal summary", async () => {
+    vi.mocked(listCategories).mockResolvedValue(categories);
+    vi.mocked(listDatasetMappings).mockResolvedValue(mappings);
+
+    renderWithProviders(<DatasetConfigPage />);
+
+    expect(await screen.findByText("制度文档")).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: /新增映射/ }));
+
+    expect(await screen.findByText("新增 Dataset 映射")).toBeInTheDocument();
+    const mappingSummary = screen.getByRole("region", { name: "Dataset 映射摘要" });
+    expect(mappingSummary).toHaveTextContent("新 Dataset 映射");
+    expect(mappingSummary).toHaveTextContent("启用映射");
   });
 
   it("tests the RAGFlow connection from the Dataset panel", async () => {

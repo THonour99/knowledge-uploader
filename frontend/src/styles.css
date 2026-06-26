@@ -2155,6 +2155,61 @@ a {
   gap: var(--ku-spacing-section);
 }
 
+.config-modal-summary {
+  display: grid;
+  grid-template-columns: 42px minmax(0, 1fr) auto;
+  gap: 12px;
+  align-items: center;
+  min-width: 0;
+  margin-bottom: 18px;
+  padding: 14px;
+  border: 1px solid rgba(229, 234, 242, 0.95);
+  border-radius: var(--ku-radius-card);
+  background: linear-gradient(135deg, rgba(230, 244, 255, 0.82), rgba(255, 255, 255, 0.98));
+}
+
+.config-modal-summary__icon {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 42px;
+  height: 42px;
+  border-radius: var(--ku-radius-control);
+  background: var(--ku-color-primary-light);
+  color: var(--ku-color-primary);
+  font-size: 18px;
+}
+
+.config-modal-summary__copy {
+  display: grid;
+  gap: 4px;
+  min-width: 0;
+}
+
+.config-modal-summary__copy .ant-typography {
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+.config-modal-summary__metric {
+  display: grid;
+  justify-items: end;
+  min-width: 72px;
+  gap: 2px;
+  color: var(--ku-text-secondary);
+  font-size: 12px;
+}
+
+.config-modal-summary__metric strong {
+  color: var(--ku-text-primary);
+  font-size: 18px;
+  line-height: 1.1;
+}
+
+.config-modal-summary__metric small {
+  font-size: 12px;
+}
+
 .form-grid {
   display: grid;
   gap: 16px;
@@ -2808,6 +2863,20 @@ a {
   .dataset-health-card__result {
     min-width: 0;
     max-width: none;
+  }
+
+  .config-modal-summary {
+    grid-template-columns: 38px minmax(0, 1fr);
+  }
+
+  .config-modal-summary__icon {
+    width: 38px;
+    height: 38px;
+  }
+
+  .config-modal-summary__metric {
+    grid-column: 1 / -1;
+    justify-items: start;
   }
 
   .form-grid--two,
