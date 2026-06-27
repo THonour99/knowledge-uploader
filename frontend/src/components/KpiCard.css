@@ -11,28 +11,28 @@
 
 .kpi-card .ant-card-body {
   display: flex;
-  min-height: 132px;
+  min-height: 108px;
   flex-direction: column;
-  gap: 6px;
-  padding: 18px 20px;
+  gap: 5px;
+  padding: 14px 16px;
 }
 
 .kpi-card__top {
   display: flex;
   align-items: flex-start;
   justify-content: space-between;
-  gap: 12px;
+  gap: 8px;
 }
 
 .kpi-card__icon {
   display: inline-flex;
-  width: 42px;
-  height: 42px;
+  width: 34px;
+  height: 34px;
   align-items: center;
   justify-content: center;
-  border-radius: 12px;
+  border-radius: 10px;
   color: var(--ku-bg-card);
-  font-size: 22px;
+  font-size: 18px;
 }
 
 .kpi-card--primary .kpi-card__icon {
@@ -67,7 +67,7 @@
 
 .kpi-card__spark {
   flex: 0 0 auto;
-  margin-top: 4px;
+  margin-top: 2px;
 }
 
 .kpi-card__title {
@@ -76,17 +76,17 @@
 
 .kpi-card__value.ant-typography {
   margin: 0;
-  font-size: 28px;
+  font-size: 24px;
   font-weight: 700;
   line-height: 1.15;
 }
 
 .kpi-card__footer {
   display: flex;
-  min-height: 20px;
+  min-height: 18px;
   flex-wrap: wrap;
   align-items: center;
-  gap: 8px;
+  gap: 6px;
 }
 
 .kpi-card__delta {

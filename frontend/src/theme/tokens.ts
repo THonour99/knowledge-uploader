@@ -49,10 +49,10 @@ export const radius = {
 } as const;
 
 export const spacing = {
-  cardPadding: 24,
-  cardPaddingSm: 20,
-  pageGutter: 24,
-  sectionGap: 16,
+  cardPadding: 20,
+  cardPaddingSm: 16,
+  pageGutter: 18,
+  sectionGap: 12,
 } as const;
 
 export const typography = {

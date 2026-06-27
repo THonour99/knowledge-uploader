@@ -11,16 +11,16 @@
 }
 
 .ai-config-kpi-grid .kpi-card .ant-card-body {
-  min-height: 146px;
+  min-height: 112px;
 }
 
 .ai-governance-strip {
   display: grid;
   grid-template-columns: minmax(280px, 0.72fr) minmax(0, 1.52fr) minmax(220px, 0.5fr);
-  gap: 16px;
+  gap: 12px;
   align-items: stretch;
   margin-bottom: var(--ku-spacing-section);
-  padding: 18px;
+  padding: 12px;
   border: 1px solid rgba(229, 234, 242, 0.95);
   border-radius: var(--ku-radius-card);
   background: linear-gradient(135deg, rgba(230, 244, 255, 0.86), rgba(255, 255, 255, 0.98));
@@ -29,7 +29,7 @@
 
 .ai-governance-strip__main {
   display: grid;
-  grid-template-columns: 44px minmax(0, 1fr) auto;
+  grid-template-columns: 36px minmax(0, 1fr) auto;
   gap: 14px;
   align-items: center;
   min-width: 0;
@@ -46,9 +46,9 @@
 }
 
 .ai-governance-strip__icon {
-  width: 44px;
-  height: 44px;
-  font-size: 20px;
+  width: 36px;
+  height: 36px;
+  font-size: 18px;
 }
 
 .ai-governance-strip__copy {
@@ -80,7 +80,7 @@
 
 .ai-governance-strip__total strong {
   color: var(--ku-text-primary);
-  font-size: 24px;
+  font-size: 20px;
   line-height: 1;
 }
 
@@ -93,7 +93,7 @@
 
 .ai-governance-lane {
   display: grid;
-  grid-template-columns: 36px minmax(0, 1fr);
+  grid-template-columns: 30px minmax(0, 1fr);
   gap: 10px;
   align-items: start;
   min-width: 0;
@@ -104,9 +104,9 @@
 }
 
 .ai-governance-lane__icon {
-  width: 36px;
-  height: 36px;
-  font-size: 16px;
+  width: 30px;
+  height: 30px;
+  font-size: 15px;
 }
 
 .ai-governance-lane__body {
@@ -159,7 +159,7 @@
 }
 
 .ai-config-tabs-card .ant-tabs-nav {
-  margin-bottom: 16px;
+  margin-bottom: 12px;
   padding: 0 4px;
 }
 
@@ -186,7 +186,7 @@
 }
 
 .ai-config-switch-card .ant-card-body {
-  padding: 18px;
+  padding: 12px;
 }
 
 .ai-config-switch-card__content {
@@ -298,7 +298,7 @@
   }
 
   .ai-governance-strip {
-    padding: 14px;
+    padding: 12px;
   }
 
   .ai-governance-strip__main {
@@ -306,8 +306,8 @@
   }
 
   .ai-governance-strip__icon {
-    width: 40px;
-    height: 40px;
+    width: 36px;
+    height: 36px;
   }
 
   .ai-governance-strip__total {

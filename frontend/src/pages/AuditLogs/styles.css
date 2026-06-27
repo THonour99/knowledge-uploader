@@ -1,10 +1,10 @@
 .audit-trace-strip {
   display: grid;
   grid-template-columns: minmax(280px, 0.7fr) minmax(0, 1.6fr);
-  gap: 16px;
+  gap: 12px;
   align-items: stretch;
   margin-bottom: var(--ku-spacing-section);
-  padding: 18px;
+  padding: 12px;
   border: 1px solid rgba(229, 234, 242, 0.95);
   border-radius: var(--ku-radius-card);
   background: linear-gradient(135deg, rgba(230, 244, 255, 0.88), rgba(255, 255, 255, 0.98));
@@ -13,7 +13,7 @@
 
 .audit-trace-strip__summary {
   display: grid;
-  grid-template-columns: 44px minmax(0, 1fr) auto;
+  grid-template-columns: 36px minmax(0, 1fr) auto;
   gap: 14px;
   align-items: center;
   min-width: 0;
@@ -30,9 +30,9 @@
 }
 
 .audit-trace-strip__icon {
-  width: 44px;
-  height: 44px;
-  font-size: 20px;
+  width: 36px;
+  height: 36px;
+  font-size: 18px;
 }
 
 .audit-trace-strip__copy {
@@ -57,7 +57,7 @@
 
 .audit-trace-strip__total strong {
   color: var(--ku-text-primary);
-  font-size: 24px;
+  font-size: 20px;
   line-height: 1;
 }
 
@@ -70,7 +70,7 @@
 
 .audit-trace-lane {
   display: grid;
-  grid-template-columns: 36px minmax(0, 1fr);
+  grid-template-columns: 30px minmax(0, 1fr);
   gap: 10px;
   align-items: start;
   min-width: 0;
@@ -81,9 +81,9 @@
 }
 
 .audit-trace-lane__icon {
-  width: 36px;
-  height: 36px;
-  font-size: 16px;
+  width: 30px;
+  height: 30px;
+  font-size: 15px;
 }
 
 .audit-trace-lane__body {
@@ -122,10 +122,10 @@
 
 .audit-detail-overview {
   display: grid;
-  grid-template-columns: 44px minmax(0, 1fr);
+  grid-template-columns: 36px minmax(0, 1fr);
   gap: 14px;
   align-items: start;
-  padding: 16px;
+  padding: 12px;
   border: 1px solid rgba(229, 234, 242, 0.95);
   border-radius: var(--ku-radius-card);
   background: linear-gradient(135deg, rgba(230, 244, 255, 0.82), rgba(255, 255, 255, 0.98));
@@ -136,8 +136,8 @@
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  width: 44px;
-  height: 44px;
+  width: 36px;
+  height: 36px;
   border-radius: var(--ku-radius-control);
   background: var(--ku-color-primary-light);
   color: var(--ku-color-primary);
@@ -214,7 +214,7 @@
 
 @media (max-width: 640px) {
   .audit-trace-strip {
-    padding: 14px;
+    padding: 12px;
   }
 
   .audit-trace-strip__summary {
@@ -222,8 +222,8 @@
   }
 
   .audit-trace-strip__icon {
-    width: 40px;
-    height: 40px;
+    width: 36px;
+    height: 36px;
   }
 
   .audit-trace-strip__total {
