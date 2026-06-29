@@ -207,16 +207,29 @@ function buildDepartmentOption(rows: StatisticsDepartmentRow[]) {
 }
 
 function buildCategoryOption(rows: StatisticsCategoryRow[]) {
+  const textColor = chartTextColor();
+
   return {
-    tooltip: { trigger: "item" },
-    legend: { orient: "vertical", right: 0, top: "middle", textStyle: { color: chartTextColor() } },
+    tooltip: { trigger: "item", formatter: "{b}: {c} 个文件 ({d}%)" },
+    legend: {
+      type: "scroll",
+      orient: "horizontal",
+      left: 12,
+      right: 12,
+      bottom: 0,
+      itemWidth: 10,
+      itemHeight: 10,
+      pageTextStyle: { color: textColor },
+      textStyle: { color: textColor, width: 118, overflow: "truncate" },
+    },
     series: [
       {
         type: "pie",
-        radius: ["46%", "72%"],
-        center: ["35%", "52%"],
+        radius: ["38%", "58%"],
+        center: ["50%", "40%"],
         avoidLabelOverlap: true,
         label: { show: false },
+        labelLine: { show: false },
         data: rows.map((row) => ({ name: row.category_name, value: row.total_files })),
       },
     ],

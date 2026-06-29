@@ -25,10 +25,14 @@ import type * as ApiClientModule from "../../api/client";
 import { themeCssVariables } from "../../theme/tokens";
 import StatisticsPage from "./index";
 
+const chartOptions = vi.hoisted((): Array<Record<string, unknown>> => []);
+
 vi.mock("echarts-for-react", () => ({
-  default: ({ option }: { option: { title?: { text?: string } } }) => (
-    <div data-testid="statistics-chart">{option.title?.text ?? "chart"}</div>
-  ),
+  default: ({ option }: { option: { title?: { text?: string } } }) => {
+    chartOptions.push(option as Record<string, unknown>);
+
+    return <div data-testid="statistics-chart">{option.title?.text ?? "chart"}</div>;
+  },
 }));
 
 vi.mock("../../api/client", async () => {
@@ -263,6 +267,7 @@ function mockStatisticsApi() {
 
 afterEach(() => {
   vi.clearAllMocks();
+  chartOptions.length = 0;
 });
 
 describe("StatisticsPage", () => {
@@ -344,5 +349,47 @@ describe("StatisticsPage", () => {
     expect(await screen.findByRole("heading", { name: "统计分析" })).toBeInTheDocument();
     expect((await screen.findAllByText("18,560")).length).toBeGreaterThan(0);
     expect(await screen.findByText("过期统计接口暂不可用")).toBeInTheDocument();
+  });
+
+  it("keeps the category distribution legend outside the donut chart area", async () => {
+    mockStatisticsApi();
+
+    renderWithProviders(<StatisticsPage />);
+
+    await screen.findByText("分类分布");
+
+    await waitFor(() => {
+      const categoryOption = chartOptions.find((option) => {
+        const series = option.series as Array<{
+          type?: string;
+          data?: Array<{ name?: string }>;
+        }>;
+
+        return series?.some(
+          (item) =>
+            item.type === "pie" && item.data?.some((dataItem) => dataItem.name === "技术文档"),
+        );
+      });
+
+      expect(categoryOption).toMatchObject({
+        legend: {
+          type: "scroll",
+          orient: "horizontal",
+          left: 12,
+          right: 12,
+          bottom: 0,
+          textStyle: { width: 118, overflow: "truncate" },
+        },
+        series: [
+          {
+            type: "pie",
+            radius: ["38%", "58%"],
+            center: ["50%", "40%"],
+            label: { show: false },
+            labelLine: { show: false },
+          },
+        ],
+      });
+    });
   });
 });
