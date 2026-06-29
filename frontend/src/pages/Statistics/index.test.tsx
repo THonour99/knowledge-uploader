@@ -351,12 +351,23 @@ describe("StatisticsPage", () => {
     expect(await screen.findByText("过期统计接口暂不可用")).toBeInTheDocument();
   });
 
-  it("keeps the category distribution legend outside the donut chart area", async () => {
+  it("renders all category legend labels as a visible list outside the donut chart", async () => {
     mockStatisticsApi();
 
     renderWithProviders(<StatisticsPage />);
 
     await screen.findByText("分类分布");
+
+    const legend = await screen.findByLabelText("分类分布图例");
+    const technicalLegend = await screen.findByRole("button", {
+      name: "技术文档，6,245 个文件，占比 59.1%",
+    });
+    const productLegend = screen.getByRole("button", {
+      name: "产品文档，4,326 个文件，占比 40.9%",
+    });
+
+    expect(legend).toContainElement(technicalLegend);
+    expect(legend).toContainElement(productLegend);
 
     await waitFor(() => {
       const categoryOption = chartOptions.find((option) => {
@@ -372,19 +383,13 @@ describe("StatisticsPage", () => {
       });
 
       expect(categoryOption).toMatchObject({
-        legend: {
-          type: "scroll",
-          orient: "horizontal",
-          left: 12,
-          right: 12,
-          bottom: 0,
-          textStyle: { width: 118, overflow: "truncate" },
-        },
+        legend: { show: false },
         series: [
           {
+            name: "分类分布",
             type: "pie",
-            radius: ["38%", "58%"],
-            center: ["50%", "40%"],
+            radius: ["42%", "64%"],
+            center: ["50%", "50%"],
             label: { show: false },
             labelLine: { show: false },
           },

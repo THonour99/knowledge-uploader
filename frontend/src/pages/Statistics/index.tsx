@@ -27,7 +27,7 @@ import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import type { ColumnsType } from "antd/es/table";
 import dayjs, { type Dayjs } from "dayjs";
 import ReactECharts from "echarts-for-react";
-import { useMemo, useState } from "react";
+import { useMemo, useRef, useState } from "react";
 
 import {
   exportStatistics,
@@ -54,6 +54,7 @@ import "./styles.css";
 
 const { RangePicker } = DatePicker;
 
+type CategoryChartRef = InstanceType<typeof ReactECharts>;
 type DateRange = [Dayjs | null, Dayjs | null] | null;
 type GroupBy = NonNullable<StatisticsQueryParams["group_by"]>;
 
@@ -76,6 +77,19 @@ const reviewStatusOptions = [
   { label: "待审核", value: "pending" },
   { label: "已通过", value: "approved" },
   { label: "已拒绝", value: "rejected" },
+];
+
+const categoryColorTokens = [
+  { token: "--ku-color-primary", fallback: "#1677ff" },
+  { token: "--ku-color-success", fallback: "#16a34a" },
+  { token: "--ku-color-warning", fallback: "#f59e0b" },
+  { token: "--ku-color-danger", fallback: "#ef4444" },
+  { token: "--ku-color-info", fallback: "#3b82f6" },
+  { token: "--ku-color-cyan", fallback: "#06b6d4" },
+  { token: "--ku-color-orange", fallback: "#f97316" },
+  { token: "--ku-color-purple", fallback: "#7c3aed" },
+  { token: "--ku-color-geekblue", fallback: "#2f54eb" },
+  { token: "--ku-color-volcano", fallback: "#dc2626" },
 ];
 
 const numberFormatter = new Intl.NumberFormat("zh-CN");
@@ -129,6 +143,10 @@ function cssVar(name: string, fallback = ""): string {
 
 function chartTextColor(): string {
   return cssVar("--ku-text-secondary", "#667085");
+}
+
+function categoryChartColors(): string[] {
+  return categoryColorTokens.map(({ token, fallback }) => cssVar(token, fallback));
 }
 
 function buildTrendOption(points: StatisticsTrendPoint[]) {
@@ -206,30 +224,24 @@ function buildDepartmentOption(rows: StatisticsDepartmentRow[]) {
   };
 }
 
-function buildCategoryOption(rows: StatisticsCategoryRow[]) {
-  const textColor = chartTextColor();
+function buildCategoryOption(rows: StatisticsCategoryRow[], colors: string[]) {
+  const cardColor = cssVar("--ku-bg-card", "#ffffff");
 
   return {
+    color: colors,
     tooltip: { trigger: "item", formatter: "{b}: {c} 个文件 ({d}%)" },
-    legend: {
-      type: "scroll",
-      orient: "horizontal",
-      left: 12,
-      right: 12,
-      bottom: 0,
-      itemWidth: 10,
-      itemHeight: 10,
-      pageTextStyle: { color: textColor },
-      textStyle: { color: textColor, width: 118, overflow: "truncate" },
-    },
+    legend: { show: false },
     series: [
       {
+        name: "分类分布",
         type: "pie",
-        radius: ["38%", "58%"],
-        center: ["50%", "40%"],
+        radius: ["42%", "64%"],
+        center: ["50%", "50%"],
         avoidLabelOverlap: true,
         label: { show: false },
         labelLine: { show: false },
+        itemStyle: { borderRadius: 4, borderColor: cardColor, borderWidth: 2 },
+        emphasis: { scale: true, scaleSize: 5 },
         data: rows.map((row) => ({ name: row.category_name, value: row.total_files })),
       },
     ],
@@ -355,6 +367,49 @@ function StatisticsInsightStrip({
   );
 }
 
+interface CategoryDistributionLegendProps {
+  colors: string[];
+  rows: StatisticsCategoryRow[];
+  onClearHighlight: () => void;
+  onHighlight: (dataIndex: number) => void;
+}
+
+function CategoryDistributionLegend({
+  colors,
+  rows,
+  onClearHighlight,
+  onHighlight,
+}: CategoryDistributionLegendProps) {
+  const totalFiles = rows.reduce((sum, row) => sum + row.total_files, 0);
+
+  return (
+    <div className="statistics-category-legend" aria-label="分类分布图例">
+      {rows.map((row, index) => {
+        const percent = totalFiles > 0 ? row.total_files / totalFiles : 0;
+        const color = colors[index % colors.length];
+        const meta = `${formatNumber(row.total_files)} · ${formatPercent(percent)}`;
+
+        return (
+          <button
+            key={row.category_id ?? row.category_name}
+            type="button"
+            className="statistics-category-legend__item"
+            title={`${row.category_name}：${meta}`}
+            aria-label={`${row.category_name}，${formatNumber(row.total_files)} 个文件，占比 ${formatPercent(percent)}`}
+            onBlur={onClearHighlight}
+            onFocus={() => onHighlight(index)}
+            onMouseEnter={() => onHighlight(index)}
+            onMouseLeave={onClearHighlight}
+          >
+            <span className="statistics-category-legend__swatch" style={{ background: color }} />
+            <span className="statistics-category-legend__name">{row.category_name}</span>
+            <span className="statistics-category-legend__meta">{meta}</span>
+          </button>
+        );
+      })}
+    </div>
+  );
+}
 function StatisticsContributionWorkbench({
   exportLoading,
   filteredUsers,
@@ -450,6 +505,7 @@ function StatisticsContributionWorkbench({
 export default function StatisticsPage() {
   const { message } = AntdApp.useApp();
   const queryClient = useQueryClient();
+  const categoryChartRef = useRef<CategoryChartRef | null>(null);
   const [dateRange, setDateRange] = useState<DateRange>([dayjs().subtract(30, "day"), dayjs()]);
   const [department, setDepartment] = useState<string | undefined>();
   const [categoryId, setCategoryId] = useState<string | undefined>();
@@ -527,6 +583,7 @@ export default function StatisticsPage() {
   const departments = departmentsQuery.data?.items ?? [];
   const categories = categoriesQuery.data?.items ?? [];
   const trends = trendsQuery.data?.items ?? [];
+  const categoryColors = useMemo(() => categoryChartColors(), []);
   const failures = failuresQuery.data?.items ?? [];
   const expiry = expiryQuery.data;
   const expiryBreakdown = normalizeExpiryBreakdown(expiry?.items ?? []);
@@ -574,6 +631,24 @@ export default function StatisticsPage() {
 
   const refreshStatistics = async () => {
     await queryClient.invalidateQueries({ queryKey: ["statistics"] });
+  };
+  const clearCategoryHighlight = () => {
+    const chart = categoryChartRef.current?.getEchartsInstance();
+
+    chart?.dispatchAction({ type: "downplay", seriesIndex: 0 });
+    chart?.dispatchAction({ type: "hideTip" });
+  };
+
+  const highlightCategory = (dataIndex: number) => {
+    const chart = categoryChartRef.current?.getEchartsInstance();
+
+    if (!chart) {
+      return;
+    }
+
+    chart.dispatchAction({ type: "downplay", seriesIndex: 0 });
+    chart.dispatchAction({ type: "highlight", seriesIndex: 0, dataIndex });
+    chart.dispatchAction({ type: "showTip", seriesIndex: 0, dataIndex });
   };
 
   const columns: ColumnsType<StatisticsUserRow> = [
@@ -810,9 +885,24 @@ export default function StatisticsPage() {
           )}
         </Card>
 
-        <Card className="document-panel statistics-chart-card" title="分类分布">
+        <Card
+          className="document-panel statistics-chart-card statistics-category-card"
+          title="分类分布"
+        >
           {categories.length > 0 ? (
-            <ReactECharts option={buildCategoryOption(categories)} className="statistics-chart" />
+            <div className="statistics-category-distribution">
+              <ReactECharts
+                ref={categoryChartRef}
+                option={buildCategoryOption(categories, categoryColors)}
+                className="statistics-chart statistics-category-chart"
+              />
+              <CategoryDistributionLegend
+                colors={categoryColors}
+                rows={categories}
+                onClearHighlight={clearCategoryHighlight}
+                onHighlight={highlightCategory}
+              />
+            </div>
           ) : (
             <Empty image={Empty.PRESENTED_IMAGE_SIMPLE} description="暂无分类数据" />
           )}

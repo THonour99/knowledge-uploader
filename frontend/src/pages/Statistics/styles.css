@@ -166,6 +166,78 @@
   height: 240px !important;
 }
 
+.statistics-category-card .ant-card-body {
+  align-content: start;
+}
+
+.statistics-category-distribution {
+  display: grid;
+  gap: 10px;
+  min-width: 0;
+}
+
+.statistics-category-chart {
+  height: 150px !important;
+}
+
+.statistics-category-legend {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 6px 8px;
+  min-width: 0;
+}
+
+.statistics-category-legend__item {
+  display: grid;
+  grid-template-columns: 10px minmax(0, 1fr) auto;
+  gap: 7px;
+  align-items: start;
+  min-width: 0;
+  padding: 5px 6px;
+  border: 1px solid transparent;
+  border-radius: var(--ku-radius-control);
+  background: transparent;
+  color: inherit;
+  font: inherit;
+  text-align: left;
+  cursor: default;
+  transition:
+    background-color 0.16s ease,
+    border-color 0.16s ease;
+}
+
+.statistics-category-legend__item:hover,
+.statistics-category-legend__item:focus-visible {
+  border-color: rgba(22, 119, 255, 0.18);
+  background: rgba(248, 251, 255, 0.86);
+  outline: none;
+}
+
+.statistics-category-legend__swatch {
+  width: 10px;
+  height: 10px;
+  margin-top: 4px;
+  border-radius: 3px;
+  box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.46);
+}
+
+.statistics-category-legend__name {
+  min-width: 0;
+  color: var(--ku-text-primary);
+  font-size: 12px;
+  font-weight: 600;
+  line-height: 1.35;
+  overflow-wrap: anywhere;
+}
+
+.statistics-category-legend__meta {
+  color: var(--ku-text-secondary);
+  font-size: 12px;
+  font-variant-numeric: tabular-nums;
+  line-height: 1.35;
+  white-space: nowrap;
+}
+
 .statistics-ranking-list {
   display: grid;
   gap: 13px;
@@ -537,6 +609,18 @@
 
   .statistics-contribution-workbench__stats {
     grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .statistics-category-legend {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .statistics-category-legend__item {
+    grid-template-columns: 10px minmax(0, 1fr);
+  }
+
+  .statistics-category-legend__meta {
+    grid-column: 2;
   }
 
   .statistics-expiry-summary {
