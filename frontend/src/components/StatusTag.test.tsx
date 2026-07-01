@@ -27,4 +27,20 @@ describe("StatusTag", () => {
 
     expect(screen.getByText("即将过期")).toBeInTheDocument();
   });
+
+  it("renders health status labels", () => {
+    render(<StatusTag kind="health" value="ok" />);
+    expect(screen.getByText("正常")).toBeInTheDocument();
+
+    render(<StatusTag kind="health" value="error" />);
+    expect(screen.getByText("异常")).toBeInTheDocument();
+  });
+
+  it("adds readable status semantics to tag and dot variants", () => {
+    render(<StatusTag kind="sync" value="syncing" />);
+    expect(screen.getByLabelText("同步状态：同步中")).toHaveAttribute("title", "同步状态：同步中");
+
+    render(<StatusTag kind="health" value="ok" variant="dot" />);
+    expect(screen.getByLabelText("健康状态：正常")).toHaveClass("status-tag-dot");
+  });
 });

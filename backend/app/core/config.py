@@ -65,7 +65,6 @@ class Settings(BaseSettings):
     jwt_expire_minutes: int = 1440
     encryption_key: str = DEFAULT_DEV_ENCRYPTION_KEY
 
-    auth_provider: str = "local"
     allow_register: bool = True
     require_email_verification: bool = True
     allowed_email_domains: str = "company.com"
@@ -105,6 +104,7 @@ class Settings(BaseSettings):
     ragflow_allowed_dataset_ids: str = ""
     ragflow_request_timeout: float = 300.0
     ragflow_max_retry_count: int = 3
+    uvicorn_forwarded_allow_ips: str = "127.0.0.1"
 
     @model_validator(mode="after")
     def validate_protected_environment_secrets(self) -> Self:
@@ -116,6 +116,10 @@ class Settings(BaseSettings):
 
         if not _requires_protected_secret_validation(self.app_env, self.app_base_url):
             return self
+
+        if "*" in _normalized_csv_values(self.uvicorn_forwarded_allow_ips):
+            msg = "UVICORN_FORWARDED_ALLOW_IPS must not trust all proxies in protected environments"
+            raise ValueError(msg)
 
         _ensure_non_placeholder_secret("JWT_SECRET", self.jwt_secret, min_length=32)
         _ensure_non_placeholder_secret("ENCRYPTION_KEY", self.encryption_key)

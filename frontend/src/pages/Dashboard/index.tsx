@@ -1,4 +1,3 @@
-import type { ReactNode } from "react";
 import {
   BarChartOutlined,
   CheckCircleOutlined,
@@ -7,91 +6,69 @@ import {
   CloudUploadOutlined,
   DownloadOutlined,
   FileDoneOutlined,
-  FileTextOutlined,
   ReloadOutlined,
   RiseOutlined,
   TeamOutlined,
   WarningOutlined,
 } from "@ant-design/icons";
-import {
-  Avatar,
-  Button,
-  Card,
-  Empty,
-  Progress,
-  Skeleton,
-  Space,
-  Typography,
-} from "antd";
+import { App as AntdApp, Avatar, Button, Card, Skeleton, Space, Typography } from "antd";
 import type { EChartsOption } from "echarts";
 import ReactECharts from "echarts-for-react";
-import { useMemo } from "react";
-import { useQuery } from "@tanstack/react-query";
+import { useMemo, useState, type CSSProperties, type ReactNode } from "react";
+import { useNavigate } from "react-router-dom";
+import { useQuery, useQueryClient } from "@tanstack/react-query";
 
 import {
+  exportStatistics,
   getStatisticsCategories,
   getStatisticsFailures,
   getStatisticsOverview,
   getStatisticsTrends,
   getStatisticsUsers,
+  getSystemReadiness,
   type StatisticsCategoryRow,
   type StatisticsFailureRow,
   type StatisticsTrendPoint,
   type StatisticsUserRow,
+  type SystemReadiness,
 } from "../../api/client";
-import { StatusTag } from "../../components/StatusTag";
+import { KpiCard } from "../../components/KpiCard";
+import { QueryBoundary } from "../../components/QueryBoundary";
+import { StatusTag, type StatusKind } from "../../components/StatusTag";
 import { PageContainer } from "../../layouts/PageContainer";
+import { downloadBlob } from "../../utils/download";
+import { formatDateTime, formatNumber, formatPercent } from "../../utils/format";
 import "./styles.css";
 
 // ---------------------------------------------------------------------------
-// Formatting helpers
+// Constants & helpers
 // ---------------------------------------------------------------------------
 
-const numberFormatter = new Intl.NumberFormat("zh-CN");
+// 分类明细色块顺序与饼图色板一致(warning 对应 --ku-color-orange,与饼图第三色相同)。
+const CATEGORY_SWATCH_TONES = ["primary", "success", "warning", "purple", "cyan"] as const;
 
-function formatNumber(value: number): string {
-  return numberFormatter.format(value);
-}
-
-function formatPercent(value: number): string {
-  return `${(value * 100).toFixed(1)}%`;
-}
+const DEPENDENCY_LABELS: Record<string, string> = {
+  database: "数据库",
+  redis: "缓存 Redis",
+  rabbitmq: "消息队列",
+  minio: "对象存储",
+};
 
 function cssVar(name: string, fallback = ""): string {
   return getComputedStyle(document.documentElement).getPropertyValue(name).trim() || fallback;
 }
 
-// ---------------------------------------------------------------------------
-// Metric card
-// ---------------------------------------------------------------------------
-
-interface MetricCardProps {
-  title: string;
-  value: string;
-  description: string;
-  icon: ReactNode;
-  tone: "primary" | "success" | "warning" | "danger" | "purple";
-}
-
-function DashboardMetricCard({ title, value, description, icon, tone }: MetricCardProps) {
-  return (
-    <Card className="dashboard-metric-card">
-      <div className="dashboard-metric-card__body">
-        <span className={`dashboard-metric-card__icon dashboard-metric-card__icon--${tone}`}>
-          {icon}
-        </span>
-        <span className="dashboard-metric-card__content">
-          <Typography.Text type="secondary">{title}</Typography.Text>
-          <Typography.Title level={3} className="dashboard-metric-card__value">
-            {value}
-          </Typography.Title>
-          <Typography.Text className={`dashboard-metric-card__delta dashboard-text--${tone}`}>
-            {description}
-          </Typography.Text>
-        </span>
-      </div>
-    </Card>
-  );
+// 环比:序列最后一期 vs 前一期的百分比变化;不足两点或前值为 0 则不展示,避免误导。
+function periodDelta(series: number[]): number | null {
+  if (series.length < 2) {
+    return null;
+  }
+  const last = series[series.length - 1];
+  const prev = series[series.length - 2];
+  if (prev === 0) {
+    return null;
+  }
+  return ((last - prev) / prev) * 100;
 }
 
 // ---------------------------------------------------------------------------
@@ -110,6 +87,8 @@ function buildTrendOption(points: StatisticsTrendPoint[]): EChartsOption {
     grid: { top: 28, right: 20, bottom: 28, left: 42 },
     tooltip: { trigger: "axis" },
     legend: { top: 0, right: 0, itemWidth: 10, itemHeight: 10 },
+    animationDuration: 700,
+    animationEasing: "cubicOut",
     xAxis: {
       type: "category",
       boundaryGap: false,
@@ -128,44 +107,35 @@ function buildTrendOption(points: StatisticsTrendPoint[]): EChartsOption {
         name: "上传",
         type: "line",
         smooth: true,
+        showSymbol: false,
         data: points.map((p) => p.total_files),
-        areaStyle: { color: "rgba(22, 119, 255, 0.12)" },
+        areaStyle: {
+          color: {
+            type: "linear",
+            x: 0,
+            y: 0,
+            x2: 0,
+            y2: 1,
+            colorStops: [
+              { offset: 0, color: "rgba(22, 119, 255, 0.18)" },
+              { offset: 1, color: "rgba(22, 119, 255, 0)" },
+            ],
+          },
+        },
       },
       {
         name: "同步",
         type: "line",
         smooth: true,
+        showSymbol: false,
         data: points.map((p) => p.synced_files),
       },
       {
         name: "待审",
         type: "line",
         smooth: true,
+        showSymbol: false,
         data: points.map((p) => p.pending_review_files),
-      },
-    ],
-  };
-}
-
-function buildCategoryOption(rows: StatisticsCategoryRow[]): EChartsOption {
-  return {
-    color: [
-      cssVar("--ku-color-primary", "#1677ff"),
-      cssVar("--ku-color-success", "#16a34a"),
-      cssVar("--ku-color-orange", "#f59e0b"),
-      cssVar("--ku-color-purple", "#7c3aed"),
-      cssVar("--ku-color-cyan", "#06b6d4"),
-    ],
-    tooltip: { trigger: "item" },
-    series: [
-      {
-        name: "分类占比",
-        type: "pie",
-        radius: ["56%", "76%"],
-        center: ["50%", "50%"],
-        label: { show: false },
-        labelLine: { show: false },
-        data: rows.map((row) => ({ value: row.total_files, name: row.category_name })),
       },
     ],
   };
@@ -175,18 +145,82 @@ function buildCategoryOption(rows: StatisticsCategoryRow[]): EChartsOption {
 // Sub-components
 // ---------------------------------------------------------------------------
 
-function UserRankingRow({ user, maxFiles }: { user: StatisticsUserRow; maxFiles: number }) {
+function UserRankingRow({
+  user,
+  maxFiles,
+  totalFiles,
+}: {
+  user: StatisticsUserRow;
+  maxFiles: number;
+  totalFiles: number;
+}) {
   const percent = maxFiles > 0 ? Math.round((user.total_files / maxFiles) * 100) : 0;
+  const share = totalFiles > 0 ? user.total_files / totalFiles : 0;
+  const syncRate = user.total_files > 0 ? user.synced_files / user.total_files : 0;
+  const lastUpload = user.last_upload_at
+    ? formatDateTime(user.last_upload_at, "MM-DD HH:mm")
+    : "暂无上传时间";
+  const rankStyle = { "--rank-width": `${percent}%` } as CSSProperties;
+
   return (
-    <div className="dashboard-ranking-row" key={user.user_id}>
-      <span className="dashboard-ranking-row__rank">{user.rank}</span>
+    <div
+      className={`dashboard-ranking-row${user.rank <= 3 ? " dashboard-ranking-row--lead" : ""}`}
+      key={user.user_id}
+      style={rankStyle}
+    >
+      <span className="dashboard-ranking-row__rank">{String(user.rank).padStart(2, "0")}</span>
       <Avatar className="dashboard-ranking-row__avatar">{user.user_name.slice(0, 1)}</Avatar>
       <span className="dashboard-ranking-row__copy">
         <Typography.Text strong>{user.user_name}</Typography.Text>
-        <Typography.Text type="secondary">{user.department ?? "未设置"}</Typography.Text>
+        <Typography.Text type="secondary">
+          {user.department ?? "未设置"} / {lastUpload}
+        </Typography.Text>
       </span>
-      <span className="dashboard-ranking-row__count">{formatNumber(user.total_files)}</span>
-      <Progress percent={percent} showInfo={false} />
+      <span className="dashboard-ranking-row__metrics">
+        <Typography.Text strong>{formatNumber(user.total_files)}</Typography.Text>
+        <Typography.Text type="secondary">上传</Typography.Text>
+        <Typography.Text type="secondary">{formatPercent(syncRate, 0)} 同步</Typography.Text>
+      </span>
+      <span className="dashboard-ranking-row__bar" aria-hidden="true" />
+      <Typography.Text className="dashboard-ranking-row__share" type="secondary">
+        占排行 {formatPercent(share)}
+      </Typography.Text>
+    </div>
+  );
+}
+
+function CategoryCompositionRow({
+  row,
+  totalFiles,
+  tone,
+}: {
+  row: StatisticsCategoryRow;
+  totalFiles: number;
+  tone: (typeof CATEGORY_SWATCH_TONES)[number];
+}) {
+  const share = totalFiles > 0 ? row.total_files / totalFiles : 0;
+  const meterStyle = { "--category-width": `${Math.round(share * 100)}%` } as CSSProperties;
+
+  return (
+    <div
+      className={`dashboard-category-composition-row dashboard-category-composition-row--${tone}`}
+      style={meterStyle}
+    >
+      <span
+        className={`dashboard-category-row__swatch dashboard-category-row__swatch--${tone}`}
+        aria-hidden="true"
+      />
+      <span className="dashboard-category-composition-row__copy">
+        <Typography.Text strong>{row.category_name}</Typography.Text>
+        <Typography.Text type="secondary">
+          已同步 {formatNumber(row.synced_files)} / 待审 {formatNumber(row.pending_review_files)}
+        </Typography.Text>
+      </span>
+      <span className="dashboard-category-composition-row__value">
+        <Typography.Text strong>{formatNumber(row.total_files)}</Typography.Text>
+        <Typography.Text type="secondary">{formatPercent(share)}</Typography.Text>
+      </span>
+      <span className="dashboard-category-composition-row__meter" aria-hidden="true" />
     </div>
   );
 }
@@ -208,11 +242,233 @@ function FailureRow({ row, maxTasks }: { row: StatisticsFailureRow; maxTasks: nu
   );
 }
 
+type HealthTone = "success" | "warning" | "danger" | "empty";
+
+interface TimelineLane {
+  key: string;
+  label: string;
+  valueOf: (point: StatisticsTrendPoint) => number;
+  toneOf: (value: number) => HealthTone;
+}
+
+const TIMELINE_LANES: TimelineLane[] = [
+  {
+    key: "upload",
+    label: "上传活跃",
+    valueOf: (point) => point.total_files,
+    toneOf: (value) => (value > 0 ? "success" : "empty"),
+  },
+  {
+    key: "synced",
+    label: "同步成功",
+    valueOf: (point) => point.synced_files,
+    toneOf: (value) => (value > 0 ? "success" : "empty"),
+  },
+  {
+    key: "pending",
+    label: "待审积压",
+    valueOf: (point) => point.pending_review_files,
+    toneOf: (value) => (value > 0 ? "warning" : "success"),
+  },
+  {
+    key: "failed",
+    label: "失败文件",
+    valueOf: (point) => point.failed_files,
+    toneOf: (value) => (value > 0 ? "danger" : "success"),
+  },
+];
+
+interface DashboardOperationsStripProps {
+  activeUploaders: number;
+  categoryCount: number;
+  failedTasks: number;
+  pendingReviewFiles: number;
+  readiness?: SystemReadiness;
+  rankedUsers: number;
+  sensitiveFiles: number;
+  trendCount: number;
+}
+
+interface DashboardOperationsLane {
+  key: string;
+  icon: ReactNode;
+  title: string;
+  primary: string;
+  secondary: string;
+  status: {
+    kind: StatusKind;
+    value: string;
+  };
+}
+
+function DashboardOperationsStrip({
+  activeUploaders,
+  categoryCount,
+  failedTasks,
+  pendingReviewFiles,
+  readiness,
+  rankedUsers,
+  sensitiveFiles,
+  trendCount,
+}: DashboardOperationsStripProps) {
+  const dependencies = Object.values(readiness?.dependencies ?? {});
+  const dependencyTotal = dependencies.length;
+  const dependencyOkCount = dependencies.filter((dependency) => dependency.status === "ok").length;
+  const dependencyFailedCount = dependencies.filter(
+    (dependency) => dependency.status === "error",
+  ).length;
+  const chartReadyCount = Number(trendCount > 0) + Number(categoryCount > 0);
+  const serviceStatus = dependencyFailedCount > 0 ? "error" : (readiness?.status ?? "unknown");
+  const governanceStatus =
+    failedTasks > 0 || sensitiveFiles > 0
+      ? ({ kind: "sync", value: "failed" } as const)
+      : pendingReviewFiles > 0
+        ? ({ kind: "review", value: "pending" } as const)
+        : ({ kind: "review", value: "approved" } as const);
+
+  const lanes: DashboardOperationsLane[] = [
+    {
+      key: "services",
+      icon: <CheckCircleOutlined />,
+      title: "服务依赖",
+      primary:
+        dependencyTotal > 0 ? `${dependencyOkCount}/${dependencyTotal} 个依赖正常` : "等待依赖探针",
+      secondary:
+        dependencyFailedCount > 0 ? `${dependencyFailedCount} 个异常需要检查` : "核心依赖可用",
+      status: { kind: "health", value: serviceStatus },
+    },
+    {
+      key: "charts",
+      icon: <BarChartOutlined />,
+      title: "图表覆盖",
+      primary: `${chartReadyCount}/2 张图表有数据`,
+      secondary: "趋势与分类视图已接入 ECharts",
+      status: { kind: "health", value: chartReadyCount === 2 ? "ok" : "unknown" },
+    },
+    {
+      key: "queue",
+      icon: <WarningOutlined />,
+      title: "治理队列",
+      primary: `${formatNumber(pendingReviewFiles)} 个待审核`,
+      secondary: `${formatNumber(failedTasks)} 个失败任务，${formatNumber(sensitiveFiles)} 个风险文件`,
+      status: governanceStatus,
+    },
+    {
+      key: "users",
+      icon: <TeamOutlined />,
+      title: "活跃贡献",
+      primary: `${formatNumber(activeUploaders)} 位活跃上传者`,
+      secondary: `排行展示 ${formatNumber(rankedUsers)} 位重点用户`,
+      status: { kind: "health", value: activeUploaders > 0 ? "ok" : "unknown" },
+    },
+  ];
+
+  return (
+    <section className="dashboard-operations-strip" aria-label="运营状态总览">
+      <div className="dashboard-operations-strip__summary">
+        <span
+          className={`dashboard-operations-strip__signal dashboard-operations-strip__signal--${serviceStatus}`}
+        >
+          <CheckCircleOutlined />
+        </span>
+        <div className="dashboard-operations-strip__copy">
+          <div className="dashboard-operations-strip__title-row">
+            <Typography.Text strong>运营状态</Typography.Text>
+            <StatusTag kind="health" value={serviceStatus} />
+          </div>
+          <Typography.Title level={4}>
+            {dependencyFailedCount > 0 ? "依赖异常待处理" : "核心链路运行中"}
+          </Typography.Title>
+          <Typography.Text type="secondary">
+            上传、审核、AI 分析与 RAGFlow 同步首屏聚合
+          </Typography.Text>
+        </div>
+      </div>
+
+      <div className="dashboard-operations-strip__lanes">
+        {lanes.map((lane) => (
+          <div className="dashboard-operations-lane" key={lane.key}>
+            <span className="dashboard-operations-lane__icon">{lane.icon}</span>
+            <div className="dashboard-operations-lane__content">
+              <div className="dashboard-operations-lane__header">
+                <Typography.Text type="secondary">{lane.title}</Typography.Text>
+                <StatusTag kind={lane.status.kind} value={lane.status.value} />
+              </div>
+              <Typography.Text strong>{lane.primary}</Typography.Text>
+              <Typography.Text type="secondary">{lane.secondary}</Typography.Text>
+            </div>
+          </div>
+        ))}
+      </div>
+    </section>
+  );
+}
+function DashboardHealthTimeline({ points }: { points: StatisticsTrendPoint[] }) {
+  const visiblePoints = points.slice(-8);
+
+  return (
+    <section className="dashboard-health-timeline" aria-label="运行健康时间线">
+      <div className="dashboard-health-timeline__header">
+        <div>
+          <Typography.Text strong>近周期健康矩阵</Typography.Text>
+          <Typography.Text type="secondary">按上传、同步、待审和失败状态聚合</Typography.Text>
+        </div>
+        <div className="dashboard-health-timeline__legend" aria-label="健康状态图例">
+          <span className="dashboard-health-timeline__legend-item">
+            <i className="dashboard-health-timeline__cell dashboard-health-timeline__cell--success" />
+            正常
+          </span>
+          <span className="dashboard-health-timeline__legend-item">
+            <i className="dashboard-health-timeline__cell dashboard-health-timeline__cell--warning" />
+            关注
+          </span>
+          <span className="dashboard-health-timeline__legend-item">
+            <i className="dashboard-health-timeline__cell dashboard-health-timeline__cell--danger" />
+            失败
+          </span>
+        </div>
+      </div>
+      <div className="dashboard-health-timeline__grid">
+        <span className="dashboard-health-timeline__axis" />
+        {visiblePoints.map((point) => (
+          <span className="dashboard-health-timeline__period" key={point.period}>
+            {point.period}
+          </span>
+        ))}
+        {TIMELINE_LANES.map((lane) => (
+          <div className="dashboard-health-timeline__lane" key={lane.key}>
+            <Typography.Text type="secondary" className="dashboard-health-timeline__lane-label">
+              {lane.label}
+            </Typography.Text>
+            {visiblePoints.map((point) => {
+              const value = lane.valueOf(point);
+              const tone = lane.toneOf(value);
+              return (
+                <span
+                  aria-label={`${point.period} ${lane.label} ${formatNumber(value)}`}
+                  className={`dashboard-health-timeline__cell dashboard-health-timeline__cell--${tone}`}
+                  key={`${lane.key}-${point.period}`}
+                  title={`${point.period} ${lane.label}: ${formatNumber(value)}`}
+                />
+              );
+            })}
+          </div>
+        ))}
+      </div>
+    </section>
+  );
+}
+
 // ---------------------------------------------------------------------------
 // Page
 // ---------------------------------------------------------------------------
 
 export default function DashboardPage() {
+  const navigate = useNavigate();
+  const queryClient = useQueryClient();
+  const { message } = AntdApp.useApp();
+  const [exporting, setExporting] = useState(false);
+
   const overviewQuery = useQuery({
     queryKey: ["dashboard", "overview"],
     queryFn: () => getStatisticsOverview({}),
@@ -239,18 +495,30 @@ export default function DashboardPage() {
     queryFn: () => getStatisticsFailures({}),
   });
 
-  const isLoading =
-    overviewQuery.isLoading ||
-    usersQuery.isLoading ||
-    categoriesQuery.isLoading ||
-    trendsQuery.isLoading ||
-    failuresQuery.isLoading;
+  const readinessQuery = useQuery({
+    queryKey: ["dashboard", "readiness"],
+    queryFn: getSystemReadiness,
+  });
+
+  const isFetching =
+    overviewQuery.isFetching ||
+    usersQuery.isFetching ||
+    categoriesQuery.isFetching ||
+    trendsQuery.isFetching ||
+    failuresQuery.isFetching ||
+    readinessQuery.isFetching;
 
   const overview = overviewQuery.data;
   const users = usersQuery.data?.items ?? [];
   const categories = categoriesQuery.data?.items ?? [];
   const trends = trendsQuery.data?.items ?? [];
   const failures = failuresQuery.data?.items ?? [];
+  const readiness = readinessQuery.data;
+
+  const trendTotals = trends.map((point) => point.total_files);
+  const trendSynced = trends.map((point) => point.synced_files);
+  const trendPending = trends.map((point) => point.pending_review_files);
+  const trendFailed = trends.map((point) => point.failed_files);
 
   const maxUserFiles = useMemo(
     () => (users.length > 0 ? Math.max(...users.map((u) => u.total_files)) : 1),
@@ -263,13 +531,52 @@ export default function DashboardPage() {
   );
 
   const trendOption = useMemo(() => buildTrendOption(trends), [trends]);
-  const categoryOption = useMemo(() => buildCategoryOption(categories), [categories]);
-
+  const rankedUserTotal = users.reduce((acc, user) => acc + user.total_files, 0);
   const categoryTotal = categories.reduce((acc, row) => acc + row.total_files, 0);
+  const rankedCategories = useMemo(
+    () => [...categories].sort((a, b) => b.total_files - a.total_files),
+    [categories],
+  );
+  const visibleCategories = rankedCategories.slice(0, 6);
+  const remainingCategoryTotal = rankedCategories
+    .slice(visibleCategories.length)
+    .reduce((acc, row) => acc + row.total_files, 0);
+  const remainingCategoryShare = categoryTotal > 0 ? remainingCategoryTotal / categoryTotal : 0;
+  const leadingCategory = rankedCategories[0];
+  const leadingShare =
+    categoryTotal > 0 && leadingCategory ? leadingCategory.total_files / categoryTotal : 0;
+  const unclassifiedTotal = categories
+    .filter((row) => row.category_id === null || row.category_name === "未分类")
+    .reduce((acc, row) => acc + row.total_files, 0);
 
-  const syncSuccessRateStr = overview
-    ? formatPercent(overview.sync_success_rate)
-    : "-";
+  const syncSuccessRateStr = formatPercent(overview?.sync_success_rate);
+
+  function handleRefresh() {
+    void queryClient.invalidateQueries({ queryKey: ["dashboard"] });
+  }
+
+  async function handleExport() {
+    setExporting(true);
+    try {
+      const blob = await exportStatistics({});
+      downloadBlob(blob, `知识库统计报表_${formatDateTime(new Date(), "YYYYMMDD_HHmm")}.csv`);
+      message.success("报表已开始下载");
+    } catch (error) {
+      message.error(error instanceof Error ? error.message : "导出失败");
+    } finally {
+      setExporting(false);
+    }
+  }
+
+  const kpiSkeleton = (
+    <div className="dashboard-kpi-grid">
+      {Array.from({ length: 5 }).map((_, index) => (
+        <Card key={index} className="kpi-card">
+          <Skeleton active title={false} paragraph={{ rows: 2 }} />
+        </Card>
+      ))}
+    </div>
+  );
 
   return (
     <PageContainer
@@ -278,53 +585,97 @@ export default function DashboardPage() {
       description="汇总上传、审核、AI 分析与 RAGFlow 同步关键指标。"
       actions={
         <Space className="dashboard-page-actions" wrap>
-          <Button icon={<ReloadOutlined />} loading={isLoading}>
+          <Button icon={<ReloadOutlined />} loading={isFetching} onClick={handleRefresh}>
             刷新
           </Button>
-          <Button type="primary" icon={<DownloadOutlined />}>
+          <Button
+            type="primary"
+            icon={<DownloadOutlined />}
+            loading={exporting}
+            onClick={() => void handleExport()}
+          >
             导出报表
           </Button>
         </Space>
       }
     >
       {/* KPI 指标卡 */}
-      <div className="dashboard-kpi-grid">
-        <DashboardMetricCard
-          title="文件总数"
-          value={isLoading ? "-" : formatNumber(overview?.total_files ?? 0)}
-          description={`今日新增 ${formatNumber(overview?.active_uploaders ?? 0)} 位上传者`}
-          icon={<CloudUploadOutlined />}
-          tone="primary"
-        />
-        <DashboardMetricCard
-          title="已同步 RAGFlow"
-          value={isLoading ? "-" : formatNumber(overview?.synced_files ?? 0)}
-          description={`成功率 ${syncSuccessRateStr}`}
-          icon={<CloudSyncOutlined />}
-          tone="success"
-        />
-        <DashboardMetricCard
-          title="待审核"
-          value={isLoading ? "-" : formatNumber(overview?.pending_review_files ?? 0)}
-          description={`含 ${formatNumber(overview?.sensitive_files ?? 0)} 个敏感风险`}
-          icon={<ClockCircleOutlined />}
-          tone="warning"
-        />
-        <DashboardMetricCard
-          title="失败任务"
-          value={isLoading ? "-" : formatNumber(overview?.failed_tasks ?? 0)}
-          description="需管理员介入"
-          icon={<WarningOutlined />}
-          tone="danger"
-        />
-        <DashboardMetricCard
-          title="风险文件"
-          value={isLoading ? "-" : formatNumber(overview?.sensitive_files ?? 0)}
-          description={`已拒绝 ${formatNumber(overview?.rejected_files ?? 0)} 个`}
-          icon={<FileDoneOutlined />}
-          tone="purple"
-        />
-      </div>
+      <QueryBoundary
+        isLoading={overviewQuery.isLoading}
+        isError={overviewQuery.isError}
+        error={overviewQuery.error}
+        onRetry={() => void overviewQuery.refetch()}
+        skeleton={kpiSkeleton}
+        errorTitle="运营指标加载失败"
+      >
+        <div className="dashboard-kpi-grid">
+          <KpiCard
+            icon={<CloudUploadOutlined />}
+            title="文件总数"
+            value={overview?.total_files ?? 0}
+            description={`活跃上传者 ${formatNumber(overview?.active_uploaders ?? 0)} 位`}
+            tone="primary"
+            trend={trendTotals}
+            deltaPct={periodDelta(trendTotals)}
+            deltaLabel="环比上期"
+            onClick={() => navigate("/files")}
+          />
+          <KpiCard
+            icon={<CloudSyncOutlined />}
+            title="已同步 RAGFlow"
+            value={overview?.synced_files ?? 0}
+            description={`成功率 ${syncSuccessRateStr}`}
+            tone="success"
+            trend={trendSynced}
+            deltaPct={periodDelta(trendSynced)}
+            deltaLabel="环比上期"
+            onClick={() => navigate("/files")}
+          />
+          <KpiCard
+            icon={<ClockCircleOutlined />}
+            title="待审核"
+            value={overview?.pending_review_files ?? 0}
+            description="等待管理员处理"
+            tone="warning"
+            trend={trendPending}
+            deltaPct={periodDelta(trendPending)}
+            deltaLabel="环比上期"
+            deltaPositiveIsGood={false}
+            onClick={() => navigate("/files")}
+          />
+          <KpiCard
+            icon={<WarningOutlined />}
+            title="失败任务"
+            value={overview?.failed_tasks ?? 0}
+            description="需管理员介入"
+            tone="danger"
+            trend={trendFailed}
+            deltaPct={periodDelta(trendFailed)}
+            deltaLabel="环比上期"
+            deltaPositiveIsGood={false}
+            onClick={() => navigate("/task-logs")}
+          />
+          <KpiCard
+            icon={<FileDoneOutlined />}
+            title="风险文件"
+            value={overview?.sensitive_files ?? 0}
+            description={`已拒绝 ${formatNumber(overview?.rejected_files ?? 0)} 个`}
+            tone="purple"
+            onClick={() => navigate("/files")}
+          />
+        </div>
+      </QueryBoundary>
+
+      <DashboardOperationsStrip
+        activeUploaders={overview?.active_uploaders ?? 0}
+        categoryCount={categories.length}
+        failedTasks={overview?.failed_tasks ?? 0}
+        pendingReviewFiles={overview?.pending_review_files ?? 0}
+        readiness={readiness}
+        rankedUsers={users.length}
+        sensitiveFiles={overview?.sensitive_files ?? 0}
+        trendCount={trends.length}
+      />
 
       <div className="dashboard-content-grid">
         {/* 上传趋势图 */}
@@ -337,53 +688,41 @@ export default function DashboardPage() {
             </Space>
           }
         >
-          {trendsQuery.isLoading ? (
-            <Skeleton active paragraph={{ rows: 6 }} />
-          ) : trends.length > 0 ? (
+          <QueryBoundary
+            isLoading={trendsQuery.isLoading}
+            isError={trendsQuery.isError}
+            error={trendsQuery.error}
+            onRetry={() => void trendsQuery.refetch()}
+            isEmpty={trends.length === 0}
+            emptyDescription="暂无趋势数据"
+            skeletonRows={6}
+            errorTitle="趋势数据加载失败"
+          >
             <ReactECharts option={trendOption} className="dashboard-chart" />
-          ) : (
-            <Empty image={Empty.PRESENTED_IMAGE_SIMPLE} description="暂无趋势数据" />
-          )}
+          </QueryBoundary>
         </Card>
 
-        {/* 待办摘要 + 失败任务列表 */}
+        {/* 失败任务列表 */}
         <Card
           className="dashboard-panel dashboard-activity-card dashboard-span-4"
           title="最近失败任务"
         >
-          {failuresQuery.isLoading ? (
-            <Skeleton active paragraph={{ rows: 4 }} />
-          ) : failures.length > 0 ? (
-            <>
-              <div className="dashboard-todo-strip">
-                <div>
-                  <Typography.Text type="secondary">待审核</Typography.Text>
-                  <Typography.Title level={4}>
-                    {formatNumber(overview?.pending_review_files ?? 0)}
-                  </Typography.Title>
-                </div>
-                <div>
-                  <Typography.Text type="secondary">高风险</Typography.Text>
-                  <Typography.Title level={4}>
-                    {formatNumber(overview?.sensitive_files ?? 0)}
-                  </Typography.Title>
-                </div>
-                <div>
-                  <Typography.Text type="secondary">失败</Typography.Text>
-                  <Typography.Title level={4}>
-                    {formatNumber(overview?.failed_tasks ?? 0)}
-                  </Typography.Title>
-                </div>
-              </div>
-              <div className="dashboard-failure-list">
-                {failures.map((row) => (
-                  <FailureRow key={row.reason} row={row} maxTasks={maxFailedTasks} />
-                ))}
-              </div>
-            </>
-          ) : (
-            <Empty image={Empty.PRESENTED_IMAGE_SIMPLE} description="暂无失败任务" />
-          )}
+          <QueryBoundary
+            isLoading={failuresQuery.isLoading}
+            isError={failuresQuery.isError}
+            error={failuresQuery.error}
+            onRetry={() => void failuresQuery.refetch()}
+            isEmpty={failures.length === 0}
+            emptyDescription="暂无失败任务"
+            skeletonRows={4}
+            errorTitle="失败任务加载失败"
+          >
+            <div className="dashboard-failure-list">
+              {failures.map((row) => (
+                <FailureRow key={row.reason} row={row} maxTasks={maxFailedTasks} />
+              ))}
+            </div>
+          </QueryBoundary>
         </Card>
 
         {/* 用户上传排行 */}
@@ -396,17 +735,27 @@ export default function DashboardPage() {
             </Space>
           }
         >
-          {usersQuery.isLoading ? (
-            <Skeleton active paragraph={{ rows: 5 }} />
-          ) : users.length > 0 ? (
+          <QueryBoundary
+            isLoading={usersQuery.isLoading}
+            isError={usersQuery.isError}
+            error={usersQuery.error}
+            onRetry={() => void usersQuery.refetch()}
+            isEmpty={users.length === 0}
+            emptyDescription="暂无上传记录"
+            skeletonRows={5}
+            errorTitle="排行数据加载失败"
+          >
             <div className="dashboard-ranking-list">
               {users.slice(0, 6).map((user) => (
-                <UserRankingRow key={user.user_id} user={user} maxFiles={maxUserFiles} />
+                <UserRankingRow
+                  key={user.user_id}
+                  user={user}
+                  maxFiles={maxUserFiles}
+                  totalFiles={rankedUserTotal}
+                />
               ))}
             </div>
-          ) : (
-            <Empty image={Empty.PRESENTED_IMAGE_SIMPLE} description="暂无上传记录" />
-          )}
+          </QueryBoundary>
         </Card>
 
         {/* 知识分类占比 */}
@@ -419,42 +768,97 @@ export default function DashboardPage() {
             </Space>
           }
         >
-          {categoriesQuery.isLoading ? (
-            <Skeleton active paragraph={{ rows: 5 }} />
-          ) : categories.length > 0 ? (
+          <QueryBoundary
+            isLoading={categoriesQuery.isLoading}
+            isError={categoriesQuery.isError}
+            error={categoriesQuery.error}
+            onRetry={() => void categoriesQuery.refetch()}
+            isEmpty={categories.length === 0}
+            emptyDescription="暂无分类数据"
+            skeletonRows={5}
+            errorTitle="分类数据加载失败"
+          >
             <div className="dashboard-category-layout">
-              <div className="dashboard-category-visual">
-                <ReactECharts option={categoryOption} className="dashboard-category-chart" />
-                <div className="dashboard-category-total">
-                  <Typography.Text type="secondary">总条目</Typography.Text>
-                  <Typography.Title level={4}>{formatNumber(categoryTotal)}</Typography.Title>
+              <section className="dashboard-category-summary" aria-label="分类概览">
+                <div className="dashboard-category-summary__total">
+                  <Typography.Text type="secondary">分类文档</Typography.Text>
+                  <Typography.Title level={3}>{formatNumber(categoryTotal)}</Typography.Title>
+                  <Typography.Text type="secondary">
+                    覆盖 {formatNumber(categories.length)} 个知识分类
+                  </Typography.Text>
                 </div>
-              </div>
-              <div className="dashboard-category-details">
-                {categories.map((row) => {
-                  const percent =
-                    categoryTotal > 0
-                      ? Math.round((row.total_files / categoryTotal) * 100)
-                      : 0;
+                <div className="dashboard-category-summary__leader">
+                  <Typography.Text type="secondary">最大分类</Typography.Text>
+                  <Typography.Text strong>{leadingCategory?.category_name ?? "-"}</Typography.Text>
+                  <Typography.Text type="secondary">
+                    {formatPercent(leadingShare)}，{formatNumber(leadingCategory?.total_files ?? 0)}{" "}
+                    条
+                  </Typography.Text>
+                </div>
+                <div className="dashboard-category-summary__stats">
+                  <span>
+                    <Typography.Text type="secondary">未分类</Typography.Text>
+                    <Typography.Text strong>{formatNumber(unclassifiedTotal)}</Typography.Text>
+                  </span>
+                  <span>
+                    <Typography.Text type="secondary">长尾分类</Typography.Text>
+                    <Typography.Text strong>
+                      {formatNumber(
+                        Math.max(rankedCategories.length - visibleCategories.length, 0),
+                      )}
+                    </Typography.Text>
+                  </span>
+                </div>
+              </section>
+              <div className="dashboard-category-composition">
+                {visibleCategories.map((row, index) => {
+                  const tone = CATEGORY_SWATCH_TONES[index % CATEGORY_SWATCH_TONES.length];
                   return (
-                    <div className="dashboard-category-row" key={row.category_id ?? row.category_name}>
-                      <div className="dashboard-category-row__header">
-                        <span className="dashboard-category-row__swatch dashboard-category-row__swatch--primary" />
-                        <Typography.Text strong>{row.category_name}</Typography.Text>
-                        <Typography.Text type="secondary">{row.total_files} 条</Typography.Text>
-                        <Typography.Text className="dashboard-category-row__percent">
-                          {percent}%
-                        </Typography.Text>
-                      </div>
-                      <Progress percent={percent} showInfo={false} />
-                    </div>
+                    <CategoryCompositionRow
+                      key={row.category_id ?? row.category_name}
+                      row={row}
+                      totalFiles={categoryTotal}
+                      tone={tone}
+                    />
                   );
                 })}
+                {remainingCategoryTotal > 0 ? (
+                  <div
+                    className="dashboard-category-composition-row dashboard-category-composition-row--muted"
+                    style={
+                      {
+                        "--category-width": `${Math.round(remainingCategoryShare * 100)}%`,
+                      } as CSSProperties
+                    }
+                  >
+                    <span
+                      className="dashboard-category-row__swatch dashboard-category-row__swatch--muted"
+                      aria-hidden="true"
+                    />
+                    <span className="dashboard-category-composition-row__copy">
+                      <Typography.Text strong>其他分类</Typography.Text>
+                      <Typography.Text type="secondary">
+                        {formatNumber(rankedCategories.length - visibleCategories.length)}{" "}
+                        个低频分类
+                      </Typography.Text>
+                    </span>
+                    <span className="dashboard-category-composition-row__value">
+                      <Typography.Text strong>
+                        {formatNumber(remainingCategoryTotal)}
+                      </Typography.Text>
+                      <Typography.Text type="secondary">
+                        {formatPercent(remainingCategoryShare)}
+                      </Typography.Text>
+                    </span>
+                    <span
+                      className="dashboard-category-composition-row__meter"
+                      aria-hidden="true"
+                    />
+                  </div>
+                ) : null}
               </div>
             </div>
-          ) : (
-            <Empty image={Empty.PRESENTED_IMAGE_SIMPLE} description="暂无分类数据" />
-          )}
+          </QueryBoundary>
         </Card>
 
         {/* 概览文件状态 */}
@@ -462,66 +866,72 @@ export default function DashboardPage() {
           className="dashboard-panel dashboard-efficiency-card dashboard-span-8"
           title="文件状态概览"
         >
-          <div className="dashboard-quick-stats">
-            <div className="dashboard-quick-stat">
-              <Typography.Text type="secondary">总文件数</Typography.Text>
-              <Typography.Title level={4}>
-                {formatNumber(overview?.total_files ?? 0)}
-              </Typography.Title>
-              <Typography.Text type="secondary">知识库全部文档</Typography.Text>
+          <QueryBoundary
+            isLoading={overviewQuery.isLoading}
+            isError={overviewQuery.isError}
+            error={overviewQuery.error}
+            onRetry={() => void overviewQuery.refetch()}
+            skeletonRows={3}
+            errorTitle="文件状态加载失败"
+          >
+            <div className="dashboard-quick-stats">
+              <div className="dashboard-quick-stat">
+                <Typography.Text type="secondary">总文件数</Typography.Text>
+                <Typography.Title level={4}>
+                  {formatNumber(overview?.total_files ?? 0)}
+                </Typography.Title>
+                <Typography.Text type="secondary">知识库全部文档</Typography.Text>
+              </div>
+              <div className="dashboard-quick-stat">
+                <Typography.Text type="secondary">已同步成功</Typography.Text>
+                <Typography.Title level={4}>
+                  {formatNumber(overview?.synced_files ?? 0)}
+                </Typography.Title>
+                <Typography.Text type="secondary">同步成功率 {syncSuccessRateStr}</Typography.Text>
+              </div>
+              <div className="dashboard-quick-stat">
+                <Typography.Text type="secondary">待审核</Typography.Text>
+                <Typography.Title level={4}>
+                  {formatNumber(overview?.pending_review_files ?? 0)}
+                </Typography.Title>
+                <Typography.Text type="secondary">等待管理员处理</Typography.Text>
+              </div>
+              <div className="dashboard-quick-stat">
+                <Typography.Text type="secondary">失败 / 风险</Typography.Text>
+                <Typography.Title level={4}>
+                  {formatNumber(overview?.failed_files ?? 0)} /{" "}
+                  {formatNumber(overview?.sensitive_files ?? 0)}
+                </Typography.Title>
+                <Typography.Text type="secondary">需关注处理</Typography.Text>
+              </div>
             </div>
-            <div className="dashboard-quick-stat">
-              <Typography.Text type="secondary">已同步成功</Typography.Text>
-              <Typography.Title level={4}>
-                {formatNumber(overview?.synced_files ?? 0)}
-              </Typography.Title>
-              <Typography.Text type="secondary">同步成功率 {syncSuccessRateStr}</Typography.Text>
-            </div>
-            <div className="dashboard-quick-stat">
-              <Typography.Text type="secondary">待审核</Typography.Text>
-              <Typography.Title level={4}>
-                {formatNumber(overview?.pending_review_files ?? 0)}
-              </Typography.Title>
-              <Typography.Text type="secondary">等待管理员处理</Typography.Text>
-            </div>
-            <div className="dashboard-quick-stat">
-              <Typography.Text type="secondary">失败 / 风险</Typography.Text>
-              <Typography.Title level={4}>
-                {formatNumber(overview?.failed_files ?? 0)} /{" "}
-                {formatNumber(overview?.sensitive_files ?? 0)}
-              </Typography.Title>
-              <Typography.Text type="secondary">需关注处理</Typography.Text>
-            </div>
-          </div>
+            <DashboardHealthTimeline points={trends} />
+          </QueryBoundary>
         </Card>
 
         {/* 系统状态 */}
         <Card className="dashboard-panel dashboard-health-card dashboard-span-4" title="系统状态">
-          <div className="dashboard-health-list">
-            <div className="dashboard-health-row">
-              <Space>
-                <span className="dashboard-text--success">
-                  <CheckCircleOutlined />
-                </span>
-                <Typography.Text strong>RAGFlow 连接</Typography.Text>
-              </Space>
-              <StatusTag kind="sync" value={overview ? "synced" : "not_synced"} />
+          <QueryBoundary
+            isLoading={readinessQuery.isLoading}
+            isError={readinessQuery.isError}
+            error={readinessQuery.error}
+            onRetry={() => void readinessQuery.refetch()}
+            skeletonRows={4}
+            errorTitle="系统状态加载失败"
+          >
+            <div className="dashboard-health-list">
+              <div className="dashboard-health-row dashboard-health-row--overall">
+                <Typography.Text strong>整体状态</Typography.Text>
+                <StatusTag kind="health" value={readiness?.status ?? "unknown"} />
+              </div>
+              {Object.entries(readiness?.dependencies ?? {}).map(([key, dep]) => (
+                <div className="dashboard-health-row" key={key}>
+                  <Typography.Text>{DEPENDENCY_LABELS[key] ?? key}</Typography.Text>
+                  <StatusTag kind="health" value={dep.status} />
+                </div>
+              ))}
             </div>
-            <div className="dashboard-health-row">
-              <Space>
-                <span className="dashboard-text--primary">
-                  <FileTextOutlined />
-                </span>
-                <Typography.Text strong>文件同步率</Typography.Text>
-              </Space>
-              <Progress
-                percent={
-                  overview ? Math.round(overview.sync_success_rate * 100) : 0
-                }
-                size="small"
-              />
-            </div>
-          </div>
+          </QueryBoundary>
         </Card>
       </div>
     </PageContainer>

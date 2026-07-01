@@ -37,7 +37,7 @@ from .schemas import (
     StatisticsUserRow,
 )
 
-ADMIN_ROLES = {"knowledge_admin", "system_admin"}
+ADMIN_ROLES = {"system_admin"}
 VALID_GROUP_BY = {"day", "week", "month"}
 VALID_SYNC_STATUS = {"synced", "failed", "syncing", "not_synced"}
 VALID_SORT_FIELDS = {

@@ -59,8 +59,36 @@ export interface UserProfile {
   role: CurrentUser["role"];
   status: string;
   email_verified: boolean;
+  department_id?: string | null;
+  department_name?: string | null;
+  department_code?: string | null;
   department: string | null;
   phone: string | null;
+  managed_department_ids?: string[];
+}
+
+export interface NotificationItem {
+  id: string;
+  type: string;
+  title: string;
+  body: string;
+  metadata: Record<string, unknown>;
+  read_at: string | null;
+  created_at: string;
+}
+
+export interface NotificationListResponse {
+  items: NotificationItem[];
+  total: number;
+  unread_count: number;
+  page: number;
+  page_size: number;
+}
+
+export interface NotificationListQuery {
+  page?: number;
+  page_size?: number;
+  unread_only?: boolean;
 }
 
 export interface FileAnalysis {
@@ -109,6 +137,9 @@ export interface KnowledgeFile {
   mime_type: string;
   size: number;
   uploader_id: string;
+  department_id?: string | null;
+  department_name?: string | null;
+  department_code?: string | null;
   department: string | null;
   category_id: string | null;
   dataset_mapping_id: string | null;
@@ -228,12 +259,43 @@ export interface AiProviderConfig {
   base_url?: string | null;
   chat_model?: string | null;
   embedding_model?: string | null;
+  vision_model?: string | null;
+  is_internal: boolean;
   enabled: boolean;
   priority: number;
+  timeout_seconds: number;
+  max_retry_count: number;
+  max_input_tokens?: number | null;
+  max_output_tokens?: number | null;
+  temperature: number;
+  top_p?: number | null;
+  has_api_key: boolean;
   api_key_masked?: string | null;
   last_test_status?: string | null;
   last_test_latency_ms?: number | null;
   last_tested_at?: string | null;
+  created_at?: string;
+  updated_at?: string;
+}
+
+export interface AiProviderPayload {
+  name: string;
+  provider_type: string;
+  base_url?: string | null;
+  api_key?: string | null;
+  clear_api_key?: boolean;
+  chat_model?: string | null;
+  embedding_model?: string | null;
+  vision_model?: string | null;
+  is_internal: boolean;
+  enabled: boolean;
+  priority: number;
+  timeout_seconds: number;
+  max_retry_count: number;
+  max_input_tokens?: number | null;
+  max_output_tokens?: number | null;
+  temperature: number;
+  top_p?: number | null;
 }
 
 export interface AiPromptTemplate {
@@ -414,6 +476,14 @@ export interface UpdateFileClassificationPayload {
   dataset_mapping_id?: string | null;
 }
 
+export interface UploadPolicy {
+  allowed_extensions: string[];
+  allow_multi_file: boolean;
+  upload_enabled: boolean;
+  max_file_size_mb: number;
+  allow_user_delete: boolean;
+}
+
 export interface UploadDocumentPayload {
   file: File;
   description?: string;
@@ -538,6 +608,14 @@ export interface DocumentListQuery {
   page_size?: number;
   status?: string;
   review_status?: string;
+}
+
+export async function getUploadPolicy(): Promise<UploadPolicy> {
+  const response = await apiClient.get<ApiEnvelope<UploadPolicy> | UploadPolicy>(
+    "/upload-policy",
+  );
+
+  return unwrapResponse(response.data);
 }
 
 export async function uploadDocument(
@@ -740,6 +818,27 @@ export async function updateAiFeature(
 ): Promise<AiFeatureConfig> {
   const response = await apiClient.patch<ApiEnvelope<AiFeatureConfig> | AiFeatureConfig>(
     `/admin/ai/features/${featureKey}`,
+    payload,
+  );
+
+  return unwrapResponse(response.data);
+}
+
+export async function createAiProvider(payload: AiProviderPayload): Promise<AiProviderConfig> {
+  const response = await apiClient.post<ApiEnvelope<AiProviderConfig> | AiProviderConfig>(
+    "/admin/ai/providers",
+    payload,
+  );
+
+  return unwrapResponse(response.data);
+}
+
+export async function updateAiProvider(
+  providerId: string,
+  payload: AiProviderPayload,
+): Promise<AiProviderConfig> {
+  const response = await apiClient.patch<ApiEnvelope<AiProviderConfig> | AiProviderConfig>(
+    `/admin/ai/providers/${providerId}`,
     payload,
   );
 
@@ -988,6 +1087,26 @@ export async function getMe(): Promise<UserProfile> {
   return unwrapResponse(response.data);
 }
 
+// ── Notification API functions ────────────────────────────────────────────────
+
+export async function listNotifications(
+  params: NotificationListQuery = {},
+): Promise<NotificationListResponse> {
+  const response = await apiClient.get<ApiEnvelope<NotificationListResponse>>("/notifications", {
+    params,
+  });
+
+  return unwrapResponse(response.data);
+}
+
+export async function markNotificationRead(notificationId: string): Promise<NotificationItem> {
+  const response = await apiClient.post<ApiEnvelope<NotificationItem>>(
+    `/notifications/${notificationId}/read`,
+  );
+
+  return unwrapResponse(response.data);
+}
+
 // ── Tag types ─────────────────────────────────────────────────────────────────
 
 export interface Tag {
@@ -1066,7 +1185,7 @@ export async function deleteTag(id: string): Promise<void> {
 
 // ── Admin user management types ───────────────────────────────────────────────
 
-export type AdminUserRole = "employee" | "knowledge_admin" | "system_admin";
+export type AdminUserRole = "employee" | "dept_admin" | "system_admin";
 
 export interface AdminUserItem {
   id: string;
@@ -1074,11 +1193,36 @@ export interface AdminUserItem {
   email: string;
   role: AdminUserRole;
   status: string;
+  department_id?: string | null;
+  department_name?: string | null;
+  department_code?: string | null;
   department: string | null;
+  managed_department_ids?: string[];
   email_verified: boolean;
   created_at: string;
   upload_count: number;
   last_upload_at: string | null;
+}
+
+export interface Department {
+  id: string;
+  name: string;
+  code: string;
+  status: "active" | "disabled";
+  created_at: string;
+  updated_at: string;
+}
+
+export interface DepartmentListResponse {
+  items: Department[];
+  total: number;
+}
+
+export interface ManagedDepartmentsResponse {
+  user_id: string;
+  managed_department_ids: string[];
+  managed_departments?: Department[];
+  departments?: Department[];
 }
 
 export interface AdminUserListResponse {
@@ -1114,6 +1258,33 @@ export async function changeUserRole(id: string, role: AdminUserRole): Promise<U
     `/users/${id}/role`,
     { role },
   );
+
+  return unwrapResponse(response.data);
+}
+
+export async function listDepartments(): Promise<DepartmentListResponse> {
+  const response = await apiClient.get<
+    ApiEnvelope<DepartmentListResponse> | DepartmentListResponse
+  >("/admin/departments");
+
+  return unwrapResponse(response.data);
+}
+
+export async function getManagedDepartments(id: string): Promise<ManagedDepartmentsResponse> {
+  const response = await apiClient.get<
+    ApiEnvelope<ManagedDepartmentsResponse> | ManagedDepartmentsResponse
+  >(`/admin/users/${id}/managed-departments`);
+
+  return unwrapResponse(response.data);
+}
+
+export async function replaceManagedDepartments(
+  id: string,
+  departmentIds: string[],
+): Promise<ManagedDepartmentsResponse> {
+  const response = await apiClient.put<
+    ApiEnvelope<ManagedDepartmentsResponse> | ManagedDepartmentsResponse
+  >(`/admin/users/${id}/managed-departments`, { department_ids: departmentIds });
 
   return unwrapResponse(response.data);
 }
@@ -1176,4 +1347,42 @@ export async function syncFile(id: string): Promise<SyncTask> {
   );
 
   return unwrapResponse(response.data);
+}
+
+export type DependencyStatus = "ok" | "error";
+
+export interface DependencyHealth {
+  status: DependencyStatus;
+  detail?: string;
+}
+
+export interface SystemReadiness {
+  status: DependencyStatus;
+  dependencies: Record<string, DependencyHealth>;
+}
+
+export interface SystemHealth {
+  status: string;
+}
+
+export function getApiBaseUrl(): string {
+  return apiClient.defaults.baseURL ?? "/api";
+}
+
+export async function getSystemHealth(): Promise<SystemHealth> {
+  const response = await apiClient.get<ApiEnvelope<SystemHealth> | SystemHealth>("/system/health");
+
+  return unwrapResponse(response.data);
+}
+
+/**
+ * 系统就绪探针（database / redis / rabbitmq / minio 真实健康）。
+ * 后端在依赖异常时返回 503，但仍带结构化 body，因此放行 503 以便展示具体异常项。
+ */
+export async function getSystemReadiness(): Promise<SystemReadiness> {
+  const response = await apiClient.get<SystemReadiness>("/system/ready", {
+    validateStatus: (status) => status === 200 || status === 503,
+  });
+
+  return response.data;
 }

@@ -12,7 +12,7 @@ from app.core.exceptions import ErrorCode
 from app.core.permissions import SystemAdminDep
 from app.core.responses import success_response
 from app.modules.user.models import User
-from app.modules.user.schemas import ChangeUserRoleRequest, UserProfile
+from app.modules.user.schemas import ChangeUserRoleRequest, SetUserDepartmentRequest, UserProfile
 
 from .service import (
     UserNotFoundError,
@@ -33,6 +33,9 @@ def _profile(user: User) -> UserProfile:
         role=user.role,
         status=user.status,
         email_verified=user.email_verified,
+        department_id=user.department_id,
+        department_name=getattr(user, "department_name", None),
+        department_code=getattr(user, "department_code", None),
         department=user.department,
         phone=user.phone,
     )
@@ -170,6 +173,29 @@ async def change_user_role(
         raise _conflict(str(exc)) from exc
     except UserNotFoundError as exc:
         raise _not_found() from exc
+    return success_response(_profile(user).model_dump(mode="json"), request)
+
+
+@router.patch("/{user_id}/department")
+async def set_user_department(
+    user_id: uuid.UUID,
+    payload: SetUserDepartmentRequest,
+    request: Request,
+    current_user: SystemAdminDep,
+    session: SessionDep,
+) -> dict[str, object]:
+    try:
+        user = await UserService.from_session(session).set_user_department(
+            actor=current_user,
+            target_id=user_id,
+            department_id=payload.department_id,
+            ip_address=_client_ip(request),
+            user_agent=_user_agent(request),
+        )
+    except UserNotFoundError as exc:
+        raise _not_found() from exc
+    except UserStateError as exc:
+        raise _conflict(str(exc)) from exc
     return success_response(_profile(user).model_dump(mode="json"), request)
 
 

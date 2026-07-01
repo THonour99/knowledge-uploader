@@ -42,8 +42,12 @@ class UserProfile(BaseModel):
     role: str
     status: str
     email_verified: bool
+    department_id: UUID
+    department_name: str | None = None
+    department_code: str | None = None
     department: str | None
     phone: str | None
+    managed_department_ids: list[UUID] = Field(default_factory=list)
 
 
 class LoginResponse(BaseModel):

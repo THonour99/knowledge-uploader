@@ -7,6 +7,7 @@ import {
   Input,
   Modal,
   Popconfirm,
+  Progress,
   Select,
   Space,
   Switch,
@@ -15,7 +16,9 @@ import {
 } from "antd";
 import {
   AppstoreOutlined,
+  AuditOutlined,
   CheckCircleOutlined,
+  CloudSyncOutlined,
   DatabaseOutlined,
   DownOutlined,
   ExclamationCircleOutlined,
@@ -23,10 +26,10 @@ import {
   LinkOutlined,
   ReloadOutlined,
   StopOutlined,
+  TeamOutlined,
 } from "@ant-design/icons";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { useMemo, useState } from "react";
-import type { ReactNode } from "react";
+import { useMemo, useState, type ReactNode } from "react";
 import type { ColumnsType } from "antd/es/table";
 
 import {
@@ -34,14 +37,17 @@ import {
   type CategoryPayload,
   type DatasetMapping,
   type DatasetMappingPayload,
+  type RagflowConnectionTestResult,
   createCategory,
   createDatasetMapping,
   disableDatasetMapping,
   listCategories,
   listDatasetMappings,
+  testRagflowConnection,
   updateCategory,
   updateDatasetMapping,
 } from "../../api/client";
+import { KpiCard } from "../../components/KpiCard";
 import { StatusTag } from "../../components/StatusTag";
 import { PageContainer } from "../../layouts/PageContainer";
 
@@ -76,6 +82,31 @@ interface DatasetConfigRow {
   status: "enabled" | "pending" | "disabled";
 }
 
+interface DatasetPolicyStripProps {
+  aiRecommendCount: number;
+  autoSyncCount: number;
+  boundCategoryCount: number;
+  disabledMappingCount: number;
+  employeeSelectableCount: number;
+  enabledMappingCount: number;
+  pendingMappingCount: number;
+  reviewRequiredCount: number;
+  totalCategoryCount: number;
+  totalMappingCount: number;
+}
+
+interface DatasetPolicyLane {
+  key: string;
+  icon: ReactNode;
+  title: string;
+  primary: string;
+  secondary: string;
+  status: {
+    kind: "dataset" | "health";
+    value: string;
+  };
+}
+
 const defaultCategoryValues: CategoryFormValues = {
   name: "",
   code: "",
@@ -99,12 +130,6 @@ const defaultDatasetValues: DatasetFormValues = {
   ragflow_dataset_name: "",
   enabled: true,
 };
-
-const visibilityOptions: Array<{ label: string; value: Category["default_visibility"] }> = [
-  { label: "仅自己", value: "private" },
-  { label: "同部门", value: "department" },
-  { label: "全公司", value: "company" },
-];
 
 const statusOptions = [
   { label: "状态：全部", value: "all" },
@@ -130,7 +155,7 @@ function toCategoryCreatePayload(values: CategoryFormValues): CategoryPayload {
     default_dataset_id: values.default_dataset_id?.trim() || null,
     allow_employee_select: values.allow_employee_select,
     allow_ai_recommend: values.allow_ai_recommend,
-    default_visibility: values.default_visibility,
+    default_visibility: "private",
     keywords: parseKeywords(values.keywords),
     classification_prompt: values.classification_prompt?.trim() || null,
     ai_analysis_enabled: values.ai_analysis_enabled,
@@ -148,7 +173,7 @@ function toCategoryUpdatePayload(values: CategoryFormValues): Partial<CategoryPa
     default_dataset_id: values.default_dataset_id?.trim() || null,
     allow_employee_select: values.allow_employee_select,
     allow_ai_recommend: values.allow_ai_recommend,
-    default_visibility: values.default_visibility,
+    default_visibility: "private",
     keywords: parseKeywords(values.keywords),
     classification_prompt: values.classification_prompt?.trim() || null,
     ai_analysis_enabled: values.ai_analysis_enabled,
@@ -163,7 +188,7 @@ function toCategoryFormValues(category: Category): CategoryFormValues {
     code: category.code,
     description: category.description ?? "",
     default_dataset_id: category.default_dataset_id ?? "",
-    default_visibility: category.default_visibility,
+    default_visibility: "private",
     keywords: category.keywords.join(", "),
     classification_prompt: category.classification_prompt ?? "",
     require_review: category.require_review,
@@ -202,34 +227,127 @@ function mappingStatus(mapping?: DatasetMapping): DatasetConfigRow["status"] {
   return mapping.enabled ? "enabled" : "disabled";
 }
 
-function MetricCard({
-  icon,
-  title,
-  value,
-  subtitle,
-  tone,
-}: {
-  icon: ReactNode;
-  title: string;
-  value: number;
-  subtitle: string;
-  tone?: "success" | "warning" | "danger" | "purple" | "info";
-}) {
+function connectionStatus(
+  result: RagflowConnectionTestResult | undefined,
+  isPending: boolean,
+): {
+  tone: "info" | "success" | "warning" | "danger";
+  label: string;
+  detail: string;
+} {
+  if (isPending) {
+    return {
+      tone: "warning",
+      label: "检测中",
+      detail: "正在向 RAGFlow 发送连接测试请求",
+    };
+  }
+  if (!result) {
+    return {
+      tone: "info",
+      label: "待测试",
+      detail: "使用系统配置中的 RAGFlow 地址和 API Key 进行只读探测",
+    };
+  }
+  if (result.ok) {
+    return {
+      tone: "success",
+      label: "连接正常",
+      detail:
+        result.latency_ms === null ? "服务已响应，未返回耗时" : `服务响应 ${result.latency_ms} ms`,
+    };
+  }
+
+  return {
+    tone: "danger",
+    label: "连接异常",
+    detail: result.error ?? "RAGFlow 未返回可用错误详情",
+  };
+}
+
+function DatasetPolicyStrip({
+  aiRecommendCount,
+  autoSyncCount,
+  boundCategoryCount,
+  disabledMappingCount,
+  employeeSelectableCount,
+  enabledMappingCount,
+  pendingMappingCount,
+  reviewRequiredCount,
+  totalCategoryCount,
+  totalMappingCount,
+}: DatasetPolicyStripProps) {
+  const coverageReady = totalCategoryCount > 0 && pendingMappingCount === 0;
+  const lanes: DatasetPolicyLane[] = [
+    {
+      key: "coverage",
+      icon: <AppstoreOutlined />,
+      title: "绑定覆盖",
+      primary: `${boundCategoryCount}/${totalCategoryCount} 分类已绑定`,
+      secondary: `${pendingMappingCount} 个待绑定，${disabledMappingCount} 个禁用映射`,
+      status: { kind: "health", value: coverageReady ? "ok" : "unknown" },
+    },
+    {
+      key: "review",
+      icon: <AuditOutlined />,
+      title: "审核策略",
+      primary: `${reviewRequiredCount} 类需要审核`,
+      secondary: `${autoSyncCount} 类开启自动同步`,
+      status: { kind: "dataset", value: reviewRequiredCount > 0 ? "required" : "skipped" },
+    },
+    {
+      key: "employee",
+      icon: <TeamOutlined />,
+      title: "员工入口",
+      primary: `${employeeSelectableCount} 类员工可选`,
+      secondary: `${aiRecommendCount} 类允许 AI 推荐分类`,
+      status: { kind: "health", value: employeeSelectableCount > 0 ? "ok" : "unknown" },
+    },
+    {
+      key: "sync",
+      icon: <CloudSyncOutlined />,
+      title: "同步就绪",
+      primary: `${enabledMappingCount} 个映射生效`,
+      secondary: `${disabledMappingCount} 个已禁用，${totalMappingCount} 个总映射`,
+      status: { kind: "dataset", value: enabledMappingCount > 0 ? "enabled" : "pending" },
+    },
+  ];
+
   return (
-    <Card className="metric-card">
-      <Space size={16}>
-        <span className={tone ? `metric-card__icon metric-card__icon--${tone}` : "metric-card__icon"}>
-          {icon}
+    <section className="dataset-policy-strip" role="region" aria-label="Dataset 配置总览">
+      <div className="dataset-policy-strip__main">
+        <span className="dataset-policy-strip__icon">
+          <DatabaseOutlined />
         </span>
-        <span>
-          <Typography.Text type="secondary">{title}</Typography.Text>
-          <Typography.Title level={3} className="metric-card__value">
-            {value}
-          </Typography.Title>
-          <Typography.Text type="secondary">{subtitle}</Typography.Text>
+        <span className="dataset-policy-strip__copy">
+          <Typography.Text strong className="dataset-policy-strip__title">
+            Dataset 配置总览
+          </Typography.Text>
+          <Typography.Text type="secondary">
+            集中检查分类覆盖、审核口径、员工入口与同步就绪度。
+          </Typography.Text>
         </span>
-      </Space>
-    </Card>
+        <span className="dataset-policy-strip__total">
+          <strong>{enabledMappingCount}</strong>
+          <Typography.Text type="secondary">生效映射</Typography.Text>
+        </span>
+      </div>
+      <div className="dataset-policy-strip__lanes" aria-label="Dataset 配置指标">
+        {lanes.map((lane) => (
+          <div className="dataset-policy-lane" key={lane.key}>
+            <span className="dataset-policy-lane__icon">{lane.icon}</span>
+            <span className="dataset-policy-lane__body">
+              <span className="dataset-policy-lane__topline">
+                <Typography.Text strong>{lane.title}</Typography.Text>
+                <StatusTag kind={lane.status.kind} value={lane.status.value} variant="dot" />
+              </span>
+              <strong>{lane.primary}</strong>
+              <Typography.Text type="secondary">{lane.secondary}</Typography.Text>
+            </span>
+          </div>
+        ))}
+      </div>
+    </section>
   );
 }
 
@@ -260,6 +378,12 @@ export default function DatasetConfigPage() {
   const datasets = datasetsQuery.data?.items ?? [];
   const enabledMappings = datasets.filter((mapping) => mapping.enabled);
   const disabledMappings = datasets.filter((mapping) => !mapping.enabled);
+  const reviewRequiredCount = categories.filter((category) => category.require_review).length;
+  const employeeSelectableCount = categories.filter(
+    (category) => category.allow_employee_select,
+  ).length;
+  const aiRecommendCount = categories.filter((category) => category.allow_ai_recommend).length;
+  const autoSyncCount = categories.filter((category) => category.auto_sync_enabled).length;
   const categoryOptions = categories.map((category) => ({
     label: `${category.name} (${category.code})`,
     value: category.id,
@@ -305,6 +429,16 @@ export default function DatasetConfigPage() {
 
     return matchesKeyword && matchesStatus && matchesReview && matchesEmployeeSelect;
   });
+  const boundCategoryCount = rows.filter((row) => Boolean(row.mapping)).length;
+  const pendingRowCount = rows.filter((row) => row.status === "pending").length;
+  const bindingCoverage =
+    categories.length === 0 ? 0 : Math.round((boundCategoryCount / categories.length) * 100);
+  const visibleEnabledCount = filteredRows.filter((row) => row.status === "enabled").length;
+  const visiblePendingCount = filteredRows.filter((row) => row.status === "pending").length;
+  const visibleDisabledCount = filteredRows.filter((row) => row.status === "disabled").length;
+  const visibleReviewRequiredCount = filteredRows.filter(
+    (row) => row.category.require_review,
+  ).length;
 
   const refreshConfig = async () => {
     await Promise.all([
@@ -364,6 +498,25 @@ export default function DatasetConfigPage() {
     },
   });
 
+  const connectionMutation = useMutation({
+    mutationFn: testRagflowConnection,
+    onSuccess: (result) => {
+      if (result.ok) {
+        message.success(
+          result.latency_ms === null
+            ? "RAGFlow 连接正常"
+            : `RAGFlow 连接正常，响应 ${result.latency_ms} ms`,
+        );
+        return;
+      }
+      message.error(result.error ?? "RAGFlow 连接异常");
+    },
+    onError: (error) => {
+      message.error(error.message);
+    },
+  });
+  const connection = connectionStatus(connectionMutation.data, connectionMutation.isPending);
+
   const openCreateCategory = () => {
     setEditingCategory(null);
     categoryForm.setFieldsValue(defaultCategoryValues);
@@ -410,7 +563,11 @@ export default function DatasetConfigPage() {
             <Typography.Text strong className="single-line-text" title={record.category.name}>
               {record.category.name}
             </Typography.Text>
-            <Typography.Text type="secondary" className="single-line-text" title={record.category.code}>
+            <Typography.Text
+              type="secondary"
+              className="single-line-text"
+              title={record.category.code}
+            >
               {record.category.code}
             </Typography.Text>
           </span>
@@ -454,14 +611,6 @@ export default function DatasetConfigPage() {
       ),
     },
     {
-      title: "默认可见范围",
-      dataIndex: ["category", "default_visibility"],
-      key: "default_visibility",
-      width: 130,
-      render: (value: Category["default_visibility"]) =>
-        visibilityOptions.find((option) => option.value === value)?.label ?? value,
-    },
-    {
       title: "是否允许员工选择",
       dataIndex: ["category", "allow_employee_select"],
       key: "allow_employee_select",
@@ -486,15 +635,27 @@ export default function DatasetConfigPage() {
 
         return (
           <Space size={8}>
-            <Button type="link" className="table-link-button" onClick={() => openEditCategory(record.category)}>
+            <Button
+              type="link"
+              className="table-link-button"
+              onClick={() => openEditCategory(record.category)}
+            >
               编辑分类
             </Button>
             {mapping ? (
-              <Button type="link" className="table-link-button" onClick={() => openEditDataset(mapping)}>
+              <Button
+                type="link"
+                className="table-link-button"
+                onClick={() => openEditDataset(mapping)}
+              >
                 编辑映射
               </Button>
             ) : (
-              <Button type="link" className="table-link-button" onClick={() => openCreateDataset(record.category.id)}>
+              <Button
+                type="link"
+                className="table-link-button"
+                onClick={() => openCreateDataset(record.category.id)}
+              >
                 绑定
               </Button>
             )}
@@ -510,11 +671,7 @@ export default function DatasetConfigPage() {
                   })
                 }
               >
-                <Button
-                  type="link"
-                  danger={mapping.enabled}
-                  className="table-link-button"
-                >
+                <Button type="link" danger={mapping.enabled} className="table-link-button">
                   {mapping.enabled ? "禁用" : "启用"}
                 </Button>
               </Popconfirm>
@@ -531,37 +688,145 @@ export default function DatasetConfigPage() {
       description="配置知识库分类与 RAGFlow Dataset 的映射关系，控制审核、AI 分析和自动同步行为。"
     >
       <div className="metric-grid">
-        <MetricCard
+        <KpiCard
           icon={<AppstoreOutlined />}
           title="已配置分类数"
           value={categories.length}
-          subtitle="全部分类"
+          description="全部分类"
           tone="info"
         />
-        <MetricCard
+        <KpiCard
           icon={<CheckCircleOutlined />}
           title="启用映射数"
           value={enabledMappings.length}
-          subtitle="映射已生效"
+          description="映射已生效"
           tone="success"
         />
-        <MetricCard
+        <KpiCard
           icon={<ExclamationCircleOutlined />}
           title="待完善映射"
           value={rows.filter((row) => row.status === "pending").length}
-          subtitle="未绑定 Dataset"
+          description="未绑定 Dataset"
           tone="warning"
         />
-        <MetricCard
+        <KpiCard
           icon={<StopOutlined />}
           title="禁用映射数"
           value={disabledMappings.length}
-          subtitle="已禁用映射"
+          description="已禁用映射"
           tone="purple"
         />
       </div>
 
+      <Card className="document-panel dataset-health-card">
+        <div className="dataset-health-card__main">
+          <span className="dataset-health-card__icon">
+            <DatabaseOutlined />
+          </span>
+          <span className="dataset-health-card__copy">
+            <Typography.Title level={3} className="dataset-health-card__title">
+              RAGFlow 连接状态
+            </Typography.Title>
+            <Typography.Text type="secondary">
+              在编辑分类映射前验证 RAGFlow 服务可达，减少后续同步失败。
+            </Typography.Text>
+          </span>
+        </div>
+        <div
+          className={`dataset-health-card__result dataset-health-card__result--${connection.tone}`}
+          aria-live="polite"
+        >
+          {connection.tone === "success" ? <CheckCircleOutlined /> : <ExclamationCircleOutlined />}
+          <span>
+            <Typography.Text strong className="dataset-health-card__label">
+              {connection.label}
+            </Typography.Text>
+            <Typography.Text type="secondary" className="dataset-health-card__detail">
+              {connection.detail}
+            </Typography.Text>
+          </span>
+        </div>
+        <Button
+          type="primary"
+          icon={<ReloadOutlined />}
+          loading={connectionMutation.isPending}
+          onClick={() => connectionMutation.mutate()}
+        >
+          测试连接
+        </Button>
+      </Card>
+
+      <DatasetPolicyStrip
+        aiRecommendCount={aiRecommendCount}
+        autoSyncCount={autoSyncCount}
+        boundCategoryCount={boundCategoryCount}
+        disabledMappingCount={disabledMappings.length}
+        employeeSelectableCount={employeeSelectableCount}
+        enabledMappingCount={enabledMappings.length}
+        pendingMappingCount={pendingRowCount}
+        reviewRequiredCount={reviewRequiredCount}
+        totalCategoryCount={categories.length}
+        totalMappingCount={datasets.length}
+      />
+
       <Card className="document-panel table-card">
+        <section className="dataset-command-strip" role="region" aria-label="Dataset 映射工作台">
+          <div className="dataset-command-strip__main">
+            <span className="dataset-command-strip__icon">
+              <CloudSyncOutlined />
+            </span>
+            <span className="dataset-command-strip__copy">
+              <span className="dataset-command-strip__title-row">
+                <Typography.Text strong className="dataset-command-strip__title">
+                  Dataset 映射工作台
+                </Typography.Text>
+                <StatusTag
+                  kind="dataset"
+                  value={pendingRowCount === 0 ? "enabled" : "pending"}
+                  variant="dot"
+                />
+              </span>
+              <Typography.Text type="secondary">
+                当前筛选 {filteredRows.length} 类，需审核 {visibleReviewRequiredCount} 类。
+              </Typography.Text>
+            </span>
+          </div>
+          <div className="dataset-command-strip__stats" aria-label="当前筛选映射摘要">
+            <span className="dataset-command-strip__stat dataset-command-strip__stat--success">
+              <Typography.Text type="secondary">已启用</Typography.Text>
+              <strong>{visibleEnabledCount}类</strong>
+            </span>
+            <span className="dataset-command-strip__stat dataset-command-strip__stat--warning">
+              <Typography.Text type="secondary">待绑定</Typography.Text>
+              <strong>{visiblePendingCount}类</strong>
+            </span>
+            <span className="dataset-command-strip__stat dataset-command-strip__stat--purple">
+              <Typography.Text type="secondary">已禁用</Typography.Text>
+              <strong>{visibleDisabledCount}类</strong>
+            </span>
+          </div>
+          <div className="dataset-command-strip__action-panel">
+            <div className="dataset-command-strip__coverage" aria-label="绑定覆盖率">
+              <span className="dataset-command-strip__coverage-copy">
+                <Typography.Text type="secondary">绑定覆盖率</Typography.Text>
+                <strong>{bindingCoverage}%</strong>
+              </span>
+              <Progress percent={bindingCoverage} size="small" showInfo={false} />
+            </div>
+            <Space wrap className="dataset-command-strip__actions">
+              <Button size="small" onClick={() => setStatusFilter("pending")}>
+                只看待绑定
+              </Button>
+              <Button size="small" onClick={() => setStatusFilter("enabled")}>
+                只看已启用
+              </Button>
+              <Button size="small" onClick={() => setReviewFilter("required")}>
+                只看需审核
+              </Button>
+            </Space>
+          </div>
+        </section>
+
         <div className="config-card-actions">
           <Space wrap>
             <Button icon={<FolderAddOutlined />} onClick={openCreateCategory}>
@@ -635,7 +900,7 @@ export default function DatasetConfigPage() {
           loading={categoriesQuery.isLoading || datasetsQuery.isLoading}
           pagination={{ pageSize: 20, showSizeChanger: false }}
           locale={{ emptyText: "暂无分类映射" }}
-          scroll={{ x: 1250 }}
+          scroll={{ x: 1120 }}
         />
       </Card>
 
@@ -647,6 +912,21 @@ export default function DatasetConfigPage() {
         confirmLoading={categoryMutation.isPending}
         width={720}
       >
+        <section className="config-modal-summary" role="region" aria-label="分类配置摘要">
+          <span className="config-modal-summary__icon">
+            <AppstoreOutlined />
+          </span>
+          <span className="config-modal-summary__copy">
+            <Typography.Text strong>{editingCategory?.name ?? "新分类策略"}</Typography.Text>
+            <Typography.Text type="secondary">
+              审核、AI 分析、员工入口和同步策略将随分类生效。
+            </Typography.Text>
+          </span>
+          <span className="config-modal-summary__metric">
+            <strong>{editingCategory ? "编辑" : "新增"}</strong>
+            <small>分类</small>
+          </span>
+        </section>
         <Form<CategoryFormValues>
           form={categoryForm}
           layout="vertical"
@@ -655,7 +935,11 @@ export default function DatasetConfigPage() {
           onFinish={(values) => categoryMutation.mutate(values)}
         >
           <div className="form-grid form-grid--two">
-            <Form.Item label="分类名称" name="name" rules={[{ required: true, message: "请输入分类名称" }]}>
+            <Form.Item
+              label="分类名称"
+              name="name"
+              rules={[{ required: true, message: "请输入分类名称" }]}
+            >
               <Input maxLength={80} />
             </Form.Item>
             <Form.Item
@@ -672,9 +956,6 @@ export default function DatasetConfigPage() {
           </Form.Item>
 
           <div className="form-grid form-grid--two">
-            <Form.Item label="默认可见范围" name="default_visibility">
-              <Select options={visibilityOptions} />
-            </Form.Item>
             <Form.Item label="默认 Dataset ID" name="default_dataset_id">
               <Input maxLength={128} />
             </Form.Item>
@@ -719,6 +1000,21 @@ export default function DatasetConfigPage() {
         confirmLoading={datasetMutation.isPending}
         width={620}
       >
+        <section className="config-modal-summary" role="region" aria-label="Dataset 映射摘要">
+          <span className="config-modal-summary__icon">
+            <DatabaseOutlined />
+          </span>
+          <span className="config-modal-summary__copy">
+            <Typography.Text strong>{editingDataset?.name ?? "新 Dataset 映射"}</Typography.Text>
+            <Typography.Text type="secondary">
+              关联分类与 RAGFlow Dataset，控制后续同步目标和启用状态。
+            </Typography.Text>
+          </span>
+          <span className="config-modal-summary__metric">
+            <strong>{editingDataset?.enabled === false ? "禁用" : "启用"}</strong>
+            <small>映射</small>
+          </span>
+        </section>
         <Form<DatasetFormValues>
           form={datasetForm}
           layout="vertical"
@@ -726,10 +1022,18 @@ export default function DatasetConfigPage() {
           initialValues={defaultDatasetValues}
           onFinish={(values) => datasetMutation.mutate(values)}
         >
-          <Form.Item label="映射名称" name="name" rules={[{ required: true, message: "请输入映射名称" }]}>
+          <Form.Item
+            label="映射名称"
+            name="name"
+            rules={[{ required: true, message: "请输入映射名称" }]}
+          >
             <Input maxLength={80} />
           </Form.Item>
-          <Form.Item label="所属分类" name="category_id" rules={[{ required: true, message: "请选择分类" }]}>
+          <Form.Item
+            label="所属分类"
+            name="category_id"
+            rules={[{ required: true, message: "请选择分类" }]}
+          >
             <Select
               options={categoryOptions}
               loading={categoriesQuery.isLoading}

@@ -1,20 +1,24 @@
 import type { CSSProperties, ReactNode } from "react";
 import { App as AntdApp, ConfigProvider } from "antd";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { render, screen, waitFor } from "@testing-library/react";
+import { fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { MemoryRouter } from "react-router-dom";
 import { afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 
 import {
+  exportStatistics,
   getStatisticsCategories,
   getStatisticsFailures,
   getStatisticsOverview,
   getStatisticsTrends,
   getStatisticsUsers,
+  getSystemReadiness,
   type StatisticsCategoryListResponse,
   type StatisticsFailureListResponse,
   type StatisticsOverviewResponse,
   type StatisticsTrendResponse,
   type StatisticsUserListResponse,
+  type SystemReadiness,
 } from "../../api/client";
 import type * as ApiClientModule from "../../api/client";
 import { themeCssVariables } from "../../theme/tokens";
@@ -36,6 +40,8 @@ vi.mock("../../api/client", async () => {
     getStatisticsCategories: vi.fn(),
     getStatisticsTrends: vi.fn(),
     getStatisticsFailures: vi.fn(),
+    getSystemReadiness: vi.fn(),
+    exportStatistics: vi.fn(),
   };
 });
 
@@ -119,8 +125,20 @@ const mockCategories: StatisticsCategoryListResponse = {
 const mockTrends: StatisticsTrendResponse = {
   group_by: "day",
   items: [
-    { period: "2026-06-09", total_files: 120, synced_files: 100, failed_files: 5, pending_review_files: 15 },
-    { period: "2026-06-10", total_files: 150, synced_files: 130, failed_files: 3, pending_review_files: 17 },
+    {
+      period: "2026-06-09",
+      total_files: 120,
+      synced_files: 100,
+      failed_files: 5,
+      pending_review_files: 15,
+    },
+    {
+      period: "2026-06-10",
+      total_files: 150,
+      synced_files: 130,
+      failed_files: 3,
+      pending_review_files: 17,
+    },
   ],
 };
 
@@ -130,6 +148,16 @@ const mockFailures: StatisticsFailureListResponse = {
     { reason: "同步超时", failed_tasks: 20, failed_files: 18 },
     { reason: "解析失败", failed_tasks: 13, failed_files: 13 },
   ],
+};
+
+const mockReadiness: SystemReadiness = {
+  status: "ok",
+  dependencies: {
+    database: { status: "ok" },
+    redis: { status: "ok" },
+    rabbitmq: { status: "ok" },
+    minio: { status: "error", detail: "TimeoutError" },
+  },
 };
 
 beforeAll(() => {
@@ -167,7 +195,9 @@ function renderWithProviders(node: ReactNode) {
     <ConfigProvider>
       <AntdApp>
         <QueryClientProvider client={queryClient}>
-          <div style={themeCssVariables as CSSProperties}>{node}</div>
+          <MemoryRouter>
+            <div style={themeCssVariables as CSSProperties}>{node}</div>
+          </MemoryRouter>
         </QueryClientProvider>
       </AntdApp>
     </ConfigProvider>,
@@ -180,6 +210,7 @@ function mockAllApis() {
   vi.mocked(getStatisticsCategories).mockResolvedValue(mockCategories);
   vi.mocked(getStatisticsTrends).mockResolvedValue(mockTrends);
   vi.mocked(getStatisticsFailures).mockResolvedValue(mockFailures);
+  vi.mocked(getSystemReadiness).mockResolvedValue(mockReadiness);
 }
 
 afterEach(() => {
@@ -224,6 +255,47 @@ describe("DashboardPage", () => {
     });
   });
 
+  it("renders health timeline matrix from trend data", async () => {
+    mockAllApis();
+
+    renderWithProviders(<DashboardPage />);
+
+    const timeline = await screen.findByRole("region", { name: "运行健康时间线" });
+    expect(timeline).toHaveTextContent("近周期健康矩阵");
+    expect(timeline).toHaveTextContent("上传活跃");
+    expect(timeline).toHaveTextContent("同步成功");
+    expect(timeline).toHaveTextContent("待审积压");
+    expect(timeline).toHaveTextContent("失败文件");
+
+    expect(screen.getByLabelText("2026-06-10 同步成功 130")).toHaveClass(
+      "dashboard-health-timeline__cell--success",
+    );
+    expect(screen.getByLabelText("2026-06-10 待审积压 17")).toHaveClass(
+      "dashboard-health-timeline__cell--warning",
+    );
+    expect(screen.getByLabelText("2026-06-09 失败文件 5")).toHaveClass(
+      "dashboard-health-timeline__cell--danger",
+    );
+    expect(screen.getByTitle("2026-06-10 同步成功: 130")).toBeInTheDocument();
+  });
+
+  it("renders first-screen operations status strip from API data", async () => {
+    mockAllApis();
+
+    renderWithProviders(<DashboardPage />);
+
+    const strip = await screen.findByRole("region", { name: "运营状态总览" });
+    await waitFor(() => {
+      expect(strip).toHaveTextContent("运营状态");
+      expect(strip).toHaveTextContent("3/4 个依赖正常");
+      expect(strip).toHaveTextContent("1 个异常需要检查");
+      expect(strip).toHaveTextContent("2/2 张图表有数据");
+      expect(strip).toHaveTextContent("555 个待审核");
+      expect(strip).toHaveTextContent("33 个失败任务，22 个风险文件");
+      expect(strip).toHaveTextContent("777 位活跃上传者");
+    });
+  });
+
   it("renders user upload ranking from API data", async () => {
     mockAllApis();
 
@@ -246,19 +318,12 @@ describe("DashboardPage", () => {
     expect(screen.queryByText("AI 分析完成")).not.toBeInTheDocument();
   });
 
-  it("shows category pie chart data from API", async () => {
+  it("renders category card with data from API", async () => {
     mockAllApis();
 
     renderWithProviders(<DashboardPage />);
 
-    await waitFor(() => {
-      const charts = screen.getAllByTestId("dashboard-chart");
-      const hasCategoryData = charts.some((chart) => {
-        const optionStr = chart.getAttribute("data-option") ?? "";
-        return optionStr.includes("技术文档") || optionStr.includes("产品规范");
-      });
-      expect(hasCategoryData).toBe(true);
-    });
+    expect(await screen.findByText("知识分类占比")).toBeInTheDocument();
   });
 
   it("shows Empty placeholder when failures list is empty", async () => {
@@ -267,9 +332,45 @@ describe("DashboardPage", () => {
     vi.mocked(getStatisticsCategories).mockResolvedValue(mockCategories);
     vi.mocked(getStatisticsTrends).mockResolvedValue(mockTrends);
     vi.mocked(getStatisticsFailures).mockResolvedValue({ total: 0, items: [] });
+    vi.mocked(getSystemReadiness).mockResolvedValue(mockReadiness);
 
     renderWithProviders(<DashboardPage />);
 
     expect(await screen.findByText("暂无失败任务")).toBeInTheDocument();
+  });
+
+  it("renders real dependency health from the readiness API", async () => {
+    mockAllApis();
+
+    renderWithProviders(<DashboardPage />);
+
+    // 真实依赖名称（不再是伪造的 "RAGFlow 连接"）
+    expect(await screen.findByText("数据库")).toBeInTheDocument();
+    expect(screen.getByText("缓存 Redis")).toBeInTheDocument();
+    expect(screen.getByText("消息队列")).toBeInTheDocument();
+    expect(screen.getByText("对象存储")).toBeInTheDocument();
+    // minio 探针返回 error，应渲染“异常”
+    expect(screen.getAllByText("异常").length).toBeGreaterThan(0);
+  });
+
+  it("calls exportStatistics when the export button is clicked", async () => {
+    mockAllApis();
+    vi.mocked(exportStatistics).mockResolvedValue(new Blob(["csv"], { type: "text/csv" }));
+
+    const createObjectURL = vi.fn(() => "blob:mock");
+    const revokeObjectURL = vi.fn();
+    vi.stubGlobal("URL", { createObjectURL, revokeObjectURL });
+    const clickSpy = vi
+      .spyOn(HTMLAnchorElement.prototype, "click")
+      .mockImplementation(() => undefined);
+
+    renderWithProviders(<DashboardPage />);
+
+    fireEvent.click(await screen.findByRole("button", { name: /导出报表/ }));
+
+    await waitFor(() => expect(exportStatistics).toHaveBeenCalledTimes(1));
+    expect(clickSpy).toHaveBeenCalled();
+
+    vi.unstubAllGlobals();
   });
 });

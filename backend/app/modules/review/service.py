@@ -5,10 +5,15 @@ from dataclasses import dataclass
 
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.core.access_scope import DepartmentAccessScope, get_department_scope_store
 from app.core.audit import record_admin_audit_log
 from app.core.config import get_settings
 from app.core.document_state import DocumentStateError, DocumentStateMachine
 from app.core.outbox import OutboxRepository
+from app.core.ragflow_runtime import (
+    is_ragflow_dataset_allowed,
+    resolve_ragflow_runtime_settings,
+)
 from app.core.runtime_config import get_config
 from app.modules.user.schemas import AuthUserRecord
 
@@ -27,7 +32,7 @@ from .schemas import (
     UpdateFileClassificationRequest,
 )
 
-ADMIN_ROLES = {"knowledge_admin", "system_admin"}
+ADMIN_ROLES = {"dept_admin", "system_admin"}
 SYSTEM_ADMIN_ROLE = "system_admin"
 VALID_VISIBILITIES = {"private", "department", "company"}
 REVIEW_RESUBMISSION_TRANSITIONS = {("rejected", "pending_review")}
@@ -462,6 +467,7 @@ class ReviewService:
         self,
         *,
         current_user: AuthUserRecord,
+        scope: DepartmentAccessScope,
         context: RequestContext,
         extension: str | None = None,
         tag_id: uuid.UUID | None = None,
@@ -470,6 +476,7 @@ class ReviewService:
         files = await self._repository.list_files(
             extension=clean_optional_text(extension),
             tag_id=tag_id,
+            department_ids=scope.query_department_ids(),
         )
         await self._record_admin_audit(
             current_user=current_user,
@@ -477,7 +484,7 @@ class ReviewService:
             target_type="file_collection",
             target_id=current_user.id,
             context=context,
-            metadata_json={"result_count": len(files)},
+            metadata_json={"result_count": len(files), **scope.audit_metadata()},
         )
         await self._session.commit()
         return files
@@ -526,12 +533,18 @@ class ReviewService:
         self,
         *,
         current_user: AuthUserRecord,
+        scope: DepartmentAccessScope,
         file_id: uuid.UUID,
         request: ReviewDecisionRequest,
         context: RequestContext,
     ) -> ReviewFileRecord:
         self._require_admin(current_user)
         file = await self._get_file_or_raise(file_id)
+        self_review_deadlock_exempt = await self._require_review_decision_permission(
+            current_user=current_user,
+            scope=scope,
+            file=file,
+        )
         category = (
             await self._get_category_or_raise(request.category_id) if request.category_id else None
         )
@@ -573,6 +586,10 @@ class ReviewService:
                 "dataset_mapping_id": str(file.dataset_mapping_id)
                 if file.dataset_mapping_id
                 else None,
+                "file_uploader_id": str(file.uploader_id),
+                "is_self_upload": current_user.id == file.uploader_id,
+                "self_review_deadlock_exempt": self_review_deadlock_exempt,
+                **scope.audit_metadata(file_department_id=file.department_id),
             },
         )
         await self._append_review_event(
@@ -585,6 +602,7 @@ class ReviewService:
                 if file.dataset_mapping_id
                 else None,
                 "ragflow_dataset_id": file.ragflow_dataset_id,
+                "file_department_id": str(file.department_id),
             },
         )
         file = await self._repository.update_file(file)
@@ -595,12 +613,18 @@ class ReviewService:
         self,
         *,
         current_user: AuthUserRecord,
+        scope: DepartmentAccessScope,
         file_id: uuid.UUID,
         reason: str,
         context: RequestContext,
     ) -> ReviewFileRecord:
         self._require_admin(current_user)
         file = await self._get_file_or_raise(file_id)
+        self_review_deadlock_exempt = await self._require_review_decision_permission(
+            current_user=current_user,
+            scope=scope,
+            file=file,
+        )
         self._transition_file(file, "rejected")
         file.review_status = "rejected"
         await self._record_audit(
@@ -609,6 +633,12 @@ class ReviewService:
             action="file.reject",
             context=context,
             reason=reason.strip(),
+            metadata_json={
+                "file_uploader_id": str(file.uploader_id),
+                "is_self_upload": current_user.id == file.uploader_id,
+                "self_review_deadlock_exempt": self_review_deadlock_exempt,
+                **scope.audit_metadata(file_department_id=file.department_id),
+            },
         )
         await self._append_review_event(
             event_type=events.REVIEW_FILE_REJECTED,
@@ -624,12 +654,14 @@ class ReviewService:
         self,
         *,
         current_user: AuthUserRecord,
+        scope: DepartmentAccessScope,
         file_id: uuid.UUID,
         request: UpdateFileClassificationRequest,
         context: RequestContext,
     ) -> ReviewFileRecord:
         self._require_admin(current_user)
         file = await self._get_file_or_raise(file_id)
+        self._require_scope_for_file(scope=scope, file=file)
         category = (
             await self._get_category_or_raise(request.category_id) if request.category_id else None
         )
@@ -667,11 +699,43 @@ class ReviewService:
                 "dataset_mapping_id": str(file.dataset_mapping_id)
                 if file.dataset_mapping_id
                 else None,
+                "file_uploader_id": str(file.uploader_id),
+                **scope.audit_metadata(file_department_id=file.department_id),
             },
         )
         file = await self._repository.update_file(file)
         await self._session.commit()
         return file
+
+    def _require_scope_for_file(
+        self,
+        *,
+        scope: DepartmentAccessScope,
+        file: ReviewFileRecord,
+    ) -> None:
+        # 越权访问他部门文件统一伪装成不存在(404), 避免 403/404 差异泄露存在性;
+        # 自审拒绝(本人上传)仍走下方 403, 因 owner 已知文件存在, 非信息泄露
+        if not scope.covers_department(file.department_id):
+            raise exceptions.file_not_found()
+
+    async def _require_review_decision_permission(
+        self,
+        *,
+        current_user: AuthUserRecord,
+        scope: DepartmentAccessScope,
+        file: ReviewFileRecord,
+    ) -> bool:
+        self._require_scope_for_file(scope=scope, file=file)
+        if current_user.id != file.uploader_id:
+            return False
+        if current_user.role == SYSTEM_ADMIN_ROLE:
+            has_reviewer = await get_department_scope_store(self._session).has_non_self_reviewer(
+                file_department_id=file.department_id,
+                uploader_id=file.uploader_id,
+            )
+            if not has_reviewer:
+                return True
+        raise exceptions.permission_denied()
 
     async def _get_tag_or_raise(self, tag_id: uuid.UUID) -> Tag:
         tag = await self._repository.get_tag(tag_id)
@@ -807,7 +871,13 @@ class ReviewService:
         current_user: AuthUserRecord,
         file: ReviewFileRecord,
     ) -> None:
-        if current_user.role in ADMIN_ROLES or file.uploader_id == current_user.id:
+        if file.uploader_id == current_user.id:
+            return
+        if current_user.role == SYSTEM_ADMIN_ROLE:
+            return
+        if current_user.role == "dept_admin" and file.department_id in set(
+            current_user.managed_department_ids
+        ):
             return
         raise exceptions.permission_denied()
 
@@ -828,8 +898,8 @@ class ReviewService:
         target_type: str,
         target_id: uuid.UUID,
     ) -> None:
-        allowed_dataset_ids = normalized_csv(get_settings().ragflow_allowed_dataset_ids)
-        if not allowed_dataset_ids or dataset_id in allowed_dataset_ids:
+        runtime_settings = await resolve_ragflow_runtime_settings()
+        if is_ragflow_dataset_allowed(dataset_id, runtime_settings):
             return
         await self._session.rollback()
         await self._record_admin_audit(
@@ -840,7 +910,7 @@ class ReviewService:
             context=context,
             metadata_json={
                 "ragflow_dataset_id": dataset_id,
-                "allowed_dataset_ids_count": len(allowed_dataset_ids),
+                "allowed_dataset_ids_count": len(runtime_settings.allowed_dataset_ids),
             },
         )
         await self._session.commit()
@@ -860,7 +930,3 @@ def clean_optional_text(value: str | None) -> str | None:
         return None
     cleaned = value.strip()
     return cleaned or None
-
-
-def normalized_csv(raw_value: str) -> set[str]:
-    return {item.strip() for item in raw_value.split(",") if item.strip()}

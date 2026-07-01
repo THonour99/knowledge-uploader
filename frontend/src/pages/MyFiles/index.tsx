@@ -32,14 +32,18 @@ import type { ColumnsType } from "antd/es/table";
 import {
   type KnowledgeFile,
   deleteFile,
-  getConfigs,
+  getUploadPolicy,
   listDocuments,
   listTags,
   submitFileForReview,
 } from "../../api/client";
+import { KpiCard, type KpiTone } from "../../components/KpiCard";
 import { StatusTag } from "../../components/StatusTag";
 import { PageContainer } from "../../layouts/PageContainer";
-import { allowedExtensionsFromConfig } from "../../utils/uploadConfig";
+import {
+  allowUserDeleteFromPolicy,
+  allowedExtensionsFromPolicy,
+} from "../../utils/uploadConfig";
 
 const { RangePicker } = DatePicker;
 
@@ -72,10 +76,10 @@ function canSubmitForReview(file: KnowledgeFile): boolean {
 
 interface MyFilesMetric {
   title: string;
-  value: string;
+  value: number;
   description: string;
   icon: ReactNode;
-  tone: "primary" | "success" | "warning" | "danger";
+  tone: KpiTone;
 }
 
 export default function MyFilesPage() {
@@ -107,9 +111,9 @@ export default function MyFilesPage() {
     queryKey: ["tags", "list"],
     queryFn: () => listTags({ enabled: true, page_size: 100 }),
   });
-  const uploadConfigQuery = useQuery({
-    queryKey: ["configs", "upload", "my-files"],
-    queryFn: () => getConfigs("upload"),
+  const uploadPolicyQuery = useQuery({
+    queryKey: ["upload-policy"],
+    queryFn: getUploadPolicy,
   });
 
   // ── delete mutation ──────────────────────────────────────────────────────────
@@ -146,11 +150,13 @@ export default function MyFilesPage() {
 
   // ── derived data ─────────────────────────────────────────────────────────────
   const allowedExtensions = useMemo(
-    () => allowedExtensionsFromConfig(uploadConfigQuery.data?.items),
-    [uploadConfigQuery.data?.items],
+    () => allowedExtensionsFromPolicy(uploadPolicyQuery.data),
+    [uploadPolicyQuery.data],
   );
   const files = filesQuery.data?.items ?? [];
-
+  const approvedCount = files.filter((file) => file.review_status === "approved").length;
+  const pendingReviewCount = files.filter((file) => file.review_status === "pending").length;
+  const syncFailedCount = files.filter((file) => syncStatus(file) === "failed").length;
   const filteredFiles = useMemo(() => {
     return files.filter((file) => {
       const normalizedKeyword = keyword.trim().toLowerCase();
@@ -179,34 +185,34 @@ export default function MyFilesPage() {
     () => [
       {
         title: "我的文件",
-        value: String(files.length),
+        value: files.length,
         description: "已上传文件总数",
         icon: <FileTextOutlined />,
         tone: "primary",
       },
       {
         title: "审核通过",
-        value: String(files.filter((file) => file.review_status === "approved").length),
+        value: approvedCount,
         description: "可进入同步流程",
         icon: <CheckCircleOutlined />,
         tone: "success",
       },
       {
         title: "待审核",
-        value: String(files.filter((file) => file.review_status === "pending").length),
+        value: pendingReviewCount,
         description: "等待管理员处理",
         icon: <WarningOutlined />,
         tone: "warning",
       },
       {
         title: "同步失败",
-        value: String(files.filter((file) => syncStatus(file) === "failed").length),
+        value: syncFailedCount,
         description: "需要重新处理",
         icon: <CloudSyncOutlined />,
         tone: "danger",
       },
     ],
-    [files],
+    [approvedCount, files.length, pendingReviewCount, syncFailedCount],
   );
 
   const tagOptions = useMemo(
@@ -217,6 +223,7 @@ export default function MyFilesPage() {
       })),
     [tagsQuery.data],
   );
+  const allowUserDelete = allowUserDeleteFromPolicy(uploadPolicyQuery.data);
 
   // ── table columns ─────────────────────────────────────────────────────────────
   const columns: ColumnsType<KnowledgeFile> = [
@@ -291,23 +298,25 @@ export default function MyFilesPage() {
               提交审核
             </Button>
           )}
-          <Popconfirm
-            title="删除文件"
-            description="确认删除该文件？此操作不可撤销。"
-            okText="确定"
-            cancelText="取消"
-            onConfirm={() => deleteMutation.mutate(record.id)}
-          >
-            <Button
-              type="text"
-              danger
-              icon={<DeleteOutlined />}
-              loading={deleteMutation.isPending && deleteMutation.variables === record.id}
-              aria-label={`删除 ${record.original_name}`}
+          {allowUserDelete && (
+            <Popconfirm
+              title="删除文件"
+              description="确认删除该文件？此操作不可撤销。"
+              okText="确定"
+              cancelText="取消"
+              onConfirm={() => deleteMutation.mutate(record.id)}
             >
-              删除
-            </Button>
-          </Popconfirm>
+              <Button
+                type="text"
+                danger
+                icon={<DeleteOutlined />}
+                loading={deleteMutation.isPending && deleteMutation.variables === record.id}
+                aria-label={`删除 ${record.original_name}`}
+              >
+                删除
+              </Button>
+            </Popconfirm>
+          )}
         </Space>
       ),
     },
@@ -326,18 +335,14 @@ export default function MyFilesPage() {
     >
       <div className="my-files-kpi-grid">
         {metrics.map((metric) => (
-          <Card className="my-files-kpi-card" key={metric.title}>
-            <div className="my-files-kpi-card__body">
-              <span className={`my-files-kpi-card__icon my-files-kpi-card__icon--${metric.tone}`}>
-                {metric.icon}
-              </span>
-              <span className="my-files-kpi-card__copy">
-                <Typography.Text type="secondary">{metric.title}</Typography.Text>
-                <Typography.Title level={3}>{metric.value}</Typography.Title>
-                <Typography.Text type="secondary">{metric.description}</Typography.Text>
-              </span>
-            </div>
-          </Card>
+          <KpiCard
+            key={metric.title}
+            icon={metric.icon}
+            title={metric.title}
+            value={metric.value}
+            description={metric.description}
+            tone={metric.tone}
+          />
         ))}
       </div>
 

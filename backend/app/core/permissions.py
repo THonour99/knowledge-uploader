@@ -12,7 +12,7 @@ from app.modules.user.schemas import AuthUserRecord
 
 class Role(StrEnum):
     EMPLOYEE = "employee"
-    KNOWLEDGE_ADMIN = "knowledge_admin"
+    DEPT_ADMIN = "dept_admin"
     SYSTEM_ADMIN = "system_admin"
 
 
@@ -42,8 +42,11 @@ def require_role(*allowed_roles: Role) -> Any:
     return Depends(dependency)
 
 
-AdminUserDep = Annotated[
+AnyAdminDep = Annotated[
     AuthUserRecord,
-    require_role(Role.KNOWLEDGE_ADMIN, Role.SYSTEM_ADMIN),
+    require_role(Role.DEPT_ADMIN, Role.SYSTEM_ADMIN),
 ]
+# Deprecated name retained for existing imports; new code should choose
+# SystemAdminDep for global settings or ScopedAdminDep for file-domain actions.
+AdminUserDep = AnyAdminDep
 SystemAdminDep = Annotated[AuthUserRecord, require_role(Role.SYSTEM_ADMIN)]

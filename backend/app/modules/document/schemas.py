@@ -40,6 +40,9 @@ class FileResponse(BaseModel):
     mime_type: str
     size: int
     uploader_id: UUID
+    department_id: UUID
+    department_name: str | None = None
+    department_code: str | None = None
     department: str | None
     category_id: UUID | None
     dataset_mapping_id: UUID | None
@@ -74,6 +77,9 @@ class FileAnalysisDetail(BaseModel):
     sensitive_risk_level: str
     quality_score: float | None = None
     extracted_text_preview: str | None
+    tables_json: list[dict[str, object]] = []
+    table_count: int = 0
+    similar_file_ids: list[str] = []
     error_message: str | None
     finished_at: datetime | None
 
@@ -82,3 +88,11 @@ class FileDetailResponse(FileResponse):
     category_name: str | None = None
     analysis: FileAnalysisDetail | None = None
     sync_error: str | None = None
+
+
+class UploadPolicyResponse(BaseModel):
+    allowed_extensions: list[str]
+    allow_multi_file: bool
+    upload_enabled: bool
+    max_file_size_mb: int
+    allow_user_delete: bool

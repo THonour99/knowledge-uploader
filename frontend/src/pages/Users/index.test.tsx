@@ -7,9 +7,14 @@ import { afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 import {
   type AdminUserItem,
   type AdminUserListResponse,
+  type DepartmentListResponse,
+  type ManagedDepartmentsResponse,
   changeUserRole,
   disableUser,
+  getManagedDepartments,
   listAdminUsers,
+  listDepartments,
+  replaceManagedDepartments,
   resetUserPassword,
 } from "../../api/client";
 import type * as ApiClientModule from "../../api/client";
@@ -25,6 +30,9 @@ vi.mock("../../api/client", async () => {
     changeUserRole: vi.fn(),
     resetUserPassword: vi.fn(),
     disableUser: vi.fn(),
+    listDepartments: vi.fn(),
+    getManagedDepartments: vi.fn(),
+    replaceManagedDepartments: vi.fn(),
   };
 });
 
@@ -45,9 +53,13 @@ const mockUser2: AdminUserItem = {
   id: "user-002",
   name: "李雪",
   email: "lixue@company.com",
-  role: "knowledge_admin",
+  role: "dept_admin",
   status: "active",
   department: "技术支持部",
+  department_id: "dept-support",
+  department_name: "技术支持部",
+  department_code: "support",
+  managed_department_ids: ["dept-support"],
   email_verified: true,
   created_at: "2026-01-02T00:00:00Z",
   upload_count: 126,
@@ -133,9 +145,27 @@ describe("UsersPage", () => {
     expect(screen.getByText("lixue@company.com")).toBeInTheDocument();
     expect(screen.getByText("陈晨")).toBeInTheDocument();
 
+    const governance = screen.getByRole("region", { name: "账号治理状态" });
+    expect(governance).toHaveTextContent("账号治理状态");
+    expect(governance).toHaveTextContent("2 个正常账号");
+    expect(governance).toHaveTextContent("当前视图 3 个账号，平台共 3 条");
+    expect(governance).toHaveTextContent("0 个待激活");
+    expect(governance).toHaveTextContent("邮箱验证完成 2/3");
+    expect(governance).toHaveTextContent("1 个部门管理员");
+    expect(governance).toHaveTextContent("1 个已配置管辖部门");
+    expect(governance).toHaveTextContent("1 个禁用/锁定");
+    expect(governance).toHaveTextContent("当前列表未应用筛选条件");
+
+    expect(screen.getByRole("heading", { name: "账号治理列表" })).toBeInTheDocument();
+    expect(screen.getByText("当前显示 3 个账号，共 3 条记录，1 个需处理")).toBeInTheDocument();
+    const roleOverview = screen.getByRole("region", { name: "角色权限概览" });
+    expect(roleOverview).toHaveTextContent("当前页 3 个账号");
+    expect(roleOverview).toHaveTextContent("部门管理员覆盖 1/1");
+    expect(screen.getAllByText("1 人")).toHaveLength(3);
+
     // Role labels
     expect(screen.getAllByText("系统管理员").length).toBeGreaterThan(0);
-    expect(screen.getAllByText("知识管理员").length).toBeGreaterThan(0);
+    expect(screen.getAllByText("部门管理员").length).toBeGreaterThan(0);
     expect(screen.getAllByText("普通员工").length).toBeGreaterThan(0);
 
     // Department column
@@ -147,7 +177,7 @@ describe("UsersPage", () => {
     expect(screen.getByText("126")).toBeInTheDocument();
 
     // Status tag for disabled user
-    expect(screen.getByText("已禁用")).toBeInTheDocument();
+    expect(screen.getAllByText("已禁用").length).toBeGreaterThan(0);
   });
 
   it("triggers re-query with search param when search input changes", async () => {
@@ -209,6 +239,9 @@ describe("UsersPage", () => {
       role: "employee",
       status: mockUser2.status,
       email_verified: mockUser2.email_verified,
+      department_id: mockUser2.department_id,
+      department_name: mockUser2.department_name,
+      department_code: mockUser2.department_code,
       department: mockUser2.department,
       phone: null,
     });
@@ -223,6 +256,9 @@ describe("UsersPage", () => {
 
     // Wait for modal to open
     await screen.findByText("变更用户角色");
+    const roleSummary = screen.getByRole("region", { name: "角色变更摘要" });
+    expect(roleSummary).toHaveTextContent("李雪");
+    expect(roleSummary).toHaveTextContent("部门管理员 至 部门管理员");
 
     // Select new role via Ant Design Select in the modal
     const roleSelect = document.querySelector(
@@ -233,6 +269,7 @@ describe("UsersPage", () => {
 
     const employeeOption = await screen.findByTitle("普通员工");
     fireEvent.click(employeeOption);
+    expect(roleSummary).toHaveTextContent("部门管理员 至 普通员工");
 
     // Click OK button in modal footer
     const footerButtons = document.querySelectorAll(
@@ -251,6 +288,63 @@ describe("UsersPage", () => {
     });
   });
 
+  it("opens managed department modal for dept admins and saves current scope", async () => {
+    const departments: DepartmentListResponse = {
+      items: [
+        {
+          id: "dept-support",
+          name: "技术支持部",
+          code: "support",
+          status: "active",
+          created_at: "2026-06-01T00:00:00Z",
+          updated_at: "2026-06-01T00:00:00Z",
+        },
+        {
+          id: "dept-hr",
+          name: "人事行政部",
+          code: "hr",
+          status: "active",
+          created_at: "2026-06-01T00:00:00Z",
+          updated_at: "2026-06-01T00:00:00Z",
+        },
+      ],
+      total: 2,
+    };
+    const managed: ManagedDepartmentsResponse = {
+      user_id: "user-002",
+      managed_department_ids: ["dept-support"],
+    };
+
+    vi.mocked(listAdminUsers).mockResolvedValue(mockUsersResponse);
+    vi.mocked(listDepartments).mockResolvedValue(departments);
+    vi.mocked(getManagedDepartments).mockResolvedValue(managed);
+    vi.mocked(replaceManagedDepartments).mockResolvedValue(managed);
+
+    renderWithProviders(<UsersPage />);
+
+    await screen.findByText("李雪");
+    const managedButtons = screen.getAllByRole("button", { name: "管辖部门" });
+    expect(managedButtons).toHaveLength(1);
+    fireEvent.click(managedButtons[0]);
+
+    expect(await screen.findByText("配置管辖部门")).toBeInTheDocument();
+    const managedSummary = screen.getByRole("region", { name: "部门管辖摘要" });
+    expect(managedSummary).toHaveTextContent("李雪");
+    expect(managedSummary).toHaveTextContent("1管辖部门");
+    await waitFor(() => {
+      expect(listDepartments).toHaveBeenCalled();
+      expect(getManagedDepartments).toHaveBeenCalledWith("user-002");
+    });
+    expect(await screen.findByText("技术支持部 (support)")).toBeInTheDocument();
+
+    const okButton = document.querySelector(".ant-modal-footer .ant-btn-primary") as HTMLElement;
+    fireEvent.click(okButton);
+
+    await waitFor(() => {
+      expect(replaceManagedDepartments).toHaveBeenCalledWith("user-002", ["dept-support"]);
+    });
+  });
+
   it("calls resetUserPassword and shows success message when reset confirmed", async () => {
     vi.mocked(listAdminUsers).mockResolvedValue(mockUsersResponse);
     vi.mocked(resetUserPassword).mockResolvedValue(undefined);
@@ -265,18 +359,17 @@ describe("UsersPage", () => {
 
     // Wait for the modal footer OK button to appear (modal is now open)
     await waitFor(() => {
-      const footerButtons = document.querySelectorAll(
-        ".ant-modal-footer .ant-btn-primary",
-      );
+      const footerButtons = document.querySelectorAll(".ant-modal-footer .ant-btn-primary");
       expect(footerButtons.length).toBeGreaterThan(0);
     });
 
     // The modal should show the user name (appears in both table and modal)
     expect(screen.getAllByText("张维").length).toBeGreaterThanOrEqual(2);
+    const resetSummary = screen.getByRole("region", { name: "密码重置摘要" });
+    expect(resetSummary).toHaveTextContent("张维");
+    expect(resetSummary).toHaveTextContent("发送一次性密码重置邮件");
 
-    const okButton = document.querySelector(
-      ".ant-modal-footer .ant-btn-primary",
-    ) as HTMLElement;
+    const okButton = document.querySelector(".ant-modal-footer .ant-btn-primary") as HTMLElement;
     fireEvent.click(okButton);
 
     await waitFor(() => {
@@ -294,9 +387,11 @@ describe("UsersPage", () => {
     // Find role filter Select combobox — look for the one with role options
     const comboboxes = screen.getAllByRole("combobox");
     // The role filter combobox should be the first one after search
-    const roleCombobox = comboboxes.find(
-      (el) => el.getAttribute("aria-label") === "角色筛选" || el.closest(".users-role-filter") !== null,
-    ) ?? comboboxes[0];
+    const roleCombobox =
+      comboboxes.find(
+        (el) =>
+          el.getAttribute("aria-label") === "角色筛选" || el.closest(".users-role-filter") !== null,
+      ) ?? comboboxes[0];
 
     fireEvent.mouseDown(roleCombobox);
 

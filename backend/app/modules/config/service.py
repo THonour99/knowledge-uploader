@@ -10,6 +10,7 @@ from app.core import runtime_config
 from app.core.audit import record_admin_audit_log
 from app.core.config import get_settings
 from app.core.outbox import OutboxRepository
+from app.core.ragflow_runtime import normalized_dataset_ids
 from app.core.security import decrypt_secret, encrypt_secret
 from app.modules.user.schemas import AuthUserRecord
 
@@ -79,6 +80,7 @@ class ConfigService:
             if definition is None or definition.group != group:
                 raise exceptions.unknown_config_key(key)
             validated[key] = self._validate_value(definition, items[key])
+        self._validate_ragflow_api_key_policy(validated)
 
         existing = await self._repository.get_by_keys(list(validated))
         changes: dict[str, object] = {}
@@ -194,6 +196,13 @@ class ConfigService:
         if not isinstance(value, list) or not all(isinstance(item, str) for item in value):
             raise exceptions.invalid_config_value(definition.key)
         return [item.strip() for item in value if item.strip()]
+
+    def _validate_ragflow_api_key_policy(self, validated: dict[str, object]) -> None:
+        api_key_value = validated.get("ragflow.api_key")
+        if not isinstance(api_key_value, str) or not api_key_value.strip():
+            return
+        if not normalized_dataset_ids(get_settings().ragflow_allowed_dataset_ids):
+            raise exceptions.invalid_config_value("ragflow.api_key")
 
     def _require_admin(self, current_user: AuthUserRecord) -> None:
         if current_user.role not in ADMIN_ROLES:

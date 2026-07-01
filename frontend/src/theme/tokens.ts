@@ -49,10 +49,10 @@ export const radius = {
 } as const;
 
 export const spacing = {
-  cardPadding: 24,
-  cardPaddingSm: 20,
-  pageGutter: 24,
-  sectionGap: 16,
+  cardPadding: 20,
+  cardPaddingSm: 16,
+  pageGutter: 18,
+  sectionGap: 12,
 } as const;
 
 export const typography = {
@@ -63,6 +63,13 @@ export const layout = {
   headerHeight: 56,
   sidebarWidth: 220,
   sidebarCollapsedWidth: 64,
+} as const;
+
+// 卡片立体感档位:rest 态用 card,hover 抬升用 cardHover,与设计稿「轻微阴影 / 悬浮卡」对齐。
+export const shadow = {
+  xs: "0 1px 2px rgba(16, 24, 40, 0.05)",
+  card: "0 2px 8px rgba(16, 24, 40, 0.06)",
+  cardHover: "0 8px 24px rgba(16, 24, 40, 0.1)",
 } as const;
 
 export const themeCssVariables = {
@@ -93,5 +100,8 @@ export const themeCssVariables = {
   "--ku-radius-tag": `${radius.tag}px`,
   "--ku-spacing-page": `${spacing.pageGutter}px`,
   "--ku-spacing-section": `${spacing.sectionGap}px`,
+  "--ku-shadow-xs": shadow.xs,
+  "--ku-shadow-card": shadow.card,
+  "--ku-shadow-card-hover": shadow.cardHover,
   "--ku-font-family": typography.fontFamily,
 } as const;

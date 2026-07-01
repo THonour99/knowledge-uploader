@@ -7,13 +7,14 @@ from fastapi import APIRouter, Depends, File, Form, HTTPException, Query, Reques
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.adapters.minio_client import MinioDocumentStorage
+from app.core.access_scope import ScopedAdminDep
 from app.core.config import Settings
 from app.core.database import get_session
 from app.core.deps import get_app_settings, get_current_user
 from app.core.exceptions import ErrorCode
-from app.core.permissions import AdminUserDep
 from app.core.ratelimit import is_within_rate_limit, upload_rate_limit_key
 from app.core.responses import success_response
+from app.core.runtime_config import get_config
 from app.modules.user.schemas import AuthUserRecord
 
 from .exceptions import DocumentError
@@ -30,6 +31,7 @@ from .service import (
 
 router = APIRouter(prefix="/api/files", tags=["files"])
 admin_router = APIRouter(prefix="/api/admin/files", tags=["files-admin"])
+policy_router = APIRouter(prefix="/api", tags=["files"])
 SessionDep = Annotated[AsyncSession, Depends(get_session)]
 SettingsDep = Annotated[Settings, Depends(get_app_settings)]
 CurrentUserDep = Annotated[AuthUserRecord, Depends(get_current_user)]
@@ -75,6 +77,9 @@ def _file_response(
         mime_type=file.mime_type,
         size=file.size,
         uploader_id=file.uploader_id,
+        department_id=file.department_id,
+        department_name=getattr(file, "department_name", None) or file.department,
+        department_code=getattr(file, "department_code", None),
         department=file.department,
         category_id=file.category_id,
         dataset_mapping_id=file.dataset_mapping_id,
@@ -112,6 +117,30 @@ def _file_detail_response(detail: FileDetailResult) -> FileDetailResponse:
         analysis=detail.analysis,
         sync_error=detail.sync_error,
     )
+
+
+@policy_router.get("/upload-policy")
+async def get_upload_policy(
+    request: Request,
+    current_user: CurrentUserDep,
+) -> dict[str, object]:
+    allowed_extensions = await get_config("upload.allowed_extensions")
+    if not isinstance(allowed_extensions, list):
+        allowed_extensions = []
+    allow_multi_file = await get_config("upload.allow_multi_file")
+    upload_enabled = await get_config("upload.enabled")
+    max_file_size_mb = await get_config("upload.max_file_size_mb")
+    allow_user_delete = await get_config("upload.allow_user_delete")
+    from .schemas import UploadPolicyResponse
+
+    response = UploadPolicyResponse(
+        allowed_extensions=allowed_extensions if isinstance(allowed_extensions, list) else [],
+        allow_multi_file=allow_multi_file is not False,
+        upload_enabled=upload_enabled is not False,
+        max_file_size_mb=max_file_size_mb if isinstance(max_file_size_mb, int) else 50,
+        allow_user_delete=allow_user_delete is True,
+    )
+    return success_response(response.model_dump(mode="json"), request)
 
 
 def _raise_rate_limited() -> NoReturn:
@@ -281,7 +310,8 @@ async def delete_file(
 async def archive_file(
     file_id: UUID,
     request: Request,
-    current_user: AdminUserDep,
+    current_user: CurrentUserDep,
+    scope: ScopedAdminDep,
     session: SessionDep,
     settings: SettingsDep,
     storage: DocumentStorageDep,
@@ -289,6 +319,7 @@ async def archive_file(
     try:
         file = await _service(session=session, settings=settings, storage=storage).archive_file(
             current_user=current_user,
+            scope=scope,
             file_id=file_id,
             client_ip=_client_ip(request),
             user_agent=_user_agent(request),
@@ -302,7 +333,8 @@ async def archive_file(
 async def reanalyze_file(
     file_id: UUID,
     request: Request,
-    current_user: AdminUserDep,
+    current_user: CurrentUserDep,
+    scope: ScopedAdminDep,
     session: SessionDep,
     settings: SettingsDep,
     storage: DocumentStorageDep,
@@ -310,6 +342,7 @@ async def reanalyze_file(
     try:
         await _service(session=session, settings=settings, storage=storage).reanalyze_file(
             current_user=current_user,
+            scope=scope,
             file_id=file_id,
             client_ip=_client_ip(request),
             user_agent=_user_agent(request),
@@ -323,7 +356,8 @@ async def reanalyze_file(
 async def reparse_file(
     file_id: UUID,
     request: Request,
-    current_user: AdminUserDep,
+    current_user: CurrentUserDep,
+    scope: ScopedAdminDep,
     session: SessionDep,
     settings: SettingsDep,
     storage: DocumentStorageDep,
@@ -332,6 +366,7 @@ async def reparse_file(
     try:
         await _service(session=session, settings=settings, storage=storage).reanalyze_file(
             current_user=current_user,
+            scope=scope,
             file_id=file_id,
             client_ip=_client_ip(request),
             user_agent=_user_agent(request),

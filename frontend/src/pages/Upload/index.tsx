@@ -6,7 +6,6 @@ import {
   Form,
   Input,
   Progress,
-  Select,
   Space,
   Switch,
   Upload,
@@ -28,14 +27,14 @@ import type { UploadFile } from "antd/es/upload/interface";
 
 import type { RcFile } from "antd/es/upload";
 
-import { type KnowledgeFile, getConfigs, uploadDocument } from "../../api/client";
+import { type KnowledgeFile, getUploadPolicy, uploadDocument } from "../../api/client";
 import { StatusTag } from "../../components/StatusTag";
 import { PageContainer } from "../../layouts/PageContainer";
 import {
-  allowMultiFileFromConfig,
-  allowedExtensionsFromConfig,
+  allowMultiFileFromPolicy,
+  allowedExtensionsFromPolicy,
   extensionAcceptValue,
-  uploadEnabledFromConfig,
+  uploadEnabledFromPolicy,
 } from "../../utils/uploadConfig";
 
 /** Maximum number of simultaneous uploads. */
@@ -56,7 +55,6 @@ interface QueueItem {
 interface UploadFormValues {
   file?: UploadFile[];
   description?: string;
-  visibility: KnowledgeFile["visibility"];
   submitAfterUpload: boolean;
   aiAnalyze: boolean;
 }
@@ -105,16 +103,16 @@ export default function UploadPage() {
   // track per-file progress and result independently of the form state.
   const [queue, setQueue] = useState<QueueItem[]>([]);
   const [isUploading, setIsUploading] = useState(false);
-  const uploadConfigQuery = useQuery({
-    queryKey: ["configs", "upload", "upload-page"],
-    queryFn: () => getConfigs("upload"),
+  const uploadPolicyQuery = useQuery({
+    queryKey: ["upload-policy"],
+    queryFn: getUploadPolicy,
   });
   const allowedExtensions = useMemo(
-    () => allowedExtensionsFromConfig(uploadConfigQuery.data?.items),
-    [uploadConfigQuery.data?.items],
+    () => allowedExtensionsFromPolicy(uploadPolicyQuery.data),
+    [uploadPolicyQuery.data],
   );
-  const allowMultiFile = allowMultiFileFromConfig(uploadConfigQuery.data?.items);
-  const uploadEnabled = uploadEnabledFromConfig(uploadConfigQuery.data?.items);
+  const allowMultiFile = allowMultiFileFromPolicy(uploadPolicyQuery.data);
+  const uploadEnabled = uploadEnabledFromPolicy(uploadPolicyQuery.data);
   const acceptValue = useMemo(() => extensionAcceptValue(allowedExtensions), [allowedExtensions]);
   const allowedExtensionText = allowedExtensions
     .map((extension) => extension.toUpperCase())
@@ -188,7 +186,7 @@ export default function UploadPage() {
           {
             file: item.file,
             description: values.description,
-            visibility: values.visibility,
+            visibility: "private",
             submitAfterUpload,
             aiAnalysisEnabled,
           },
@@ -266,7 +264,6 @@ export default function UploadPage() {
         className="upload-workspace"
         layout="vertical"
         initialValues={{
-          visibility: "private",
           submitAfterUpload: true,
           aiAnalyze: true,
         }}
@@ -312,7 +309,8 @@ export default function UploadPage() {
                 <p className="ant-upload-text">拖拽文件到此处，或点击选择文件</p>
                 <p className="ant-upload-hint">
                   支持 {allowedExtensionText}
-                  {allowMultiFile ? "，可同时选择多个文件。" : "，当前仅允许单文件上传。"}
+                  {allowMultiFile ? "，可同时选择多个文件" : "，当前仅允许单文件上传"}
+                  ，最多 {CONCURRENCY_LIMIT} 个并发上传。
                 </p>
               </Upload.Dragger>
             </Form.Item>
@@ -433,15 +431,6 @@ export default function UploadPage() {
             </Space>
           }
         >
-          <Form.Item label="可见范围" name="visibility">
-            <Select
-              options={[
-                { label: "仅自己", value: "private" },
-                { label: "同部门", value: "department" },
-                { label: "全公司", value: "company" },
-              ]}
-            />
-          </Form.Item>
           <Form.Item label="说明" name="description">
             <Input.TextArea
               rows={5}

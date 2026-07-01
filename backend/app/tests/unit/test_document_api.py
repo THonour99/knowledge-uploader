@@ -870,7 +870,7 @@ async def test_file_detail_returns_null_extras_without_records(
     assert data["sync_error"] is None
 
 
-@pytest.mark.parametrize("admin_role", ["knowledge_admin", "system_admin"])
+@pytest.mark.parametrize("admin_role", ["system_admin", "system_admin"])
 async def test_admin_views_any_file_detail_and_writes_audit(
     document_client: tuple[AsyncClient, FakeDocumentStorage],
     admin_role: str,
@@ -907,3 +907,54 @@ async def test_admin_views_any_file_detail_and_writes_audit(
     assert audit_logs[0].actor_id == admin_id
     assert audit_logs[0].target_id == UUID(file_id)
     assert audit_logs[0].target_type == "file"
+
+
+async def test_file_detail_returns_analysis_fields(
+    document_client: tuple[AsyncClient, FakeDocumentStorage],
+) -> None:
+    from app.core.database import AsyncSessionFactory
+
+    client, _storage = document_client
+    await _create_user(email="analyst@company.com", password="password123")
+    token = await _login(client, email="analyst@company.com", password="password123")
+
+    upload_response = await client.post(
+        "/api/files/upload",
+        files={"file": ("test.pdf", PDF_BYTES, "application/pdf")},
+        data={"visibility": "private"},
+        headers={"Authorization": f"Bearer {token}"},
+    )
+    assert upload_response.status_code == 201
+    file_id = upload_response.json()["data"]["id"]
+
+    async with AsyncSessionFactory() as session:
+        from app.modules.ai.models import DocumentAnalysis
+
+        analysis = DocumentAnalysis(
+            file_id=file_id,
+            status="succeeded",
+            summary="Test summary",
+            sensitive_risk_level="low",
+            quality_score=85,
+            tables_json=[{"title": "Table 1", "markdown": "| A | B |"}],
+            table_count=1,
+            similar_file_ids=["some-file-id"],
+            extracted_text="Sample extracted text for preview",
+        )
+        session.add(analysis)
+        await session.commit()
+
+    detail_response = await client.get(
+        f"/api/files/{file_id}",
+        headers={"Authorization": f"Bearer {token}"},
+    )
+    assert detail_response.status_code == 200
+    data = detail_response.json()["data"]
+    analysis_data = data["analysis"]
+    assert analysis_data is not None
+    assert analysis_data["quality_score"] == 85
+    assert analysis_data["table_count"] == 1
+    assert len(analysis_data["tables_json"]) == 1
+    assert analysis_data["tables_json"][0]["title"] == "Table 1"
+    assert analysis_data["similar_file_ids"] == ["some-file-id"]
+    assert analysis_data["summary"] == "Test summary"

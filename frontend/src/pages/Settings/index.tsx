@@ -29,7 +29,7 @@ import {
   Typography,
 } from "antd";
 import type { ColumnsType } from "antd/es/table";
-import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import { useMutation, useQueries, useQuery, useQueryClient } from "@tanstack/react-query";
 import type { ReactNode } from "react";
 
 import {
@@ -40,6 +40,7 @@ import {
   testRagflowConnection,
   updateConfigs,
 } from "../../api/client";
+import { KpiCard, type KpiTone } from "../../components/KpiCard";
 import { StatusTag } from "../../components/StatusTag";
 import { PageContainer } from "../../layouts/PageContainer";
 import "./styles.css";
@@ -97,10 +98,25 @@ function getLabel(item: ConfigItem): string {
 
 interface SettingsStatusCard {
   title: string;
-  value: string;
+  value: string | number;
   description: string;
   icon: ReactNode;
-  tone: "primary" | "success" | "warning" | "purple";
+  tone: KpiTone;
+}
+
+type SettingsTabKey = ConfigGroup | "services";
+
+interface SettingsSummaryItem {
+  key: SettingsTabKey;
+  title: string;
+  meta: string;
+  description: string;
+  icon: ReactNode;
+  tone: KpiTone;
+  status: {
+    kind: "dataset" | "health";
+    value: string;
+  };
 }
 
 interface PolicyRow {
@@ -120,34 +136,68 @@ interface ServiceRow {
   uptime: number;
 }
 
-const statusCards: SettingsStatusCard[] = [
+const configOverviewGroups: ConfigGroup[] = [
+  "basic",
+  "upload",
+  "processing",
+  "security",
+  "ragflow",
+];
+
+const settingsSummaryItems: SettingsSummaryItem[] = [
   {
-    title: "系统版本",
-    value: "v0.9.0",
-    description: "阶段 9 集成验证",
+    key: "basic",
+    title: "基础参数",
+    meta: "6 项配置",
+    description: "平台名称、语言、时区和通知渠道",
     icon: <SettingOutlined />,
     tone: "primary",
+    status: { kind: "dataset", value: "enabled" },
   },
   {
-    title: "服务健康",
-    value: "12/12",
-    description: "核心容器运行正常",
-    icon: <CheckCircleOutlined />,
+    key: "upload",
+    title: "上传策略",
+    meta: "容量与类型",
+    description: "文件白名单、配额和去重规则",
+    icon: <CloudServerOutlined />,
     tone: "success",
+    status: { kind: "dataset", value: "enabled" },
   },
   {
-    title: "安全策略",
-    value: "8 项",
-    description: "上传、登录、审计",
+    key: "processing",
+    title: "处理链路",
+    meta: "Celery 队列",
+    description: "解析、AI 分析和同步触发策略",
+    icon: <ExperimentOutlined />,
+    tone: "warning",
+    status: { kind: "health", value: "ok" },
+  },
+  {
+    key: "security",
+    title: "安全审计",
+    meta: "强制审计",
+    description: "登录锁定、邮箱验证和敏感阻断",
     icon: <SafetyCertificateOutlined />,
     tone: "purple",
+    status: { kind: "dataset", value: "enabled" },
   },
   {
-    title: "待处理配置",
-    value: "3",
-    description: "需要管理员确认",
-    icon: <BellOutlined />,
-    tone: "warning",
+    key: "ragflow",
+    title: "RAGFlow 同步",
+    meta: "密钥加密",
+    description: "连接地址、API Key 和同步重试",
+    icon: <ApiOutlined />,
+    tone: "primary",
+    status: { kind: "dataset", value: "pending" },
+  },
+  {
+    key: "services",
+    title: "服务状态",
+    meta: "4 个依赖",
+    description: "API、PostgreSQL、MinIO 与 RAGFlow",
+    icon: <CheckCircleOutlined />,
+    tone: "success",
+    status: { kind: "health", value: "ok" },
   },
 ];
 
@@ -272,22 +322,58 @@ const serviceColumns: ColumnsType<ServiceRow> = [
   },
 ];
 
-// ── Small components ──────────────────────────────────────────────────────────
+// ── Configuration command strip ───────────────────────────────────────────────
 
-function SettingsStatusCardView({ card }: { card: SettingsStatusCard }) {
+function SettingsCommandStrip({
+  activeTab,
+  items,
+  onSelectTab,
+}: {
+  activeTab: SettingsTabKey;
+  items: SettingsSummaryItem[];
+  onSelectTab: (key: SettingsTabKey) => void;
+}) {
   return (
-    <Card className="settings-status-card">
-      <div className="settings-status-card__body">
-        <span className={`settings-status-card__icon settings-status-card__icon--${card.tone}`}>
-          {card.icon}
+    <section className="settings-command-strip" aria-label="配置运行摘要">
+      <div className="settings-command-strip__main">
+        <span className="settings-command-strip__icon">
+          <SettingOutlined />
         </span>
-        <span className="settings-status-card__copy">
-          <Typography.Text type="secondary">{card.title}</Typography.Text>
-          <Typography.Title level={3}>{card.value}</Typography.Title>
-          <Typography.Text type="secondary">{card.description}</Typography.Text>
+        <span className="settings-command-strip__copy">
+          <Typography.Text strong className="settings-command-strip__title">
+            配置中心
+          </Typography.Text>
+          <Typography.Text type="secondary">
+            汇总平台基础参数、上传策略、安全审计和 RAGFlow 连接状态，点击卡片快速切换配置域。
+          </Typography.Text>
         </span>
       </div>
-    </Card>
+      <div className="settings-command-strip__cards" aria-label="配置域快捷入口">
+        {items.map((item) => (
+          <button
+            aria-pressed={activeTab === item.key}
+            className={`settings-command-card settings-command-card--${item.tone} ${
+              activeTab === item.key ? "settings-command-card--active" : ""
+            }`}
+            key={item.key}
+            onClick={() => onSelectTab(item.key)}
+            type="button"
+          >
+            <span className="settings-command-card__icon">{item.icon}</span>
+            <span className="settings-command-card__body">
+              <span className="settings-command-card__topline">
+                <Typography.Text strong>{item.title}</Typography.Text>
+                <StatusTag kind={item.status.kind} value={item.status.value} variant="dot" />
+              </span>
+              <Typography.Text className="settings-command-card__meta">{item.meta}</Typography.Text>
+              <Typography.Text type="secondary" className="settings-command-card__description">
+                {item.description}
+              </Typography.Text>
+            </span>
+          </button>
+        ))}
+      </div>
+    </section>
   );
 }
 
@@ -381,6 +467,84 @@ function buildPayload(formValues: FormValues, items: ConfigItem[]): Record<strin
   return payload;
 }
 
+function latestConfigUpdatedAt(items: ConfigItem[]): string {
+  const timestamps = items
+    .map((item) => item.updated_at)
+    .filter((value): value is string => Boolean(value));
+
+  if (timestamps.length === 0) {
+    return "暂无";
+  }
+
+  const latest = timestamps.reduce((currentLatest, value) =>
+    Date.parse(value) > Date.parse(currentLatest) ? value : currentLatest,
+  );
+
+  return new Intl.DateTimeFormat("zh-CN", {
+    month: "2-digit",
+    day: "2-digit",
+    hour: "2-digit",
+    minute: "2-digit",
+    hour12: false,
+  }).format(new Date(latest));
+}
+
+function hasConfiguredValue(item: ConfigItem): boolean {
+  if (item.is_secret || item.value_type === "secret") {
+    return Boolean(
+      item.masked_value || (typeof item.value === "string" && item.value.trim() !== ""),
+    );
+  }
+  if (item.value_type === "list") {
+    return Array.isArray(item.value) && item.value.length > 0;
+  }
+  if (typeof item.value === "string") {
+    return item.value.trim() !== "";
+  }
+  return item.value !== null && item.value !== undefined;
+}
+
+function isPendingConfigItem(item: ConfigItem): boolean {
+  return !hasConfiguredValue(item);
+}
+
+function ConfigPanelSummary({ items }: { items: ConfigItem[] }) {
+  const switchCount = items.filter((item) => item.value_type === "bool").length;
+  const secretCount = items.filter((item) => item.is_secret || item.value_type === "secret").length;
+  const listCount = items.filter((item) => item.value_type === "list").length;
+
+  return (
+    <section className="settings-config-summary" aria-label="配置面板摘要">
+      <div className="settings-config-summary__heading">
+        <Typography.Text strong>配置摘要</Typography.Text>
+        <StatusTag kind="health" value={items.length > 0 ? "ok" : "unknown"} variant="dot" />
+      </div>
+      <div className="settings-config-summary__grid">
+        <span className="settings-config-summary__item">
+          <Typography.Text type="secondary">配置项</Typography.Text>
+          <strong>{items.length} 项</strong>
+        </span>
+        <span className="settings-config-summary__item">
+          <Typography.Text type="secondary">开关项</Typography.Text>
+          <strong>{switchCount} 项</strong>
+        </span>
+        <span className="settings-config-summary__item">
+          <Typography.Text type="secondary">密钥项</Typography.Text>
+          <strong>{secretCount} 项</strong>
+        </span>
+        <span className="settings-config-summary__item">
+          <Typography.Text type="secondary">列表项</Typography.Text>
+          <strong>{listCount} 项</strong>
+        </span>
+        <span className="settings-config-summary__item settings-config-summary__item--wide">
+          <Typography.Text type="secondary">最近更新</Typography.Text>
+          <strong>{latestConfigUpdatedAt(items)}</strong>
+        </span>
+      </div>
+    </section>
+  );
+}
+
 // ── Generic config panel ──────────────────────────────────────────────────────
 
 interface ConfigPanelProps {
@@ -461,6 +625,7 @@ function ConfigPanel({ group, cardTitle, dangerConfirm = false }: ConfigPanelPro
 
   return (
     <Card className="settings-panel" title={cardTitle}>
+      <ConfigPanelSummary items={items} />
       <Alert
         type="info"
         showIcon
@@ -557,6 +722,7 @@ function RagflowPanel() {
   return (
     <div className="settings-panel-stack">
       <Card className="settings-panel" title="RAGFlow 配置">
+        <ConfigPanelSummary items={items} />
         <Alert
           type="info"
           showIcon
@@ -671,6 +837,93 @@ function ServiceSettingsPanel() {
 
 export default function SettingsPage() {
   const queryClient = useQueryClient();
+  const [activeTab, setActiveTab] = useState<SettingsTabKey>("basic");
+  const overviewQueries = useQueries({
+    queries: configOverviewGroups.map((group) => ({
+      queryKey: ["configs", group] as const,
+      queryFn: () => getConfigs(group),
+      staleTime: 30_000,
+    })),
+  });
+  const overviewResults = configOverviewGroups.map((group, index) => ({
+    group,
+    query: overviewQueries[index],
+  }));
+  const loadedGroupCount = overviewResults.filter(({ query }) => Boolean(query.data)).length;
+  const hasOverviewError = overviewResults.some(({ query }) => query.isError);
+  const hasOverviewLoading = overviewResults.some(({ query }) => query.isLoading);
+  const overviewItems = overviewResults.flatMap(({ query }) => query.data?.items ?? []);
+  const pendingConfigCount = overviewItems.filter(isPendingConfigItem).length;
+  const secretConfigCount = overviewItems.filter(
+    (item) => item.is_secret || item.value_type === "secret",
+  ).length;
+  const switchConfigCount = overviewItems.filter((item) => item.value_type === "bool").length;
+  const securityItems =
+    overviewResults.find(({ group }) => group === "security")?.query.data?.items ?? [];
+  const enabledSecuritySwitches = securityItems.filter(
+    (item) => item.value_type === "bool" && item.value === true,
+  ).length;
+  const securitySwitchCount = securityItems.filter((item) => item.value_type === "bool").length;
+  const statusCards: SettingsStatusCard[] = [
+    {
+      title: "配置域",
+      value: `${loadedGroupCount}/${configOverviewGroups.length}`,
+      description: hasOverviewError
+        ? "部分配置读取失败"
+        : hasOverviewLoading
+          ? "配置读取中"
+          : "配置已同步",
+      icon: <SettingOutlined />,
+      tone: hasOverviewError ? "danger" : "primary",
+    },
+    {
+      title: "配置项",
+      value: overviewItems.length,
+      description: `${switchConfigCount} 个开关 / ${secretConfigCount} 个密钥`,
+      icon: <CheckCircleOutlined />,
+      tone: "success",
+    },
+    {
+      title: "安全策略",
+      value:
+        securitySwitchCount > 0
+          ? `${enabledSecuritySwitches}/${securitySwitchCount}`
+          : `${securityItems.length} 项`,
+      description: "邮箱验证、审核与敏感阻断",
+      icon: <SafetyCertificateOutlined />,
+      tone: "purple",
+    },
+    {
+      title: "待处理配置",
+      value: pendingConfigCount,
+      description: pendingConfigCount > 0 ? "需要管理员确认" : "无待处理项",
+      icon: <BellOutlined />,
+      tone: pendingConfigCount > 0 ? "warning" : "info",
+    },
+  ];
+  const commandItems = settingsSummaryItems.map((item) => {
+    if (item.key === "services") {
+      return item;
+    }
+
+    const result = overviewResults.find(({ group }) => group === item.key);
+    const configItems = result?.query.data?.items ?? [];
+    const groupPendingCount = configItems.filter(isPendingConfigItem).length;
+
+    return {
+      ...item,
+      meta: result?.query.isError
+        ? "读取失败"
+        : result?.query.isLoading
+          ? "加载中"
+          : `${configItems.length} 项配置`,
+      status: result?.query.isError
+        ? ({ kind: "health", value: "error" } as const)
+        : groupPendingCount > 0
+          ? ({ kind: "dataset", value: "pending" } as const)
+          : ({ kind: "dataset", value: "enabled" } as const),
+    };
+  });
 
   function handleReload() {
     void queryClient.invalidateQueries({ queryKey: ["configs"] });
@@ -690,12 +943,23 @@ export default function SettingsPage() {
     >
       <div className="settings-status-grid">
         {statusCards.map((card) => (
-          <SettingsStatusCardView key={card.title} card={card} />
+          <KpiCard
+            key={card.title}
+            icon={card.icon}
+            title={card.title}
+            value={card.value}
+            description={card.description}
+            tone={card.tone}
+          />
         ))}
       </div>
 
+      <SettingsCommandStrip activeTab={activeTab} items={commandItems} onSelectTab={setActiveTab} />
+
       <Tabs
+        activeKey={activeTab}
         className="settings-tabs"
+        onChange={(key) => setActiveTab(key as SettingsTabKey)}
         items={[
           {
             key: "basic",

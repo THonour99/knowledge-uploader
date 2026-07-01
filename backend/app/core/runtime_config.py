@@ -23,8 +23,8 @@ from app.core.security import decrypt_secret
 
 logger = structlog.get_logger(__name__)
 
-DEFAULT_TTL_SECONDS = 60.0
-GROUP_TTL_SECONDS: dict[str, float] = {"security": 30.0}
+DEFAULT_TTL_SECONDS = 15.0
+GROUP_TTL_SECONDS: dict[str, float] = {"security": 5.0}
 
 _SYSTEM_CONFIGS = sa.table(
     "system_configs",

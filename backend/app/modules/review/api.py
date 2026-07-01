@@ -6,6 +6,7 @@ from uuid import UUID
 from fastapi import APIRouter, Depends, HTTPException, Query, Request, Response
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.core.access_scope import ScopedAdminDep
 from app.core.database import get_session
 from app.core.deps import get_current_user
 from app.core.permissions import AdminUserDep
@@ -106,6 +107,9 @@ def _file_response(file: ReviewFileRecord) -> FileResponse:
         mime_type=file.mime_type,
         size=file.size,
         uploader_id=file.uploader_id,
+        department_id=file.department_id,
+        department_name=file.department,
+        department_code=None,
         department=file.department,
         category_id=file.category_id,
         dataset_mapping_id=file.dataset_mapping_id,
@@ -386,7 +390,8 @@ async def delete_dataset_mapping(
 @router.get("/api/review/files")
 async def list_review_files(
     request: Request,
-    current_user: AdminUserDep,
+    current_user: CurrentUserDep,
+    scope: ScopedAdminDep,
     session: SessionDep,
     extension: Annotated[str | None, Query()] = None,
     tag_id: Annotated[UUID | None, Query()] = None,
@@ -394,6 +399,7 @@ async def list_review_files(
     try:
         files = await _service(session).list_review_files(
             current_user=current_user,
+            scope=scope,
             context=_context_from(request),
             extension=extension,
             tag_id=tag_id,
@@ -427,12 +433,14 @@ async def approve_file(
     file_id: UUID,
     payload: ReviewDecisionRequest,
     request: Request,
-    current_user: AdminUserDep,
+    current_user: CurrentUserDep,
+    scope: ScopedAdminDep,
     session: SessionDep,
 ) -> dict[str, object]:
     try:
         file = await _service(session).approve_file(
             current_user=current_user,
+            scope=scope,
             file_id=file_id,
             request=payload,
             context=_context_from(request),
@@ -447,12 +455,14 @@ async def reject_file(
     file_id: UUID,
     payload: RejectFileRequest,
     request: Request,
-    current_user: AdminUserDep,
+    current_user: CurrentUserDep,
+    scope: ScopedAdminDep,
     session: SessionDep,
 ) -> dict[str, object]:
     try:
         file = await _service(session).reject_file(
             current_user=current_user,
+            scope=scope,
             file_id=file_id,
             reason=payload.reason,
             context=_context_from(request),
@@ -467,12 +477,14 @@ async def update_file_classification(
     file_id: UUID,
     payload: UpdateFileClassificationRequest,
     request: Request,
-    current_user: AdminUserDep,
+    current_user: CurrentUserDep,
+    scope: ScopedAdminDep,
     session: SessionDep,
 ) -> dict[str, object]:
     try:
         file = await _service(session).update_file_classification(
             current_user=current_user,
+            scope=scope,
             file_id=file_id,
             request=payload,
             context=_context_from(request),

@@ -430,7 +430,7 @@ async def test_admin_archives_approved_file_and_emits_event(
     client, _storage = lifecycle_client
     owner_id = await _create_user(email="archived@company.com", password="password123")
     admin_id = await _create_user(
-        email="archiver@company.com", password="password123", role="knowledge_admin"
+        email="archiver@company.com", password="password123", role="system_admin"
     )
     admin_token = await _login(client, email="archiver@company.com", password="password123")
     file_id = await _create_file_row(
@@ -448,13 +448,15 @@ async def test_admin_archives_approved_file_and_emits_event(
     assert response.json()["data"]["status"] == "disabled"
     assert await _file_status(file_id) == "disabled"
     payloads = await _outbox_payloads("document.file.archived")
-    assert payloads == [
-        {
-            "file_id": str(file_id),
-            "ragflow_document_id": "rf-doc-9",
-            "keep_remote": True,
-        }
-    ]
+    assert len(payloads) == 1
+    payload = payloads[0]
+    assert payload["file_id"] == str(file_id)
+    assert payload["ragflow_document_id"] == "rf-doc-9"
+    assert payload["keep_remote"] is True
+    assert payload["actor_role"] == "system_admin"
+    assert payload["scope_all_departments"] is True
+    assert payload["actor_department_ids"] == []
+    assert payload["file_department_id"] == "00000000-0000-0000-0000-000000000001"
     audit_logs = await _audit_logs("file.archive")
     assert len(audit_logs) == 1
     assert audit_logs[0][0] == admin_id

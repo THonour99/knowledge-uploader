@@ -1,204 +1,147 @@
-# CLAUDE.md — Knowledge Uploader
+# CLAUDE.md
 
-> 项目级 AI 工程师规则文件。每次工作开始前必读。
+This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
 
-## 1. 项目一句话
+## 项目概述
 
-公司员工通过 Web 上传文档 → 校验/去重/可选 AI 分析 → 管理员审核 → 同步到 RAGFlow → 喂给钉钉客服机器人。
+Knowledge Uploader — 公司内部知识库文件贡献与 RAGFlow 同步平台。员工通过 Web 上传文档，平台完成文件校验、去重、AI 分析、管理员审核、RAGFlow Dataset 同步，最终供钉钉客服机器人检索。前端不直接访问 RAGFlow 或 AI Provider，所有外部密钥只在后端和 Worker 环境中使用。
 
-## 2. 必读文档（按优先级）
-
-1. `knowledge_uploader_docs/02_ARCHITECTURE_最终架构设计.md` — 架构定版
-2. `knowledge_uploader_docs/03_BACKEND_SPEC_后端开发规范.md` — 后端模块边界
-3. `knowledge_uploader_docs/05_DATABASE_API_SPEC_数据库与API规范.md` — 表与 API
-4. `knowledge_uploader_docs/07_DEPLOYMENT_ENV_部署与环境配置.md` — 12 个服务
-5. `knowledge_uploader_docs/08_TASK_BREAKDOWN_开发任务拆解.md` — 9 阶段任务
-6. `knowledge_platform_design_package/design.md` — UI 视觉权威源（实施后位于 `docs/design/`）
-7. `docs/spark/2026-06-04-p0-implementation-supplement.md` — 跨平台 / 事件总线 / 目录 / 版本锁 / 前端设计落地
-
-## 3. 项目根与目录
-
-- **项目根**：当前工作目录 `E:\知识库系统搭建\RAGFlow\`（即 `.claude/` 所在目录）
-- 后端：`backend/`
-- 前端：`frontend/`
-- 配置：`docker-compose.yml` + `nginx/` + `deploy/`
-- 文档：`knowledge_uploader_docs/`（spec）、`knowledge_platform_design_package/`（设计稿，将迁移到 `docs/design/`）、`docs/spark/`（补充 spec）
-
-## 4. 架构红线（不可逾越）
-
-- 不使用 SQLite。数据库统一 **PostgreSQL 16**。
-- 不使用本地文件系统作为正式存储。文件统一 **MinIO**。
-- 不使用 FastAPI BackgroundTasks 承担核心长任务。长任务统一 **Celery + RabbitMQ**。
-- 前端不直接访问 RAGFlow、AI 模型。
-- RAGFlow API Key 与 AI Provider API Key **绝不返回前端**，**绝不打日志**。
-- 文件状态机变更只能通过 service 层方法，不能直接 update ORM。
-- 所有管理员操作必须写 `audit_logs`。
-- AI 关闭时（`AI_ANALYSIS_ENABLED=false`），文件不能进入任何 AI 相关状态。
-
-## 5. 跨平台规则（Windows 本机 → DGX Spark ARM64 生产）
-
-- 路径用 `pathlib.Path`，禁止字符串拼接。
-- 文件读写明确 `encoding="utf-8"`。
-- 行尾全部 LF（`.gitattributes` 强制）。
-- 新加 Python 依赖前必须检查 ARM64 wheel：`invoke check-arm64`。
-- 禁用清单：`psycopg2*`、`python-magic*`、`mysqlclient`、`pycrypto`、`m2crypto`。
-- 文件名清洗必须过滤 Windows 保留名（CON / PRN / AUX / NUL / COM* / LPT*）。
-- Dockerfile 必须 `--platform=$BUILDPLATFORM`，base image 必须官方多架构。
-
-## 6. 模块边界（硬规则）
-
-```
-modules/<module>/
-├── api.py / schemas.py / models.py
-├── repository.py / service.py
-├── events.py / handlers.py
-├── permissions.py / tasks.py / exceptions.py
-```
-
-- ❌ 禁止跨模块 `from app.modules.X.service import ...`
-- ❌ 禁止跨模块 `from app.modules.X.repository import ...`
-- ✅ 允许跨模块 `from app.modules.X.schemas import ...`
-- ✅ 模块间通信只走：(1) 事件总线 (2) Celery task (3) 共享 schemas
-- `ruff` 配置中已 ban 跨模块 service import，违规 CI 阻塞
-
-## 7. 域事件规则
-
-- 模块发布事件用 `event_outbox` 表（同事务），由 `outbox-dispatcher` 投递 RabbitMQ
-- 模块订阅事件用 `@event_handler(EventClass)` 装饰器，定义在 `handlers.py`
-- 事件命名：`<module>.<aggregate>.<action>`（routing key）
-- 核心事件清单：`UserRegistered`, `UserVerified`, `FileUploaded`, `TextExtracted`, `FileAnalyzed`, `SensitiveDetected`, `FileSubmittedForReview`, `FileApproved`, `FileRejected`, `RAGFlowDocumentUploaded`, `RAGFlowParseStarted`, `RAGFlowParseCompleted`, `RAGFlowParseFailed`, `ConfigChanged`
-
-## 8. 文件状态机硬规则
-
-完整 17 状态见 `05_DATABASE_API_SPEC §2`。规则：
-
-- 状态变更只能通过 `DocumentStateMachine.transition(from, to)` 调用
-- AI 关闭：跳过 `extracting_text` / `analysis_queued` / `analyzing` / `analysis_failed` / `analyzed`
-- 敏感等级 `critical`：默认阻止同步 RAGFlow
-- 同一文件不能同时存在多个 `ragflow_upload` 任务（用 Redis 分布式锁，key 模式 `lock:sync:{file_id}`）
-
-## 9. 安全规则
-
-- 密码：Argon2id（`argon2-cffi`）
-- JWT：HS256，secret 至少 32 字节随机；过期 24h（可配）
-- API Key 字段级加密：Fernet（key 从环境变量 `ENCRYPTION_KEY` 加载）
-- 邮箱验证 token / 重置密码 token：入库前 SHA256 hash，原文只在邮件中出现一次
-- 文件上传：扩展名白名单 + `filetype` 二次校验 + 文件名清洗 + 大小限制
-- 限流：登录失败 5 次锁 15 分钟；上传 10 次/分钟/用户
-- 日志中所有 API Key 字段统一脱敏为 `sk-****abcd`
-
-## 10. 代码规范
-
-### Python
-- `ruff` (lint + format) + `mypy --strict`
-- 行宽 100，字符串引号统一 `"`
-- 导入顺序：stdlib → 第三方 → app（ruff isort 规则集）
-- 函数注解：所有 public 函数必须有完整类型注解
-- 异步：API 路由、Service、Repository 全 `async def`，DB 用 `AsyncSession`
-- 日志：用 `structlog.get_logger()`，不能 `print()`
-
-### TypeScript / React
-- `tsconfig.json` strict 模式
-- UI 状态用 Zustand，服务端状态用 TanStack Query
-- 所有 API 调用走 `api/client.ts`（含 JWT 注入和错误处理）
-- 状态展示走 `<StatusTag>` 组件，不可硬编码颜色
-- 颜色 / 圆角 / 间距走 `theme/tokens.ts`
-
-## 11. 测试要求
-
-- 后端：pytest + pytest-asyncio + httpx + factory-boy
-- 前端：Vitest + React Testing Library
-- 覆盖：core / utils / repository 必有单测；每个 API 至少 1 happy + 1 failure
-- E2E：上传 → 审核 → RAGFlow 同步全链路（mock RAGFlow + mock LLM）
-- 测试不依赖外网（CI 无外网）
-- 命令：`invoke test`
-
-## 12. 提交规范
-
-### 格式
-
-```text
-type(scope):中文描述
-```
-
-- **type**（英文，必填）：`feat` / `fix` / `refactor` / `docs` / `test` / `chore` / `perf` / `style` / `ci` / `build` / `revert`
-- **scope**（英文，可选）：模块或子系统名，如 `auth` / `document` / `ragflow` / `ai` / `claude` / `git` / `infra` / `spark` / `design` / `spec`
-- **冒号 + 中文描述**（中文，必填）：简洁、动词开头、不带句号
-
-### 示例
-
-```text
-feat(auth): 添加邮箱验证流程
-fix(document): 修复连续 5 次失败登录未锁定的问题
-refactor(ragflow): 把 RagflowClient 拆分为接口与实现
-docs(spark): 添加 P0 实施补充 spec v1.1
-chore(claude): 添加 .claude/ 骨架（rules/agents/skills/hooks）
-test(ai): 补全 Prompt 模板渲染单测
-```
-
-### 其他规则
-
-- AI 完成代码必须主动提交（每个原子变更立刻 commit），不要堆积
-- 一个提交一个原子变更（小到能独立 review 和回滚）
-- DB schema 变更必须含 Alembic 迁移
-- 新增 Python 依赖必须 `invoke check-arm64` 通过
-
-### 不允许
-
-- ❌ 英文描述（如 `feat(auth): add email verification`）
-- ❌ 缺 type（如 `添加注册流程`）
-- ❌ 模糊 type（如 `update / improve / change`）
-- ❌ 句末有句号
-- ❌ 多个原子变更塞一个 commit
-- ❌ 任何 trailer（`Co-Authored-By:` / `Signed-off-by:` / `Reviewed-by:` 等都不要带）
-
-## 13. 阶段化开发（不可跳）
-
-按 `knowledge_uploader_docs/08_TASK_BREAKDOWN.md` 9 阶段顺序推进。每阶段必须：
-
-- `invoke up` 能起所有容器
-- `/api/system/health` 返回 200
-- Alembic 迁移可逐步前进
-- 阶段验收点全部通过
-- 提交一次 PR 等 review
-
-## 14. 常用命令
+## 常用命令
 
 ```powershell
-# 启停
-invoke up
+# 本地开发（Docker 只跑基础设施，FastAPI + Vite 在宿主机热更新）
+scripts\dev.bat                    # 启动基础设施 + 后端 + 前端
+scripts\dev.bat worker             # 额外启动 Outbox Dispatcher + Celery Worker + Beat
+scripts\dev-stop.bat               # 停止开发基础设施
+
+# Docker 全量启停
+invoke up                          # docker compose up -d --build
 invoke down
-invoke logs --service=backend-api
 
-# 数据库
-invoke migrate --msg="add users"   # 创建迁移
-invoke migrate                      # 升级到最新
+# 数据库迁移
+invoke migrate                     # alembic upgrade head
+invoke migrate --msg="add users"   # alembic revision --autogenerate
 
-# 测试与质量
-invoke test
-invoke test -k "test_login"
-invoke lint
-invoke fmt
+# 测试
+invoke test-backend                # pytest（容器内）
+invoke test-backend -k "login"     # 按关键字过滤
+invoke test-frontend               # vitest --run（本地 npm）
+invoke test                        # 后端 + 前端
 
-# 跨架构
-invoke check-arm64
-invoke build-arm64 --version=0.1.0
+# Lint
+invoke lint-backend                # ruff check + 模块边界检查 + mypy --strict
+invoke lint-frontend               # eslint
+invoke lint                        # 后端 + 前端
+
+# 格式化
+invoke fmt                         # ruff format + prettier
+
+# 提交前门禁
+invoke check                       # lint + test
+invoke ship                        # check + check-arm64（发布前）
 ```
 
-## 15. 找帮助前先看
+前端单独命令（在 `frontend/` 目录下或使用 `--prefix`）：
 
-- 文件状态相关：`05_DATABASE_API_SPEC §2` + `03_BACKEND_SPEC §5`
-- API 设计：`05_DATABASE_API_SPEC §3`
-- AI Provider：`06_AI_RAGFLOW_SPEC §2`
-- 部署/环境：`07_DEPLOYMENT_ENV`
-- 前端设计：`docs/design/design.md` + 补充 spec §9
-- 测试 fixture：`backend/app/tests/conftest.py`
-- 跨平台坑：补充 spec §2
-- 域事件：补充 spec §3
+```powershell
+npm --prefix frontend run dev      # Vite dev server (localhost:5173)
+npm --prefix frontend run build    # tsc --noEmit + vite build
+npm --prefix frontend run test     # vitest (watch 模式)
+npm --prefix frontend run test:run # vitest --run
+npm --prefix frontend run lint     # eslint
+```
 
-## 16. CLAUDE.md 维护原则
+## 架构
 
-- 每完成一个阶段后 review 一次
-- 发现 AI 反复犯同样错误 → 加入 §4-§10 对应规则
-- 不写"建议"类规则，只写"必须 / 禁止"
-- 详细 path 特定规则在 `.claude/rules/` 中按 paths frontmatter 加载，不要塞到此文件
+### 技术栈
+
+- **后端**: FastAPI + SQLAlchemy (async) + Alembic + Celery + Kombu
+- **前端**: React 18 + TypeScript + Ant Design 5 + React Query + Zustand + Vite
+- **基础设施**: PostgreSQL 16 + RabbitMQ + Redis + MinIO + Nginx
+
+### 后端分层（模块化单体）
+
+```
+backend/app/
+├── main.py              # FastAPI 入口，注册所有模块路由
+├── core/                # 跨模块基础设施
+│   ├── config.py        # pydantic-settings，全量环境变量
+│   ├── database.py      # async engine + session factory
+│   ├── permissions.py   # Role enum (employee/dept_admin/system_admin)，require_role 依赖
+│   ├── document_state.py # 文档状态机（全量状态转移白名单）
+│   ├── events.py        # 领域事件总线 (DomainEvent → @event_handler)
+│   ├── outbox.py        # event_outbox 表 + OutboxRepository
+│   ├── security.py      # JWT、密码哈希
+│   └── deps.py          # FastAPI 依赖注入
+├── modules/             # 业务模块（每个标准 9 文件）
+│   ├── auth/            # 注册登录、邮箱验证、密码重置、JWT
+│   ├── user/            # 用户管理、角色变更
+│   ├── document/        # 文件上传、状态流转、分类
+│   ├── review/          # 审核流程
+│   ├── ragflow/         # RAGFlow API 集成、同步任务
+│   ├── ai/              # AI 分析、Provider 配置
+│   ├── config/          # 运行时系统配置
+│   ├── department/      # 部门管理
+│   ├── statistics/      # 统计聚合
+│   ├── audit/           # 审计日志
+│   └── notification/    # 邮件通知
+├── adapters/            # 外部服务适配器 (email, llm, minio, ragflow, storage)
+├── workers/             # Celery app + Outbox Dispatcher
+├── db/                  # Base model、migrations、models 注册
+└── tests/               # unit/ + integration/ + e2e/ + red_team/
+```
+
+**每个模块标准结构**: `api.py`（路由）→ `schemas.py`（Pydantic DTO）→ `service.py`（业务编排）→ `repository.py`（数据访问）→ `models.py`（ORM）→ `events.py`（域事件）→ `handlers.py`（事件处理）→ `tasks.py`（Celery 任务）→ `permissions.py`/`exceptions.py`（可选）。
+
+### 模块边界规则
+
+**跨模块禁止直接 import `service.py` 和 `repository.py`**（ruff TID251 强制）。模块间通信只能通过：
+- 领域事件（event_outbox → outbox_dispatcher → handlers）
+- Celery task
+- 共享 schemas
+
+### 事件驱动架构
+
+Service 层写 `event_outbox` 表 → `outbox_dispatcher` 轮询发布 → `handlers.py` 消费 → 可能发 Celery task。Celery 路由按模块分队列：`document_queue`、`ai_queue`、`ragflow_queue`、`notification_queue`。
+
+### 前端结构
+
+```
+frontend/src/
+├── api/client.ts        # Axios 封装，统一 ApiEnvelope<T>，401 自动登出
+├── store/               # Zustand (auth.store.ts, ui.store.ts)，localStorage 持久化
+├── router/              # React Router v6，lazy loading，RequireAuth/RoleGuard 守卫
+├── pages/               # 按功能分目录，每目录含 index.tsx + styles.css
+├── layouts/             # AppShell + Sidebar + TopHeader + PageContainer
+├── components/          # 共享组件 (QueryBoundary, StatusTag, KpiCard, Sparkline)
+├── theme/               # Ant Design 主题 token + CSS 变量 (--ku-color-*, --ku-spacing-*)
+└── utils/               # format, download, uploadConfig
+```
+
+### API 约定
+
+所有业务响应统一 envelope: `{ success, data, message, request_id, error_code? }`。认证使用 Bearer JWT。三种角色：`employee`、`dept_admin`（知识库管理员）、`system_admin`。
+
+## 关键约束
+
+- 数据库统一 PostgreSQL 16，不使用 SQLite
+- 文件存储统一 MinIO，不使用本地文件系统
+- 核心长任务统一 Celery + RabbitMQ，不使用 FastAPI BackgroundTasks
+- 文件状态变更只能通过 `DocumentStateMachine`（`core/document_state.py`）
+- 管理员操作必须写 `audit_logs`
+- RAGFlow API Key 与 AI Provider API Key 不返回前端、不打日志
+- 新增 Python 依赖前必须通过 ARM64 wheel 检查（`invoke check-arm64`）
+- 后端行宽 100，ruff + mypy --strict；前端 Prettier 行宽 100，ESLint strict TS
+- pytest 使用 `asyncio_mode = "auto"`，测试数据库为 `knowledge_uploader_test`
+- 后端测试在 Docker 容器内运行（`docker compose run --rm backend-api pytest`）
+
+## 开发端口
+
+| 服务 | 本地开发端口 | Docker 端口 |
+|---|---|---|
+| 前端 Vite | 5173 | 80 (Nginx) |
+| 后端 API | 18000 | 18000→8000 |
+| PostgreSQL | 15432 | 5432 |
+| Redis | 16379 | 6379 |
+| RabbitMQ AMQP | 15673 | 5672 |
+| MinIO API | 19000 | 9000 |

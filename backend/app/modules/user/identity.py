@@ -3,21 +3,51 @@ from __future__ import annotations
 import uuid
 from datetime import datetime
 
-from sqlalchemy import select
+from sqlalchemy import Column, MetaData, String, Table, select
+from sqlalchemy.dialects.postgresql import UUID as PG_UUID
 from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.sql.elements import ColumnElement
 
 from app.core.identity import NullableDatetimeUpdate, NullableStringUpdate
 from app.modules.user.models import User
 from app.modules.user.schemas import AuthUserRecord
 
+UNASSIGNED_DEPARTMENT_ID = uuid.UUID("00000000-0000-0000-0000-000000000001")
+UNASSIGNED_DEPARTMENT_NAME = "未分配"
 
-def _record(user: User) -> AuthUserRecord:
+_DEPARTMENTS = Table(
+    "departments",
+    MetaData(),
+    Column("id", PG_UUID(as_uuid=True), primary_key=True),
+    Column("name", String(100), nullable=False),
+    Column("code", String(50), nullable=False),
+    Column("status", String(40), nullable=False),
+)
+
+_USER_MANAGED_DEPARTMENTS = Table(
+    "user_managed_departments",
+    MetaData(),
+    Column("user_id", PG_UUID(as_uuid=True), primary_key=True),
+    Column("department_id", PG_UUID(as_uuid=True), primary_key=True),
+)
+
+
+def _record(
+    user: User,
+    *,
+    department_name: str | None,
+    department_code: str | None,
+    managed_department_ids: list[uuid.UUID],
+) -> AuthUserRecord:
     return AuthUserRecord(
         id=user.id,
         name=user.name,
         email=user.email,
         email_domain=user.email_domain,
         password_hash=user.password_hash,
+        department_id=user.department_id,
+        department_name=department_name,
+        department_code=department_code,
         department=user.department,
         phone=user.phone,
         role=user.role,
@@ -26,6 +56,7 @@ def _record(user: User) -> AuthUserRecord:
         failed_login_count=user.failed_login_count,
         locked_until=user.locked_until,
         session_version=user.session_version,
+        managed_department_ids=managed_department_ids,
     )
 
 
@@ -34,13 +65,10 @@ class SqlUserIdentityStore:
         self._session = session
 
     async def get_by_email(self, email: str) -> AuthUserRecord | None:
-        result = await self._session.execute(select(User).where(User.email == email))
-        user = result.scalar_one_or_none()
-        return _record(user) if user is not None else None
+        return await self._get_record(User.email == email)
 
     async def get_by_id(self, user_id: uuid.UUID) -> AuthUserRecord | None:
-        user = await self._session.get(User, user_id)
-        return _record(user) if user is not None else None
+        return await self._get_record(User.id == user_id)
 
     async def create_user(
         self,
@@ -59,7 +87,8 @@ class SqlUserIdentityStore:
             email=email,
             email_domain=email_domain,
             password_hash=password_hash,
-            department=department,
+            department_id=UNASSIGNED_DEPARTMENT_ID,
+            department=UNASSIGNED_DEPARTMENT_NAME,
             phone=phone,
             role="employee",
             status=status,
@@ -69,14 +98,23 @@ class SqlUserIdentityStore:
         )
         self._session.add(user)
         await self._session.flush()
-        return _record(user)
+        return _record(
+            user,
+            department_name=UNASSIGNED_DEPARTMENT_NAME,
+            department_code="unassigned",
+            managed_department_ids=[],
+        )
 
     async def mark_email_verified(self, user_id: uuid.UUID) -> AuthUserRecord:
         user = await self._required_by_id(user_id)
         user.email_verified = True
         user.status = "active"
         await self._session.flush()
-        return _record(user)
+        record = await self.get_by_id(user_id)
+        if record is None:
+            msg = "user was not found"
+            raise RuntimeError(msg)
+        return record
 
     async def record_verification_state(
         self,
@@ -106,7 +144,45 @@ class SqlUserIdentityStore:
         if increment_session_version:
             user.session_version += 1
         await self._session.flush()
-        return _record(user)
+        record = await self.get_by_id(user_id)
+        if record is None:
+            msg = "user was not found"
+            raise RuntimeError(msg)
+        return record
+
+    async def _get_record(self, criterion: ColumnElement[bool]) -> AuthUserRecord | None:
+        result = await self._session.execute(
+            select(
+                User,
+                _DEPARTMENTS.c.name.label("department_name"),
+                _DEPARTMENTS.c.code.label("department_code"),
+            )
+            .outerjoin(_DEPARTMENTS, User.department_id == _DEPARTMENTS.c.id)
+            .where(criterion)
+        )
+        row = result.one_or_none()
+        if row is None:
+            return None
+        managed_department_ids = await self._managed_department_ids(row[0].id)
+        return _record(
+            row[0],
+            department_name=row.department_name,
+            department_code=row.department_code,
+            managed_department_ids=managed_department_ids,
+        )
+
+    async def _managed_department_ids(self, user_id: uuid.UUID) -> list[uuid.UUID]:
+        result = await self._session.execute(
+            select(_USER_MANAGED_DEPARTMENTS.c.department_id)
+            .join(
+                _DEPARTMENTS,
+                _USER_MANAGED_DEPARTMENTS.c.department_id == _DEPARTMENTS.c.id,
+            )
+            .where(_USER_MANAGED_DEPARTMENTS.c.user_id == user_id)
+            .where(_DEPARTMENTS.c.status == "active")
+            .order_by(_USER_MANAGED_DEPARTMENTS.c.department_id.asc())
+        )
+        return list(result.scalars())
 
     async def _required_by_id(self, user_id: uuid.UUID) -> User:
         user = await self._session.get(User, user_id)

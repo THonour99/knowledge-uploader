@@ -13,8 +13,12 @@ import {
 } from "antd";
 import {
   AppstoreOutlined,
+  CheckCircleOutlined,
+  CloudSyncOutlined,
   PlusOutlined,
+  SafetyCertificateOutlined,
   ReloadOutlined,
+  RobotOutlined,
 } from "@ant-design/icons";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useState } from "react";
@@ -29,8 +33,10 @@ import {
   listDatasetMappings,
   updateCategory,
 } from "../../api/client";
+import { KpiCard } from "../../components/KpiCard";
 import { StatusTag } from "../../components/StatusTag";
 import { PageContainer } from "../../layouts/PageContainer";
+import "./styles.css";
 
 interface CategoryFormValues {
   name: string;
@@ -64,12 +70,6 @@ const defaultFormValues: CategoryFormValues = {
   auto_sync_enabled: false,
 };
 
-const visibilityOptions: Array<{ label: string; value: Category["default_visibility"] }> = [
-  { label: "仅自己", value: "private" },
-  { label: "同部门", value: "department" },
-  { label: "全公司", value: "company" },
-];
-
 function parseKeywords(value?: string): string[] {
   return (value ?? "")
     .split(/[,，\n]/)
@@ -87,7 +87,7 @@ function toCreatePayload(values: CategoryFormValues): CategoryPayload {
     default_dataset_id: values.default_dataset_id?.trim() || null,
     allow_employee_select: values.allow_employee_select,
     allow_ai_recommend: values.allow_ai_recommend,
-    default_visibility: values.default_visibility,
+    default_visibility: "private",
     keywords: parseKeywords(values.keywords),
     classification_prompt: values.classification_prompt?.trim() || null,
     ai_analysis_enabled: values.ai_analysis_enabled,
@@ -105,7 +105,7 @@ function toUpdatePayload(values: CategoryFormValues): Partial<CategoryPayload> {
     default_dataset_id: values.default_dataset_id?.trim() || null,
     allow_employee_select: values.allow_employee_select,
     allow_ai_recommend: values.allow_ai_recommend,
-    default_visibility: values.default_visibility,
+    default_visibility: "private",
     keywords: parseKeywords(values.keywords),
     classification_prompt: values.classification_prompt?.trim() || null,
     ai_analysis_enabled: values.ai_analysis_enabled,
@@ -120,7 +120,7 @@ function toFormValues(category: Category): CategoryFormValues {
     code: category.code,
     description: category.description ?? "",
     default_dataset_id: category.default_dataset_id ?? "",
-    default_visibility: category.default_visibility,
+    default_visibility: "private",
     keywords: category.keywords.join(", "),
     classification_prompt: category.classification_prompt ?? "",
     require_review: category.require_review,
@@ -130,6 +130,101 @@ function toFormValues(category: Category): CategoryFormValues {
     sensitive_detection_enabled: category.sensitive_detection_enabled,
     auto_sync_enabled: category.auto_sync_enabled,
   };
+}
+
+interface CategoryPolicyStripProps {
+  aiEnabledCount: number;
+  allowEmployeeSelectCount: number;
+  autoSyncCount: number;
+  boundCategoryCount: number;
+  requireReviewCount: number;
+  sensitiveDetectionCount: number;
+  total: number;
+  unboundCategoryCount: number;
+}
+
+function CategoryPolicyStrip({
+  aiEnabledCount,
+  allowEmployeeSelectCount,
+  autoSyncCount,
+  boundCategoryCount,
+  requireReviewCount,
+  sensitiveDetectionCount,
+  total,
+  unboundCategoryCount,
+}: CategoryPolicyStripProps) {
+  const lanes = [
+    {
+      key: "binding",
+      icon: <AppstoreOutlined />,
+      title: "Dataset 绑定",
+      primary: `${boundCategoryCount} 个分类已绑定`,
+      secondary: `${unboundCategoryCount} 个分类待绑定知识库`,
+      status: unboundCategoryCount > 0 ? "unknown" : "ok",
+    },
+    {
+      key: "ai",
+      icon: <RobotOutlined />,
+      title: "AI 分析策略",
+      primary: `${aiEnabledCount} 个启用 AI`,
+      secondary: `${sensitiveDetectionCount} 个启用敏感检测`,
+      status: aiEnabledCount > 0 && sensitiveDetectionCount > 0 ? "ok" : "unknown",
+    },
+    {
+      key: "review",
+      icon: <SafetyCertificateOutlined />,
+      title: "审核与可选",
+      primary: `${requireReviewCount} 个需要审核`,
+      secondary: `${allowEmployeeSelectCount} 个员工可选分类`,
+      status: requireReviewCount > 0 ? "ok" : "unknown",
+    },
+    {
+      key: "sync",
+      icon: <CloudSyncOutlined />,
+      title: "同步策略",
+      primary: `${autoSyncCount} 个自动同步`,
+      secondary: `平台共 ${total} 个分类策略`,
+      status: autoSyncCount > 0 ? "ok" : "unknown",
+    },
+  ];
+
+  return (
+    <section className="categories-policy-strip" role="region" aria-label="分类策略状态">
+      <div className="categories-policy-strip__summary">
+        <span className="categories-policy-strip__icon">
+          <AppstoreOutlined />
+        </span>
+        <span className="categories-policy-strip__copy">
+          <Typography.Text strong className="categories-policy-strip__title">
+            分类策略状态
+          </Typography.Text>
+          <Typography.Text type="secondary">
+            汇总分类与 Dataset 绑定、AI 分析、审核可选和同步策略覆盖情况。
+          </Typography.Text>
+        </span>
+        <span className="categories-policy-strip__total">
+          <strong>{total}</strong>
+          <Typography.Text type="secondary">分类策略</Typography.Text>
+        </span>
+      </div>
+
+      <div className="categories-policy-strip__lanes" aria-label="分类策略指标">
+        {lanes.map((lane) => (
+          <div className="categories-policy-lane" key={lane.key}>
+            <span className="categories-policy-lane__icon">{lane.icon}</span>
+            <span className="categories-policy-lane__body">
+              <span className="categories-policy-lane__topline">
+                <Typography.Text strong>{lane.title}</Typography.Text>
+                <StatusTag kind="health" value={lane.status} variant="dot" />
+              </span>
+              <strong>{lane.primary}</strong>
+              <Typography.Text type="secondary">{lane.secondary}</Typography.Text>
+            </span>
+          </div>
+        ))}
+      </div>
+    </section>
+  );
 }
 
 export default function CategoriesPage() {
@@ -156,6 +251,17 @@ export default function CategoriesPage() {
     label: dm.name,
     value: dm.id,
   }));
+  const boundCategoryCount = categories.filter((category) => category.default_dataset_id).length;
+  const aiEnabledCount = categories.filter((category) => category.ai_analysis_enabled).length;
+  const autoSyncCount = categories.filter((category) => category.auto_sync_enabled).length;
+  const unboundCategoryCount = categories.length - boundCategoryCount;
+  const sensitiveDetectionCount = categories.filter(
+    (category) => category.sensitive_detection_enabled,
+  ).length;
+  const requireReviewCount = categories.filter((category) => category.require_review).length;
+  const allowEmployeeSelectCount = categories.filter(
+    (category) => category.allow_employee_select,
+  ).length;
 
   const refreshCategories = async () => {
     await queryClient.invalidateQueries({ queryKey: ["categories"] });
@@ -226,11 +332,7 @@ export default function CategoriesPage() {
             <Typography.Text strong className="single-line-text" title={value}>
               {value}
             </Typography.Text>
-            <Typography.Text
-              type="secondary"
-              className="single-line-text"
-              title={record.code}
-            >
+            <Typography.Text type="secondary" className="single-line-text" title={record.code}>
               {record.code}
             </Typography.Text>
           </span>
@@ -358,11 +460,7 @@ export default function CategoriesPage() {
       width: 100,
       fixed: "right" as const,
       render: (_: unknown, record) => (
-        <Button
-          type="link"
-          className="table-link-button"
-          onClick={() => openEdit(record)}
-        >
+        <Button type="link" className="table-link-button" onClick={() => openEdit(record)}>
           编辑
         </Button>
       ),
@@ -374,14 +472,68 @@ export default function CategoriesPage() {
       title="分类管理"
       description="管理文档分类，配置 AI 分析、敏感检测和自动同步行为。"
     >
+      <div className="metric-grid">
+        <KpiCard
+          icon={<AppstoreOutlined />}
+          title="分类总数"
+          value={categories.length}
+          description="全部文档分类"
+          tone="primary"
+        />
+        <KpiCard
+          icon={<CheckCircleOutlined />}
+          title="已绑定 Dataset"
+          value={boundCategoryCount}
+          description="配置默认知识库"
+          tone="success"
+        />
+        <KpiCard
+          icon={<RobotOutlined />}
+          title="AI 启用分类"
+          value={aiEnabledCount}
+          description="允许自动分析"
+          tone="info"
+        />
+        <KpiCard
+          icon={<CloudSyncOutlined />}
+          title="自动同步分类"
+          value={autoSyncCount}
+          description="审核后自动入库"
+          tone="purple"
+        />
+      </div>
+
+      <CategoryPolicyStrip
+        aiEnabledCount={aiEnabledCount}
+        allowEmployeeSelectCount={allowEmployeeSelectCount}
+        autoSyncCount={autoSyncCount}
+        boundCategoryCount={boundCategoryCount}
+        requireReviewCount={requireReviewCount}
+        sensitiveDetectionCount={sensitiveDetectionCount}
+        total={categories.length}
+        unboundCategoryCount={unboundCategoryCount}
+      />
+
       <Card className="document-panel table-card">
+        <div className="table-section-header">
+          <span className="table-section-header__copy">
+            <Typography.Title level={4} className="table-section-header__title">
+              分类策略列表
+            </Typography.Title>
+            <Typography.Text className="table-section-header__meta">
+              当前维护 {categories.length} 个分类，{boundCategoryCount} 个已绑定 Dataset
+            </Typography.Text>
+          </span>
+          <StatusTag
+            kind="health"
+            value={categoriesQuery.isError || datasetsQuery.isError ? "error" : "ok"}
+            variant="dot"
+          />
+        </div>
+
         <div className="config-card-actions">
           <Space wrap>
-            <Button
-              type="primary"
-              icon={<PlusOutlined />}
-              onClick={openCreate}
-            >
+            <Button type="primary" icon={<PlusOutlined />} onClick={openCreate}>
               新增分类
             </Button>
             <Button
@@ -417,7 +569,27 @@ export default function CategoriesPage() {
         confirmLoading={categoryMutation.isPending}
         width={720}
         destroyOnHidden
+        className="category-config-modal"
       >
+        <section className="category-form-summary" role="region" aria-label="分类配置摘要">
+          <span className="category-form-summary__icon">
+            <AppstoreOutlined />
+          </span>
+          <span className="category-form-summary__copy">
+            <Typography.Text strong>
+              {editingCategory ? editingCategory.name : "新建分类策略"}
+            </Typography.Text>
+            <Typography.Text type="secondary">
+              {editingCategory ? editingCategory.code : "待配置编码"}
+            </Typography.Text>
+          </span>
+          <StatusTag
+            kind="dataset"
+            value={editingCategory?.default_dataset_id ? "enabled" : "pending"}
+            variant="dot"
+          />
+        </section>
+
         <Form<CategoryFormValues>
           form={form}
           layout="vertical"
@@ -447,9 +619,6 @@ export default function CategoriesPage() {
           </Form.Item>
 
           <div className="form-grid form-grid--two">
-            <Form.Item label="默认可见范围" name="default_visibility">
-              <Select options={visibilityOptions} />
-            </Form.Item>
             <Form.Item label="关联知识库" name="default_dataset_id">
               <Select
                 options={datasetOptions}
@@ -470,45 +639,35 @@ export default function CategoriesPage() {
             <Input.TextArea rows={3} maxLength={2000} showCount />
           </Form.Item>
 
-          <div className="switch-grid">
-            <Form.Item label="需要审核" name="require_review" valuePropName="checked">
-              <Switch />
-            </Form.Item>
-            <Form.Item
-              label="员工可选"
-              name="allow_employee_select"
-              valuePropName="checked"
-            >
-              <Switch />
-            </Form.Item>
-            <Form.Item
-              label="AI 可推荐"
-              name="allow_ai_recommend"
-              valuePropName="checked"
-            >
-              <Switch />
-            </Form.Item>
-            <Form.Item
-              label="AI 分析"
-              name="ai_analysis_enabled"
-              valuePropName="checked"
-            >
-              <Switch />
-            </Form.Item>
-            <Form.Item
-              label="敏感检测"
-              name="sensitive_detection_enabled"
-              valuePropName="checked"
-            >
-              <Switch />
-            </Form.Item>
-            <Form.Item
-              label="自动同步"
-              name="auto_sync_enabled"
-              valuePropName="checked"
-            >
-              <Switch />
-            </Form.Item>
+          <div className="category-switch-panel">
+            <div className="category-switch-panel__header">
+              <Typography.Text strong>策略开关</Typography.Text>
+              <StatusTag kind="dataset" value="enabled" variant="dot" />
+            </div>
+            <div className="switch-grid category-switch-panel__grid">
+              <Form.Item label="需要审核" name="require_review" valuePropName="checked">
+                <Switch />
+              </Form.Item>
+              <Form.Item label="员工可选" name="allow_employee_select" valuePropName="checked">
+                <Switch />
+              </Form.Item>
+              <Form.Item label="AI 可推荐" name="allow_ai_recommend" valuePropName="checked">
+                <Switch />
+              </Form.Item>
+              <Form.Item label="AI 分析" name="ai_analysis_enabled" valuePropName="checked">
+                <Switch />
+              </Form.Item>
+              <Form.Item
+                label="敏感检测"
+                name="sensitive_detection_enabled"
+                valuePropName="checked"
+              >
+                <Switch />
+              </Form.Item>
+              <Form.Item label="自动同步" name="auto_sync_enabled" valuePropName="checked">
+                <Switch />
+              </Form.Item>
+            </div>
           </div>
         </Form>
       </Modal>

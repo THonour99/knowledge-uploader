@@ -142,7 +142,7 @@ async def test_repeated_reads_within_ttl_do_not_query_db(
     _use_factory(monkeypatch, factory)
 
     assert await runtime_config.get_config("upload.max_file_size_mb") == 80
-    clock.advance(59.0)
+    clock.advance(14.0)
     assert await runtime_config.get_config("upload.max_file_size_mb") == 80
     assert factory.execute_count == 1
 
@@ -159,7 +159,7 @@ async def test_security_group_uses_shorter_ttl(
     _use_factory(monkeypatch, factory)
 
     assert await runtime_config.get_config("security.login_max_failed_attempts") == 7
-    clock.advance(29.0)
+    clock.advance(4.0)
     assert await runtime_config.get_config("security.login_max_failed_attempts") == 7
     assert factory.execute_count == 1
 

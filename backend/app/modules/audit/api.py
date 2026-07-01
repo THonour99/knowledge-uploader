@@ -10,7 +10,7 @@ from starlette import status
 
 from app.core.database import get_session
 from app.core.exceptions import ErrorCode
-from app.core.permissions import AdminUserDep
+from app.core.permissions import SystemAdminDep
 from app.core.responses import success_response
 
 from .repository import AuditRepository
@@ -30,7 +30,7 @@ def _service(session: AsyncSession) -> AuditService:
 async def list_audit_logs(
     request: Request,
     session: SessionDep,
-    current_user: AdminUserDep,
+    current_user: SystemAdminDep,
     page: Annotated[int, Query(ge=1)] = 1,
     page_size: Annotated[int, Query(ge=1, le=100)] = 20,
     actor_id: Annotated[uuid.UUID | None, Query()] = None,
@@ -41,8 +41,7 @@ async def list_audit_logs(
 ) -> dict[str, object]:
     """Query audit logs.
 
-    Accessible by knowledge_admin and system_admin only (enforced via
-    AdminUserDep which rejects employee with 403).
+    Accessible by system_admin only.
 
     NOTE: This endpoint does NOT produce an audit log entry for the read
     operation — see AuditService.search_logs for the rationale.

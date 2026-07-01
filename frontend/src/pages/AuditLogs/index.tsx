@@ -11,14 +11,23 @@ import {
   Table,
   Typography,
 } from "antd";
-import { ReloadOutlined } from "@ant-design/icons";
+import {
+  AuditOutlined,
+  DatabaseOutlined,
+  FileSearchOutlined,
+  ReloadOutlined,
+  UserOutlined,
+} from "@ant-design/icons";
 import { useQuery } from "@tanstack/react-query";
 import dayjs, { type Dayjs } from "dayjs";
 import { useState } from "react";
 import type { ColumnsType } from "antd/es/table";
 
 import { type AuditLogItem, type AuditLogQuery, listAuditLogs } from "../../api/client";
+import { KpiCard } from "../../components/KpiCard";
+import { StatusTag } from "../../components/StatusTag";
 import { PageContainer } from "../../layouts/PageContainer";
+import "./styles.css";
 
 const { RangePicker } = DatePicker;
 
@@ -42,25 +51,144 @@ function MetadataViewer({ metadata }: { metadata: Record<string, unknown> | null
     return <Typography.Text type="secondary">无</Typography.Text>;
   }
 
+  return <pre className="audit-metadata-viewer">{JSON.stringify(metadata, null, 2)}</pre>;
+}
+
+interface AuditTraceStripProps {
+  actionFilter: string;
+  actorCount: number;
+  configActionCount: number;
+  fileActionCount: number;
+  hasDateRange: boolean;
+  pageCount: number;
+  targetTypeFilter: string;
+  total: number;
+}
+
+function AuditTraceStrip({
+  actionFilter,
+  actorCount,
+  configActionCount,
+  fileActionCount,
+  hasDateRange,
+  pageCount,
+  targetTypeFilter,
+  total,
+}: AuditTraceStripProps) {
+  const hasFilters = Boolean(actionFilter || targetTypeFilter.trim() || hasDateRange);
+  const lanes = [
+    {
+      key: "coverage",
+      icon: <AuditOutlined />,
+      title: "审计覆盖",
+      primary: `${pageCount} 条当前页记录`,
+      secondary: `平台匹配 ${total} 条审计事件`,
+      status: pageCount > 0 ? "ok" : "unknown",
+    },
+    {
+      key: "actors",
+      icon: <UserOutlined />,
+      title: "操作主体",
+      primary: `${actorCount} 个操作人`,
+      secondary: "按当前页去重统计",
+      status: actorCount > 0 ? "ok" : "unknown",
+    },
+    {
+      key: "critical",
+      icon: <DatabaseOutlined />,
+      title: "配置审计",
+      primary: `${configActionCount} 条配置变更`,
+      secondary: "覆盖系统、Dataset 与 AI 配置",
+      status: configActionCount > 0 ? "ok" : "unknown",
+    },
+    {
+      key: "files",
+      icon: <FileSearchOutlined />,
+      title: "文件流转",
+      primary: `${fileActionCount} 条文件操作`,
+      secondary: hasFilters ? "当前列表已应用筛选条件" : "当前列表未应用筛选条件",
+      status: fileActionCount > 0 ? "ok" : "unknown",
+    },
+  ];
+
   return (
-    <pre
-      style={{
-        background: "var(--ku-bg-base)",
-        padding: 12,
-        borderRadius: "var(--ku-radius-control)",
-        fontSize: 12,
-        overflowX: "auto",
-        maxHeight: 320,
-        margin: 0,
-        whiteSpace: "pre-wrap",
-        wordBreak: "break-all",
-      }}
-    >
-      {JSON.stringify(metadata, null, 2)}
-    </pre>
+    <section className="audit-trace-strip" role="region" aria-label="审计运行状态">
+      <div className="audit-trace-strip__summary">
+        <span className="audit-trace-strip__icon">
+          <AuditOutlined />
+        </span>
+        <span className="audit-trace-strip__copy">
+          <Typography.Text strong className="audit-trace-strip__title">
+            审计运行状态
+          </Typography.Text>
+          <Typography.Text type="secondary">
+            汇总当前筛选范围内的审计覆盖、操作主体、配置变更和文件流转记录。
+          </Typography.Text>
+        </span>
+        <span className="audit-trace-strip__total">
+          <strong>{total}</strong>
+          <Typography.Text type="secondary">审计事件</Typography.Text>
+        </span>
+      </div>
+
+      <div className="audit-trace-strip__lanes" aria-label="审计运行指标">
+        {lanes.map((lane) => (
+          <div className="audit-trace-lane" key={lane.key}>
+            <span className="audit-trace-lane__icon">{lane.icon}</span>
+            <span className="audit-trace-lane__body">
+              <span className="audit-trace-lane__topline">
+                <Typography.Text strong>{lane.title}</Typography.Text>
+                <StatusTag kind="health" value={lane.status} variant="dot" />
+              </span>
+              <strong>{lane.primary}</strong>
+              <Typography.Text type="secondary">{lane.secondary}</Typography.Text>
+            </span>
+          </div>
+        ))}
+      </div>
+    </section>
   );
 }
 
+function AuditDetailOverview({ record }: { record: AuditLogItem }) {
+  return (
+    <section className="audit-detail-overview" role="region" aria-label="审计事件摘要">
+      <span className="audit-detail-overview__icon">
+        <AuditOutlined />
+      </span>
+      <span className="audit-detail-overview__copy">
+        <span className="audit-detail-overview__title-row">
+          <Typography.Text code>{record.action}</Typography.Text>
+          <StatusTag kind="health" value="ok" variant="dot" />
+        </span>
+        <Typography.Text type="secondary">
+          {record.actor_name ?? record.actor_id}
+          {record.actor_email ? ` · ${record.actor_email}` : ""}
+        </Typography.Text>
+      </span>
+      <div className="audit-detail-overview__stats" aria-label="审计事件指标">
+        <span className="audit-detail-overview__stat">
+          <Typography.Text type="secondary">操作时间</Typography.Text>
+          <strong>{dayjs(record.created_at).format("YYYY-MM-DD HH:mm:ss")}</strong>
+        </span>
+        <span className="audit-detail-overview__stat">
+          <Typography.Text type="secondary">操作对象</Typography.Text>
+          <strong>
+            {record.target_type} / {record.target_id ?? "-"}
+          </strong>
+        </span>
+        <span className="audit-detail-overview__stat">
+          <Typography.Text type="secondary">来源 IP</Typography.Text>
+          <strong>{record.ip_address ?? "-"}</strong>
+        </span>
+        <span className="audit-detail-overview__stat">
+          <Typography.Text type="secondary">结果摘要</Typography.Text>
+          <strong>{record.reason ?? "-"}</strong>
+        </span>
+      </div>
+    </section>
+  );
+}
 export default function AuditLogsPage() {
   const [page, setPage] = useState(1);
   const [pageSize] = useState(20);
@@ -91,6 +219,9 @@ export default function AuditLogsPage() {
 
   const logs = logsQuery.data?.items ?? [];
   const total = logsQuery.data?.total ?? 0;
+  const pageActorCount = new Set(logs.map((log) => log.actor_id)).size;
+  const configActionCount = logs.filter((log) => log.action.includes("config")).length;
+  const fileActionCount = logs.filter((log) => log.action.startsWith("file.")).length;
 
   const handleActorSearch = (value: string) => {
     setActorFilter(value);
@@ -206,7 +337,61 @@ export default function AuditLogsPage() {
       title="操作日志"
       description="查询管理员与系统操作的完整审计日志，支持按操作人、类型与时间筛选。"
     >
+      <div className="metric-grid">
+        <KpiCard
+          icon={<AuditOutlined />}
+          title="审计日志总数"
+          value={total}
+          description="满足当前筛选条件"
+          tone="primary"
+        />
+        <KpiCard
+          icon={<UserOutlined />}
+          title="当前页操作人"
+          value={pageActorCount}
+          description="去重管理员账号"
+          tone="success"
+        />
+        <KpiCard
+          icon={<DatabaseOutlined />}
+          title="配置变更"
+          value={configActionCount}
+          description="当前页配置类操作"
+          tone="warning"
+        />
+        <KpiCard
+          icon={<FileSearchOutlined />}
+          title="文件操作"
+          value={fileActionCount}
+          description="当前页文件类操作"
+          tone="info"
+        />
+      </div>
+
+      <AuditTraceStrip
+        actionFilter={actionFilter}
+        actorCount={pageActorCount}
+        configActionCount={configActionCount}
+        fileActionCount={fileActionCount}
+        hasDateRange={dateRange !== null}
+        pageCount={logs.length}
+        targetTypeFilter={targetTypeFilter}
+        total={total}
+      />
+
       <Card className="audit-logs-panel table-card">
+        <div className="table-section-header">
+          <span className="table-section-header__copy">
+            <Typography.Title level={4} className="table-section-header__title">
+              审计列表
+            </Typography.Title>
+            <Typography.Text className="table-section-header__meta">
+              当前显示 {logs.length} 条审计事件，共 {total} 条匹配记录
+            </Typography.Text>
+          </span>
+          <StatusTag kind="health" value={logsQuery.isError ? "error" : "ok"} variant="dot" />
+        </div>
+
         <div className="filter-toolbar filter-toolbar--audit">
           <Input.Search
             className="filter-toolbar__search"
@@ -262,7 +447,7 @@ export default function AuditLogsPage() {
           scroll={{ x: 900 }}
         />
 
-        <div style={{ marginTop: 16, textAlign: "right" }}>
+        <div className="audit-logs-pagination">
           <Pagination
             current={page}
             pageSize={pageSize}
@@ -280,40 +465,40 @@ export default function AuditLogsPage() {
         onClose={() => setDetailRecord(null)}
         width={560}
         destroyOnClose
+        className="audit-detail-drawer"
       >
         {detailRecord !== null ? (
-          <Descriptions column={1} size="small" bordered>
-            <Descriptions.Item label="日志 ID">{detailRecord.id}</Descriptions.Item>
-            <Descriptions.Item label="操作时间">
-              {dayjs(detailRecord.created_at).format("YYYY-MM-DD HH:mm:ss")}
-            </Descriptions.Item>
-            <Descriptions.Item label="操作人">
-              {detailRecord.actor_name ?? detailRecord.actor_id}
-              {detailRecord.actor_email ? ` (${detailRecord.actor_email})` : ""}
-            </Descriptions.Item>
-            <Descriptions.Item label="操作人 ID">{detailRecord.actor_id}</Descriptions.Item>
-            <Descriptions.Item label="操作类型">
-              <Typography.Text code>{detailRecord.action}</Typography.Text>
-            </Descriptions.Item>
-            <Descriptions.Item label="对象类型">{detailRecord.target_type}</Descriptions.Item>
-            <Descriptions.Item label="对象 ID">
-              {detailRecord.target_id ?? "-"}
-            </Descriptions.Item>
-            <Descriptions.Item label="IP 地址">
-              {detailRecord.ip_address ?? "-"}
-            </Descriptions.Item>
-            <Descriptions.Item label="User Agent">
-              <Typography.Text style={{ wordBreak: "break-all", fontSize: 12 }}>
-                {detailRecord.user_agent ?? "-"}
-              </Typography.Text>
-            </Descriptions.Item>
-            <Descriptions.Item label="结果摘要">
-              {detailRecord.reason ?? "-"}
-            </Descriptions.Item>
-            <Descriptions.Item label="元数据">
-              <MetadataViewer metadata={detailRecord.metadata} />
-            </Descriptions.Item>
-          </Descriptions>
+          <Space direction="vertical" style={{ width: "100%" }} size="large">
+            <AuditDetailOverview record={detailRecord} />
+            <Descriptions column={1} size="small" bordered>
+              <Descriptions.Item label="日志 ID">{detailRecord.id}</Descriptions.Item>
+              <Descriptions.Item label="操作时间">
+                {dayjs(detailRecord.created_at).format("YYYY-MM-DD HH:mm:ss")}
+              </Descriptions.Item>
+              <Descriptions.Item label="操作人">
+                {detailRecord.actor_name ?? detailRecord.actor_id}
+                {detailRecord.actor_email ? ` (${detailRecord.actor_email})` : ""}
+              </Descriptions.Item>
+              <Descriptions.Item label="操作人 ID">{detailRecord.actor_id}</Descriptions.Item>
+              <Descriptions.Item label="操作类型">
+                <Typography.Text code>{detailRecord.action}</Typography.Text>
+              </Descriptions.Item>
+              <Descriptions.Item label="对象类型">{detailRecord.target_type}</Descriptions.Item>
+              <Descriptions.Item label="对象 ID">{detailRecord.target_id ?? "-"}</Descriptions.Item>
+              <Descriptions.Item label="IP 地址">
+                {detailRecord.ip_address ?? "-"}
+              </Descriptions.Item>
+              <Descriptions.Item label="User Agent">
+                <Typography.Text className="audit-detail-user-agent">
+                  {detailRecord.user_agent ?? "-"}
+                </Typography.Text>
+              </Descriptions.Item>
+              <Descriptions.Item label="结果摘要">{detailRecord.reason ?? "-"}</Descriptions.Item>
+              <Descriptions.Item label="元数据">
+                <MetadataViewer metadata={detailRecord.metadata} />
+              </Descriptions.Item>
+            </Descriptions>
+          </Space>
         ) : null}
       </Drawer>
     </PageContainer>

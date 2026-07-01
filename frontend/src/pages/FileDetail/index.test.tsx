@@ -151,9 +151,9 @@ function setAdminSession() {
     accessToken: "test-token",
     user: {
       id: "admin-1",
-      name: "知识管理员",
+      name: "部门管理员",
       email: "admin@company.com",
-      role: "knowledge_admin",
+      role: "dept_admin",
     },
   });
 }
@@ -172,6 +172,11 @@ describe("FileDetailPage", () => {
     expect((await screen.findAllByText("AI 分析")).length).toBeGreaterThan(0);
     expect(screen.getByText("这是一份员工手册的摘要。")).toBeInTheDocument();
     expect(screen.getByText("中风险")).toBeInTheDocument();
+
+    const statusRegion = screen.getByRole("region", { name: "文档运行状态" });
+    expect(statusRegion).toHaveTextContent("文档治理");
+    expect(statusRegion).toHaveTextContent("同步健康");
+    expect(statusRegion).toHaveTextContent("制度文档");
 
     fireEvent.click(screen.getByText("提取文本预览"));
     expect(await screen.findByText("员工手册提取文本前五百字……")).toBeInTheDocument();
@@ -199,7 +204,7 @@ describe("FileDetailPage", () => {
     renderFileDetail();
 
     expect(await screen.findByText("88 分")).toBeInTheDocument();
-    expect(screen.getByText("优秀")).toBeInTheDocument();
+    expect(screen.getAllByText("优秀").length).toBeGreaterThan(0);
     expect(screen.getAllByText("即将过期").length).toBeGreaterThan(0);
     expect(screen.getByText("检测到 1 个相似文档")).toBeInTheDocument();
     expect(screen.getByText("similar-file-1")).toBeInTheDocument();
@@ -208,15 +213,16 @@ describe("FileDetailPage", () => {
     expect(await screen.findByText(/培训/)).toBeInTheDocument();
   });
 
-  it("renders category and tags card", async () => {
+  it("renders category and tags card without visibility metadata", async () => {
     vi.mocked(getDocument).mockResolvedValue(baseFile);
 
     renderFileDetail();
 
     expect(await screen.findByText("分类与标签")).toBeInTheDocument();
-    expect(await screen.findByText("制度文档")).toBeInTheDocument();
+    expect((await screen.findAllByText("制度文档")).length).toBeGreaterThan(0);
     expect(screen.getByText("制度")).toBeInTheDocument();
     expect(screen.getByText("人事")).toBeInTheDocument();
+    expect(screen.queryByText("可见范围")).not.toBeInTheDocument();
   });
 
   it("hides analysis card when there is no analysis record", async () => {
@@ -268,6 +274,10 @@ describe("FileDetailPage", () => {
     renderFileDetail();
 
     expect(await screen.findByText("处理日志")).toBeInTheDocument();
+    const processingSidebar = screen.getByRole("complementary", { name: "文件处理侧栏" });
+    expect(processingSidebar).toHaveTextContent("分类与标签");
+    expect(processingSidebar).toHaveTextContent("同步信息");
+    expect(processingSidebar).toHaveTextContent("处理日志");
     await waitFor(() => {
       expect(listTasks).toHaveBeenCalledWith({ file_id: "file-1" });
     });

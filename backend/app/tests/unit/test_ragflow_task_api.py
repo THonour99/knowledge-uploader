@@ -11,6 +11,7 @@ from redis.asyncio import from_url
 from sqlalchemy import select
 
 pytestmark = pytest.mark.asyncio
+UNASSIGNED_DEPARTMENT_ID = UUID("00000000-0000-0000-0000-000000000001")
 
 
 async def _reset_database() -> None:
@@ -99,6 +100,18 @@ async def _create_user(*, email: str, password: str, role: str = "employee") -> 
         return user.id
 
 
+async def _create_department(*, name: str, code: str) -> UUID:
+    from app.core.database import AsyncSessionFactory
+    from app.modules.department.models import Department
+
+    department = Department(name=name, code=code, status="active")
+    async with AsyncSessionFactory() as session:
+        session.add(department)
+        await session.commit()
+        await session.refresh(department)
+        return department.id
+
+
 async def _login(client: AsyncClient, *, email: str, password: str) -> str:
     response = await client.post("/api/auth/login", json={"email": email, "password": password})
     assert response.status_code == 200
@@ -111,6 +124,8 @@ async def _create_file(
     status_value: str = "pending_review",
     review_status: str = "in_review",
     hash_value: str = "b" * 64,
+    department_id: UUID = UNASSIGNED_DEPARTMENT_ID,
+    department: str | None = "QA",
     dataset_mapping_id: UUID | None = None,
     ragflow_dataset_id: str | None = None,
     ragflow_document_id: str | None = None,
@@ -130,7 +145,7 @@ async def _create_file(
         bucket="knowledge-files",
         object_key=f"uploads/{uploader_id}/file-phase4-handbook.pdf",
         uploader_id=uploader_id,
-        department="QA",
+        department=department,
         dataset_mapping_id=dataset_mapping_id,
         visibility="private",
         description="phase4 task target",
@@ -142,6 +157,8 @@ async def _create_file(
         ragflow_parse_status=ragflow_parse_status,
         ai_analysis_enabled_at_upload=False,
     )
+    if department_id is not None:
+        file.department_id = department_id
     async with AsyncSessionFactory() as session:
         session.add(file)
         await session.commit()
@@ -167,7 +184,7 @@ async def _create_category_and_mapping(
             "auto_sync_enabled": True,
         },
     )
-    assert category_response.status_code == 201
+    assert category_response.status_code == 201, category_response.text
     category_id = str(category_response.json()["data"]["id"])
 
     mapping_response = await client.post(
@@ -181,7 +198,7 @@ async def _create_category_and_mapping(
             "enabled": True,
         },
     )
-    assert mapping_response.status_code == 201
+    assert mapping_response.status_code == 201, mapping_response.text
     return category_id, str(mapping_response.json()["data"]["id"])
 
 
@@ -770,6 +787,7 @@ async def test_ragflow_upload_worker_uploads_minio_object_and_parses_document(
 
     token = await _create_admin_token(task_client)
     uploader_id = await _create_user(email="phase4-worker@company.com", password="password123")
+    department_id = await _create_department(name="研发知识部", code="research-ops")
     _, mapping_id = await _create_category_and_mapping(
         task_client,
         token,
@@ -780,6 +798,8 @@ async def test_ragflow_upload_worker_uploads_minio_object_and_parses_document(
         uploader_id=uploader_id,
         status_value="queued",
         review_status="approved",
+        department_id=department_id,
+        department="Legacy QA",
         dataset_mapping_id=UUID(mapping_id),
         ragflow_dataset_id="ragflow-phase5",
     )
@@ -843,7 +863,10 @@ async def test_ragflow_upload_worker_uploads_minio_object_and_parses_document(
         "source": "knowledge_uploader",
         "file_id": str(file_id),
         "uploader": str(uploader_id),
-        "department": "QA",
+        "department": "Legacy QA",
+        "department_id": str(department_id),
+        "department_name": "研发知识部",
+        "department_code": "research-ops",
         "category": None,
         "tags": [],
         "visibility": "private",
@@ -1491,6 +1514,66 @@ async def test_ragflow_upload_worker_enforces_dataset_allowlist(
     with pytest.raises(RuntimeError, match="RagflowSyncPreconditionError"):
         await tasks.run_ragflow_upload_task_async(str(task_id))
     get_settings.cache_clear()
+
+    async with AsyncSessionFactory() as session:
+        result = await session.execute(select(SyncTask).where(SyncTask.id == task_id))
+        task = result.scalar_one()
+
+    assert task.status == "failed"
+    assert task.error_message == "RagflowSyncPreconditionError"
+    assert storage.reads == []
+    assert client.uploads == []
+
+
+async def test_ragflow_upload_worker_requires_allowlist_for_runtime_api_key(
+    task_client: AsyncClient,
+    monkeypatch: pytest.MonkeyPatch,
+    set_secret_system_config: Callable[[str, str], Awaitable[None]],
+) -> None:
+    from app.core.config import get_settings
+    from app.core.database import AsyncSessionFactory
+    from app.modules.ragflow import tasks
+    from app.modules.ragflow.models import SyncTask
+    from app.modules.ragflow.tasks import create_ragflow_upload_sync_task
+
+    token = await _create_admin_token(task_client)
+    uploader_id = await _create_user(
+        email="phase5-runtime-key-allowlist@company.com",
+        password="password123",
+    )
+    _, mapping_id = await _create_category_and_mapping(
+        task_client,
+        token,
+        ragflow_dataset_id="ragflow-runtime-no-allowlist",
+        ragflow_dataset_name="运行时 Key 知识库",
+    )
+    monkeypatch.delenv("RAGFLOW_ALLOWED_DATASET_IDS", raising=False)
+    get_settings.cache_clear()
+    await set_secret_system_config("ragflow.api_key", "sk-runtime-worker-abcd")
+    file_id = await _create_file(
+        uploader_id=uploader_id,
+        status_value="queued",
+        review_status="approved",
+        dataset_mapping_id=UUID(mapping_id),
+        ragflow_dataset_id="ragflow-runtime-no-allowlist",
+    )
+    async with AsyncSessionFactory() as session:
+        task_id = await create_ragflow_upload_sync_task(session=session, file_id=file_id)
+        await session.commit()
+
+    storage = _FakeReadableStorage(b"must not be read")
+    client = _FakeRagflowClient()
+    monkeypatch.setattr(tasks, "build_document_storage", lambda _settings: storage)
+
+    async def _fake_build_ragflow_client() -> object:
+        return client
+
+    monkeypatch.setattr(
+        tasks, "build_ragflow_client_from_runtime_config", _fake_build_ragflow_client
+    )
+
+    with pytest.raises(RuntimeError, match="RagflowSyncPreconditionError"):
+        await tasks.run_ragflow_upload_task_async(str(task_id))
 
     async with AsyncSessionFactory() as session:
         result = await session.execute(select(SyncTask).where(SyncTask.id == task_id))

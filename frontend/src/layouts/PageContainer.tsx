@@ -1,11 +1,18 @@
 import type { ReactNode } from "react";
-import { Typography } from "antd";
+import { Breadcrumb, Typography } from "antd";
+import { Link } from "react-router-dom";
+
+export interface BreadcrumbItem {
+  label: string;
+  path?: string;
+}
 
 interface PageContainerProps {
   title: string;
   description?: string;
   actions?: ReactNode;
   className?: string;
+  breadcrumb?: BreadcrumbItem[];
   children: ReactNode;
 }
 
@@ -14,10 +21,20 @@ export function PageContainer({
   description,
   actions,
   className,
+  breadcrumb,
   children,
 }: PageContainerProps) {
   return (
     <main className={["page-container", className].filter(Boolean).join(" ")}>
+      {breadcrumb && breadcrumb.length > 0 ? (
+        <Breadcrumb
+          className="page-breadcrumb"
+          aria-label="面包屑"
+          items={breadcrumb.map((item) => ({
+            title: item.path ? <Link to={item.path}>{item.label}</Link> : item.label,
+          }))}
+        />
+      ) : null}
       <div className="page-header">
         <div>
           <Typography.Title level={2} className="page-title">

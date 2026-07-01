@@ -16,9 +16,9 @@ import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vite
 import type { UploadFile } from "antd/es/upload/interface";
 
 import {
-  type ConfigGroupResponse,
   type KnowledgeFile,
-  getConfigs,
+  type UploadPolicy,
+  getUploadPolicy,
   uploadDocument,
 } from "../../api/client";
 import type * as ApiClientModule from "../../api/client";
@@ -29,7 +29,7 @@ import UploadPage from "./index";
 
 vi.mock("../../api/client", async () => {
   const actual = await vi.importActual<typeof ApiClientModule>("../../api/client");
-  return { ...actual, getConfigs: vi.fn(), uploadDocument: vi.fn() };
+  return { ...actual, getUploadPolicy: vi.fn(), uploadDocument: vi.fn() };
 });
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
@@ -65,28 +65,12 @@ const makeKnowledgeFile = (overrides: Partial<KnowledgeFile> = {}): KnowledgeFil
   ...overrides,
 });
 
-const uploadConfigResponse: ConfigGroupResponse = {
-  group: "upload",
-  items: [
-    {
-      key: "upload.allowed_extensions",
-      value: ["pdf", "docx", "xlsx", "pptx", "txt", "md", "csv"],
-      value_type: "list",
-      is_secret: false,
-      masked_value: null,
-      description: "允许的扩展名",
-      updated_at: null,
-    },
-    {
-      key: "upload.allow_multi_file",
-      value: true,
-      value_type: "bool",
-      is_secret: false,
-      masked_value: null,
-      description: "允许批量上传",
-      updated_at: null,
-    },
-  ],
+const uploadPolicyResponse: UploadPolicy = {
+  allowed_extensions: ["pdf", "docx", "xlsx", "pptx", "txt", "md", "csv"],
+  allow_multi_file: true,
+  upload_enabled: true,
+  max_file_size_mb: 50,
+  allow_user_delete: false,
 };
 
 /** Convert raw Files to the UploadFile shape AntD Upload produces. */
@@ -133,7 +117,7 @@ afterEach(() => {
 });
 
 beforeEach(() => {
-  vi.mocked(getConfigs).mockResolvedValue(uploadConfigResponse);
+  vi.mocked(getUploadPolicy).mockResolvedValue(uploadPolicyResponse);
 });
 
 // ── Render helper ─────────────────────────────────────────────────────────────
@@ -325,11 +309,9 @@ describe("UploadPage rendering", () => {
   });
 
   it("honors upload.allow_multi_file=false in upload config", async () => {
-    vi.mocked(getConfigs).mockResolvedValueOnce({
-      ...uploadConfigResponse,
-      items: uploadConfigResponse.items.map((item) =>
-        item.key === "upload.allow_multi_file" ? { ...item, value: false } : item,
-      ),
+    vi.mocked(getUploadPolicy).mockResolvedValueOnce({
+      ...uploadPolicyResponse,
+      allow_multi_file: false,
     });
 
     renderWithProviders(<UploadPage />);
@@ -338,20 +320,9 @@ describe("UploadPage rendering", () => {
   });
 
   it("honors upload.enabled=false in upload config", async () => {
-    vi.mocked(getConfigs).mockResolvedValueOnce({
-      ...uploadConfigResponse,
-      items: [
-        ...uploadConfigResponse.items,
-        {
-          key: "upload.enabled",
-          value: false,
-          value_type: "bool",
-          is_secret: false,
-          masked_value: null,
-          description: "是否开放员工上传",
-          updated_at: null,
-        },
-      ],
+    vi.mocked(getUploadPolicy).mockResolvedValueOnce({
+      ...uploadPolicyResponse,
+      upload_enabled: false,
     });
 
     renderWithProviders(<UploadPage />);
@@ -374,12 +345,11 @@ describe("UploadPage rendering", () => {
     expect(btn).not.toBeDisabled();
   });
 
-  it("has a visibility select rendered", () => {
+  it("does not render a visibility selector", () => {
     renderWithProviders(<UploadPage />);
 
-    // AntD Select renders as a combobox role.
-    const comboboxes = screen.getAllByRole("combobox");
-    expect(comboboxes.length).toBeGreaterThan(0);
+    expect(screen.queryByText("可见范围")).not.toBeInTheDocument();
+    expect(screen.queryByRole("combobox")).not.toBeInTheDocument();
   });
 
   it("draft button is present", () => {

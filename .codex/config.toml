@@ -1,3 +1,4 @@
+sandbox_mode = "workspace-write"
 [shell_environment_policy]
 inherit = "core"
 

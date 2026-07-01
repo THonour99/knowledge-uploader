@@ -1,9 +1,29 @@
+import type { CSSProperties } from "react";
 import { Tag } from "antd";
 
 import { statusTagColors } from "../theme/tokens";
 
-export type StatusKind = "file" | "review" | "sync" | "risk" | "user" | "dataset" | "expiry";
+export type StatusKind =
+  | "file"
+  | "review"
+  | "sync"
+  | "risk"
+  | "user"
+  | "dataset"
+  | "expiry"
+  | "health";
 type StatusTone = keyof typeof statusTagColors;
+
+const statusKindLabels: Record<StatusKind, string> = {
+  file: "文件状态",
+  review: "审核状态",
+  sync: "同步状态",
+  risk: "风险等级",
+  user: "用户状态",
+  dataset: "Dataset 状态",
+  expiry: "有效期状态",
+  health: "健康状态",
+};
 
 export interface StatusTagProps {
   kind: StatusKind;
@@ -84,16 +104,26 @@ const statusMap: Record<StatusKind, Record<string, StatusMeta>> = {
     expired: { label: "已过期", color: "danger" },
     never: { label: "长期有效", color: "default" },
   },
+  health: {
+    ok: { label: "正常", color: "success" },
+    error: { label: "异常", color: "danger" },
+    unknown: { label: "未知", color: "default" },
+  },
 };
 
 export function StatusTag({ kind, value, processing = false, variant = "tag" }: StatusTagProps) {
   const meta = statusMap[kind][value] ?? { label: value, color: "default" };
   const color = statusTagColors[meta.color];
   const isProcessing = processing || meta.processing === true;
+  const ariaLabel = `${statusKindLabels[kind]}：${meta.label}`;
 
   if (variant === "dot") {
     return (
-      <span className={`status-tag-dot status-tag-dot--${meta.color}`}>
+      <span
+        aria-label={ariaLabel}
+        className={`status-tag-dot status-tag-dot--${meta.color}`}
+        title={ariaLabel}
+      >
         {meta.label}
       </span>
     );
@@ -101,9 +131,12 @@ export function StatusTag({ kind, value, processing = false, variant = "tag" }: 
 
   return (
     <Tag
-      color={color}
+      aria-label={ariaLabel}
+      style={{ "--status-color": color } as CSSProperties}
+      title={ariaLabel}
       className={[
         "status-tag",
+        `status-tag--${meta.color}`,
         meta.italic ? "status-tag--italic" : "",
         isProcessing ? "status-tag--processing" : "",
       ]

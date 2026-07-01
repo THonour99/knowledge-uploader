@@ -150,6 +150,19 @@ describe("CategoriesPage", () => {
     expect(await screen.findByText("技术文档")).toBeInTheDocument();
     expect(screen.getByText("人事档案")).toBeInTheDocument();
 
+    const policyStrip = screen.getByRole("region", { name: "分类策略状态" });
+    expect(policyStrip).toHaveTextContent("分类策略状态");
+    expect(policyStrip).toHaveTextContent("1 个分类已绑定");
+    expect(policyStrip).toHaveTextContent("1 个分类待绑定知识库");
+    expect(policyStrip).toHaveTextContent("1 个启用 AI");
+    expect(policyStrip).toHaveTextContent("1 个启用敏感检测");
+    expect(policyStrip).toHaveTextContent("1 个需要审核");
+    expect(policyStrip).toHaveTextContent("1 个员工可选分类");
+    expect(policyStrip).toHaveTextContent("1 个自动同步");
+
+    expect(screen.getByText("分类策略列表")).toBeInTheDocument();
+    expect(screen.getByText("当前维护 2 个分类，1 个已绑定 Dataset")).toBeInTheDocument();
+
     // Category codes (appear in both name cell and code cell, use getAllBy)
     expect(screen.getAllByText("tech-docs").length).toBeGreaterThan(0);
     expect(screen.getAllByText("hr-files").length).toBeGreaterThan(0);
@@ -185,6 +198,10 @@ describe("CategoriesPage", () => {
     const modalTitles = await screen.findAllByText("新增分类");
     // There should be at least 2: the button text and the modal title
     expect(modalTitles.length).toBeGreaterThanOrEqual(2);
+    const formSummary = await screen.findByRole("region", { name: "分类配置摘要" });
+    expect(formSummary).toHaveTextContent("新建分类策略");
+    expect(formSummary).toHaveTextContent("待配置编码");
+    expect(screen.getByText("策略开关")).toBeInTheDocument();
 
     // Get all visible non-disabled textboxes; they now include modal form inputs
     const textboxes = screen.getAllByRole("textbox").filter((el) => !el.hasAttribute("disabled"));
@@ -203,9 +220,7 @@ describe("CategoriesPage", () => {
     if (footerButtons.length === 0) {
       // Fallback: find by role and check if it's a primary button
       const allButtons = screen.getAllByRole("button");
-      const primaryBtn = allButtons.find((btn) =>
-        btn.className.includes("ant-btn-primary"),
-      );
+      const primaryBtn = allButtons.find((btn) => btn.className.includes("ant-btn-primary"));
       expect(primaryBtn).toBeDefined();
       fireEvent.click(primaryBtn!);
     } else {
@@ -217,9 +232,23 @@ describe("CategoriesPage", () => {
         expect.objectContaining({
           name: "新分类",
           code: "new-cat",
+          default_visibility: "private",
         }),
       );
     });
+  });
+
+  it("does not render default visibility controls in the category modal", async () => {
+    vi.mocked(listCategories).mockResolvedValue(mockCategoriesResponse);
+    vi.mocked(listDatasetMappings).mockResolvedValue(mockDatasetMappingsResponse);
+
+    renderWithProviders(<CategoriesPage />);
+
+    await screen.findByText("技术文档");
+    fireEvent.click(screen.getByRole("button", { name: /新增分类/ }));
+
+    await screen.findAllByText("新增分类");
+    expect(screen.queryByText("默认可见范围")).not.toBeInTheDocument();
   });
 
   it("submits updateCategory with correct parameters when editing a category", async () => {
@@ -253,9 +282,7 @@ describe("CategoriesPage", () => {
     if (footerButtons.length === 0) {
       // Fallback: find by role and check if it's a primary button
       const allButtons = screen.getAllByRole("button");
-      const primaryBtn = allButtons.find((btn) =>
-        btn.className.includes("ant-btn-primary"),
-      );
+      const primaryBtn = allButtons.find((btn) => btn.className.includes("ant-btn-primary"));
       expect(primaryBtn).toBeDefined();
       fireEvent.click(primaryBtn!);
     } else {

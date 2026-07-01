@@ -16,6 +16,9 @@ class RagflowSyncFileRecord:
     bucket: str
     object_key: str
     uploader_id: UUID
+    department_id: UUID
+    department_name: str | None
+    department_code: str | None
     department: str | None
     category_id: UUID | None
     dataset_mapping_id: UUID | None

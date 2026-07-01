@@ -40,7 +40,6 @@ def test_users_table_has_auth_constraints_and_indexes() -> None:
     assert {
         "ck_users_role",
         "ck_users_status",
-        "ck_users_auth_provider",
         "ck_users_email_lowercase",
         "ck_users_email_domain_lowercase",
         "ck_users_failed_login_count_non_negative",

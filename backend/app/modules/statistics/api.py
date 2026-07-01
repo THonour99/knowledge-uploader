@@ -8,7 +8,7 @@ from fastapi import APIRouter, Depends, HTTPException, Query, Request, Response
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.database import get_session
-from app.core.permissions import AdminUserDep
+from app.core.permissions import SystemAdminDep
 from app.core.responses import success_response
 
 from . import exceptions
@@ -80,7 +80,7 @@ def _query_from(
 @router.get("/overview")
 async def get_statistics_overview(
     request: Request,
-    current_user: AdminUserDep,
+    current_user: SystemAdminDep,
     session: SessionDep,
     start_date: date | None = None,
     end_date: date | None = None,
@@ -114,7 +114,7 @@ async def get_statistics_overview(
 @router.get("/expiry")
 async def get_statistics_expiry(
     request: Request,
-    current_user: AdminUserDep,
+    current_user: SystemAdminDep,
     session: SessionDep,
     start_date: date | None = None,
     end_date: date | None = None,
@@ -152,7 +152,7 @@ async def get_statistics_expiry(
 @router.get("/users")
 async def list_statistics_users(
     request: Request,
-    current_user: AdminUserDep,
+    current_user: SystemAdminDep,
     session: SessionDep,
     start_date: date | None = None,
     end_date: date | None = None,
@@ -195,7 +195,7 @@ async def list_statistics_users(
 async def get_statistics_user(
     user_id: UUID,
     request: Request,
-    current_user: AdminUserDep,
+    current_user: SystemAdminDep,
     session: SessionDep,
     start_date: date | None = None,
     end_date: date | None = None,
@@ -228,7 +228,7 @@ async def get_statistics_user(
 @router.get("/departments")
 async def list_statistics_departments(
     request: Request,
-    current_user: AdminUserDep,
+    current_user: SystemAdminDep,
     session: SessionDep,
     start_date: date | None = None,
     end_date: date | None = None,
@@ -262,7 +262,7 @@ async def list_statistics_departments(
 @router.get("/categories")
 async def list_statistics_categories(
     request: Request,
-    current_user: AdminUserDep,
+    current_user: SystemAdminDep,
     session: SessionDep,
     start_date: date | None = None,
     end_date: date | None = None,
@@ -296,7 +296,7 @@ async def list_statistics_categories(
 @router.get("/trends")
 async def list_statistics_trends(
     request: Request,
-    current_user: AdminUserDep,
+    current_user: SystemAdminDep,
     session: SessionDep,
     start_date: date | None = None,
     end_date: date | None = None,
@@ -332,7 +332,7 @@ async def list_statistics_trends(
 @router.get("/failures")
 async def list_statistics_failures(
     request: Request,
-    current_user: AdminUserDep,
+    current_user: SystemAdminDep,
     session: SessionDep,
     start_date: date | None = None,
     end_date: date | None = None,
@@ -366,7 +366,7 @@ async def list_statistics_failures(
 @router.get("/export")
 async def export_statistics(
     request: Request,
-    current_user: AdminUserDep,
+    current_user: SystemAdminDep,
     session: SessionDep,
     start_date: date | None = None,
     end_date: date | None = None,

@@ -9,11 +9,11 @@ import type * as RouterModule from "react-router-dom";
 import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 
 import {
-  type ConfigGroupResponse,
   type FileListResponse,
   type TagListResponse,
+  type UploadPolicy,
   deleteFile,
-  getConfigs,
+  getUploadPolicy,
   listDocuments,
   listTags,
   submitFileForReview,
@@ -28,7 +28,7 @@ vi.mock("../../api/client", async () => {
 
   return {
     ...actual,
-    getConfigs: vi.fn(),
+    getUploadPolicy: vi.fn(),
     listDocuments: vi.fn(),
     listTags: vi.fn(),
     deleteFile: vi.fn(),
@@ -214,19 +214,12 @@ const mockTagsResponse: TagListResponse = {
   page_size: 100,
 };
 
-const uploadConfigResponse: ConfigGroupResponse = {
-  group: "upload",
-  items: [
-    {
-      key: "upload.allowed_extensions",
-      value: ["pdf", "docx", "xlsx", "pptx", "txt", "md", "csv"],
-      value_type: "list",
-      is_secret: false,
-      masked_value: null,
-      description: "允许的扩展名",
-      updated_at: null,
-    },
-  ],
+const uploadPolicyResponse: UploadPolicy = {
+  allowed_extensions: ["pdf", "docx", "xlsx", "pptx", "txt", "md", "csv"],
+  allow_multi_file: true,
+  upload_enabled: true,
+  max_file_size_mb: 50,
+  allow_user_delete: true,
 };
 
 // ── Setup ────────────────────────────────────────────────────────────────────
@@ -279,7 +272,7 @@ afterEach(() => {
 });
 
 beforeEach(() => {
-  vi.mocked(getConfigs).mockResolvedValue(uploadConfigResponse);
+  vi.mocked(getUploadPolicy).mockResolvedValue(uploadPolicyResponse);
   vi.mocked(submitFileForReview).mockResolvedValue(mockFile2);
 });
 
@@ -293,6 +286,7 @@ describe("MyFilesPage", () => {
 
     expect(await screen.findByText("产品规划.pdf")).toBeInTheDocument();
     expect(await screen.findByText("技术架构.docx")).toBeInTheDocument();
+
   });
 
   it("calls deleteFile when delete button is clicked and Popconfirm confirms", async () => {
@@ -314,6 +308,21 @@ describe("MyFilesPage", () => {
     await waitFor(() => {
       expect(deleteFile).toHaveBeenCalledWith("file-1");
     });
+  });
+
+  it("hides the delete button when allow_user_delete is false", async () => {
+    vi.mocked(getUploadPolicy).mockResolvedValue({
+      ...uploadPolicyResponse,
+      allow_user_delete: false,
+    });
+    vi.mocked(listDocuments).mockResolvedValue(mockFilesResponse);
+    vi.mocked(listTags).mockResolvedValue(mockTagsResponse);
+
+    renderWithProviders(<MyFilesPage />);
+
+    await screen.findByText("产品规划.pdf");
+
+    expect(screen.queryByRole("button", { name: /删除/ })).not.toBeInTheDocument();
   });
 
   it("re-fetches file list after successful delete", async () => {

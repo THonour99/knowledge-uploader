@@ -12,7 +12,15 @@ import {
   Table,
   Typography,
 } from "antd";
-import { MergeOutlined, PlusOutlined, ReloadOutlined, TagOutlined } from "@ant-design/icons";
+import {
+  CheckCircleOutlined,
+  DatabaseOutlined,
+  FilterOutlined,
+  MergeOutlined,
+  PlusOutlined,
+  ReloadOutlined,
+  TagOutlined,
+} from "@ant-design/icons";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useState } from "react";
 import type { ColumnsType } from "antd/es/table";
@@ -29,7 +37,10 @@ import {
   mergeTag,
   updateTag,
 } from "../../api/client";
+import { KpiCard } from "../../components/KpiCard";
+import { StatusTag } from "../../components/StatusTag";
 import { PageContainer } from "../../layouts/PageContainer";
+import "./styles.css";
 
 // ── Form value types ──────────────────────────────────────────────────────────
 
@@ -42,6 +53,102 @@ interface MergeFormValues {
   target_tag_id: string;
 }
 
+interface TagGovernanceStripProps {
+  attachedFileCount: number;
+  disabledCount: number;
+  enabledCount: number;
+  hasSearch: boolean;
+  manualCount: number;
+  pageCount: number;
+  systemGeneratedCount: number;
+  total: number;
+  unusedCount: number;
+}
+
+function TagGovernanceStrip({
+  attachedFileCount,
+  disabledCount,
+  enabledCount,
+  hasSearch,
+  manualCount,
+  pageCount,
+  systemGeneratedCount,
+  total,
+  unusedCount,
+}: TagGovernanceStripProps) {
+  const lanes = [
+    {
+      key: "health",
+      icon: <CheckCircleOutlined />,
+      title: "标签健康",
+      primary: `${enabledCount} 个启用标签`,
+      secondary: `${disabledCount} 个停用，平台共 ${total} 个标签`,
+      status: disabledCount > 0 ? "unknown" : "ok",
+    },
+    {
+      key: "coverage",
+      icon: <DatabaseOutlined />,
+      title: "文件覆盖",
+      primary: `${attachedFileCount} 次文件关联`,
+      secondary: `${unusedCount} 个空闲标签可清理或合并`,
+      status: unusedCount > 0 ? "unknown" : "ok",
+    },
+    {
+      key: "source",
+      icon: <TagOutlined />,
+      title: "来源治理",
+      primary: `${systemGeneratedCount} 个系统标签`,
+      secondary: `${manualCount} 个手动维护标签`,
+      status: pageCount > 0 ? "ok" : "unknown",
+    },
+    {
+      key: "filters",
+      icon: <FilterOutlined />,
+      title: "筛选视图",
+      primary: hasSearch ? "已按关键字筛选" : "全部标签视图",
+      secondary: hasSearch ? "当前结果来自搜索条件" : "展示完整标签治理范围",
+      status: hasSearch ? "ok" : "unknown",
+    },
+  ];
+
+  return (
+    <section className="tags-governance-strip" role="region" aria-label="标签治理状态">
+      <div className="tags-governance-strip__summary">
+        <span className="tags-governance-strip__icon">
+          <TagOutlined />
+        </span>
+        <span className="tags-governance-strip__copy">
+          <Typography.Text strong className="tags-governance-strip__title">
+            标签治理状态
+          </Typography.Text>
+          <Typography.Text type="secondary">
+            汇总当前标签库的启用状态、文件覆盖、来源构成和筛选范围。
+          </Typography.Text>
+        </span>
+        <span className="tags-governance-strip__total">
+          <strong>{total}</strong>
+          <Typography.Text type="secondary">标签总量</Typography.Text>
+        </span>
+      </div>
+
+      <div className="tags-governance-strip__lanes" aria-label="标签治理指标">
+        {lanes.map((lane) => (
+          <div className="tags-governance-lane" key={lane.key}>
+            <span className="tags-governance-lane__icon">{lane.icon}</span>
+            <span className="tags-governance-lane__body">
+              <span className="tags-governance-lane__topline">
+                <Typography.Text strong>{lane.title}</Typography.Text>
+                <StatusTag kind="health" value={lane.status} variant="dot" />
+              </span>
+              <strong>{lane.primary}</strong>
+              <Typography.Text type="secondary">{lane.secondary}</Typography.Text>
+            </span>
+          </div>
+        ))}
+      </div>
+    </section>
+  );
+}
 // ── Tags page ─────────────────────────────────────────────────────────────────
 
 export default function TagsPage() {
@@ -75,6 +182,13 @@ export default function TagsPage() {
 
   const tags = tagsQuery.data?.items ?? [];
   const total = tagsQuery.data?.total ?? 0;
+  const enabledTagCount = tags.filter((tag) => tag.enabled).length;
+  const systemGeneratedCount = tags.filter((tag) => tag.is_system_generated).length;
+  const unusedTagCount = tags.filter((tag) => tag.usage_count === 0).length;
+  const disabledTagCount = tags.length - enabledTagCount;
+  const manualTagCount = tags.length - systemGeneratedCount;
+  const attachedFileCount = tags.reduce((sum, tag) => sum + tag.usage_count, 0);
+  const hasSearch = Boolean(search.trim());
 
   const refreshTags = async () => {
     await queryClient.invalidateQueries({ queryKey: ["tags"] });
@@ -113,8 +227,7 @@ export default function TagsPage() {
   // ── Enable toggle mutation ────────────────────────────────────────────────
 
   const toggleMutation = useMutation({
-    mutationFn: ({ id, enabled }: { id: string; enabled: boolean }) =>
-      updateTag(id, { enabled }),
+    mutationFn: ({ id, enabled }: { id: string; enabled: boolean }) => updateTag(id, { enabled }),
     onSuccess: async () => {
       await refreshTags();
     },
@@ -205,9 +318,9 @@ export default function TagsPage() {
       key: "name",
       width: 160,
       render: (value: string) => (
-        <span style={{ display: "inline-flex", alignItems: "center", gap: 6 }}>
-          <TagOutlined style={{ color: "var(--ku-color-primary)", flexShrink: 0 }} />
-          <Typography.Text strong style={{ maxWidth: 120 }} ellipsis title={value}>
+        <span className="tags-name-cell">
+          <TagOutlined className="tags-name-cell__icon" />
+          <Typography.Text strong className="tags-name-cell__text" ellipsis title={value}>
             {value}
           </Typography.Text>
         </span>
@@ -233,9 +346,7 @@ export default function TagsPage() {
       key: "usage_count",
       width: 100,
       align: "right" as const,
-      render: (value: number) => (
-        <Typography.Text>{value.toLocaleString()}</Typography.Text>
-      ),
+      render: (value: number) => <Typography.Text>{value.toLocaleString()}</Typography.Text>,
     },
     {
       title: "来源",
@@ -259,9 +370,7 @@ export default function TagsPage() {
           checked={value}
           size="small"
           loading={toggleMutation.isPending}
-          onChange={(checked) =>
-            toggleMutation.mutate({ id: record.id, enabled: checked })
-          }
+          onChange={(checked) => toggleMutation.mutate({ id: record.id, enabled: checked })}
         />
       ),
     },
@@ -328,11 +437,63 @@ export default function TagsPage() {
   // ── Render ────────────────────────────────────────────────────────────────
 
   return (
-    <PageContainer
-      title="标签管理"
-      description="管理文档标签，合并重复标签，控制标签启用状态。"
-    >
+    <PageContainer title="标签管理" description="管理文档标签，合并重复标签，控制标签启用状态。">
+      <div className="metric-grid">
+        <KpiCard
+          icon={<TagOutlined />}
+          title="标签总数"
+          value={total}
+          description="当前标签库规模"
+          tone="primary"
+        />
+        <KpiCard
+          icon={<CheckCircleOutlined />}
+          title="启用标签"
+          value={enabledTagCount}
+          description="可用于文件关联"
+          tone="success"
+        />
+        <KpiCard
+          icon={<DatabaseOutlined />}
+          title="系统标签"
+          value={systemGeneratedCount}
+          description="AI 或规则生成"
+          tone="info"
+        />
+        <KpiCard
+          icon={<MergeOutlined />}
+          title="空闲标签"
+          value={unusedTagCount}
+          description="可合并或清理"
+          tone="warning"
+        />
+      </div>
+
+      <TagGovernanceStrip
+        attachedFileCount={attachedFileCount}
+        disabledCount={disabledTagCount}
+        enabledCount={enabledTagCount}
+        hasSearch={hasSearch}
+        manualCount={manualTagCount}
+        pageCount={tags.length}
+        systemGeneratedCount={systemGeneratedCount}
+        total={total}
+        unusedCount={unusedTagCount}
+      />
+
       <Card className="document-panel table-card">
+        <div className="table-section-header">
+          <span className="table-section-header__copy">
+            <Typography.Title level={4} className="table-section-header__title">
+              标签治理列表
+            </Typography.Title>
+            <Typography.Text className="table-section-header__meta">
+              当前显示 {tags.length} 个标签，共 {total} 个治理对象，{unusedTagCount} 个空闲
+            </Typography.Text>
+          </span>
+          <StatusTag kind="health" value={tagsQuery.isError ? "error" : "ok"} variant="dot" />
+        </div>
+
         <div className="config-card-actions">
           <Space wrap>
             <Input.Search
@@ -344,11 +505,7 @@ export default function TagsPage() {
               allowClear
               style={{ width: 240 }}
             />
-            <Button
-              type="primary"
-              icon={<PlusOutlined />}
-              onClick={openCreate}
-            >
+            <Button type="primary" icon={<PlusOutlined />} onClick={openCreate}>
               新增标签
             </Button>
             <Button
@@ -385,7 +542,25 @@ export default function TagsPage() {
         confirmLoading={tagMutation.isPending}
         destroyOnHidden
         width={480}
+        className="tag-config-modal"
       >
+        <section className="tag-form-summary" role="region" aria-label="标签配置摘要">
+          <span className="tag-form-summary__icon">
+            <TagOutlined />
+          </span>
+          <span className="tag-form-summary__copy">
+            <Typography.Text strong>{editingTag ? editingTag.name : "新建标签"}</Typography.Text>
+            <Typography.Text type="secondary">
+              {editingTag ? `${editingTag.usage_count} 次文件关联` : "待创建标签"}
+            </Typography.Text>
+          </span>
+          <StatusTag
+            kind="dataset"
+            value={editingTag?.enabled === false ? "disabled" : "enabled"}
+            variant="dot"
+          />
+        </section>
+
         <Form<TagFormValues>
           form={tagForm}
           layout="vertical"
@@ -419,12 +594,21 @@ export default function TagsPage() {
         confirmLoading={mergeMutation.isPending}
         destroyOnHidden
         width={480}
+        className="tag-merge-modal"
       >
         {mergingSourceTag && (
-          <Typography.Paragraph type="secondary" style={{ marginBottom: 16 }}>
-            将「{mergingSourceTag.name}」（{mergingSourceTag.usage_count} 个文件关联）合并到目标标签后，
-            所有文件关联将迁移到目标标签，源标签将被删除。
-          </Typography.Paragraph>
+          <section className="tag-merge-summary" role="region" aria-label="标签合并摘要">
+            <span className="tag-merge-summary__icon">
+              <MergeOutlined />
+            </span>
+            <span className="tag-merge-summary__copy">
+              <Typography.Text strong>{mergingSourceTag.name}</Typography.Text>
+              <Typography.Text type="secondary">
+                {mergingSourceTag.usage_count} 个文件关联将迁移到目标标签，源标签会被删除。
+              </Typography.Text>
+            </span>
+            <StatusTag kind="health" value="unknown" variant="dot" />
+          </section>
         )}
         <Form<MergeFormValues>
           form={mergeForm}

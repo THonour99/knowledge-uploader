@@ -9,7 +9,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.core.config import Settings
 from app.core.database import get_session
 from app.core.deps import SettingsDep
-from app.core.permissions import AdminUserDep
+from app.core.permissions import SystemAdminDep
 from app.core.responses import success_response
 
 from . import exceptions
@@ -53,7 +53,7 @@ def _context_from(request: Request) -> RequestContext:
 @router.get("/config")
 async def get_ai_config(
     request: Request,
-    current_user: AdminUserDep,
+    current_user: SystemAdminDep,
     session: SessionDep,
     settings: SettingsDep,
 ) -> dict[str, object]:
@@ -72,7 +72,7 @@ async def update_ai_feature(
     feature_key: str,
     payload: AiFeatureUpdateRequest,
     request: Request,
-    current_user: AdminUserDep,
+    current_user: SystemAdminDep,
     session: SessionDep,
     settings: SettingsDep,
 ) -> dict[str, object]:
@@ -92,7 +92,7 @@ async def update_ai_feature(
 async def create_ai_provider(
     payload: AiProviderCreateRequest,
     request: Request,
-    current_user: AdminUserDep,
+    current_user: SystemAdminDep,
     session: SessionDep,
     settings: SettingsDep,
 ) -> dict[str, object]:
@@ -113,7 +113,7 @@ async def update_ai_provider(
     provider_id: UUID,
     payload: AiProviderUpdateRequest,
     request: Request,
-    current_user: AdminUserDep,
+    current_user: SystemAdminDep,
     session: SessionDep,
     settings: SettingsDep,
 ) -> dict[str, object]:
@@ -134,7 +134,7 @@ async def update_ai_provider(
 async def test_ai_provider(
     provider_id: UUID,
     request: Request,
-    current_user: AdminUserDep,
+    current_user: SystemAdminDep,
     session: SessionDep,
     settings: SettingsDep,
 ) -> dict[str, object]:

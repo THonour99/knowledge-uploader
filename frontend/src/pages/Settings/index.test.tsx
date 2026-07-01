@@ -233,12 +233,64 @@ describe("SettingsPage", () => {
     expect(screen.getByRole("tab", { name: "RAGFlow" })).toBeInTheDocument();
   });
 
+  it("renders configuration summary strip and switches panels from shortcut cards", async () => {
+    setupMocks();
+    renderWithProviders(<SettingsPage />);
+
+    const summary = await screen.findByRole("region", { name: "配置运行摘要" });
+    expect(summary).toHaveTextContent("配置中心");
+    expect(summary).toHaveTextContent("基础参数");
+    expect(summary).toHaveTextContent("上传策略");
+    expect(summary).toHaveTextContent("RAGFlow 同步");
+    expect(summary).toHaveTextContent("服务状态");
+
+    fireEvent.click(screen.getByRole("button", { name: /服务状态/ }));
+
+    expect(await screen.findByText("服务连接状态")).toBeInTheDocument();
+    expect(screen.getByRole("tab", { name: "服务状态", selected: true })).toBeInTheDocument();
+  });
+
+  it("drives overview cards and shortcut metadata from fetched config groups", async () => {
+    setupMocks();
+    renderWithProviders(<SettingsPage />);
+
+    expect(await screen.findByText("5/5")).toBeInTheDocument();
+    expect(screen.getByText("配置已同步")).toBeInTheDocument();
+    expect(screen.getByText("11")).toBeInTheDocument();
+    expect(screen.getByText("3 个开关 / 1 个密钥")).toBeInTheDocument();
+    expect(screen.getByText("1/1")).toBeInTheDocument();
+    expect(screen.getByText("无待处理项")).toBeInTheDocument();
+
+    const summary = screen.getByRole("region", { name: "配置运行摘要" });
+    expect(summary).toHaveTextContent("2 项配置");
+    expect(summary).toHaveTextContent("3 项配置");
+  });
   it("loads and fills basic tab with fetched data", async () => {
     setupMocks();
     renderWithProviders(<SettingsPage />);
 
     // basic tab is active by default; wait for data to populate
     expect(await screen.findByDisplayValue("知识库平台")).toBeInTheDocument();
+  });
+
+  it("renders configuration panel summary metrics", async () => {
+    setupMocks();
+    renderWithProviders(<SettingsPage />);
+
+    await screen.findByDisplayValue("知识库平台");
+
+    const basicSummary = screen.getByRole("region", { name: "配置面板摘要" });
+    expect(basicSummary).toHaveTextContent("配置摘要");
+    expect(basicSummary).toHaveTextContent("配置项");
+    expect(basicSummary).toHaveTextContent("2 项");
+    expect(basicSummary).toHaveTextContent("最近更新");
+
+    fireEvent.click(screen.getByRole("tab", { name: "RAGFlow" }));
+    await screen.findByDisplayValue("http://192.168.4.46:8092");
+
+    const ragflowSummary = screen.getByRole("region", { name: "配置面板摘要" });
+    expect(ragflowSummary).toHaveTextContent("密钥项");
+    expect(ragflowSummary).toHaveTextContent("1 项");
   });
 
   it("loads upload tab and shows max_file_size_mb field", async () => {

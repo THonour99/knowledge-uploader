@@ -9,11 +9,12 @@ from datetime import datetime, timedelta
 from hashlib import sha256
 from io import BytesIO
 from pathlib import PurePosixPath, PureWindowsPath
-from typing import Protocol
+from typing import Any, Protocol, cast
 
 import filetype
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.core.access_scope import DepartmentAccessScope
 from app.core.audit import record_admin_audit_log, record_audit_log
 from app.core.config import Settings
 from app.core.document_state import DocumentStateError, DocumentStateMachine
@@ -23,7 +24,7 @@ from app.modules.user.schemas import AuthUserRecord
 
 from . import events, exceptions
 from .models import File
-from .repository import DocumentRepository, ExpiryScanCandidate
+from .repository import HIDDEN_FILE_STATUSES, DocumentRepository, ExpiryScanCandidate
 from .schemas import FileAnalysisDetail
 
 WINDOWS_RESERVED_NAMES = {
@@ -56,7 +57,7 @@ OOXML_REQUIRED_ENTRIES = {
 }
 UNSUPPORTED_LEGACY_EXTENSIONS = {"doc", "xls", "ppt"}
 TEXT_EXTENSIONS = {"txt", "md", "csv"}
-ADMIN_ROLES = {"knowledge_admin", "system_admin"}
+ADMIN_ROLES = {"dept_admin", "system_admin"}
 EXTRACTED_TEXT_PREVIEW_CHARS = 500
 # 重新分析的合法源状态: 失败/已分析可重跑; 中间态属于 R1 遗留卡死文件, 允许救回
 REANALYZE_SOURCE_STATUSES = {
@@ -180,7 +181,8 @@ class DocumentService:
             bucket=bucket,
             object_key=object_key,
             uploader_id=current_user.id,
-            department=current_user.department,
+            department_id=current_user.department_id,
+            department=current_user.department_name or current_user.department,
             visibility=visibility,
             description=clean_optional_text(description),
             tags=[],
@@ -221,6 +223,9 @@ class DocumentService:
                     await self._storage.delete_object(bucket=bucket, object_key=object_key)
             raise
         await self._session.refresh(file)
+        dynamic_file = cast(Any, file)
+        dynamic_file.department_name = current_user.department_name or current_user.department
+        dynamic_file.department_code = current_user.department_code
         return UploadedFileResult(file=file, duplicate_file_id=duplicate_file_id)
 
     async def _resolve_upload_ai_analysis_enabled(
@@ -258,6 +263,7 @@ class DocumentService:
                 "mime_type": file.mime_type,
                 "size": file.size,
                 "visibility": file.visibility,
+                "file_department_id": str(file.department_id),
                 "duplicate": duplicate_file_id is not None,
                 "duplicate_file_id": (
                     str(duplicate_file_id) if duplicate_file_id is not None else None
@@ -289,6 +295,7 @@ class DocumentService:
                 "status": file.status,
                 "review_status": file.review_status,
                 "actor_role": current_user.role,
+                "file_department_id": str(file.department_id),
             },
         )
 
@@ -322,13 +329,17 @@ class DocumentService:
         client_ip: str,
         user_agent: str,
     ) -> FileDetailResult:
-        is_admin_view = current_user.role in ADMIN_ROLES
-        if is_admin_view:
-            file = await self._repository.get_by_id(file_id)
-            if file is None:
+        file = await self._repository.get_by_id(file_id)
+        if file is None or file.status in HIDDEN_FILE_STATUSES:
+            raise exceptions.file_not_found()
+        is_owner = file.uploader_id == current_user.id
+        is_admin_view = current_user.role in ADMIN_ROLES and not is_owner
+        if not is_owner:
+            if current_user.role not in ADMIN_ROLES:
                 raise exceptions.file_not_found()
-        else:
-            file = await self.get_my_file(current_user=current_user, file_id=file_id)
+            if not self._can_admin_access_file(current_user=current_user, file=file):
+                # 越权访问他部门文件统一伪装成不存在(404), 避免 403/404 差异泄露存在性
+                raise exceptions.file_not_found()
 
         analysis = await self._repository.get_analysis_for_file(file.id)
         result = FileDetailResult(
@@ -339,12 +350,15 @@ class DocumentService:
                     status=analysis.status,
                     summary=analysis.summary,
                     sensitive_risk_level=analysis.sensitive_risk_level,
-                    quality_score=None,
+                    quality_score=analysis.quality_score,
                     extracted_text_preview=(
                         analysis.extracted_text[:EXTRACTED_TEXT_PREVIEW_CHARS]
                         if analysis.extracted_text is not None
                         else None
                     ),
+                    tables_json=analysis.tables_json,
+                    table_count=analysis.table_count,
+                    similar_file_ids=analysis.similar_file_ids,
                     error_message=analysis.error_message,
                     finished_at=analysis.finished_at,
                 )
@@ -427,16 +441,17 @@ class DocumentService:
         user_agent: str,
     ) -> None:
         """软删文件: 状态机转 deleted, MinIO 对象保留, 远端清理交 ragflow 模块异步执行。"""
-        is_admin = current_user.role in ADMIN_ROLES
-        if is_admin:
-            file = await self._repository.get_by_id(file_id)
-        else:
-            file = await self._repository.get_for_uploader(
-                file_id=file_id,
-                uploader_id=current_user.id,
-            )
-        if file is None or file.status == "deleted":
+        file = await self._repository.get_by_id(file_id)
+        if file is None or file.status in HIDDEN_FILE_STATUSES:
             raise exceptions.file_not_found()
+        is_owner = file.uploader_id == current_user.id
+        is_admin = current_user.role in ADMIN_ROLES
+        if not is_owner:
+            if not is_admin:
+                raise exceptions.file_not_found()
+            if not self._can_admin_access_file(current_user=current_user, file=file):
+                # 越权删他部门文件统一伪装成不存在(404), 消除存在性枚举 oracle
+                raise exceptions.file_not_found()
         if not is_admin and await get_config("upload.allow_user_delete") is not True:
             raise exceptions.permission_denied()
         previous_status = file.status
@@ -468,6 +483,7 @@ class DocumentService:
                 "original_name": file.original_name,
                 "previous_status": previous_status,
                 "actor_role": current_user.role,
+                "file_department_id": str(file.department_id),
                 "delete_remote": delete_remote,
             },
         )
@@ -477,6 +493,7 @@ class DocumentService:
         self,
         *,
         current_user: AuthUserRecord,
+        scope: DepartmentAccessScope,
         file_id: uuid.UUID,
         client_ip: str,
         user_agent: str,
@@ -484,8 +501,9 @@ class DocumentService:
         """归档文件 (-> disabled), 是否保留远端文档由配置决策后写入事件 payload。"""
         self._require_admin(current_user)
         file = await self._repository.get_by_id(file_id)
-        if file is None or file.status == "deleted":
+        if file is None or file.status in HIDDEN_FILE_STATUSES:
             raise exceptions.file_not_found()
+        self._require_scope_for_file(scope=scope, file=file)
         previous_status = file.status
         file.status = self._transition_or_raise(file.status, "disabled")
         keep_remote = await get_config("ragflow.keep_remote_on_archive") is not False
@@ -497,6 +515,7 @@ class DocumentService:
                 "file_id": str(file.id),
                 "ragflow_document_id": file.ragflow_document_id,
                 "keep_remote": keep_remote,
+                **scope.audit_metadata(file_department_id=file.department_id),
             },
         )
         await record_admin_audit_log(
@@ -511,6 +530,7 @@ class DocumentService:
                 "original_name": file.original_name,
                 "previous_status": previous_status,
                 "keep_remote": keep_remote,
+                **scope.audit_metadata(file_department_id=file.department_id),
             },
         )
         await self._session.commit()
@@ -521,6 +541,7 @@ class DocumentService:
         self,
         *,
         current_user: AuthUserRecord,
+        scope: DepartmentAccessScope,
         file_id: uuid.UUID,
         client_ip: str,
         user_agent: str,
@@ -533,8 +554,9 @@ class DocumentService:
         """
         self._require_admin(current_user)
         file = await self._repository.get_by_id(file_id)
-        if file is None or file.status == "deleted":
+        if file is None or file.status in HIDDEN_FILE_STATUSES:
             raise exceptions.file_not_found()
+        self._require_scope_for_file(scope=scope, file=file)
         if not await self._is_ai_analysis_enabled():
             raise exceptions.ai_analysis_disabled()
         if file.status not in REANALYZE_SOURCE_STATUSES:
@@ -559,9 +581,22 @@ class DocumentService:
             metadata_json={
                 "original_name": file.original_name,
                 "previous_status": previous_status,
+                **scope.audit_metadata(file_department_id=file.department_id),
             },
         )
         await self._session.commit()
+
+    def _can_admin_access_file(self, *, current_user: AuthUserRecord, file: File) -> bool:
+        if current_user.role == "system_admin":
+            return True
+        if current_user.role != "dept_admin":
+            return False
+        return file.department_id in set(current_user.managed_department_ids)
+
+    def _require_scope_for_file(self, *, scope: DepartmentAccessScope, file: File) -> None:
+        if not scope.covers_department(file.department_id):
+            # 越权统一伪装成不存在(404), 与 get/delete 路径一致, 避免存在性泄露
+            raise exceptions.file_not_found()
 
     def _require_admin(self, current_user: AuthUserRecord) -> None:
         if current_user.role not in ADMIN_ROLES:

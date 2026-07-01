@@ -6,7 +6,7 @@
 
 ## 当前交付
 
-本仓库已按 `knowledge_uploader_docs/08_TASK_BREAKDOWN_开发任务拆解.md` 推进到阶段 9，包含：
+本仓库已按 `需求文档/08_TASK_BREAKDOWN_开发任务拆解.md` 推进到阶段 9，包含：
 
 - FastAPI 后端、React + TypeScript 前端、Nginx 反向代理。
 - PostgreSQL 16、RabbitMQ、Redis、MinIO、Celery Worker、Outbox Dispatcher、Scheduler 的 Docker Compose 编排。
@@ -109,6 +109,53 @@ Remove-Item Env:\SEED_ADMIN_PASSWORD
 
 前端视觉以 `docs/design/design.md` 和 `docs/design/images/` 为权威参考。
 
+## 本地开发模式
+
+日常改前端或后端时，优先使用本地开发脚本：Docker 只运行 PostgreSQL、Redis、RabbitMQ、MinIO，FastAPI 和 Vite 在宿主机运行，支持热更新。
+
+```powershell
+scripts\dev.bat
+```
+
+首次运行前如本机没有后端虚拟环境或前端依赖，先执行：
+
+```powershell
+scripts\dev-setup.bat
+```
+
+默认启动：
+
+- Docker 基础设施：PostgreSQL、Redis、RabbitMQ、MinIO。
+- 本地后端：`http://127.0.0.1:18000`，使用 `uvicorn --reload`。
+- 本地前端：`http://127.0.0.1:5173`，使用 Vite dev server，`/api` 自动代理到后端。
+- 默认开发期基础设施端口：PostgreSQL `15432`、Redis `16379`、RabbitMQ AMQP `15673`、RabbitMQ 管理页 `15672`、MinIO API `19000`、MinIO 控制台 `19001`。
+
+需要调试异步任务时：
+
+```powershell
+scripts\dev.bat worker
+```
+
+这会额外启动 Outbox Dispatcher、Celery Worker 和 Celery Beat。Windows 本地 Celery 使用 `--pool=solo`。
+
+脚本自检：
+
+```powershell
+scripts\dev.bat check
+```
+
+停止开发基础设施：
+
+```powershell
+scripts\dev-stop.bat
+```
+
+部署或提交前仍使用全 Docker 验证：
+
+```powershell
+scripts\dev-check.bat
+```
+
 ## RAGFlow 联调
 
 只在测试 Dataset 或明确目标 Dataset 上联调，不操作既有知识库。
@@ -133,23 +180,30 @@ invoke logs --service=backend-api
 invoke migrate
 invoke migrate --msg="add users"
 
-# 质量与测试
-invoke lint
-invoke test
+# 日常聚焦检查
+invoke lint-backend
+invoke test-backend -k "test_login"
+invoke lint-frontend
+invoke test-frontend
+
+# 提交前与发布前门禁
+invoke check
+invoke ship
+
+# 格式化与 ARM64
 invoke fmt
 invoke check-arm64
-
-# ARM64 镜像
 invoke build-arm64 --version=0.1.0
 ```
 
 ## 文档索引
 
 - `docs/api.md`：当前 API 端点、认证、响应 envelope 和权限边界。
+- `docs/development.md`：开发命令分层、目录职责和本地/CI 门禁关系。
 - `docs/deployment.md`：Compose 服务、环境变量、RAGFlow、AI、生产部署和 ARM64 注意事项。
 - `docs/testing.md`：主要流程测试覆盖矩阵和验收命令。
 - `docs/faq.md`：端口、迁移、MinIO、RAGFlow、AI、前端构建等常见问题。
-- `knowledge_uploader_docs/`：阶段规格与架构文档。
+- `需求文档/`：阶段规格与架构文档。
 - `AGENTS.md`：项目级 AI 工程师规则。
 
 ## 关键约束

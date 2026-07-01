@@ -11,7 +11,7 @@ from app.adapters.ragflow.base import RagflowClient
 from app.adapters.ragflow.http import HttpRagflowClient
 from app.core.config import Settings, get_settings
 from app.core.database import AsyncSessionFactory, engine
-from app.core.runtime_config import get_config
+from app.core.ragflow_runtime import resolve_ragflow_runtime_settings
 from app.workers.celery_app import celery_app
 
 from .repository import RagflowTaskRepository  # noqa: TID251 - same-module repository dependency
@@ -36,23 +36,11 @@ def build_document_storage(settings: Settings) -> RagflowObjectStorage:
 
 async def build_ragflow_client_from_runtime_config() -> RagflowClient:
     """Build a RAGFlow HTTP client using runtime config (DB-first, env fallback)."""
-    base_url_value = await get_config("ragflow.base_url")
-    api_key_value = await get_config("ragflow.api_key")
-    timeout_value = await get_config("ragflow.sync_timeout_seconds")
-
-    base_url = (
-        str(base_url_value) if base_url_value is not None else get_settings().ragflow_base_url
-    )
-    api_key = str(api_key_value) if api_key_value is not None else get_settings().ragflow_api_key
-    timeout_seconds = (
-        float(timeout_value)
-        if isinstance(timeout_value, int | float)
-        else get_settings().ragflow_request_timeout
-    )
+    runtime_settings = await resolve_ragflow_runtime_settings()
     return HttpRagflowClient(
-        base_url=base_url,
-        api_key=api_key,
-        timeout_seconds=timeout_seconds,
+        base_url=runtime_settings.base_url,
+        api_key=runtime_settings.api_key,
+        timeout_seconds=runtime_settings.timeout_seconds,
     )
 
 
@@ -237,7 +225,10 @@ async def _run_ragflow_upload_task(sync_task_id: uuid.UUID) -> None:
             session=session,
             repository=RagflowTaskRepository(session),
         )
-        claimed = await service.claim_running(sync_task_id)
+        claimed = await service.claim_running(
+            sync_task_id,
+            expected_task_types={"ragflow_upload", "ragflow_status_check"},
+        )
         if not claimed:
             return
 
@@ -297,7 +288,10 @@ async def _run_ragflow_delete_task(sync_task_id: uuid.UUID) -> None:
             session=session,
             repository=RagflowTaskRepository(session),
         )
-        claimed = await service.claim_running(sync_task_id)
+        claimed = await service.claim_running(
+            sync_task_id,
+            expected_task_types={"ragflow_delete"},
+        )
         if not claimed:
             return
 

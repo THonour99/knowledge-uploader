@@ -34,6 +34,7 @@ FILES = Table(
     Column("mime_type", String(120), nullable=False),
     Column("size", BigInteger, nullable=False),
     Column("uploader_id", UUID(as_uuid=True), nullable=False),
+    Column("department_id", UUID(as_uuid=True), nullable=False),
     Column("department", String(100)),
     Column("category_id", UUID(as_uuid=True)),
     Column("dataset_mapping_id", UUID(as_uuid=True)),
@@ -192,12 +193,17 @@ class ReviewRepository:
         *,
         extension: str | None = None,
         tag_id: uuid.UUID | None = None,
+        department_ids: frozenset[uuid.UUID] | None = None,
     ) -> list[ReviewFileRecord]:
         stmt = (
             select(*FILE_COLUMNS)
             .select_from(FILES)
             .where(FILES.c.status.not_in(HIDDEN_FILE_STATUSES))
         )
+        if department_ids is not None:
+            if not department_ids:
+                return []
+            stmt = stmt.where(FILES.c.department_id.in_(department_ids))
         if extension:
             stmt = stmt.where(FILES.c.extension == extension)
         if tag_id is not None:
@@ -262,6 +268,7 @@ def file_record_from_row(row: RowMapping) -> ReviewFileRecord:
         mime_type=cast(str, row["mime_type"]),
         size=cast(int, row["size"]),
         uploader_id=cast(uuid.UUID, row["uploader_id"]),
+        department_id=cast(uuid.UUID, row["department_id"]),
         department=cast(str | None, row["department"]),
         category_id=cast(uuid.UUID | None, row["category_id"]),
         dataset_mapping_id=cast(uuid.UUID | None, row["dataset_mapping_id"]),

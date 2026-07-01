@@ -25,10 +25,14 @@ import type * as ApiClientModule from "../../api/client";
 import { themeCssVariables } from "../../theme/tokens";
 import StatisticsPage from "./index";
 
+const chartOptions = vi.hoisted((): Array<Record<string, unknown>> => []);
+
 vi.mock("echarts-for-react", () => ({
-  default: ({ option }: { option: { title?: { text?: string } } }) => (
-    <div data-testid="statistics-chart">{option.title?.text ?? "chart"}</div>
-  ),
+  default: ({ option }: { option: { title?: { text?: string } } }) => {
+    chartOptions.push(option as Record<string, unknown>);
+
+    return <div data-testid="statistics-chart">{option.title?.text ?? "chart"}</div>;
+  },
 }));
 
 vi.mock("../../api/client", async () => {
@@ -151,8 +155,20 @@ const categories: StatisticsCategoryListResponse = {
 const trends: StatisticsTrendResponse = {
   group_by: "day",
   items: [
-    { period: "2026-06-01", total_files: 1024, synced_files: 860, failed_files: 20, pending_review_files: 144 },
-    { period: "2026-06-02", total_files: 890, synced_files: 790, failed_files: 18, pending_review_files: 82 },
+    {
+      period: "2026-06-01",
+      total_files: 1024,
+      synced_files: 860,
+      failed_files: 20,
+      pending_review_files: 144,
+    },
+    {
+      period: "2026-06-02",
+      total_files: 890,
+      synced_files: 790,
+      failed_files: 18,
+      pending_review_files: 82,
+    },
   ],
 };
 
@@ -185,7 +201,7 @@ beforeAll(() => {
   Object.defineProperty(window, "matchMedia", {
     writable: true,
     value: vi.fn().mockImplementation((query: string) => ({
-      matches: false,
+      matches: query.includes("prefers-reduced-motion"),
       media: query,
       onchange: null,
       addListener: vi.fn(),
@@ -251,6 +267,7 @@ function mockStatisticsApi() {
 
 afterEach(() => {
   vi.clearAllMocks();
+  chartOptions.length = 0;
 });
 
 describe("StatisticsPage", () => {
@@ -259,8 +276,8 @@ describe("StatisticsPage", () => {
 
     renderWithProviders(<StatisticsPage />);
 
-    expect(await screen.findByRole("heading", { name: "统计分析" })).toBeInTheDocument();
-    expect(await screen.findByText("18,560")).toBeInTheDocument();
+    expect(await screen.findByRole("heading", { name: "统计报表" })).toBeInTheDocument();
+    expect((await screen.findAllByText("18,560")).length).toBeGreaterThan(0);
     expect(screen.getByText("236")).toBeInTheDocument();
     expect(screen.getByText("92.4%")).toBeInTheDocument();
     expect(screen.getByText("上传趋势")).toBeInTheDocument();
@@ -273,6 +290,22 @@ describe("StatisticsPage", () => {
     expect(screen.getAllByText("已过期").length).toBeGreaterThan(0);
     expect(screen.getAllByText("李明").length).toBeGreaterThan(0);
     expect(screen.getByText("RuntimeError")).toBeInTheDocument();
+    const reportStatus = screen.getByRole("region", { name: "统计报表状态" });
+    expect(reportStatus).toHaveTextContent("统计报表状态");
+    expect(reportStatus).toHaveTextContent("3/3 张图表有数据");
+    expect(reportStatus).toHaveTextContent("18,560 个文件进入统计");
+    expect(reportStatus).toHaveTextContent("2 位贡献用户");
+    expect(reportStatus).toHaveTextContent("162 个失败任务");
+    expect(reportStatus).toHaveTextContent("1,240 个待审核，37 个敏感风险");
+    expect(reportStatus).toHaveTextContent("同步失败");
+    const contributionWorkbench = screen.getByRole("region", { name: "贡献明细工作台" });
+    expect(contributionWorkbench).toHaveTextContent("贡献明细工作台");
+    expect(contributionWorkbench).toHaveTextContent("当前视图 2 位用户，样本总数 2 位");
+    expect(contributionWorkbench).toHaveTextContent("上传文件2,324");
+    expect(contributionWorkbench).toHaveTextContent("同步成功2,178");
+    expect(contributionWorkbench).toHaveTextContent("待审核56");
+    expect(contributionWorkbench).toHaveTextContent("失败文件90");
+    expect(contributionWorkbench).toHaveTextContent("同步质量94%");
   });
 
   it("filters the user table locally and exports with current query filters", async () => {
@@ -287,12 +320,23 @@ describe("StatisticsPage", () => {
 
     expect(screen.queryByText("李明")).not.toBeInTheDocument();
     expect(screen.getAllByText("王芳").length).toBeGreaterThan(0);
+    const contributionWorkbench = screen.getByRole("region", { name: "贡献明细工作台" });
+    expect(contributionWorkbench).toHaveTextContent("当前视图 1 位用户，样本总数 2 位");
+    expect(contributionWorkbench).toHaveTextContent("上传文件1,076");
+    expect(contributionWorkbench).toHaveTextContent("同步质量93%");
+
+    fireEvent.click(screen.getByRole("button", { name: /清空搜索/ }));
+
+    expect(screen.getAllByText("李明").length).toBeGreaterThan(0);
+    expect(contributionWorkbench).toHaveTextContent("当前视图 2 位用户，样本总数 2 位");
 
     fireEvent.click(screen.getByRole("button", { name: /导出报表/ }));
 
     await waitFor(() => {
       expect(exportStatistics).toHaveBeenCalledWith(expect.objectContaining({ group_by: "day" }));
-      expect(getStatisticsExpiry).toHaveBeenCalledWith(expect.objectContaining({ group_by: "day" }));
+      expect(getStatisticsExpiry).toHaveBeenCalledWith(
+        expect.objectContaining({ group_by: "day" }),
+      );
     });
   });
 
@@ -302,8 +346,55 @@ describe("StatisticsPage", () => {
 
     renderWithProviders(<StatisticsPage />);
 
-    expect(await screen.findByRole("heading", { name: "统计分析" })).toBeInTheDocument();
-    expect(await screen.findByText("18,560")).toBeInTheDocument();
+    expect(await screen.findByRole("heading", { name: "统计报表" })).toBeInTheDocument();
+    expect((await screen.findAllByText("18,560")).length).toBeGreaterThan(0);
     expect(await screen.findByText("过期统计接口暂不可用")).toBeInTheDocument();
+  });
+
+  it("renders all category legend labels as a visible list outside the donut chart", async () => {
+    mockStatisticsApi();
+
+    renderWithProviders(<StatisticsPage />);
+
+    await screen.findByText("分类分布");
+
+    const legend = await screen.findByLabelText("分类分布图例");
+    const technicalLegend = await screen.findByRole("button", {
+      name: "技术文档，6,245 个文件，占比 59.1%",
+    });
+    const productLegend = screen.getByRole("button", {
+      name: "产品文档，4,326 个文件，占比 40.9%",
+    });
+
+    expect(legend).toContainElement(technicalLegend);
+    expect(legend).toContainElement(productLegend);
+
+    await waitFor(() => {
+      const categoryOption = chartOptions.find((option) => {
+        const series = option.series as Array<{
+          type?: string;
+          data?: Array<{ name?: string }>;
+        }>;
+
+        return series?.some(
+          (item) =>
+            item.type === "pie" && item.data?.some((dataItem) => dataItem.name === "技术文档"),
+        );
+      });
+
+      expect(categoryOption).toMatchObject({
+        legend: { show: false },
+        series: [
+          {
+            name: "分类分布",
+            type: "pie",
+            radius: ["42%", "64%"],
+            center: ["50%", "50%"],
+            label: { show: false },
+            labelLine: { show: false },
+          },
+        ],
+      });
+    });
   });
 });

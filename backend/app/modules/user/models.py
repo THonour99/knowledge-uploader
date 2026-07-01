@@ -3,7 +3,7 @@ from __future__ import annotations
 import uuid
 from datetime import datetime
 
-from sqlalchemy import Boolean, CheckConstraint, DateTime, Index, Integer, String, func
+from sqlalchemy import Boolean, CheckConstraint, DateTime, ForeignKey, Index, Integer, String, func
 from sqlalchemy.orm import Mapped, mapped_column
 
 from app.db.base import Base
@@ -13,16 +13,12 @@ class User(Base):
     __tablename__ = "users"
     __table_args__ = (
         CheckConstraint(
-            "role IN ('employee', 'knowledge_admin', 'system_admin')",
+            "role IN ('employee', 'dept_admin', 'system_admin')",
             name="ck_users_role",
         ),
         CheckConstraint(
             "status IN ('pending_email_verification', 'active', 'disabled', 'locked')",
             name="ck_users_status",
-        ),
-        CheckConstraint(
-            "auth_provider IN ('local', 'dingtalk', 'external')",
-            name="ck_users_auth_provider",
         ),
         CheckConstraint("email = lower(email)", name="ck_users_email_lowercase"),
         CheckConstraint(
@@ -38,6 +34,8 @@ class User(Base):
         ),
         Index("uq_users_email", "email", unique=True),
         Index("idx_users_email_domain", "email_domain"),
+        Index("idx_users_department_id", "department_id"),
+        Index("idx_users_department_role_status", "department_id", "role", "status"),
         Index("idx_users_role_status", "role", "status"),
         Index("idx_users_status", "status"),
     )
@@ -47,6 +45,11 @@ class User(Base):
     email: Mapped[str] = mapped_column(String(255), nullable=False)
     email_domain: Mapped[str] = mapped_column(String(255), nullable=False)
     password_hash: Mapped[str] = mapped_column(String(255), nullable=False)
+    department_id: Mapped[uuid.UUID] = mapped_column(
+        ForeignKey("departments.id", ondelete="RESTRICT"),
+        nullable=False,
+        server_default="00000000-0000-0000-0000-000000000001",
+    )
     department: Mapped[str | None] = mapped_column(String(100))
     phone: Mapped[str | None] = mapped_column(String(40))
     role: Mapped[str] = mapped_column(String(40), nullable=False, server_default="employee")
@@ -56,9 +59,6 @@ class User(Base):
         server_default="pending_email_verification",
     )
     email_verified: Mapped[bool] = mapped_column(Boolean, nullable=False, server_default="false")
-    auth_provider: Mapped[str] = mapped_column(String(40), nullable=False, server_default="local")
-    external_user_id: Mapped[str | None] = mapped_column(String(120))
-    ding_user_id: Mapped[str | None] = mapped_column(String(120))
     employee_no: Mapped[str | None] = mapped_column(String(80))
     failed_login_count: Mapped[int] = mapped_column(Integer, nullable=False, server_default="0")
     session_version: Mapped[int] = mapped_column(Integer, nullable=False, server_default="0")

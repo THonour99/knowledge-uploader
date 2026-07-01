@@ -1,0 +1,216 @@
+import type { CSSProperties, ReactNode } from "react";
+import { App as AntdApp, ConfigProvider } from "antd";
+import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
+import { fireEvent, render, screen } from "@testing-library/react";
+import { afterEach, beforeAll, describe, expect, it, vi } from "vitest";
+
+import {
+  type CategoryListResponse,
+  type DatasetMappingListResponse,
+  listCategories,
+  listDatasetMappings,
+  testRagflowConnection,
+} from "../../api/client";
+import type * as ApiClientModule from "../../api/client";
+import { themeCssVariables } from "../../theme/tokens";
+import DatasetConfigPage from "./index";
+
+vi.mock("../../api/client", async () => {
+  const actual = await vi.importActual<typeof ApiClientModule>("../../api/client");
+
+  return {
+    ...actual,
+    listCategories: vi.fn(),
+    listDatasetMappings: vi.fn(),
+    createCategory: vi.fn(),
+    updateCategory: vi.fn(),
+    createDatasetMapping: vi.fn(),
+    updateDatasetMapping: vi.fn(),
+    disableDatasetMapping: vi.fn(),
+    testRagflowConnection: vi.fn(),
+  };
+});
+
+const categories: CategoryListResponse = {
+  items: [
+    {
+      id: "cat-1",
+      name: "制度文档",
+      code: "policy",
+      description: null,
+      parent_id: null,
+      require_review: true,
+      default_dataset_id: null,
+      allow_employee_select: true,
+      allow_ai_recommend: true,
+      default_visibility: "company",
+      keywords: [],
+      classification_prompt: null,
+      ai_analysis_enabled: true,
+      sensitive_detection_enabled: true,
+      auto_sync_enabled: false,
+      created_at: "2026-06-01T00:00:00Z",
+      updated_at: "2026-06-01T00:00:00Z",
+    },
+    {
+      id: "cat-2",
+      name: "产品资料",
+      code: "product",
+      description: null,
+      parent_id: null,
+      require_review: false,
+      default_dataset_id: null,
+      allow_employee_select: false,
+      allow_ai_recommend: true,
+      default_visibility: "company",
+      keywords: [],
+      classification_prompt: null,
+      ai_analysis_enabled: true,
+      sensitive_detection_enabled: true,
+      auto_sync_enabled: true,
+      created_at: "2026-06-01T00:00:00Z",
+      updated_at: "2026-06-01T00:00:00Z",
+    },
+  ],
+  total: 2,
+};
+
+const mappings: DatasetMappingListResponse = {
+  items: [
+    {
+      id: "mapping-1",
+      name: "制度文档 Dataset",
+      category_id: "cat-1",
+      ragflow_dataset_id: "ds-policy",
+      ragflow_dataset_name: "policy-dataset",
+      enabled: true,
+      created_at: "2026-06-01T00:00:00Z",
+      updated_at: "2026-06-01T00:00:00Z",
+    },
+  ],
+  total: 1,
+};
+
+beforeAll(() => {
+  Object.defineProperty(window, "matchMedia", {
+    writable: true,
+    value: vi.fn().mockImplementation((query: string) => ({
+      matches: false,
+      media: query,
+      onchange: null,
+      addListener: vi.fn(),
+      removeListener: vi.fn(),
+      addEventListener: vi.fn(),
+      removeEventListener: vi.fn(),
+      dispatchEvent: vi.fn(),
+    })),
+  });
+
+  Object.defineProperty(window, "getComputedStyle", {
+    writable: true,
+    value: vi.fn().mockImplementation(() => ({
+      getPropertyValue: () => "",
+    })),
+  });
+});
+
+function renderWithProviders(node: ReactNode) {
+  const queryClient = new QueryClient({
+    defaultOptions: {
+      queries: { retry: false },
+      mutations: { retry: false },
+    },
+  });
+
+  return render(
+    <ConfigProvider>
+      <AntdApp>
+        <QueryClientProvider client={queryClient}>
+          <div style={themeCssVariables as CSSProperties}>{node}</div>
+        </QueryClientProvider>
+      </AntdApp>
+    </ConfigProvider>,
+  );
+}
+
+afterEach(() => {
+  vi.clearAllMocks();
+});
+
+describe("DatasetConfigPage", () => {
+  it("does not render default visibility in the table or category modal", async () => {
+    vi.mocked(listCategories).mockResolvedValue(categories);
+    vi.mocked(listDatasetMappings).mockResolvedValue(mappings);
+
+    renderWithProviders(<DatasetConfigPage />);
+
+    expect(await screen.findByText("制度文档")).toBeInTheDocument();
+    const policyStatus = screen.getByRole("region", { name: "Dataset 配置总览" });
+    expect(policyStatus).toHaveTextContent("Dataset 配置总览");
+    expect(policyStatus).toHaveTextContent("1/2 分类已绑定");
+    expect(policyStatus).toHaveTextContent("1 个待绑定，0 个禁用映射");
+    expect(policyStatus).toHaveTextContent("1 类需要审核");
+    expect(policyStatus).toHaveTextContent("1 类开启自动同步");
+    expect(policyStatus).toHaveTextContent("1 类员工可选");
+    expect(policyStatus).toHaveTextContent("2 类允许 AI 推荐分类");
+    expect(policyStatus).toHaveTextContent("1 个映射生效");
+    const mappingWorkbench = screen.getByRole("region", { name: "Dataset 映射工作台" });
+    expect(mappingWorkbench).toHaveTextContent("Dataset 映射工作台");
+    expect(mappingWorkbench).toHaveTextContent("当前筛选 2 类，需审核 1 类");
+    expect(mappingWorkbench).toHaveTextContent("已启用1类");
+    expect(mappingWorkbench).toHaveTextContent("待绑定1类");
+    expect(mappingWorkbench).toHaveTextContent("已禁用0类");
+    expect(mappingWorkbench).toHaveTextContent("绑定覆盖率50%");
+    expect(screen.queryByText("默认可见范围")).not.toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole("button", { name: /只看待绑定/ }));
+
+    expect(mappingWorkbench).toHaveTextContent("当前筛选 1 类，需审核 0 类");
+    expect(mappingWorkbench).toHaveTextContent("已启用0类");
+    expect(mappingWorkbench).toHaveTextContent("待绑定1类");
+
+    fireEvent.click(screen.getByRole("button", { name: /新增分类/ }));
+    await screen.findAllByText("新增分类");
+    const categorySummary = screen.getByRole("region", { name: "分类配置摘要" });
+    expect(categorySummary).toHaveTextContent("新分类策略");
+    expect(categorySummary).toHaveTextContent("新增分类");
+
+    expect(screen.queryByText("默认可见范围")).not.toBeInTheDocument();
+  });
+
+  it("renders Dataset mapping modal summary", async () => {
+    vi.mocked(listCategories).mockResolvedValue(categories);
+    vi.mocked(listDatasetMappings).mockResolvedValue(mappings);
+
+    renderWithProviders(<DatasetConfigPage />);
+
+    expect(await screen.findByText("制度文档")).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: /新增映射/ }));
+
+    expect(await screen.findByText("新增 Dataset 映射")).toBeInTheDocument();
+    const mappingSummary = screen.getByRole("region", { name: "Dataset 映射摘要" });
+    expect(mappingSummary).toHaveTextContent("新 Dataset 映射");
+    expect(mappingSummary).toHaveTextContent("启用映射");
+  });
+
+  it("tests the RAGFlow connection from the Dataset panel", async () => {
+    vi.mocked(listCategories).mockResolvedValue(categories);
+    vi.mocked(listDatasetMappings).mockResolvedValue(mappings);
+    vi.mocked(testRagflowConnection).mockResolvedValue({
+      ok: true,
+      latency_ms: 42,
+      error: null,
+    });
+
+    renderWithProviders(<DatasetConfigPage />);
+
+    expect(await screen.findByText("RAGFlow 连接状态")).toBeInTheDocument();
+    expect(screen.getByText("待测试")).toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole("button", { name: /测试连接/ }));
+
+    expect(await screen.findByText("连接正常")).toBeInTheDocument();
+    expect(screen.getByText("服务响应 42 ms")).toBeInTheDocument();
+    expect(testRagflowConnection).toHaveBeenCalledTimes(1);
+  });
+});

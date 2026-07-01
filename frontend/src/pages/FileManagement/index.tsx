@@ -4,18 +4,22 @@ import {
   Button,
   Card,
   DatePicker,
+  Dropdown,
   Form,
   Input,
   Modal,
   Popconfirm,
+  Progress,
   Select,
   Space,
   Table,
   Typography,
 } from "antd";
+import type { MenuProps } from "antd";
 import {
   CheckCircleOutlined,
   CloudSyncOutlined,
+  DatabaseOutlined,
   DeleteOutlined,
   DownloadOutlined,
   FileExcelOutlined,
@@ -25,8 +29,10 @@ import {
   FileProtectOutlined,
   FilePptOutlined,
   FileWordOutlined,
+  DownOutlined,
   FilterOutlined,
   InboxOutlined,
+  UpOutlined,
   ReloadOutlined,
   SafetyOutlined,
   StarOutlined,
@@ -35,7 +41,7 @@ import {
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import dayjs, { type Dayjs } from "dayjs";
 import { useMemo, useState } from "react";
-import type { Key, ReactNode } from "react";
+import type { Key } from "react";
 import type { ColumnsType } from "antd/es/table";
 import type { FormInstance } from "antd/es/form";
 
@@ -45,7 +51,7 @@ import {
   approveFile,
   archiveFile,
   deleteFile,
-  getConfigs,
+  getUploadPolicy,
   listCategories,
   listDatasetMappings,
   listReviewFiles,
@@ -56,9 +62,10 @@ import {
   syncFile,
   updateFileClassification,
 } from "../../api/client";
+import { KpiCard } from "../../components/KpiCard";
 import { StatusTag } from "../../components/StatusTag";
 import { PageContainer } from "../../layouts/PageContainer";
-import { allowedExtensionsFromConfig } from "../../utils/uploadConfig";
+import { allowedExtensionsFromPolicy } from "../../utils/uploadConfig";
 
 // ── 常量 ──────────────────────────────────────────────────────────────────────
 
@@ -141,39 +148,100 @@ function fileTypeMeta(fileName: string) {
   return { icon: <FileOutlined />, className: "file-title-cell__icon--default" };
 }
 
-// ── 子组件 ────────────────────────────────────────────────────────────────────
-
-function MetricCard({
-  icon,
-  title,
-  value,
-  trend,
-  tone,
+function FileGovernanceStrip({
+  allowedExtensionCount,
+  activeMappingCount,
+  totalCount,
+  unmappedCount,
+  pendingReviewCount,
+  highRiskCount,
+  syncFailedCount,
+  syncableCount,
 }: {
-  icon: ReactNode;
-  title: string;
-  value: number;
-  trend: string;
-  tone?: "success" | "warning" | "danger" | "purple" | "info";
+  allowedExtensionCount: number;
+  activeMappingCount: number;
+  totalCount: number;
+  unmappedCount: number;
+  pendingReviewCount: number;
+  highRiskCount: number;
+  syncFailedCount: number;
+  syncableCount: number;
 }) {
+  const lanes = [
+    {
+      key: "ingress",
+      icon: <FileProtectOutlined />,
+      title: "准入规则",
+      primary: allowedExtensionCount > 0 ? `${allowedExtensionCount} 类文件白名单` : "读取上传配置",
+      secondary: "文件类型与标签筛选已接入服务端",
+      status: { kind: "health" as const, value: allowedExtensionCount > 0 ? "ok" : "unknown" },
+    },
+    {
+      key: "mapping",
+      icon: <DatabaseOutlined />,
+      title: "分类映射",
+      primary: `${activeMappingCount} 个启用映射`,
+      secondary: unmappedCount > 0 ? `${unmappedCount} 个文件待补 Dataset` : "当前视图已完成映射",
+      status: { kind: "dataset" as const, value: unmappedCount > 0 ? "pending" : "enabled" },
+    },
+    {
+      key: "risk",
+      icon: <SafetyOutlined />,
+      title: "审核风险",
+      primary: `${pendingReviewCount} 个待审核`,
+      secondary: highRiskCount > 0 ? `${highRiskCount} 个高风险文件` : "未发现高风险文件",
+      status: { kind: "risk" as const, value: highRiskCount > 0 ? "high" : "low" },
+    },
+    {
+      key: "sync",
+      icon: <CloudSyncOutlined />,
+      title: "RAGFlow 同步",
+      primary: `${syncableCount} 个可同步`,
+      secondary: syncFailedCount > 0 ? `${syncFailedCount} 个失败重试` : "同步队列可继续处理",
+      status: {
+        kind: "sync" as const,
+        value: syncFailedCount > 0 ? "failed" : syncableCount > 0 ? "queued" : "succeeded",
+      },
+    },
+  ];
+
   return (
-    <Card className="metric-card">
-      <Space size={16}>
-        <span className={tone ? `metric-card__icon metric-card__icon--${tone}` : "metric-card__icon"}>
-          {icon}
+    <section className="file-governance-strip" role="region" aria-label="文件治理工作台状态">
+      <div className="file-governance-strip__main">
+        <span className="file-governance-strip__icon">
+          <FileProtectOutlined />
         </span>
-        <span>
-          <Typography.Text type="secondary">{title}</Typography.Text>
-          <Typography.Title level={3} className="metric-card__value">
-            {value}
-          </Typography.Title>
-          <Typography.Text type="secondary">{trend}</Typography.Text>
+        <span className="file-governance-strip__copy">
+          <Typography.Text strong className="file-governance-strip__title">
+            文件治理工作台
+          </Typography.Text>
+          <Typography.Text type="secondary">
+            将准入白名单、分类映射、审核风险和 RAGFlow 同步状态合并到当前视图。
+          </Typography.Text>
         </span>
-      </Space>
-    </Card>
+        <span className="file-governance-strip__count">
+          <strong>{totalCount}</strong>
+          <Typography.Text type="secondary">当前视图文件</Typography.Text>
+        </span>
+      </div>
+      <div className="file-governance-strip__lanes" aria-label="文件治理指标">
+        {lanes.map((lane) => (
+          <div className="file-governance-lane" key={lane.key}>
+            <span className="file-governance-lane__icon">{lane.icon}</span>
+            <span className="file-governance-lane__body">
+              <span className="file-governance-lane__topline">
+                <Typography.Text strong>{lane.title}</Typography.Text>
+                <StatusTag kind={lane.status.kind} value={lane.status.value} variant="dot" />
+              </span>
+              <strong>{lane.primary}</strong>
+              <Typography.Text type="secondary">{lane.secondary}</Typography.Text>
+            </span>
+          </div>
+        ))}
+      </div>
+    </section>
   );
 }
-
 // ── 主页面 ────────────────────────────────────────────────────────────────────
 
 export default function FileManagementPage() {
@@ -193,6 +261,9 @@ export default function FileManagementPage() {
   const [syncFilter, setSyncFilter] = useState("all");
   const [riskFilter, setRiskFilter] = useState("all");
   const [uploadedRange, setUploadedRange] = useState<[Dayjs, Dayjs] | null>(null);
+  const [filtersExpanded, setFiltersExpanded] = useState(false);
+  const [bulkApproving, setBulkApproving] = useState(false);
+  const [bulkSyncing, setBulkSyncing] = useState(false);
   // 新增：服务端筛选参数
   const [extensionFilter, setExtensionFilter] = useState<string | undefined>(undefined);
   const [tagIdFilter, setTagIdFilter] = useState<string | undefined>(undefined);
@@ -219,9 +290,9 @@ export default function FileManagementPage() {
     queryKey: ["tags"],
     queryFn: () => listTags({ enabled: true, page_size: 200 }),
   });
-  const uploadConfigQuery = useQuery({
-    queryKey: ["configs", "upload", "file-management"],
-    queryFn: () => getConfigs("upload"),
+  const uploadPolicyQuery = useQuery({
+    queryKey: ["upload-policy"],
+    queryFn: getUploadPolicy,
   });
 
   const categories = categoriesQuery.data?.items ?? [];
@@ -229,8 +300,8 @@ export default function FileManagementPage() {
   const files = reviewFilesQuery.data?.items ?? [];
   const tags = tagsQuery.data?.items ?? [];
   const allowedExtensions = useMemo(
-    () => allowedExtensionsFromConfig(uploadConfigQuery.data?.items),
-    [uploadConfigQuery.data?.items],
+    () => allowedExtensionsFromPolicy(uploadPolicyQuery.data),
+    [uploadPolicyQuery.data],
   );
   const extensionOptions = useMemo(
     () => [
@@ -277,9 +348,9 @@ export default function FileManagementPage() {
 
   const filteredFiles = files.filter((file) => {
     const keyword = searchText.trim().toLowerCase();
-    const categoryName = file.category_id ? categoryNameById.get(file.category_id) ?? "" : "";
+    const categoryName = file.category_id ? (categoryNameById.get(file.category_id) ?? "") : "";
     const datasetName = file.dataset_mapping_id
-      ? mappingById.get(file.dataset_mapping_id)?.name ?? ""
+      ? (mappingById.get(file.dataset_mapping_id)?.name ?? "")
       : "";
     const haystack = [
       file.original_name,
@@ -308,6 +379,32 @@ export default function FileManagementPage() {
           uploadedAt.isBefore(uploadedRange[1].endOf("day"))))
     );
   });
+
+  const selectedKeySet = useMemo(
+    () => new Set(selectedRowKeys.map((key) => String(key))),
+    [selectedRowKeys],
+  );
+  const selectedFiles = filteredFiles.filter((file) => selectedKeySet.has(file.id));
+  const pendingReviewCount = filteredFiles.filter(
+    (file) => file.status === "pending_review",
+  ).length;
+  const highRiskCount = filteredFiles.filter((file) => riskLevel(file) === "high").length;
+  const syncFailedCount = filteredFiles.filter((file) => syncStatus(file) === "failed").length;
+  const syncableReadyCount = filteredFiles.filter((file) =>
+    syncableStatuses.has(file.status),
+  ).length;
+  const unmappedFileCount = filteredFiles.filter(
+    (file) => !file.dataset_mapping_id && !file.ragflow_dataset_id,
+  ).length;
+  const activeMappingCount = datasets.filter((mapping) => mapping.enabled).length;
+  const selectedPendingCount = selectedFiles.filter(
+    (file) => file.status === "pending_review",
+  ).length;
+  const selectedSyncableCount = selectedFiles.filter((file) =>
+    syncableStatuses.has(file.status),
+  ).length;
+  const selectedRatio =
+    filteredFiles.length > 0 ? Math.round((selectedFiles.length / filteredFiles.length) * 100) : 0;
 
   // ── 刷新辅助 ─────────────────────────────────────────────────────────────────
 
@@ -468,6 +565,68 @@ export default function FileManagementPage() {
     setTagIdFilter(undefined);
   };
 
+  const handleBulkApprove = async () => {
+    const targets = selectedFiles.filter((file) => file.status === "pending_review");
+
+    if (targets.length === 0) {
+      message.warning("已选文件中没有可批量审核项");
+      return;
+    }
+
+    setBulkApproving(true);
+    try {
+      const results = await Promise.allSettled(
+        targets.map((file) =>
+          approveFile(file.id, {
+            category_id: file.category_id ?? null,
+            dataset_mapping_id: file.dataset_mapping_id ?? null,
+            reason: "批量审核通过",
+          }),
+        ),
+      );
+      const failedCount = results.filter((result) => result.status === "rejected").length;
+      const successCount = targets.length - failedCount;
+
+      if (failedCount > 0) {
+        message.warning(`批量审核完成，成功 ${successCount} 项，失败 ${failedCount} 项`);
+      } else {
+        message.success(`已批量审核 ${successCount} 个文件`);
+      }
+
+      setSelectedRowKeys([]);
+      await refreshFiles();
+    } finally {
+      setBulkApproving(false);
+    }
+  };
+
+  const handleBulkSync = async () => {
+    const targets = selectedFiles.filter((file) => syncableStatuses.has(file.status));
+
+    if (targets.length === 0) {
+      message.warning("已选文件中没有可同步项");
+      return;
+    }
+
+    setBulkSyncing(true);
+    try {
+      const results = await Promise.allSettled(targets.map((file) => syncFile(file.id)));
+      const failedCount = results.filter((result) => result.status === "rejected").length;
+      const successCount = targets.length - failedCount;
+
+      if (failedCount > 0) {
+        message.warning(`批量同步完成，成功 ${successCount} 项，失败 ${failedCount} 项`);
+      } else {
+        message.success(`已创建 ${successCount} 个同步任务`);
+      }
+
+      setSelectedRowKeys([]);
+      await refreshFiles();
+    } finally {
+      setBulkSyncing(false);
+    }
+  };
+
   // ── 表格列定义 ────────────────────────────────────────────────────────────────
 
   const columns: ColumnsType<KnowledgeFile> = [
@@ -529,9 +688,9 @@ export default function FileManagementPage() {
       render: (value: string | null) => (
         <span
           className="single-line-text"
-          title={value ? categoryNameById.get(value) ?? "未知分类" : "未分类"}
+          title={value ? (categoryNameById.get(value) ?? "未知分类") : "未分类"}
         >
-          {value ? categoryNameById.get(value) ?? "未知分类" : "未分类"}
+          {value ? (categoryNameById.get(value) ?? "未知分类") : "未分类"}
         </span>
       ),
     },
@@ -573,7 +732,7 @@ export default function FileManagementPage() {
     {
       title: "操作",
       key: "actions",
-      width: 220,
+      width: 148,
       fixed: "right" as const,
       render: (_, record) => {
         const canSubmit = reviewableStatuses.has(record.status);
@@ -581,18 +740,65 @@ export default function FileManagementPage() {
         const canSync = syncableStatuses.has(record.status);
         const canReanalyze = reanalyzeStatuses.has(record.status);
 
+        const moreItems: MenuProps["items"] = [
+          canSync
+            ? {
+                key: "sync",
+                icon: <SyncOutlined />,
+                label: "手动同步",
+                onClick: () => syncMutation.mutate(record.id),
+              }
+            : null,
+          canReanalyze
+            ? {
+                key: "reanalyze",
+                label: "重新分析",
+                onClick: () => reanalyzeMutation.mutate(record.id),
+              }
+            : null,
+          {
+            key: "classify",
+            label: "修改分类",
+            onClick: () => openClassificationModal(record),
+          },
+          {
+            key: "archive",
+            icon: <InboxOutlined />,
+            label: "归档",
+            onClick: () => archiveMutation.mutate(record.id),
+          },
+          { type: "divider" as const },
+          {
+            key: "delete",
+            icon: <DeleteOutlined />,
+            label: "删除",
+            danger: true,
+            onClick: () => deleteMutation.mutate(record.id),
+          },
+        ].filter(Boolean);
+
         return (
-          <Space size={4} wrap>
-            {/* 审核 / 送审 */}
+          <Space size={4}>
             {canDecide ? (
-              <Button
-                type="link"
-                size="small"
-                className="table-link-button"
-                onClick={() => openApproveModal(record)}
-              >
-                审核
-              </Button>
+              <>
+                <Button
+                  type="link"
+                  size="small"
+                  className="table-link-button"
+                  onClick={() => openApproveModal(record)}
+                >
+                  审核
+                </Button>
+                <Button
+                  type="link"
+                  danger
+                  size="small"
+                  className="table-link-button"
+                  onClick={() => openRejectModal(record)}
+                >
+                  驳回
+                </Button>
+              </>
             ) : canSubmit ? (
               <Button
                 type="link"
@@ -604,103 +810,11 @@ export default function FileManagementPage() {
                 送审
               </Button>
             ) : null}
-
-            {/* 修改分类 */}
-            <Button
-              type="link"
-              size="small"
-              className="table-link-button"
-              onClick={() => openClassificationModal(record)}
-            >
-              修改分类
-            </Button>
-
-            {/* 手动同步（approved / failed 态） */}
-            {canSync ? (
-              <Popconfirm
-                title="手动触发同步"
-                description="将该文件重新推送到 RAGFlow 知识库，确认继续？"
-                onConfirm={() => syncMutation.mutate(record.id)}
-                okText="确定"
-                cancelText="取消"
-              >
-                <Button
-                  type="link"
-                  size="small"
-                  icon={<SyncOutlined />}
-                  className="table-link-button"
-                  loading={syncMutation.isPending}
-                >
-                  同步
-                </Button>
-              </Popconfirm>
-            ) : null}
-
-            {/* 重新分析（analysis_failed / analyzed 态） */}
-            {canReanalyze ? (
-              <Button
-                type="link"
-                size="small"
-                className="table-link-button"
-                loading={reanalyzeMutation.isPending}
-                onClick={() => reanalyzeMutation.mutate(record.id)}
-              >
-                重新分析
+            <Dropdown menu={{ items: moreItems }} trigger={["click"]}>
+              <Button type="text" size="small" aria-label="更多操作">
+                ···
               </Button>
-            ) : null}
-
-            {/* 归档 */}
-            <Popconfirm
-              title="归档文件"
-              description="归档后文件将停止同步，确认继续？"
-              onConfirm={() => archiveMutation.mutate(record.id)}
-              okText="确定"
-              cancelText="取消"
-            >
-              <Button
-                type="link"
-                size="small"
-                icon={<InboxOutlined />}
-                className="table-link-button"
-                loading={archiveMutation.isPending}
-              >
-                归档
-              </Button>
-            </Popconfirm>
-
-            {/* 驳回（待审核态） */}
-            {canDecide ? (
-              <Button
-                type="link"
-                danger
-                size="small"
-                className="table-link-button"
-                onClick={() => openRejectModal(record)}
-              >
-                驳回
-              </Button>
-            ) : null}
-
-            {/* 删除 */}
-            <Popconfirm
-              title="删除文件"
-              description="此操作不可撤销，文件将被软删除并触发 RAGFlow 联动清理，确认删除？"
-              onConfirm={() => deleteMutation.mutate(record.id)}
-              okText="确定"
-              cancelText="取消"
-              okButtonProps={{ danger: true }}
-            >
-              <Button
-                type="link"
-                danger
-                size="small"
-                icon={<DeleteOutlined />}
-                className="table-link-button"
-                loading={deleteMutation.isPending}
-              >
-                删除
-              </Button>
-            </Popconfirm>
+            </Dropdown>
           </Space>
         );
       },
@@ -711,39 +825,50 @@ export default function FileManagementPage() {
 
   return (
     <PageContainer
-      title="文件管理"
+      title="文件审核"
       description="管理平台内所有文件的审核与同步状态，保障数据质量与合规安全。"
     >
       <div className="metric-grid">
-        <MetricCard
+        <KpiCard
           icon={<FileProtectOutlined />}
           title="待审核"
           value={files.filter((file) => file.status === "pending_review").length}
-          trend="较昨日保持稳定"
+          description="较昨日保持稳定"
           tone="warning"
         />
-        <MetricCard
+        <KpiCard
           icon={<SafetyOutlined />}
           title="高风险文件"
           value={files.filter((file) => riskLevel(file) === "high").length}
-          trend="敏感审核队列"
+          description="敏感审核队列"
           tone="danger"
         />
-        <MetricCard
+        <KpiCard
           icon={<CloudSyncOutlined />}
           title="同步失败"
           value={files.filter((file) => syncStatus(file) === "failed").length}
-          trend="需人工处理"
+          description="需人工处理"
           tone="purple"
         />
-        <MetricCard
+        <KpiCard
           icon={<FileAddOutlined />}
           title="今日新增"
           value={files.filter((file) => dayjs(file.uploaded_at).isSame(dayjs(), "day")).length}
-          trend="当日上传"
+          description="当日上传"
           tone="info"
         />
       </div>
+
+      <FileGovernanceStrip
+        activeMappingCount={activeMappingCount}
+        allowedExtensionCount={allowedExtensions.length}
+        highRiskCount={highRiskCount}
+        pendingReviewCount={pendingReviewCount}
+        syncableCount={syncableReadyCount}
+        syncFailedCount={syncFailedCount}
+        totalCount={filteredFiles.length}
+        unmappedCount={unmappedFileCount}
+      />
 
       <Card className="document-panel table-card">
         {/* ── 筛选栏 ── */}
@@ -754,18 +879,6 @@ export default function FileManagementPage() {
             value={searchText}
             onChange={(event) => setSearchText(event.target.value)}
             allowClear
-          />
-          <Select
-            className="filter-toolbar__control"
-            value={uploaderFilter}
-            options={[{ label: "上传人：全部", value: "all" }, ...uploaderOptions]}
-            onChange={setUploaderFilter}
-          />
-          <Select
-            className="filter-toolbar__control"
-            value={categoryFilter}
-            options={[{ label: "分类：全部", value: "all" }, ...categoryOptions]}
-            onChange={setCategoryFilter}
           />
           <Select
             className="filter-toolbar__control"
@@ -790,40 +903,137 @@ export default function FileManagementPage() {
             ]}
             onChange={setSyncFilter}
           />
-          <Select
-            className="filter-toolbar__control"
-            value={riskFilter}
-            options={[
-              { label: "风险等级：全部", value: "all" },
-              { label: "低风险", value: "low" },
-              { label: "中风险", value: "medium" },
-              { label: "高风险", value: "high" },
-            ]}
-            onChange={setRiskFilter}
-          />
-          {/* 新增：文件类型筛选（服务端过滤） */}
-          <Select
-            className="filter-toolbar__control"
-            value={extensionFilter ?? "all"}
-            options={extensionOptions}
-            onChange={(value) => setExtensionFilter(value === "all" ? undefined : value)}
-            placeholder="文件类型：全部"
-          />
-          {/* 新增：标签筛选（服务端过滤） */}
-          <Select
-            className="filter-toolbar__control"
-            value={tagIdFilter ?? "all"}
-            options={tagOptions}
-            onChange={(value) => setTagIdFilter(value === "all" ? undefined : value)}
-            loading={tagsQuery.isLoading}
-            placeholder="标签：全部"
-          />
-          <RangePicker
-            className="filter-toolbar__range"
-            placeholder={["开始日期", "结束日期"]}
-            value={uploadedRange}
-            onChange={(value) => setUploadedRange(value as [Dayjs, Dayjs] | null)}
-          />
+          <Button
+            type="text"
+            icon={filtersExpanded ? <UpOutlined /> : <DownOutlined />}
+            onClick={() => setFiltersExpanded((prev) => !prev)}
+            aria-label="更多筛选"
+          >
+            更多筛选
+          </Button>
+          {filtersExpanded ? (
+            <>
+              <Select
+                className="filter-toolbar__control"
+                value={uploaderFilter}
+                options={[{ label: "上传人：全部", value: "all" }, ...uploaderOptions]}
+                onChange={setUploaderFilter}
+              />
+              <Select
+                className="filter-toolbar__control"
+                value={categoryFilter}
+                options={[{ label: "分类：全部", value: "all" }, ...categoryOptions]}
+                onChange={setCategoryFilter}
+              />
+              <Select
+                className="filter-toolbar__control"
+                value={riskFilter}
+                options={[
+                  { label: "风险等级：全部", value: "all" },
+                  { label: "低风险", value: "low" },
+                  { label: "中风险", value: "medium" },
+                  { label: "高风险", value: "high" },
+                ]}
+                onChange={setRiskFilter}
+              />
+              <Select
+                className="filter-toolbar__control"
+                value={extensionFilter ?? "all"}
+                options={extensionOptions}
+                onChange={(value) => setExtensionFilter(value === "all" ? undefined : value)}
+                placeholder="文件类型：全部"
+              />
+              <Select
+                className="filter-toolbar__control"
+                value={tagIdFilter ?? "all"}
+                options={tagOptions}
+                onChange={(value) => setTagIdFilter(value === "all" ? undefined : value)}
+                loading={tagsQuery.isLoading}
+                placeholder="标签：全部"
+              />
+              <RangePicker
+                className="filter-toolbar__range"
+                placeholder={["开始日期", "结束日期"]}
+                value={uploadedRange}
+                onChange={(value) => setUploadedRange(value as [Dayjs, Dayjs] | null)}
+              />
+            </>
+          ) : null}
+        </div>
+
+        <div className="review-command-strip" role="region" aria-label="审核队列摘要">
+          <div className="review-command-strip__main">
+            <span className="review-command-strip__icon">
+              <FileProtectOutlined />
+            </span>
+            <span className="review-command-strip__copy">
+              <span className="review-command-strip__title-row">
+                <Typography.Text strong className="review-command-strip__title">
+                  审核队列
+                </Typography.Text>
+                <StatusTag
+                  kind="review"
+                  value={pendingReviewCount > 0 ? "pending" : "approved"}
+                  variant="dot"
+                />
+              </span>
+              <Typography.Text type="secondary">
+                基于当前筛选结果汇总待处理文件，选中后可快速判断可审核与可同步范围。
+              </Typography.Text>
+            </span>
+          </div>
+          <div className="review-command-strip__stats" aria-label="当前筛选摘要">
+            <span className="review-command-strip__stat review-command-strip__stat--warning">
+              <Typography.Text type="secondary">待审核</Typography.Text>
+              <strong>{pendingReviewCount}项</strong>
+            </span>
+            <span className="review-command-strip__stat review-command-strip__stat--danger">
+              <Typography.Text type="secondary">高风险</Typography.Text>
+              <strong>{highRiskCount}项</strong>
+            </span>
+            <span className="review-command-strip__stat review-command-strip__stat--purple">
+              <Typography.Text type="secondary">同步失败</Typography.Text>
+              <strong>{syncFailedCount}项</strong>
+            </span>
+            <span className="review-command-strip__stat review-command-strip__stat--info">
+              <Typography.Text type="secondary">已选</Typography.Text>
+              <strong>{selectedFiles.length}项</strong>
+            </span>
+            <span className="review-command-strip__stat">
+              <Typography.Text type="secondary">可审核</Typography.Text>
+              <strong>{selectedPendingCount}项</strong>
+            </span>
+            <span className="review-command-strip__stat">
+              <Typography.Text type="secondary">可同步</Typography.Text>
+              <strong>{selectedSyncableCount}项</strong>
+            </span>
+          </div>
+          <div className="review-command-strip__action-panel">
+            <div className="review-command-strip__selection" aria-label="选择范围">
+              <span className="review-command-strip__selection-copy">
+                <Typography.Text type="secondary">选中范围</Typography.Text>
+                <strong>
+                  {selectedFiles.length}/{filteredFiles.length}
+                </strong>
+              </span>
+              <Progress percent={selectedRatio} size="small" showInfo={false} />
+            </div>
+            <Space wrap className="review-command-strip__actions">
+              <Button size="small" onClick={() => setReviewFilter("pending_review")}>
+                只看待审核
+              </Button>
+              <Button size="small" onClick={() => setSyncFilter("failed")}>
+                只看同步失败
+              </Button>
+              <Button
+                size="small"
+                disabled={selectedFiles.length === 0}
+                onClick={() => setSelectedRowKeys([])}
+              >
+                清空选择
+              </Button>
+            </Space>
+          </div>
         </div>
 
         {/* ── 表格工具栏 ── */}
@@ -832,16 +1042,37 @@ export default function FileManagementPage() {
             重置筛选
           </Button>
           <Space wrap className="table-actions__right">
-            <Button
-              type="primary"
-              icon={<CheckCircleOutlined />}
-              disabled={selectedRowKeys.length === 0}
+            <Popconfirm
+              title="批量审核通过"
+              description={`将 ${selectedPendingCount} 个待审核文件标记为通过，确认继续？`}
+              onConfirm={() => void handleBulkApprove()}
+              okText="确定"
+              cancelText="取消"
             >
-              批量审核
-            </Button>
-            <Button icon={<CloudSyncOutlined />} disabled={selectedRowKeys.length === 0}>
-              批量同步
-            </Button>
+              <Button
+                type="primary"
+                icon={<CheckCircleOutlined />}
+                disabled={selectedPendingCount === 0}
+                loading={bulkApproving}
+              >
+                批量审核
+              </Button>
+            </Popconfirm>
+            <Popconfirm
+              title="批量同步文件"
+              description={`为 ${selectedSyncableCount} 个可同步文件创建 RAGFlow 同步任务，确认继续？`}
+              onConfirm={() => void handleBulkSync()}
+              okText="确定"
+              cancelText="取消"
+            >
+              <Button
+                icon={<CloudSyncOutlined />}
+                disabled={selectedSyncableCount === 0}
+                loading={bulkSyncing}
+              >
+                批量同步
+              </Button>
+            </Popconfirm>
             <Button icon={<DownloadOutlined />}>导出</Button>
             <Button
               icon={<ReloadOutlined />}

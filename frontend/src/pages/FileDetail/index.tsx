@@ -12,7 +12,14 @@ import {
   Timeline,
   Typography,
 } from "antd";
-import { ArrowLeftOutlined, CloudUploadOutlined } from "@ant-design/icons";
+import {
+  ArrowLeftOutlined,
+  CloudSyncOutlined,
+  CloudUploadOutlined,
+  FileProtectOutlined,
+  SafetyOutlined,
+  TagsOutlined,
+} from "@ant-design/icons";
 import { useQuery } from "@tanstack/react-query";
 import dayjs from "dayjs";
 import { useNavigate, useParams } from "react-router-dom";
@@ -26,6 +33,7 @@ import {
   getDocument,
   listTasks,
 } from "../../api/client";
+import { KpiCard, type KpiTone } from "../../components/KpiCard";
 import { StatusTag } from "../../components/StatusTag";
 import { PageContainer } from "../../layouts/PageContainer";
 import { Roles, useAuthStore } from "../../store/auth.store";
@@ -34,6 +42,21 @@ const TASK_TYPE_LABELS: Record<string, string> = {
   ragflow_upload: "RAGFlow 上传",
   ragflow_parse: "RAGFlow 解析",
   ragflow_status_check: "RAGFlow 状态检查",
+};
+
+const REVIEW_STATUS_LABELS: Record<string, string> = {
+  pending: "待审核",
+  in_review: "审核中",
+  approved: "已通过",
+  rejected: "未通过",
+};
+
+const RISK_LEVEL_LABELS: Record<string, string> = {
+  none: "无风险",
+  low: "低风险",
+  medium: "中风险",
+  high: "高风险",
+  critical: "严重风险",
 };
 
 function formatFileSize(size: number): string {
@@ -82,6 +105,80 @@ function qualityProgressStatus(score: number): "success" | "normal" | "exception
     return "exception";
   }
   return "normal";
+}
+
+function qualityTone(score: number | null): KpiTone {
+  if (score === null) {
+    return "info";
+  }
+  if (score >= 85) {
+    return "success";
+  }
+  if (score < 60) {
+    return "danger";
+  }
+  return "warning";
+}
+
+function syncStatus(file: KnowledgeFile): string {
+  if (file.sync_error || file.ragflow_parse_status === "failed") {
+    return "failed";
+  }
+  if (file.ragflow_parse_status === "parsed") {
+    return "synced";
+  }
+  if (file.ragflow_parse_status === "parsing") {
+    return "syncing";
+  }
+  return file.ragflow_document_id ? "queued" : "not_synced";
+}
+
+function syncMetricLabel(status: string): string {
+  const labels: Record<string, string> = {
+    failed: "异常",
+    synced: "已入库",
+    syncing: "解析中",
+    queued: "待解析",
+    not_synced: "未同步",
+  };
+  return labels[status] ?? status;
+}
+
+function syncMetricTone(status: string): KpiTone {
+  if (status === "failed") {
+    return "danger";
+  }
+  if (status === "synced") {
+    return "success";
+  }
+  if (status === "syncing" || status === "queued") {
+    return "warning";
+  }
+  return "purple";
+}
+
+function syncMetricDescription(file: KnowledgeFile): string {
+  if (file.sync_error) {
+    return "需要人工处理";
+  }
+  if (file.last_sync_at) {
+    return `最近 ${dayjs(file.last_sync_at).format("MM-DD HH:mm")}`;
+  }
+  if (file.ragflow_document_id) {
+    return "远端文档已创建";
+  }
+  return "等待审核通过";
+}
+
+function reviewStatusLabel(status: string): string {
+  return REVIEW_STATUS_LABELS[status] ?? status;
+}
+
+function riskLevelLabel(level: string | null | undefined): string {
+  if (!level) {
+    return "暂无风险结果";
+  }
+  return RISK_LEVEL_LABELS[level] ?? level;
 }
 
 function expiryMeta(expiresAt?: string | null, explicitStatus?: string | null) {
@@ -261,7 +358,7 @@ function AnalysisCard({ analysis, file, loading }: AnalysisCardProps) {
             <span className="document-analysis-metric__hint">已识别表格数量</span>
           </div>
         </div>
-        <Descriptions column={1} size="middle" labelStyle={{ width: 140 }}>
+        <Descriptions column={1} size="middle" styles={{ label: { width: 140 } }}>
           <Descriptions.Item label="风险等级">
             <StatusTag kind="risk" value={analysis.sensitive_risk_level} />
           </Descriptions.Item>
@@ -341,7 +438,7 @@ export default function FileDetailPage() {
   const navigate = useNavigate();
   const { id } = useParams();
   const role = useAuthStore((state) => state.user?.role ?? null);
-  const isAdmin = role === Roles.KNOWLEDGE_ADMIN || role === Roles.SYSTEM_ADMIN;
+  const isAdmin = role === Roles.DEPT_ADMIN || role === Roles.SYSTEM_ADMIN;
   const fileQuery = useQuery({
     queryKey: ["documents", id],
     queryFn: () => getDocument(id ?? ""),
@@ -373,11 +470,24 @@ export default function FileDetailPage() {
 
   const file = fileQuery.data;
   const fileTasks = (tasksQuery.data?.items ?? []).filter((task) => task.file_id === id);
+  const detailQualityScore =
+    file?.analysis && typeof file.analysis.quality_score === "number"
+      ? clampScore(file.analysis.quality_score)
+      : null;
+  const detailSyncStatus = file ? syncStatus(file) : "not_synced";
+  const detailAnalysisHealth =
+    file?.analysis?.status === "failed" ? "error" : file?.analysis ? "ok" : "unknown";
+  const detailMetadataHealth = file && (file.category_name || file.tags.length > 0) ? "ok" : "unknown";
+  const detailRiskLevel = file?.analysis?.sensitive_risk_level ?? "none";
 
   return (
     <PageContainer
       title={file?.original_name ?? "文件详情"}
       description="文件基础信息、AI 分析结果与审核同步状态。"
+      breadcrumb={[
+        { label: "文件审核", path: "/files" },
+        { label: file?.original_name ?? "加载中" },
+      ]}
       actions={
         <Space>
           <Button icon={<ArrowLeftOutlined />} onClick={() => navigate("/my-files")}>
@@ -389,78 +499,200 @@ export default function FileDetailPage() {
         </Space>
       }
     >
-      <div className="document-workspace">
-        <Card className="document-panel" loading={fileQuery.isLoading}>
-          {file ? (
-            <Descriptions column={1} size="middle" labelStyle={{ width: 140 }}>
-              <Descriptions.Item label="文件状态">
-                <Space wrap>
-                  <StatusTag kind="file" value={file.status} />
-                  <StatusTag kind="review" value={file.review_status} />
-                </Space>
-              </Descriptions.Item>
-              <Descriptions.Item label="文件大小">{formatFileSize(file.size)}</Descriptions.Item>
-              <Descriptions.Item label="MIME">{file.mime_type}</Descriptions.Item>
-              <Descriptions.Item label="可见范围">{file.visibility}</Descriptions.Item>
-              <Descriptions.Item label="AI 分析">
-                {file.ai_analysis_enabled_at_upload ? "已启用" : "上传时跳过"}
-              </Descriptions.Item>
-              <Descriptions.Item label="过期指标">
-                <ExpiryIndicator expiresAt={file.expires_at} status={file.expiry_status} />
-              </Descriptions.Item>
-              <Descriptions.Item label="上传时间">
+      {file ? (
+        <div className="metric-grid file-detail-kpi-grid">
+          <KpiCard
+            icon={<FileProtectOutlined />}
+            title="文件规格"
+            value={file.extension.toUpperCase()}
+            description={formatFileSize(file.size)}
+            tone="primary"
+          />
+          <KpiCard
+            icon={<TagsOutlined />}
+            title="标签数量"
+            value={file.tags.length}
+            description={file.category_name ? "分类已设置" : "未分类"}
+            tone="info"
+          />
+          <KpiCard
+            icon={<SafetyOutlined />}
+            title="分析质量"
+            value={detailQualityScore === null ? "待评分" : `${detailQualityScore}%`}
+            description={file.analysis ? "R5 质量评分" : "未生成分析"}
+            tone={qualityTone(detailQualityScore)}
+          />
+          <KpiCard
+            icon={<CloudSyncOutlined />}
+            title="RAGFlow"
+            value={syncMetricLabel(detailSyncStatus)}
+            description={syncMetricDescription(file)}
+            tone={syncMetricTone(detailSyncStatus)}
+          />
+        </div>
+      ) : null}
+
+      {file ? (
+        <section className="document-status-strip" aria-label="文档运行状态">
+          <div className="document-status-strip__main">
+            <span className="document-status-strip__icon">
+              <FileProtectOutlined />
+            </span>
+            <span className="document-status-strip__copy">
+              <Typography.Text type="secondary">文档治理</Typography.Text>
+              <Typography.Title level={4} className="document-status-strip__title">
+                文档运行状态
+              </Typography.Title>
+              <Typography.Text type="secondary">
+                {file.extension.toUpperCase()} · {formatFileSize(file.size)} ·{" "}
                 {dayjs(file.uploaded_at).format("YYYY-MM-DD HH:mm")}
-              </Descriptions.Item>
-              <Descriptions.Item label="说明">{file.description ?? "-"}</Descriptions.Item>
-            </Descriptions>
-          ) : null}
-        </Card>
+              </Typography.Text>
+            </span>
+            <StatusTag kind="file" value={file.status} variant="dot" />
+          </div>
 
-        <Card className="document-panel" title="分类与标签" loading={fileQuery.isLoading}>
-          {file ? (
-            <Descriptions column={1} size="middle" labelStyle={{ width: 140 }}>
-              <Descriptions.Item label="分类">{file.category_name ?? "-"}</Descriptions.Item>
-              <Descriptions.Item label="标签">
-                {file.tags.length > 0 ? (
+          <div className="document-status-strip__lanes">
+            <div className="document-status-lane">
+              <span className="document-status-lane__icon">
+                <FileProtectOutlined />
+              </span>
+              <span className="document-status-lane__body">
+                <span className="document-status-lane__topline">
+                  <Typography.Text type="secondary">文件状态</Typography.Text>
+                  <StatusTag kind="file" value={file.status} variant="dot" />
+                </span>
+                <strong>{file.original_name}</strong>
+                <Typography.Text type="secondary">
+                  审核：{reviewStatusLabel(file.review_status)}
+                </Typography.Text>
+              </span>
+            </div>
+
+            <div className="document-status-lane">
+              <span className="document-status-lane__icon document-status-lane__icon--sync">
+                <CloudSyncOutlined />
+              </span>
+              <span className="document-status-lane__body">
+                <span className="document-status-lane__topline">
+                  <Typography.Text type="secondary">同步健康</Typography.Text>
+                  <StatusTag kind="sync" value={detailSyncStatus} variant="dot" />
+                </span>
+                <strong>{syncMetricLabel(detailSyncStatus)}</strong>
+                <Typography.Text type="secondary">{syncMetricDescription(file)}</Typography.Text>
+              </span>
+            </div>
+
+            <div className="document-status-lane">
+              <span className="document-status-lane__icon document-status-lane__icon--risk">
+                <SafetyOutlined />
+              </span>
+              <span className="document-status-lane__body">
+                <span className="document-status-lane__topline">
+                  <Typography.Text type="secondary">AI 治理</Typography.Text>
+                  <StatusTag kind="health" value={detailAnalysisHealth} variant="dot" />
+                </span>
+                <strong>{file.analysis ? qualityLevel(detailQualityScore) : "未生成分析"}</strong>
+                <Typography.Text type="secondary">风险：{riskLevelLabel(detailRiskLevel)}</Typography.Text>
+              </span>
+            </div>
+
+            <div className="document-status-lane">
+              <span className="document-status-lane__icon document-status-lane__icon--meta">
+                <TagsOutlined />
+              </span>
+              <span className="document-status-lane__body">
+                <span className="document-status-lane__topline">
+                  <Typography.Text type="secondary">元数据</Typography.Text>
+                  <StatusTag kind="health" value={detailMetadataHealth} variant="dot" />
+                </span>
+                <strong>{file.category_name ?? "未分类"}</strong>
+                <Typography.Text type="secondary">{file.tags.length} 个标签</Typography.Text>
+              </span>
+            </div>
+          </div>
+        </section>
+      ) : null}
+      <div className="document-workspace document-workspace--detail">
+        <div className="document-workspace__main">
+          <Card className="document-panel" loading={fileQuery.isLoading}>
+            {file ? (
+              <Descriptions column={1} size="middle" styles={{ label: { width: 140 } }}>
+                <Descriptions.Item label="文件状态">
                   <Space wrap>
-                    {file.tags.map((tag) => (
-                      <Tag key={tag}>{tag}</Tag>
-                    ))}
+                    <StatusTag kind="file" value={file.status} />
+                    <StatusTag kind="review" value={file.review_status} />
                   </Space>
-                ) : (
-                  "暂无标签"
-                )}
-              </Descriptions.Item>
-            </Descriptions>
+                </Descriptions.Item>
+                <Descriptions.Item label="文件大小">{formatFileSize(file.size)}</Descriptions.Item>
+                <Descriptions.Item label="MIME">{file.mime_type}</Descriptions.Item>
+                <Descriptions.Item label="AI 分析">
+                  {file.ai_analysis_enabled_at_upload ? "已启用" : "上传时跳过"}
+                </Descriptions.Item>
+                <Descriptions.Item label="过期指标">
+                  <ExpiryIndicator expiresAt={file.expires_at} status={file.expiry_status} />
+                </Descriptions.Item>
+                <Descriptions.Item label="上传时间">
+                  {dayjs(file.uploaded_at).format("YYYY-MM-DD HH:mm")}
+                </Descriptions.Item>
+                <Descriptions.Item label="说明">{file.description ?? "-"}</Descriptions.Item>
+              </Descriptions>
+            ) : null}
+          </Card>
+
+          {file?.analysis ? (
+            <AnalysisCard analysis={file.analysis} file={file} loading={fileQuery.isLoading} />
           ) : null}
-        </Card>
+        </div>
 
-        {file?.analysis ? (
-          <AnalysisCard analysis={file.analysis} file={file} loading={fileQuery.isLoading} />
-        ) : null}
+        <aside className="document-workspace__side" aria-label="文件处理侧栏">
+          <Card className="document-panel" title="分类与标签" loading={fileQuery.isLoading}>
+            {file ? (
+              <Descriptions column={1} size="middle" styles={{ label: { width: 140 } }}>
+                <Descriptions.Item label="分类">{file.category_name ?? "-"}</Descriptions.Item>
+                <Descriptions.Item label="标签">
+                  {file.tags.length > 0 ? (
+                    <Space wrap>
+                      {file.tags.map((tag) => (
+                        <Tag key={tag}>{tag}</Tag>
+                      ))}
+                    </Space>
+                  ) : (
+                    "暂无标签"
+                  )}
+                </Descriptions.Item>
+              </Descriptions>
+            ) : null}
+          </Card>
 
-        <Card className="document-panel" title="同步信息" loading={fileQuery.isLoading}>
-          {file ? (
-            <Space direction="vertical" size={12} className="document-result">
-              {file.sync_error ? (
-                <Alert type="error" showIcon message="同步失败原因" description={file.sync_error} />
-              ) : null}
-              <Typography.Text>
-                RAGFlow 文档：
-                <Typography.Text code>{file.ragflow_document_id ?? "-"}</Typography.Text>
-              </Typography.Text>
-              <Typography.Text>
-                解析状态：<Typography.Text code>{file.ragflow_parse_status ?? "-"}</Typography.Text>
-              </Typography.Text>
-              <Typography.Text>
-                最近同步：
-                {file.last_sync_at ? dayjs(file.last_sync_at).format("YYYY-MM-DD HH:mm") : "-"}
-              </Typography.Text>
-            </Space>
-          ) : null}
-        </Card>
+          <Card className="document-panel" title="同步信息" loading={fileQuery.isLoading}>
+            {file ? (
+              <Space direction="vertical" size={12} className="document-result">
+                {file.sync_error ? (
+                  <Alert
+                    type="error"
+                    showIcon
+                    message="同步失败原因"
+                    description={file.sync_error}
+                  />
+                ) : null}
+                <Typography.Text>
+                  RAGFlow 文档：
+                  <Typography.Text code>{file.ragflow_document_id ?? "-"}</Typography.Text>
+                </Typography.Text>
+                <Typography.Text>
+                  解析状态：
+                  <Typography.Text code>{file.ragflow_parse_status ?? "-"}</Typography.Text>
+                </Typography.Text>
+                <Typography.Text>
+                  最近同步：
+                  {file.last_sync_at ? dayjs(file.last_sync_at).format("YYYY-MM-DD HH:mm") : "-"}
+                </Typography.Text>
+              </Space>
+            ) : null}
+          </Card>
 
-        {isAdmin ? <TaskTimelineCard tasks={fileTasks} loading={tasksQuery.isLoading} /> : null}
+          {isAdmin ? <TaskTimelineCard tasks={fileTasks} loading={tasksQuery.isLoading} /> : null}
+        </aside>
       </div>
     </PageContainer>
   );

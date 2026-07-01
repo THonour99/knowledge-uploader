@@ -206,17 +206,18 @@ class UserService:
     ) -> User:
         target = await self.get_user(target_id)
 
-        # Cannot change own role
         if actor.id == target.id:
             raise UserPermissionError("cannot change own role")
 
-        # If target is currently the last active system_admin, cannot demote
         if target.role == "system_admin" and new_role != "system_admin":
             active_admins = await self._repository.count_active_system_admins()
             if active_admins <= 1:
                 raise UserPermissionError("cannot demote the last active system_admin")
 
         old_role = target.role
+        cleared_departments: list[uuid.UUID] = []
+        if new_role != "dept_admin":
+            cleared_departments = await self._repository.clear_managed_departments(target.id)
         target.role = new_role
         await record_admin_audit_log(
             self._session,
@@ -230,6 +231,51 @@ class UserService:
                 "target_email": target.email,
                 "old_role": old_role,
                 "new_role": new_role,
+                "cleared_managed_department_ids": [
+                    str(department_id) for department_id in sorted(cleared_departments)
+                ],
+            },
+        )
+        await self._session.commit()
+        return target
+
+    async def set_user_department(
+        self,
+        *,
+        actor: AuthUserRecord,
+        target_id: uuid.UUID,
+        department_id: uuid.UUID,
+        ip_address: str,
+        user_agent: str,
+    ) -> User:
+        target = await self.get_user(target_id)
+        department = await self._repository.get_active_department_info(department_id)
+        if department is None:
+            raise UserStateError("department not found or disabled")
+        before = {
+            "department_id": str(target.department_id),
+            "department": target.department,
+            "department_name": getattr(target, "department_name", None),
+            "department_code": getattr(target, "department_code", None),
+        }
+        await self._repository.set_user_department(target, department)
+        await record_admin_audit_log(
+            self._session,
+            actor_id=actor.id,
+            action="user.department.change",
+            target_type="user",
+            target_id=target.id,
+            ip_address=ip_address,
+            user_agent=user_agent,
+            metadata_json={
+                "target_email": target.email,
+                "before": before,
+                "after": {
+                    "department_id": str(department.id),
+                    "department": department.name,
+                    "department_name": department.name,
+                    "department_code": department.code,
+                },
             },
         )
         await self._session.commit()
@@ -245,11 +291,9 @@ class UserService:
     ) -> None:
         target = await self.get_user(target_id)
 
-        # Cannot reset password for a disabled user
         if target.status == "disabled":
             raise UserStateError("cannot reset password for a disabled user")
 
-        # Write outbox event (same transaction as audit log)
         await OutboxRepository(self._session).append(
             event_type=USER_PASSWORD_RESET_REQUESTED,
             aggregate_type="user",
@@ -276,7 +320,7 @@ class UserService:
 
 
 def role_rank(role: str) -> int:
-    return {"employee": 0, "knowledge_admin": 1, "system_admin": 2}.get(role, -1)
+    return {"employee": 0, "dept_admin": 1, "system_admin": 2}.get(role, -1)
 
 
 def _make_admin_item(row: UserWithStats) -> AdminUserItem:
@@ -286,6 +330,9 @@ def _make_admin_item(row: UserWithStats) -> AdminUserItem:
         email=row.user.email,
         role=row.user.role,
         status=row.user.status,
+        department_id=row.user.department_id,
+        department_name=row.department_name,
+        department_code=row.department_code,
         department=row.user.department,
         email_verified=row.user.email_verified,
         created_at=row.user.created_at,

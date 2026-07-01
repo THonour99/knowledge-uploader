@@ -115,3 +115,16 @@ def test_production_accepts_ragflow_dataset_allowlist() -> None:
     )
 
     assert settings.ragflow_allowed_dataset_ids == "dataset-1,dataset-2"
+
+
+def test_protected_environment_rejects_trusting_all_forwarded_ips() -> None:
+    with pytest.raises(ValidationError, match="UVICORN_FORWARDED_ALLOW_IPS"):
+        Settings(**_production_settings(uvicorn_forwarded_allow_ips="*"))
+
+
+def test_protected_environment_accepts_explicit_forwarded_ips() -> None:
+    settings = Settings(
+        **_production_settings(uvicorn_forwarded_allow_ips="127.0.0.1,10.0.0.5")
+    )
+
+    assert settings.uvicorn_forwarded_allow_ips == "127.0.0.1,10.0.0.5"
