@@ -47,7 +47,7 @@ import {
   approveFile,
   archiveFile,
   deleteFile,
-  getConfigs,
+  getUploadPolicy,
   listCategories,
   listDatasetMappings,
   listReviewFiles,
@@ -61,7 +61,7 @@ import {
 import { KpiCard } from "../../components/KpiCard";
 import { StatusTag } from "../../components/StatusTag";
 import { PageContainer } from "../../layouts/PageContainer";
-import { allowedExtensionsFromConfig } from "../../utils/uploadConfig";
+import { allowedExtensionsFromPolicy } from "../../utils/uploadConfig";
 
 // ── 常量 ──────────────────────────────────────────────────────────────────────
 
@@ -285,9 +285,9 @@ export default function FileManagementPage() {
     queryKey: ["tags"],
     queryFn: () => listTags({ enabled: true, page_size: 200 }),
   });
-  const uploadConfigQuery = useQuery({
-    queryKey: ["configs", "upload", "file-management"],
-    queryFn: () => getConfigs("upload"),
+  const uploadPolicyQuery = useQuery({
+    queryKey: ["upload-policy"],
+    queryFn: getUploadPolicy,
   });
 
   const categories = categoriesQuery.data?.items ?? [];
@@ -295,8 +295,8 @@ export default function FileManagementPage() {
   const files = reviewFilesQuery.data?.items ?? [];
   const tags = tagsQuery.data?.items ?? [];
   const allowedExtensions = useMemo(
-    () => allowedExtensionsFromConfig(uploadConfigQuery.data?.items),
-    [uploadConfigQuery.data?.items],
+    () => allowedExtensionsFromPolicy(uploadPolicyQuery.data),
+    [uploadPolicyQuery.data],
   );
   const extensionOptions = useMemo(
     () => [

@@ -476,6 +476,14 @@ export interface UpdateFileClassificationPayload {
   dataset_mapping_id?: string | null;
 }
 
+export interface UploadPolicy {
+  allowed_extensions: string[];
+  allow_multi_file: boolean;
+  upload_enabled: boolean;
+  max_file_size_mb: number;
+  allow_user_delete: boolean;
+}
+
 export interface UploadDocumentPayload {
   file: File;
   description?: string;
@@ -600,6 +608,14 @@ export interface DocumentListQuery {
   page_size?: number;
   status?: string;
   review_status?: string;
+}
+
+export async function getUploadPolicy(): Promise<UploadPolicy> {
+  const response = await apiClient.get<ApiEnvelope<UploadPolicy> | UploadPolicy>(
+    "/upload-policy",
+  );
+
+  return unwrapResponse(response.data);
 }
 
 export async function uploadDocument(

@@ -7,16 +7,16 @@ import { fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 
 import {
-  type ConfigGroupResponse,
   type DatasetMapping,
   type FileListResponse,
   type KnowledgeFile,
   type Tag,
   type TagListResponse,
+  type UploadPolicy,
   approveFile,
   archiveFile,
   deleteFile,
-  getConfigs,
+  getUploadPolicy,
   listCategories,
   listDatasetMappings,
   listReviewFiles,
@@ -36,7 +36,7 @@ vi.mock("../../api/client", async () => {
   return {
     ...actual,
     listReviewFiles: vi.fn(),
-    getConfigs: vi.fn(),
+    getUploadPolicy: vi.fn(),
     listCategories: vi.fn(),
     listDatasetMappings: vi.fn(),
     listTags: vi.fn(),
@@ -178,19 +178,12 @@ function makeTag(overrides: Partial<Tag> = {}): Tag {
 
 const emptyTagList: TagListResponse = { items: [], total: 0, page: 1, page_size: 20 };
 
-const uploadConfigResponse: ConfigGroupResponse = {
-  group: "upload",
-  items: [
-    {
-      key: "upload.allowed_extensions",
-      value: ["pdf", "docx", "xlsx", "pptx", "txt", "md", "csv"],
-      value_type: "list",
-      is_secret: false,
-      masked_value: null,
-      description: "允许的扩展名",
-      updated_at: null,
-    },
-  ],
+const uploadPolicyResponse: UploadPolicy = {
+  allowed_extensions: ["pdf", "docx", "xlsx", "pptx", "txt", "md", "csv"],
+  allow_multi_file: true,
+  upload_enabled: true,
+  max_file_size_mb: 50,
+  allow_user_delete: false,
 };
 const emptyFileList: FileListResponse = { items: [], total: 0 };
 
@@ -222,7 +215,7 @@ afterEach(() => {
 });
 
 beforeEach(() => {
-  vi.mocked(getConfigs).mockResolvedValue(uploadConfigResponse);
+  vi.mocked(getUploadPolicy).mockResolvedValue(uploadPolicyResponse);
 });
 
 function renderWithProviders(node: ReactNode) {

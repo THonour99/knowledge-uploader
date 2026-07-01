@@ -32,7 +32,7 @@ import type { ColumnsType } from "antd/es/table";
 import {
   type KnowledgeFile,
   deleteFile,
-  getConfigs,
+  getUploadPolicy,
   listDocuments,
   listTags,
   submitFileForReview,
@@ -40,7 +40,10 @@ import {
 import { KpiCard, type KpiTone } from "../../components/KpiCard";
 import { StatusTag } from "../../components/StatusTag";
 import { PageContainer } from "../../layouts/PageContainer";
-import { allowedExtensionsFromConfig } from "../../utils/uploadConfig";
+import {
+  allowUserDeleteFromPolicy,
+  allowedExtensionsFromPolicy,
+} from "../../utils/uploadConfig";
 
 const { RangePicker } = DatePicker;
 
@@ -108,9 +111,9 @@ export default function MyFilesPage() {
     queryKey: ["tags", "list"],
     queryFn: () => listTags({ enabled: true, page_size: 100 }),
   });
-  const uploadConfigQuery = useQuery({
-    queryKey: ["configs", "upload", "my-files"],
-    queryFn: () => getConfigs("upload"),
+  const uploadPolicyQuery = useQuery({
+    queryKey: ["upload-policy"],
+    queryFn: getUploadPolicy,
   });
 
   // ── delete mutation ──────────────────────────────────────────────────────────
@@ -147,8 +150,8 @@ export default function MyFilesPage() {
 
   // ── derived data ─────────────────────────────────────────────────────────────
   const allowedExtensions = useMemo(
-    () => allowedExtensionsFromConfig(uploadConfigQuery.data?.items),
-    [uploadConfigQuery.data?.items],
+    () => allowedExtensionsFromPolicy(uploadPolicyQuery.data),
+    [uploadPolicyQuery.data],
   );
   const files = filesQuery.data?.items ?? [];
   const approvedCount = files.filter((file) => file.review_status === "approved").length;
@@ -237,14 +240,15 @@ export default function MyFilesPage() {
           allowedExtensions.length > 5 ? ` 等 ${allowedExtensions.length} 类` : ""
         }`
       : "等待上传配置";
-  const uploadPolicyStatus = uploadConfigQuery.isLoading
+  const uploadPolicyStatus = uploadPolicyQuery.isLoading
     ? "unknown"
-    : uploadConfigQuery.isError
+    : uploadPolicyQuery.isError
       ? "error"
       : "ok";
   const pageHealthStatus =
-    filesQuery.isError || tagsQuery.isError || uploadConfigQuery.isError ? "error" : "ok";
+    filesQuery.isError || tagsQuery.isError || uploadPolicyQuery.isError ? "error" : "ok";
   const syncHealthStatus = syncFailedCount > 0 ? "failed" : syncedCount > 0 ? "synced" : "not_synced";
+  const allowUserDelete = allowUserDeleteFromPolicy(uploadPolicyQuery.data);
 
   // ── table columns ─────────────────────────────────────────────────────────────
   const columns: ColumnsType<KnowledgeFile> = [
@@ -319,23 +323,25 @@ export default function MyFilesPage() {
               提交审核
             </Button>
           )}
-          <Popconfirm
-            title="删除文件"
-            description="确认删除该文件？此操作不可撤销。"
-            okText="确定"
-            cancelText="取消"
-            onConfirm={() => deleteMutation.mutate(record.id)}
-          >
-            <Button
-              type="text"
-              danger
-              icon={<DeleteOutlined />}
-              loading={deleteMutation.isPending && deleteMutation.variables === record.id}
-              aria-label={`删除 ${record.original_name}`}
+          {allowUserDelete && (
+            <Popconfirm
+              title="删除文件"
+              description="确认删除该文件？此操作不可撤销。"
+              okText="确定"
+              cancelText="取消"
+              onConfirm={() => deleteMutation.mutate(record.id)}
             >
-              删除
-            </Button>
-          </Popconfirm>
+              <Button
+                type="text"
+                danger
+                icon={<DeleteOutlined />}
+                loading={deleteMutation.isPending && deleteMutation.variables === record.id}
+                aria-label={`删除 ${record.original_name}`}
+              >
+                删除
+              </Button>
+            </Popconfirm>
+          )}
         </Space>
       ),
     },

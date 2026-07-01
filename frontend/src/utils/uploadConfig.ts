@@ -1,4 +1,4 @@
-import type { ConfigItem } from "../api/client";
+import type { ConfigItem, UploadPolicy } from "../api/client";
 
 export const DEFAULT_ALLOWED_EXTENSIONS = ["pdf", "docx", "xlsx", "pptx", "txt", "md", "csv"];
 
@@ -30,4 +30,23 @@ export function uploadEnabledFromConfig(items: ConfigItem[] | undefined): boolea
 
 export function extensionAcceptValue(extensions: string[]): string {
   return extensions.map((extension) => `.${extension}`).join(",");
+}
+
+export function allowedExtensionsFromPolicy(policy: UploadPolicy | undefined): string[] {
+  if (!policy || policy.allowed_extensions.length === 0) {
+    return DEFAULT_ALLOWED_EXTENSIONS;
+  }
+  return policy.allowed_extensions;
+}
+
+export function allowMultiFileFromPolicy(policy: UploadPolicy | undefined): boolean {
+  return policy?.allow_multi_file !== false;
+}
+
+export function uploadEnabledFromPolicy(policy: UploadPolicy | undefined): boolean {
+  return policy?.upload_enabled !== false;
+}
+
+export function allowUserDeleteFromPolicy(policy: UploadPolicy | undefined): boolean {
+  return policy?.allow_user_delete === true;
 }

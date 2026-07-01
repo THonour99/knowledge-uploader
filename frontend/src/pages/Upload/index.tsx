@@ -31,15 +31,15 @@ import type { UploadFile } from "antd/es/upload/interface";
 
 import type { RcFile } from "antd/es/upload";
 
-import { type KnowledgeFile, getConfigs, uploadDocument } from "../../api/client";
+import { type KnowledgeFile, getUploadPolicy, uploadDocument } from "../../api/client";
 import { KpiCard } from "../../components/KpiCard";
 import { StatusTag } from "../../components/StatusTag";
 import { PageContainer } from "../../layouts/PageContainer";
 import {
-  allowMultiFileFromConfig,
-  allowedExtensionsFromConfig,
+  allowMultiFileFromPolicy,
+  allowedExtensionsFromPolicy,
   extensionAcceptValue,
-  uploadEnabledFromConfig,
+  uploadEnabledFromPolicy,
 } from "../../utils/uploadConfig";
 
 /** Maximum number of simultaneous uploads. */
@@ -236,16 +236,16 @@ export default function UploadPage() {
   // track per-file progress and result independently of the form state.
   const [queue, setQueue] = useState<QueueItem[]>([]);
   const [isUploading, setIsUploading] = useState(false);
-  const uploadConfigQuery = useQuery({
-    queryKey: ["configs", "upload", "upload-page"],
-    queryFn: () => getConfigs("upload"),
+  const uploadPolicyQuery = useQuery({
+    queryKey: ["upload-policy"],
+    queryFn: getUploadPolicy,
   });
   const allowedExtensions = useMemo(
-    () => allowedExtensionsFromConfig(uploadConfigQuery.data?.items),
-    [uploadConfigQuery.data?.items],
+    () => allowedExtensionsFromPolicy(uploadPolicyQuery.data),
+    [uploadPolicyQuery.data],
   );
-  const allowMultiFile = allowMultiFileFromConfig(uploadConfigQuery.data?.items);
-  const uploadEnabled = uploadEnabledFromConfig(uploadConfigQuery.data?.items);
+  const allowMultiFile = allowMultiFileFromPolicy(uploadPolicyQuery.data);
+  const uploadEnabled = uploadEnabledFromPolicy(uploadPolicyQuery.data);
   const acceptValue = useMemo(() => extensionAcceptValue(allowedExtensions), [allowedExtensions]);
   const allowedExtensionText = allowedExtensions
     .map((extension) => extension.toUpperCase())
