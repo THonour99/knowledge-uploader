@@ -56,8 +56,8 @@ const mockConfig: AiConfigResponse = {
       provider_type: "openai_compatible",
       base_url: "https://api.openai.com/v1",
       chat_model: "gpt-4o-mini",
-      embedding_model: "text-embedding-3-small",
-      vision_model: "gpt-4o-mini",
+      embedding_model: null,
+      vision_model: null,
       is_internal: false,
       enabled: true,
       priority: 1,
@@ -207,6 +207,48 @@ describe("AiConfigPage", () => {
     });
   });
 
+  it("does not warn for private provider URLs when external models are disabled", async () => {
+    vi.mocked(getAiConfig).mockResolvedValue({
+      ...mockConfig,
+      global: {
+        ...mockConfig.global,
+        allow_external_llm: false,
+      },
+      providers: [
+        {
+          ...mockConfig.providers[0],
+          base_url: "http://192.168.4.94:8317/v1",
+        },
+      ],
+    });
+
+    renderWithProviders(<AiConfigPage />);
+
+    fireEvent.click(await screen.findByRole("tab", { name: "模型供应商" }));
+
+    expect(
+      screen.queryByText("存在公网 Base URL，外部模型关闭时测试会被阻止。"),
+    ).not.toBeInTheDocument();
+  });
+
+  it("warns for public provider URLs when external models are disabled", async () => {
+    vi.mocked(getAiConfig).mockResolvedValue({
+      ...mockConfig,
+      global: {
+        ...mockConfig.global,
+        allow_external_llm: false,
+      },
+    });
+
+    renderWithProviders(<AiConfigPage />);
+
+    fireEvent.click(await screen.findByRole("tab", { name: "模型供应商" }));
+
+    expect(
+      screen.getByText("存在公网 Base URL，外部模型关闭时测试会被阻止。"),
+    ).toBeInTheDocument();
+  });
+
   it("creates an OpenAI-compatible provider from the modal", async () => {
     vi.mocked(getAiConfig).mockResolvedValue(mockConfig);
     vi.mocked(createAiProvider).mockResolvedValue({
@@ -215,20 +257,22 @@ describe("AiConfigPage", () => {
       name: "DeepSeek",
       base_url: "https://api.deepseek.com/v1",
       chat_model: "deepseek-chat",
+      embedding_model: null,
+      vision_model: null,
     });
 
     renderWithProviders(<AiConfigPage />);
 
     fireEvent.click(await screen.findByRole("tab", { name: "模型供应商" }));
-    fireEvent.click(screen.getByRole("button", { name: /新增供应商/ }));
+    fireEvent.click(screen.getByRole("button", { name: /新增模型配置/ }));
 
-    expect(await screen.findByRole("dialog", { name: "新增模型供应商" })).toBeInTheDocument();
+    expect(await screen.findByRole("dialog", { name: "新增模型配置" })).toBeInTheDocument();
     fireEvent.change(screen.getByLabelText("供应商名称"), { target: { value: "DeepSeek" } });
     fireEvent.change(screen.getByLabelText("Base URL"), {
       target: { value: "https://api.deepseek.com/v1" },
     });
     fireEvent.change(screen.getByLabelText("API Key"), { target: { value: "sk-deepseek" } });
-    fireEvent.change(screen.getByLabelText("对话模型"), { target: { value: "deepseek-chat" } });
+    fireEvent.change(screen.getByLabelText("模型名称"), { target: { value: "deepseek-chat" } });
     fireEvent.click(screen.getByRole("button", { name: /创\s*建/ }));
 
     await waitFor(() => {
@@ -241,6 +285,8 @@ describe("AiConfigPage", () => {
         base_url: "https://api.deepseek.com/v1",
         api_key: "sk-deepseek",
         chat_model: "deepseek-chat",
+        embedding_model: null,
+        vision_model: null,
         enabled: true,
       }),
     );
@@ -258,7 +304,7 @@ describe("AiConfigPage", () => {
     fireEvent.click(await screen.findByRole("tab", { name: "模型供应商" }));
     fireEvent.click(screen.getByRole("button", { name: /编辑/ }));
 
-    expect(await screen.findByRole("dialog", { name: "编辑模型供应商" })).toBeInTheDocument();
+    expect(await screen.findByRole("dialog", { name: "编辑模型配置" })).toBeInTheDocument();
     fireEvent.change(screen.getByLabelText("优先级"), { target: { value: "5" } });
     fireEvent.click(screen.getByRole("button", { name: /保\s*存/ }));
 

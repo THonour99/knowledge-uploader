@@ -11,7 +11,7 @@ from urllib.parse import urlparse
 
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.adapters.llm.openai_compatible import LLMTestResult, OpenAICompatibleProvider
+from app.adapters.llm.openai_compatible import LLMTestKind, LLMTestResult, OpenAICompatibleProvider
 from app.adapters.minio_client import STORAGE_TRANSIENT_ERRORS, is_transient_storage_error
 from app.core.audit import record_admin_audit_log
 from app.core.config import Settings
@@ -562,11 +562,12 @@ class AiConfigService:
             return LLMTestResult(status="success", latency_ms=0, message="ok")
         if provider.provider_type == "disabled":
             return LLMTestResult(status="failed", latency_ms=None, message="provider disabled")
-        if not provider.base_url or not provider.chat_model:
+        test_model = _provider_test_model(provider)
+        if not provider.base_url or test_model is None:
             return LLMTestResult(
                 status="failed",
                 latency_ms=None,
-                message="base_url and chat_model are required",
+                message="base_url and model are required",
             )
         features = await self._feature_map()
         allow_external_llm = (
@@ -578,13 +579,14 @@ class AiConfigService:
                 latency_ms=None,
                 message="external model provider is disabled",
             )
+        model_kind, model_name = test_model
         client = OpenAICompatibleProvider(
             base_url=provider.base_url,
             api_key=self._decrypt_provider_key(provider),
-            model=provider.chat_model,
+            model=model_name,
             timeout_seconds=provider.timeout_seconds,
         )
-        return await client.test_connection()
+        return await client.test_connection(model_kind=model_kind)
 
     def _validate_provider_type(self, provider_type: str, *, is_internal: bool) -> None:
         allowed = {
@@ -905,6 +907,16 @@ def clean_optional_text(value: str | None) -> str | None:
         return None
     cleaned = value.strip()
     return cleaned or None
+
+
+def _provider_test_model(provider: AiProvider) -> tuple[LLMTestKind, str] | None:
+    if provider.chat_model:
+        return "chat", provider.chat_model
+    if provider.embedding_model:
+        return "embedding", provider.embedding_model
+    if provider.vision_model:
+        return "vision", provider.vision_model
+    return None
 
 
 def cast_optional_str(value: object) -> str | None:

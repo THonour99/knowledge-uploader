@@ -119,13 +119,38 @@ const providerTypeOptions = [
 const providerTypesWithoutEndpoint = new Set(["mock", "disabled"]);
 
 type ProviderFormMode = "create" | "edit";
+type ProviderModelKind = "chat" | "embedding" | "vision";
 
 type ProviderModalState = {
   mode: ProviderFormMode;
   provider?: AiProviderConfig;
 };
 
-type AiProviderFormValues = AiProviderPayload;
+type AiProviderFormValues = Omit<
+  AiProviderPayload,
+  "chat_model" | "embedding_model" | "vision_model"
+> & {
+  model_kind: ProviderModelKind;
+  model_name: string;
+};
+
+const providerModelKindLabels: Record<ProviderModelKind, string> = {
+  chat: "对话",
+  embedding: "向量",
+  vision: "视觉",
+};
+
+const providerModelKindOptions = [
+  { label: "对话模型", value: "chat" },
+  { label: "向量模型", value: "embedding" },
+  { label: "视觉模型", value: "vision" },
+];
+
+const providerModelNamePlaceholders: Record<ProviderModelKind, string> = {
+  chat: "gpt-4o-mini / deepseek-chat / qwen-plus",
+  embedding: "text-embedding-3-small",
+  vision: "gpt-4o-mini",
+};
 
 const providerDefaultValues: AiProviderFormValues = {
   name: "",
@@ -133,9 +158,8 @@ const providerDefaultValues: AiProviderFormValues = {
   base_url: "",
   api_key: "",
   clear_api_key: false,
-  chat_model: "",
-  embedding_model: "",
-  vision_model: "",
+  model_kind: "chat",
+  model_name: "",
   is_internal: false,
   enabled: true,
   priority: 100,
@@ -156,20 +180,109 @@ function optionalNumber(value?: number | null): number | null {
   return typeof value === "number" ? value : null;
 }
 
+function providerModelKind(provider?: AiProviderConfig): ProviderModelKind {
+  if (!provider) {
+    return "chat";
+  }
+  if (provider.embedding_model && !provider.chat_model && !provider.vision_model) {
+    return "embedding";
+  }
+  if (provider.vision_model && !provider.chat_model && !provider.embedding_model) {
+    return "vision";
+  }
+  return "chat";
+}
+
+function providerModelName(
+  provider: AiProviderConfig | undefined,
+  modelKind: ProviderModelKind,
+): string {
+  if (!provider) {
+    return "";
+  }
+  if (modelKind === "embedding") {
+    return provider.embedding_model ?? "";
+  }
+  if (modelKind === "vision") {
+    return provider.vision_model ?? "";
+  }
+  return provider.chat_model ?? "";
+}
+
+function providerModelInfo(provider: AiProviderConfig): {
+  label: string;
+  modelName: string;
+} {
+  const modelKind = providerModelKind(provider);
+  return {
+    label: providerModelKindLabels[modelKind],
+    modelName: providerModelName(provider, modelKind),
+  };
+}
+
+function isPrivateIPv4(hostname: string): boolean {
+  const parts = hostname.split(".").map((part) => Number(part));
+  if (
+    parts.length !== 4 ||
+    parts.some((part) => !Number.isInteger(part) || part < 0 || part > 255)
+  ) {
+    return false;
+  }
+  const [first, second] = parts;
+  return (
+    first === 0 ||
+    first === 10 ||
+    first === 127 ||
+    (first === 169 && second === 254) ||
+    (first === 172 && second >= 16 && second <= 31) ||
+    (first === 192 && second === 168)
+  );
+}
+
+function isLocalProviderHost(hostname: string): boolean {
+  return ["localhost", "host.docker.internal", "ollama", "vllm", "lmstudio"].includes(hostname);
+}
+
+function isExternalProviderUrl(value?: string | null): boolean {
+  const baseUrl = optionalText(value);
+  if (!baseUrl) {
+    return false;
+  }
+
+  try {
+    const hostname = new URL(baseUrl).hostname.replace(/^\[|\]$/g, "").toLowerCase();
+    if (isLocalProviderHost(hostname) || isPrivateIPv4(hostname)) {
+      return false;
+    }
+    if (
+      hostname.includes(":") &&
+      (hostname === "::1" ||
+        hostname.startsWith("fc") ||
+        hostname.startsWith("fd") ||
+        hostname.startsWith("fe80"))
+    ) {
+      return false;
+    }
+    return true;
+  } catch {
+    return false;
+  }
+}
+
 function providerFormValues(provider?: AiProviderConfig): AiProviderFormValues {
   if (!provider) {
     return { ...providerDefaultValues };
   }
 
+  const modelKind = providerModelKind(provider);
   return {
     name: provider.name,
     provider_type: provider.provider_type,
     base_url: provider.base_url ?? "",
     api_key: "",
     clear_api_key: false,
-    chat_model: provider.chat_model ?? "",
-    embedding_model: provider.embedding_model ?? "",
-    vision_model: provider.vision_model ?? "",
+    model_kind: modelKind,
+    model_name: providerModelName(provider, modelKind),
     is_internal: provider.is_internal,
     enabled: provider.enabled,
     priority: provider.priority,
@@ -184,14 +297,15 @@ function providerFormValues(provider?: AiProviderConfig): AiProviderFormValues {
 
 function providerPayloadFromValues(values: AiProviderFormValues): AiProviderPayload {
   const apiKey = optionalText(values.api_key);
+  const modelName = optionalText(values.model_name);
   const payload: AiProviderPayload = {
     name: values.name.trim(),
     provider_type: values.provider_type,
     base_url: optionalText(values.base_url),
     clear_api_key: Boolean(values.clear_api_key),
-    chat_model: optionalText(values.chat_model),
-    embedding_model: optionalText(values.embedding_model),
-    vision_model: optionalText(values.vision_model),
+    chat_model: values.model_kind === "chat" ? modelName : null,
+    embedding_model: values.model_kind === "embedding" ? modelName : null,
+    vision_model: values.model_kind === "vision" ? modelName : null,
     is_internal: Boolean(values.is_internal),
     enabled: Boolean(values.enabled),
     priority: values.priority,
@@ -496,6 +610,7 @@ function ProviderFormModal({
 }) {
   const [form] = Form.useForm<AiProviderFormValues>();
   const selectedType = Form.useWatch("provider_type", form);
+  const selectedModelKind = Form.useWatch("model_kind", form) ?? "chat";
   const clearApiKey = Form.useWatch("clear_api_key", form);
   const requiresEndpoint = !providerTypesWithoutEndpoint.has(selectedType ?? "openai_compatible");
 
@@ -509,7 +624,7 @@ function ProviderFormModal({
 
   return (
     <Modal
-      title={mode === "create" ? "新增模型供应商" : "编辑模型供应商"}
+      title={mode === "create" ? "新增模型配置" : "编辑模型配置"}
       open={open}
       width={760}
       okText={mode === "create" ? "创建" : "保存"}
@@ -522,7 +637,7 @@ function ProviderFormModal({
         className="ai-provider-form-alert"
         type="info"
         showIcon
-        message="Base URL 填 OpenAI 协议根地址，系统会请求 /chat/completions。"
+        message="Base URL 填 OpenAI 协议根地址；当前配置只对应一种模型用途。"
       />
       <Form<AiProviderFormValues>
         form={form}
@@ -577,21 +692,22 @@ function ProviderFormModal({
             <Switch disabled={mode === "create"} />
           </Form.Item>
           <Form.Item
-            label="对话模型"
-            name="chat_model"
+            label="模型用途"
+            name="model_kind"
+            rules={[{ required: true, message: "请选择模型用途" }]}
+          >
+            <Select options={providerModelKindOptions} />
+          </Form.Item>
+          <Form.Item
+            label="模型名称"
+            name="model_name"
             rules={
               requiresEndpoint
-                ? [{ required: true, whitespace: true, message: "请输入对话模型" }]
+                ? [{ required: true, whitespace: true, message: "请输入模型名称" }]
                 : []
             }
           >
-            <Input placeholder="gpt-4o-mini / deepseek-chat / qwen-plus" />
-          </Form.Item>
-          <Form.Item label="向量模型" name="embedding_model">
-            <Input placeholder="text-embedding-3-small" />
-          </Form.Item>
-          <Form.Item label="视觉模型" name="vision_model">
-            <Input placeholder="gpt-4o-mini" />
+            <Input placeholder={providerModelNamePlaceholders[selectedModelKind]} />
           </Form.Item>
           <Form.Item label="优先级" name="priority" rules={[{ required: true, message: "请输入优先级" }]}>
             <InputNumber min={0} precision={0} className="ai-provider-form-number" />
@@ -702,23 +818,23 @@ function ProvidersPanel({
       ),
     },
     {
-      title: "模型",
+      title: "用途/模型",
       key: "models",
       width: 220,
-      render: (_, record) => (
-        <span className="ai-config-models-cell">
-          <Typography.Text className="single-line-text" title={record.chat_model ?? "-"}>
-            对话：{record.chat_model ?? "-"}
-          </Typography.Text>
-          <Typography.Text
-            type="secondary"
-            className="single-line-text"
-            title={record.embedding_model ?? "-"}
-          >
-            向量：{record.embedding_model ?? "-"}
-          </Typography.Text>
-        </span>
-      ),
+      render: (_, record) => {
+        const modelInfo = providerModelInfo(record);
+        const modelName = modelInfo.modelName || "-";
+        return (
+          <span className="ai-config-models-cell">
+            <Typography.Text className="single-line-text" title={modelName}>
+              {modelInfo.label}：{modelName}
+            </Typography.Text>
+            <Typography.Text type="secondary" className="single-line-text" title={modelInfo.label}>
+              模型用途：{modelInfo.label}
+            </Typography.Text>
+          </span>
+        );
+      },
     },
     {
       title: "优先级",
@@ -787,6 +903,9 @@ function ProvidersPanel({
   const failedProviders = providers.filter(
     (provider) => provider.enabled && provider.last_test_status === "failed",
   ).length;
+  const hasExternalProviders = providers.some((provider) =>
+    isExternalProviderUrl(provider.base_url),
+  );
 
   return (
     <Card className="document-panel table-card">
@@ -802,16 +921,16 @@ function ProvidersPanel({
         <Space size={8}>
           <StatusTag kind="health" value={failedProviders > 0 ? "error" : "ok"} variant="dot" />
           <Button type="primary" icon={<PlusOutlined />} onClick={onCreate}>
-            新增供应商
+            新增模型配置
           </Button>
         </Space>
       </div>
-      {!allowExternalLlm ? (
+      {!allowExternalLlm && hasExternalProviders ? (
         <Alert
           className="ai-config-provider-alert"
           type="warning"
           showIcon
-          message="外部模型当前被禁用，外网 Base URL 的连接测试会被阻止。"
+          message="存在公网 Base URL，外部模型关闭时测试会被阻止。"
         />
       ) : null}
       <Table<AiProviderConfig>
