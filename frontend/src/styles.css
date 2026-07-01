@@ -114,6 +114,23 @@ a {
   border-inline-end: 0 !important;
 }
 
+.sidebar-menu .ant-menu-item-group-title {
+  padding: 16px 12px 4px;
+  color: var(--ku-text-disabled);
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.05em;
+  text-transform: uppercase;
+}
+
+.sidebar-menu .ant-menu-item-group:first-child .ant-menu-item-group-title {
+  padding-top: 0;
+}
+
+.app-shell__sider.ant-layout-sider-collapsed .ant-menu-item-group-title {
+  display: none;
+}
+
 .sidebar-menu .ant-menu-item {
   height: 40px;
   margin-inline: 2px;

@@ -81,8 +81,8 @@ describe("Sidebar", () => {
     renderSidebar();
 
     expect(screen.getByText("知识库贡献平台")).toBeInTheDocument();
-    expect(screen.getByText("仪表盘")).toBeInTheDocument();
-    expect(screen.getByText("统计分析")).toBeInTheDocument();
+    expect(screen.getByText("运营总览")).toBeInTheDocument();
+    expect(screen.getByText("统计报表")).toBeInTheDocument();
     const healthCard = screen.getByLabelText("平台运行状态");
     expect(healthCard).toHaveTextContent("运行状态");
     expect(await within(healthCard).findByText("正常")).toBeInTheDocument();

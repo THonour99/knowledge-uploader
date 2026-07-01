@@ -5,7 +5,9 @@ import {
   DoubleRightOutlined,
 } from "@ant-design/icons";
 import { Button, Menu } from "antd";
+import type { MenuProps } from "antd";
 import { useQuery } from "@tanstack/react-query";
+import { useMemo } from "react";
 import { useLocation, useNavigate } from "react-router-dom";
 
 import { getSystemHealth } from "../api/client";
@@ -57,13 +59,39 @@ export function Sidebar() {
   const healthValue = resolveSidebarHealth(healthQuery.data?.status, healthQuery.isError);
   const healthDescription = formatHealthDescription(healthValue);
 
-  const menuItems = appNavigationRoutes
-    .filter((route) => !route.roles || (role ? route.roles.includes(role) : false))
-    .map((route) => ({
-      key: route.path,
-      icon: route.nav?.icon,
-      label: route.nav?.label,
-    }));
+  const menuItems: MenuProps["items"] = useMemo(() => {
+    const visibleRoutes = appNavigationRoutes.filter(
+      (route) => !route.roles || (role ? route.roles.includes(role) : false),
+    );
+
+    const grouped = new Map<string, typeof visibleRoutes>();
+    for (const route of visibleRoutes) {
+      const group = route.nav?.group ?? "";
+      const list = grouped.get(group) ?? [];
+      list.push(route);
+      grouped.set(group, list);
+    }
+
+    const items: MenuProps["items"] = [];
+    for (const [group, routes] of grouped) {
+      if (!group) {
+        for (const route of routes) {
+          items.push({ key: route.path, icon: route.nav?.icon, label: route.nav?.label });
+        }
+        continue;
+      }
+      items.push({
+        type: "group" as const,
+        label: group,
+        children: routes.map((route) => ({
+          key: route.path,
+          icon: route.nav?.icon,
+          label: route.nav?.label,
+        })),
+      });
+    }
+    return items;
+  }, [role]);
 
   return (
     <div className="sidebar">
