@@ -65,7 +65,6 @@ class Settings(BaseSettings):
     jwt_expire_minutes: int = 1440
     encryption_key: str = DEFAULT_DEV_ENCRYPTION_KEY
 
-    auth_provider: str = "local"
     allow_register: bool = True
     require_email_verification: bool = True
     allowed_email_domains: str = "company.com"

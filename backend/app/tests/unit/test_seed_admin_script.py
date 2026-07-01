@@ -29,11 +29,8 @@ def _run_seed_admin_script(email: str, password: str) -> subprocess.CompletedPro
         **os.environ,
         "SEED_ADMIN_PASSWORD": password,
         "ALLOWED_EMAIL_DOMAINS": "company.com",
-<<<<<<< HEAD
         # 固定最小依赖集, 不受继承环境 / .env 中 PASSWORD_MIN_LENGTH 漂移影响。
         "PASSWORD_MIN_LENGTH": "8",
-=======
->>>>>>> 54cef6df03d7c6bc94a1a686823afc3ccddbea87
     }
     return subprocess.run(
         [sys.executable, str(SEED_ADMIN_SCRIPT), "--email", email],
@@ -223,7 +220,6 @@ async def test_seed_admin_force_recovers_existing_system_admin_with_audit_log() 
     assert audit_log.metadata_json["previous_status"] == "active"
 
 
-<<<<<<< HEAD
 async def test_seed_admin_creates_user_with_unassigned_department_id() -> None:
     """进程内功能校验: 新建 admin 默认落到"未分配"部门, commit 能完成。
 
@@ -232,9 +228,6 @@ async def test_seed_admin_creates_user_with_unassigned_department_id() -> None:
     真正复刻"全新进程缺 import"回归的是下面的
     test_seed_admin_script_runs_standalone_with_department_foreign_key。
     """
-=======
-async def test_seed_admin_commits_user_with_department_foreign_key() -> None:
->>>>>>> 54cef6df03d7c6bc94a1a686823afc3ccddbea87
     from scripts.seed_admin import SeedAdminArgs, seed_admin
     from sqlalchemy import select
 

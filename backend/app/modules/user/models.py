@@ -20,10 +20,6 @@ class User(Base):
             "status IN ('pending_email_verification', 'active', 'disabled', 'locked')",
             name="ck_users_status",
         ),
-        CheckConstraint(
-            "auth_provider IN ('local', 'dingtalk', 'external')",
-            name="ck_users_auth_provider",
-        ),
         CheckConstraint("email = lower(email)", name="ck_users_email_lowercase"),
         CheckConstraint(
             "email_domain = lower(email_domain)", name="ck_users_email_domain_lowercase"
@@ -63,9 +59,6 @@ class User(Base):
         server_default="pending_email_verification",
     )
     email_verified: Mapped[bool] = mapped_column(Boolean, nullable=False, server_default="false")
-    auth_provider: Mapped[str] = mapped_column(String(40), nullable=False, server_default="local")
-    external_user_id: Mapped[str | None] = mapped_column(String(120))
-    ding_user_id: Mapped[str | None] = mapped_column(String(120))
     employee_no: Mapped[str | None] = mapped_column(String(80))
     failed_login_count: Mapped[int] = mapped_column(Integer, nullable=False, server_default="0")
     session_version: Mapped[int] = mapped_column(Integer, nullable=False, server_default="0")

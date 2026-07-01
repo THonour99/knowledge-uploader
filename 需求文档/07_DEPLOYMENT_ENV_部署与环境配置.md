@@ -127,7 +127,6 @@ BLOCK_CRITICAL_RISK_SYNC=true
 ### 4.7 Auth
 
 ```env
-AUTH_PROVIDER=local
 ALLOW_REGISTER=true
 REQUIRE_EMAIL_VERIFICATION=true
 ALLOWED_EMAIL_DOMAINS=company.com,corp.company.com

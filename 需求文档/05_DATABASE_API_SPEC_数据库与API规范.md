@@ -15,9 +15,6 @@ phone
 role
 status
 email_verified
-auth_provider
-external_user_id
-ding_user_id
 employee_no
 failed_login_count
 locked_until
