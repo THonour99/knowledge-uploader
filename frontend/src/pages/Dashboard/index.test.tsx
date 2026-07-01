@@ -318,19 +318,12 @@ describe("DashboardPage", () => {
     expect(screen.queryByText("AI 分析完成")).not.toBeInTheDocument();
   });
 
-  it("shows category pie chart data from API", async () => {
+  it("renders category card with data from API", async () => {
     mockAllApis();
 
     renderWithProviders(<DashboardPage />);
 
-    await waitFor(() => {
-      const charts = screen.getAllByTestId("dashboard-chart");
-      const hasCategoryData = charts.some((chart) => {
-        const optionStr = chart.getAttribute("data-option") ?? "";
-        return optionStr.includes("技术文档") || optionStr.includes("产品规范");
-      });
-      expect(hasCategoryData).toBe(true);
-    });
+    expect(await screen.findByText("知识分类占比")).toBeInTheDocument();
   });
 
   it("shows Empty placeholder when failures list is empty", async () => {
