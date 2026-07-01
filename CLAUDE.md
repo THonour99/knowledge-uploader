@@ -135,6 +135,21 @@ frontend/src/
 - pytest 使用 `asyncio_mode = "auto"`，测试数据库为 `knowledge_uploader_test`
 - 后端测试在 Docker 容器内运行（`docker compose run --rm backend-api pytest`）
 
+## 分支命名
+
+格式：`tsk/YYYYMMDD/功能描述`
+
+- **tsk** — 固定前缀
+- **YYYYMMDD** — 创建分支的日期（如 `20260701`）
+- **功能描述** — 短横线连接的英文描述（如 `nav-restructure`、`fix-upload-403`）
+
+示例：
+```
+tsk/20260701/nav-restructure
+tsk/20260701/fix-upload-403
+tsk/20260702/add-department-module
+```
+
 ## 开发端口
 
 | 服务 | 本地开发端口 | Docker 端口 |
