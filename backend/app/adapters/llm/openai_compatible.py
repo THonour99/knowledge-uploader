@@ -74,7 +74,19 @@ class OpenAICompatibleProvider:
             raise LLMProviderError(msg) from exc
 
         if response.status_code >= 400:
-            msg = _http_error_message(response.status_code)
+            body_preview = response.text[:300]
+            key_hint = self._api_key[:8] if self._api_key else "NO_KEY"
+            all_hdrs = dict(response.headers)
+            base_msg = _http_error_message(response.status_code)
+            msg = (
+                f"{base_msg} [debug: key_prefix={key_hint}, "
+                f"url={self._base_url}/chat/completions, "
+                f"body={body_preview!r}, "
+                f"resp_headers={all_hdrs}, "
+                f"http_version={response.http_version}, "
+                f"content_length={len(response.content)}, "
+                f"req_headers={dict(response.request.headers)}]"
+            )
             raise LLMProviderError(msg)
 
         try:
