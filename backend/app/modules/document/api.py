@@ -14,6 +14,7 @@ from app.core.deps import get_app_settings, get_current_user
 from app.core.exceptions import ErrorCode
 from app.core.ratelimit import is_within_rate_limit, upload_rate_limit_key
 from app.core.responses import success_response
+from app.core.runtime_config import get_config
 from app.modules.user.schemas import AuthUserRecord
 
 from .exceptions import DocumentError
@@ -30,6 +31,7 @@ from .service import (
 
 router = APIRouter(prefix="/api/files", tags=["files"])
 admin_router = APIRouter(prefix="/api/admin/files", tags=["files-admin"])
+policy_router = APIRouter(prefix="/api", tags=["files"])
 SessionDep = Annotated[AsyncSession, Depends(get_session)]
 SettingsDep = Annotated[Settings, Depends(get_app_settings)]
 CurrentUserDep = Annotated[AuthUserRecord, Depends(get_current_user)]
@@ -115,6 +117,30 @@ def _file_detail_response(detail: FileDetailResult) -> FileDetailResponse:
         analysis=detail.analysis,
         sync_error=detail.sync_error,
     )
+
+
+@policy_router.get("/upload-policy")
+async def get_upload_policy(
+    request: Request,
+    current_user: CurrentUserDep,
+) -> dict[str, object]:
+    allowed_extensions = await get_config("upload.allowed_extensions")
+    if not isinstance(allowed_extensions, list):
+        allowed_extensions = []
+    allow_multi_file = await get_config("upload.allow_multi_file")
+    upload_enabled = await get_config("upload.enabled")
+    max_file_size_mb = await get_config("upload.max_file_size_mb")
+    allow_user_delete = await get_config("upload.allow_user_delete")
+    from .schemas import UploadPolicyResponse
+
+    response = UploadPolicyResponse(
+        allowed_extensions=allowed_extensions if isinstance(allowed_extensions, list) else [],
+        allow_multi_file=allow_multi_file is not False,
+        upload_enabled=upload_enabled is not False,
+        max_file_size_mb=max_file_size_mb if isinstance(max_file_size_mb, int) else 50,
+        allow_user_delete=allow_user_delete is True,
+    )
+    return success_response(response.model_dump(mode="json"), request)
 
 
 def _raise_rate_limited() -> NoReturn:

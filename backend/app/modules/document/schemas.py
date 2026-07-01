@@ -85,3 +85,11 @@ class FileDetailResponse(FileResponse):
     category_name: str | None = None
     analysis: FileAnalysisDetail | None = None
     sync_error: str | None = None
+
+
+class UploadPolicyResponse(BaseModel):
+    allowed_extensions: list[str]
+    allow_multi_file: bool
+    upload_enabled: bool
+    max_file_size_mb: int
+    allow_user_delete: bool

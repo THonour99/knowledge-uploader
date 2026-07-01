@@ -28,6 +28,7 @@ from app.modules.config.api import router as config_router
 from app.modules.department.api import managed_router as department_managed_router
 from app.modules.department.api import router as department_router
 from app.modules.document.api import admin_router as document_admin_router
+from app.modules.document.api import policy_router as document_policy_router
 from app.modules.document.api import router as document_router
 from app.modules.notification.api import router as notification_router
 from app.modules.ragflow.api import router as ragflow_router
@@ -46,6 +47,7 @@ app.include_router(department_router)
 app.include_router(department_managed_router)
 app.include_router(document_admin_router)
 app.include_router(document_router)
+app.include_router(document_policy_router)
 app.include_router(notification_router)
 app.include_router(ragflow_router)
 app.include_router(review_router)
