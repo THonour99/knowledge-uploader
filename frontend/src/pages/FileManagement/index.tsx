@@ -4,6 +4,7 @@ import {
   Button,
   Card,
   DatePicker,
+  Dropdown,
   Form,
   Input,
   Modal,
@@ -14,6 +15,7 @@ import {
   Table,
   Typography,
 } from "antd";
+import type { MenuProps } from "antd";
 import {
   CheckCircleOutlined,
   CloudSyncOutlined,
@@ -730,7 +732,7 @@ export default function FileManagementPage() {
     {
       title: "操作",
       key: "actions",
-      width: 220,
+      width: 148,
       fixed: "right" as const,
       render: (_, record) => {
         const canSubmit = reviewableStatuses.has(record.status);
@@ -738,18 +740,65 @@ export default function FileManagementPage() {
         const canSync = syncableStatuses.has(record.status);
         const canReanalyze = reanalyzeStatuses.has(record.status);
 
+        const moreItems: MenuProps["items"] = [
+          canSync
+            ? {
+                key: "sync",
+                icon: <SyncOutlined />,
+                label: "手动同步",
+                onClick: () => syncMutation.mutate(record.id),
+              }
+            : null,
+          canReanalyze
+            ? {
+                key: "reanalyze",
+                label: "重新分析",
+                onClick: () => reanalyzeMutation.mutate(record.id),
+              }
+            : null,
+          {
+            key: "classify",
+            label: "修改分类",
+            onClick: () => openClassificationModal(record),
+          },
+          {
+            key: "archive",
+            icon: <InboxOutlined />,
+            label: "归档",
+            onClick: () => archiveMutation.mutate(record.id),
+          },
+          { type: "divider" as const },
+          {
+            key: "delete",
+            icon: <DeleteOutlined />,
+            label: "删除",
+            danger: true,
+            onClick: () => deleteMutation.mutate(record.id),
+          },
+        ].filter(Boolean);
+
         return (
-          <Space size={4} wrap>
-            {/* 审核 / 送审 */}
+          <Space size={4}>
             {canDecide ? (
-              <Button
-                type="link"
-                size="small"
-                className="table-link-button"
-                onClick={() => openApproveModal(record)}
-              >
-                审核
-              </Button>
+              <>
+                <Button
+                  type="link"
+                  size="small"
+                  className="table-link-button"
+                  onClick={() => openApproveModal(record)}
+                >
+                  审核
+                </Button>
+                <Button
+                  type="link"
+                  danger
+                  size="small"
+                  className="table-link-button"
+                  onClick={() => openRejectModal(record)}
+                >
+                  驳回
+                </Button>
+              </>
             ) : canSubmit ? (
               <Button
                 type="link"
@@ -761,103 +810,11 @@ export default function FileManagementPage() {
                 送审
               </Button>
             ) : null}
-
-            {/* 修改分类 */}
-            <Button
-              type="link"
-              size="small"
-              className="table-link-button"
-              onClick={() => openClassificationModal(record)}
-            >
-              修改分类
-            </Button>
-
-            {/* 手动同步（approved / failed 态） */}
-            {canSync ? (
-              <Popconfirm
-                title="手动触发同步"
-                description="将该文件重新推送到 RAGFlow 知识库，确认继续？"
-                onConfirm={() => syncMutation.mutate(record.id)}
-                okText="确定"
-                cancelText="取消"
-              >
-                <Button
-                  type="link"
-                  size="small"
-                  icon={<SyncOutlined />}
-                  className="table-link-button"
-                  loading={syncMutation.isPending}
-                >
-                  同步
-                </Button>
-              </Popconfirm>
-            ) : null}
-
-            {/* 重新分析（analysis_failed / analyzed 态） */}
-            {canReanalyze ? (
-              <Button
-                type="link"
-                size="small"
-                className="table-link-button"
-                loading={reanalyzeMutation.isPending}
-                onClick={() => reanalyzeMutation.mutate(record.id)}
-              >
-                重新分析
+            <Dropdown menu={{ items: moreItems }} trigger={["click"]}>
+              <Button type="text" size="small" aria-label="更多操作">
+                ···
               </Button>
-            ) : null}
-
-            {/* 归档 */}
-            <Popconfirm
-              title="归档文件"
-              description="归档后文件将停止同步，确认继续？"
-              onConfirm={() => archiveMutation.mutate(record.id)}
-              okText="确定"
-              cancelText="取消"
-            >
-              <Button
-                type="link"
-                size="small"
-                icon={<InboxOutlined />}
-                className="table-link-button"
-                loading={archiveMutation.isPending}
-              >
-                归档
-              </Button>
-            </Popconfirm>
-
-            {/* 驳回（待审核态） */}
-            {canDecide ? (
-              <Button
-                type="link"
-                danger
-                size="small"
-                className="table-link-button"
-                onClick={() => openRejectModal(record)}
-              >
-                驳回
-              </Button>
-            ) : null}
-
-            {/* 删除 */}
-            <Popconfirm
-              title="删除文件"
-              description="此操作不可撤销，文件将被软删除并触发 RAGFlow 联动清理，确认删除？"
-              onConfirm={() => deleteMutation.mutate(record.id)}
-              okText="确定"
-              cancelText="取消"
-              okButtonProps={{ danger: true }}
-            >
-              <Button
-                type="link"
-                danger
-                size="small"
-                icon={<DeleteOutlined />}
-                className="table-link-button"
-                loading={deleteMutation.isPending}
-              >
-                删除
-              </Button>
-            </Popconfirm>
+            </Dropdown>
           </Space>
         );
       },

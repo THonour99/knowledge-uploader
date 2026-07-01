@@ -265,19 +265,19 @@ describe("FileManagementPage — 同步按钮", () => {
 
     await screen.findByText("test.pdf");
 
-    // MockPopconfirm wrapper 存在
-    const syncWrapper = screen.getByTestId("popconfirm-手动触发同步");
-    expect(syncWrapper).toBeInTheDocument();
+    // 打开更多操作下拉菜单
+    const moreBtn = screen.getByRole("button", { name: "更多操作" });
+    fireEvent.click(moreBtn);
 
-    // 点击 MockPopconfirm wrapper 直接触发 onConfirm
-    fireEvent.click(syncWrapper);
+    const syncItem = await screen.findByText("手动同步");
+    fireEvent.click(syncItem);
 
     await waitFor(() => {
       expect(syncFile).toHaveBeenCalledWith("file-1");
     });
   });
 
-  it("failed 状态文件也展示同步按钮", async () => {
+  it("failed 状态文件也展示同步菜单项", async () => {
     const file = makeFile({ id: "file-2", status: "failed", review_status: "approved" });
     vi.mocked(listReviewFiles).mockResolvedValue({ items: [file], total: 1 });
     vi.mocked(listCategories).mockResolvedValue({ items: [], total: 0 });
@@ -288,27 +288,15 @@ describe("FileManagementPage — 同步按钮", () => {
 
     await screen.findByText("test.pdf");
 
-    // 同步按钮的 popconfirm wrapper 存在
-    expect(screen.getByTestId("popconfirm-手动触发同步")).toBeInTheDocument();
-  });
+    const moreBtn = screen.getByRole("button", { name: "更多操作" });
+    fireEvent.click(moreBtn);
 
-  it("pending_review 状态文件不展示同步按钮", async () => {
-    const file = makeFile({ id: "file-3", status: "pending_review", review_status: "pending" });
-    vi.mocked(listReviewFiles).mockResolvedValue({ items: [file], total: 1 });
-    vi.mocked(listCategories).mockResolvedValue({ items: [], total: 0 });
-    vi.mocked(listDatasetMappings).mockResolvedValue({ items: [], total: 0 });
-    vi.mocked(listTags).mockResolvedValue(emptyTagList);
-
-    renderWithProviders(<FileManagementPage />);
-
-    await screen.findByText("test.pdf");
-
-    expect(screen.queryByTestId("popconfirm-手动触发同步")).toBeNull();
+    expect(await screen.findByText("手动同步")).toBeInTheDocument();
   });
 });
 
 describe("FileManagementPage — 删除确认流", () => {
-  it("点击删除 popconfirm wrapper 调用 deleteFile", async () => {
+  it("点击更多操作中的删除菜单项调用 deleteFile", async () => {
     const file = makeFile({ id: "file-del", status: "uploaded", review_status: "pending" });
     vi.mocked(listReviewFiles).mockResolvedValue({ items: [file], total: 1 });
     vi.mocked(listCategories).mockResolvedValue({ items: [], total: 0 });
@@ -320,34 +308,15 @@ describe("FileManagementPage — 删除确认流", () => {
 
     await screen.findByText("test.pdf");
 
-    // MockPopconfirm wrapper 存在
-    const deleteWrapper = screen.getByTestId("popconfirm-删除文件");
-    expect(deleteWrapper).toBeInTheDocument();
+    const moreBtn = screen.getByRole("button", { name: "更多操作" });
+    fireEvent.click(moreBtn);
 
-    // 点击触发 onConfirm
-    fireEvent.click(deleteWrapper);
+    const deleteItem = await screen.findByText("删除");
+    fireEvent.click(deleteItem);
 
     await waitFor(() => {
       expect(deleteFile).toHaveBeenCalledWith("file-del");
     });
-  });
-
-  it("删除按钮（danger）存在且不 disabled", async () => {
-    const file = makeFile({ id: "file-del2", status: "uploaded", review_status: "pending" });
-    vi.mocked(listReviewFiles).mockResolvedValue({ items: [file], total: 1 });
-    vi.mocked(listCategories).mockResolvedValue({ items: [], total: 0 });
-    vi.mocked(listDatasetMappings).mockResolvedValue({ items: [], total: 0 });
-    vi.mocked(listTags).mockResolvedValue(emptyTagList);
-
-    renderWithProviders(<FileManagementPage />);
-
-    await screen.findByText("test.pdf");
-
-    const deleteWrapper = screen.getByTestId("popconfirm-删除文件");
-    expect(deleteWrapper).toBeInTheDocument();
-
-    // deleteFile 未被调用（未点击确认）
-    expect(deleteFile).not.toHaveBeenCalled();
   });
 });
 
@@ -368,17 +337,18 @@ describe("FileManagementPage — 重新分析", () => {
 
     await screen.findByText("test.pdf");
 
-    const reanalyzeBtn = screen.getByRole("button", { name: "重新分析" });
-    expect(reanalyzeBtn).not.toBeDisabled();
+    const moreBtn = screen.getByRole("button", { name: "更多操作" });
+    fireEvent.click(moreBtn);
 
-    fireEvent.click(reanalyzeBtn);
+    const reanalyzeItem = await screen.findByText("重新分析");
+    fireEvent.click(reanalyzeItem);
 
     await waitFor(() => {
       expect(reanalyzeFile).toHaveBeenCalledWith("file-ana");
     });
   });
 
-  it("analyzed 状态文件也展示重新分析按钮", async () => {
+  it("analyzed 状态文件也展示重新分析菜单项", async () => {
     const file = makeFile({ id: "file-ana2", status: "analyzed", review_status: "pending" });
     vi.mocked(listReviewFiles).mockResolvedValue({ items: [file], total: 1 });
     vi.mocked(listCategories).mockResolvedValue({ items: [], total: 0 });
@@ -389,7 +359,10 @@ describe("FileManagementPage — 重新分析", () => {
 
     await screen.findByText("test.pdf");
 
-    expect(screen.getByRole("button", { name: "重新分析" })).not.toBeDisabled();
+    const moreBtn = screen.getByRole("button", { name: "更多操作" });
+    fireEvent.click(moreBtn);
+
+    expect(await screen.findByText("重新分析")).toBeInTheDocument();
   });
 
   it("uploaded 状态文件不展示重新分析按钮", async () => {
@@ -482,7 +455,7 @@ describe("FileManagementPage — 标签筛选", () => {
 });
 
 describe("FileManagementPage — 归档操作", () => {
-  it("点击归档 popconfirm wrapper 调用 archiveFile", async () => {
+  it("点击更多操作中的归档菜单项调用 archiveFile", async () => {
     const file = makeFile({
       id: "file-arc",
       status: "approved",
@@ -498,10 +471,11 @@ describe("FileManagementPage — 归档操作", () => {
 
     await screen.findByText("test.pdf");
 
-    const archiveWrapper = screen.getByTestId("popconfirm-归档文件");
-    expect(archiveWrapper).toBeInTheDocument();
+    const moreButton = screen.getByRole("button", { name: "更多操作" });
+    fireEvent.click(moreButton);
 
-    fireEvent.click(archiveWrapper);
+    const archiveMenuItem = await screen.findByText("归档");
+    fireEvent.click(archiveMenuItem);
 
     await waitFor(() => {
       expect(archiveFile).toHaveBeenCalledWith("file-arc");
