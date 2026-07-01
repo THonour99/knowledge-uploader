@@ -237,42 +237,62 @@
 }
 
 .dashboard-insight-card .ant-card-body {
-  min-height: 260px;
-}
-
-.dashboard-category-chart {
-  width: 100%;
-  height: 230px !important;
+  min-height: 300px;
 }
 
 .dashboard-ranking-list {
   display: grid;
-  gap: 12px;
+  gap: 10px;
 }
 
 .dashboard-ranking-row {
+  --rank-width: 0%;
+  position: relative;
   display: grid;
-  grid-template-columns: 24px 34px minmax(0, 1fr) auto;
-  gap: 10px;
+  overflow: hidden;
+  grid-template-columns: 38px 36px minmax(0, 1fr) minmax(118px, auto);
+  gap: 7px 12px;
   align-items: center;
+  padding: 12px 12px 10px;
+  border: 1px solid rgba(229, 234, 242, 0.9);
+  border-radius: 10px;
+  background: linear-gradient(180deg, #ffffff, #fbfdff);
 }
 
-.dashboard-ranking-row .ant-progress {
-  grid-column: 3 / 5;
-  margin-left: 0;
+.dashboard-ranking-row::before {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  left: 0;
+  width: 3px;
+  background: var(--ku-color-primary);
+  content: "";
+  opacity: 0.55;
+}
+
+.dashboard-ranking-row--lead {
+  border-color: rgba(22, 119, 255, 0.22);
+  background: linear-gradient(90deg, rgba(22, 119, 255, 0.08), rgba(255, 255, 255, 0.96) 48%);
 }
 
 .dashboard-ranking-row__rank {
   display: inline-flex;
-  width: 22px;
-  height: 22px;
+  width: 32px;
+  height: 28px;
   align-items: center;
   justify-content: center;
-  border-radius: 50%;
-  background: var(--ku-color-warning-light);
-  color: var(--ku-color-orange);
+  border-radius: 8px;
+  background: var(--ku-bg-muted);
+  color: var(--ku-text-secondary);
+  font-family: var(--ku-font-family);
   font-size: 12px;
-  font-weight: 700;
+  font-weight: 800;
+  letter-spacing: 0;
+}
+
+.dashboard-ranking-row--lead .dashboard-ranking-row__rank {
+  background: var(--ku-color-primary-light);
+  color: var(--ku-color-primary);
 }
 
 .dashboard-ranking-row__avatar {
@@ -281,67 +301,170 @@
   font-weight: 700;
 }
 
-.dashboard-ranking-row__copy {
-  display: flex;
+.dashboard-ranking-row__copy,
+.dashboard-ranking-row__metrics {
+  display: grid;
   min-width: 0;
-  flex-direction: column;
+  gap: 2px;
 }
 
-.dashboard-ranking-row__count {
+.dashboard-ranking-row__copy .ant-typography,
+.dashboard-ranking-row__metrics .ant-typography,
+.dashboard-ranking-row__share {
+  margin: 0;
+}
+
+.dashboard-ranking-row__copy .ant-typography {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.dashboard-ranking-row__metrics {
+  justify-items: end;
+  text-align: right;
+}
+
+.dashboard-ranking-row__metrics .ant-typography:first-child {
   color: var(--ku-text-primary);
-  font-weight: 700;
+  font-size: 18px;
+  line-height: 1;
+}
+
+.dashboard-ranking-row__bar {
+  position: relative;
+  display: block;
+  overflow: hidden;
+  grid-column: 3 / 5;
+  height: 3px;
+  border-radius: 999px;
+}
+
+.dashboard-ranking-row__bar::after {
+  position: absolute;
+  inset: 0 auto 0 0;
+  width: var(--rank-width);
+  border-radius: inherit;
+  background: linear-gradient(90deg, var(--ku-color-primary), rgba(22, 119, 255, 0.36));
+  content: "";
+}
+
+.dashboard-ranking-row__share {
+  grid-column: 3 / 5;
+  justify-self: end;
+  font-size: 12px;
 }
 
 .dashboard-category-layout {
   display: grid;
-  grid-template-columns: minmax(190px, 0.85fr) minmax(240px, 1fr);
-  gap: 24px;
-  align-items: center;
-  min-height: 260px;
+  grid-template-columns: minmax(220px, 0.72fr) minmax(0, 1.28fr);
+  gap: 18px;
+  align-items: stretch;
+  min-height: 300px;
 }
 
-.dashboard-category-visual {
-  position: relative;
+.dashboard-category-summary {
   display: grid;
-  min-height: 260px;
-  place-items: center;
+  align-content: space-between;
+  gap: 16px;
+  padding: 16px;
+  border: 1px solid rgba(191, 219, 254, 0.78);
+  border-radius: 12px;
+  background:
+    linear-gradient(155deg, rgba(22, 119, 255, 0.12), rgba(255, 255, 255, 0.92) 46%),
+    var(--ku-bg-card);
 }
 
-.dashboard-category-total {
-  position: absolute;
-  top: 50%;
-  left: 50%;
-  display: grid;
-  width: 96px;
-  transform: translate(-50%, -50%);
-  text-align: center;
-  pointer-events: none;
-}
-
-.dashboard-category-total .ant-typography {
+.dashboard-category-summary .ant-typography,
+.dashboard-category-composition-row .ant-typography {
   margin: 0;
 }
 
-.dashboard-category-details {
+.dashboard-category-summary__total,
+.dashboard-category-summary__leader {
   display: grid;
-  gap: 14px;
+  gap: 5px;
 }
 
-.dashboard-category-row {
-  display: grid;
-  gap: 7px;
+.dashboard-category-summary__total h3.ant-typography {
+  font-size: 34px;
+  line-height: 1.05;
 }
 
-.dashboard-category-row__header {
+.dashboard-category-summary__leader {
+  padding-top: 14px;
+  border-top: 1px solid rgba(191, 219, 254, 0.7);
+}
+
+.dashboard-category-summary__stats {
   display: grid;
-  grid-template-columns: 10px minmax(48px, 1fr) auto 44px;
-  gap: 8px;
-  align-items: center;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 10px;
+}
+
+.dashboard-category-summary__stats > span {
+  display: grid;
+  gap: 3px;
+  padding: 10px;
+  border: 1px solid rgba(229, 234, 242, 0.82);
+  border-radius: 9px;
+  background: rgba(255, 255, 255, 0.74);
+}
+
+.dashboard-category-composition {
+  display: grid;
+  align-content: start;
+  gap: 0;
+}
+
+.dashboard-category-composition-row {
+  --category-width: 0%;
+  --category-accent: var(--ku-color-primary);
+  display: grid;
+  grid-template-columns: 10px minmax(0, 1fr) auto;
+  gap: 7px 10px;
+  align-items: start;
+  padding: 10px 0;
+  border-bottom: 1px solid var(--ku-border);
+}
+
+.dashboard-category-composition-row:first-child {
+  padding-top: 0;
+}
+
+.dashboard-category-composition-row:last-child {
+  padding-bottom: 0;
+  border-bottom: 0;
+}
+
+.dashboard-category-composition-row--primary {
+  --category-accent: var(--ku-color-primary);
+}
+
+.dashboard-category-composition-row--success {
+  --category-accent: var(--ku-color-success);
+}
+
+.dashboard-category-composition-row--warning {
+  --category-accent: var(--ku-color-orange);
+}
+
+.dashboard-category-composition-row--purple {
+  --category-accent: var(--ku-color-purple);
+}
+
+.dashboard-category-composition-row--cyan {
+  --category-accent: var(--ku-color-cyan);
+}
+
+.dashboard-category-composition-row--muted {
+  --category-accent: var(--ku-text-tertiary);
 }
 
 .dashboard-category-row__swatch {
   width: 8px;
   height: 8px;
+  margin-top: 6px;
   border-radius: 2px;
 }
 
@@ -365,10 +488,44 @@
   background: var(--ku-color-cyan);
 }
 
-.dashboard-category-row__percent {
-  color: var(--ku-text-primary);
-  font-weight: 700;
+.dashboard-category-row__swatch--muted {
+  background: var(--ku-text-tertiary);
+}
+
+.dashboard-category-composition-row__copy,
+.dashboard-category-composition-row__value {
+  display: grid;
+  min-width: 0;
+  gap: 3px;
+}
+
+.dashboard-category-composition-row__copy .ant-typography {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.dashboard-category-composition-row__value {
+  justify-items: end;
   text-align: right;
+}
+
+.dashboard-category-composition-row__meter {
+  position: relative;
+  display: block;
+  overflow: hidden;
+  grid-column: 2 / 4;
+  height: 3px;
+  border-radius: 999px;
+}
+
+.dashboard-category-composition-row__meter::after {
+  position: absolute;
+  inset: 0 auto 0 0;
+  width: var(--category-width);
+  border-radius: inherit;
+  background: var(--category-accent);
+  content: "";
 }
 
 .dashboard-quick-stats {
@@ -602,10 +759,6 @@
   .dashboard-operations-strip__lanes {
     grid-template-columns: minmax(0, 1fr);
   }
-
-  .dashboard-category-visual {
-    min-height: 230px;
-  }
 }
 
 @media (max-width: 640px) {
@@ -619,6 +772,25 @@
 
   .dashboard-health-timeline__legend {
     justify-content: flex-start;
+  }
+
+  .dashboard-ranking-row {
+    grid-template-columns: 32px 34px minmax(0, 1fr);
+  }
+
+  .dashboard-ranking-row__metrics {
+    grid-column: 3 / 4;
+    justify-items: start;
+    text-align: left;
+  }
+
+  .dashboard-ranking-row__bar,
+  .dashboard-ranking-row__share {
+    grid-column: 1 / -1;
+  }
+
+  .dashboard-category-summary__stats {
+    grid-template-columns: minmax(0, 1fr);
   }
 
   .dashboard-quick-stat,

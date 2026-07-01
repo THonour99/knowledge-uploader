@@ -11,10 +11,10 @@ import {
   TeamOutlined,
   WarningOutlined,
 } from "@ant-design/icons";
-import { App as AntdApp, Avatar, Button, Card, Progress, Skeleton, Space, Typography } from "antd";
+import { App as AntdApp, Avatar, Button, Card, Skeleton, Space, Typography } from "antd";
 import type { EChartsOption } from "echarts";
 import ReactECharts from "echarts-for-react";
-import { useMemo, useState, type ReactNode } from "react";
+import { useMemo, useState, type CSSProperties, type ReactNode } from "react";
 import { useNavigate } from "react-router-dom";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 
@@ -141,50 +141,86 @@ function buildTrendOption(points: StatisticsTrendPoint[]): EChartsOption {
   };
 }
 
-function buildCategoryOption(rows: StatisticsCategoryRow[]): EChartsOption {
-  const cardColor = cssVar("--ku-bg-card", "#ffffff");
-
-  return {
-    color: [
-      cssVar("--ku-color-primary", "#1677ff"),
-      cssVar("--ku-color-success", "#16a34a"),
-      cssVar("--ku-color-orange", "#f59e0b"),
-      cssVar("--ku-color-purple", "#7c3aed"),
-      cssVar("--ku-color-cyan", "#06b6d4"),
-    ],
-    tooltip: { trigger: "item", formatter: "{b}: {c} 条 ({d}%)" },
-    series: [
-      {
-        name: "分类占比",
-        type: "pie",
-        radius: ["56%", "76%"],
-        center: ["50%", "50%"],
-        label: { show: false },
-        labelLine: { show: false },
-        itemStyle: { borderRadius: 4, borderColor: cardColor, borderWidth: 2 },
-        emphasis: { scale: true, scaleSize: 6 },
-        data: rows.map((row) => ({ value: row.total_files, name: row.category_name })),
-      },
-    ],
-  };
-}
-
 // ---------------------------------------------------------------------------
 // Sub-components
 // ---------------------------------------------------------------------------
 
-function UserRankingRow({ user, maxFiles }: { user: StatisticsUserRow; maxFiles: number }) {
+function UserRankingRow({
+  user,
+  maxFiles,
+  totalFiles,
+}: {
+  user: StatisticsUserRow;
+  maxFiles: number;
+  totalFiles: number;
+}) {
   const percent = maxFiles > 0 ? Math.round((user.total_files / maxFiles) * 100) : 0;
+  const share = totalFiles > 0 ? user.total_files / totalFiles : 0;
+  const syncRate = user.total_files > 0 ? user.synced_files / user.total_files : 0;
+  const lastUpload = user.last_upload_at
+    ? formatDateTime(user.last_upload_at, "MM-DD HH:mm")
+    : "暂无上传时间";
+  const rankStyle = { "--rank-width": `${percent}%` } as CSSProperties;
+
   return (
-    <div className="dashboard-ranking-row" key={user.user_id}>
-      <span className="dashboard-ranking-row__rank">{user.rank}</span>
+    <div
+      className={`dashboard-ranking-row${user.rank <= 3 ? " dashboard-ranking-row--lead" : ""}`}
+      key={user.user_id}
+      style={rankStyle}
+    >
+      <span className="dashboard-ranking-row__rank">{String(user.rank).padStart(2, "0")}</span>
       <Avatar className="dashboard-ranking-row__avatar">{user.user_name.slice(0, 1)}</Avatar>
       <span className="dashboard-ranking-row__copy">
         <Typography.Text strong>{user.user_name}</Typography.Text>
-        <Typography.Text type="secondary">{user.department ?? "未设置"}</Typography.Text>
+        <Typography.Text type="secondary">
+          {user.department ?? "未设置"} / {lastUpload}
+        </Typography.Text>
       </span>
-      <span className="dashboard-ranking-row__count">{formatNumber(user.total_files)}</span>
-      <Progress percent={percent} showInfo={false} />
+      <span className="dashboard-ranking-row__metrics">
+        <Typography.Text strong>{formatNumber(user.total_files)}</Typography.Text>
+        <Typography.Text type="secondary">上传</Typography.Text>
+        <Typography.Text type="secondary">{formatPercent(syncRate, 0)} 同步</Typography.Text>
+      </span>
+      <span className="dashboard-ranking-row__bar" aria-hidden="true" />
+      <Typography.Text className="dashboard-ranking-row__share" type="secondary">
+        占排行 {formatPercent(share)}
+      </Typography.Text>
+    </div>
+  );
+}
+
+function CategoryCompositionRow({
+  row,
+  totalFiles,
+  tone,
+}: {
+  row: StatisticsCategoryRow;
+  totalFiles: number;
+  tone: (typeof CATEGORY_SWATCH_TONES)[number];
+}) {
+  const share = totalFiles > 0 ? row.total_files / totalFiles : 0;
+  const meterStyle = { "--category-width": `${Math.round(share * 100)}%` } as CSSProperties;
+
+  return (
+    <div
+      className={`dashboard-category-composition-row dashboard-category-composition-row--${tone}`}
+      style={meterStyle}
+    >
+      <span
+        className={`dashboard-category-row__swatch dashboard-category-row__swatch--${tone}`}
+        aria-hidden="true"
+      />
+      <span className="dashboard-category-composition-row__copy">
+        <Typography.Text strong>{row.category_name}</Typography.Text>
+        <Typography.Text type="secondary">
+          已同步 {formatNumber(row.synced_files)} / 待审 {formatNumber(row.pending_review_files)}
+        </Typography.Text>
+      </span>
+      <span className="dashboard-category-composition-row__value">
+        <Typography.Text strong>{formatNumber(row.total_files)}</Typography.Text>
+        <Typography.Text type="secondary">{formatPercent(share)}</Typography.Text>
+      </span>
+      <span className="dashboard-category-composition-row__meter" aria-hidden="true" />
     </div>
   );
 }
@@ -495,9 +531,23 @@ export default function DashboardPage() {
   );
 
   const trendOption = useMemo(() => buildTrendOption(trends), [trends]);
-  const categoryOption = useMemo(() => buildCategoryOption(categories), [categories]);
-
+  const rankedUserTotal = users.reduce((acc, user) => acc + user.total_files, 0);
   const categoryTotal = categories.reduce((acc, row) => acc + row.total_files, 0);
+  const rankedCategories = useMemo(
+    () => [...categories].sort((a, b) => b.total_files - a.total_files),
+    [categories],
+  );
+  const visibleCategories = rankedCategories.slice(0, 6);
+  const remainingCategoryTotal = rankedCategories
+    .slice(visibleCategories.length)
+    .reduce((acc, row) => acc + row.total_files, 0);
+  const remainingCategoryShare = categoryTotal > 0 ? remainingCategoryTotal / categoryTotal : 0;
+  const leadingCategory = rankedCategories[0];
+  const leadingShare =
+    categoryTotal > 0 && leadingCategory ? leadingCategory.total_files / categoryTotal : 0;
+  const unclassifiedTotal = categories
+    .filter((row) => row.category_id === null || row.category_name === "未分类")
+    .reduce((acc, row) => acc + row.total_files, 0);
 
   const syncSuccessRateStr = formatPercent(overview?.sync_success_rate);
 
@@ -697,7 +747,12 @@ export default function DashboardPage() {
           >
             <div className="dashboard-ranking-list">
               {users.slice(0, 6).map((user) => (
-                <UserRankingRow key={user.user_id} user={user} maxFiles={maxUserFiles} />
+                <UserRankingRow
+                  key={user.user_id}
+                  user={user}
+                  maxFiles={maxUserFiles}
+                  totalFiles={rankedUserTotal}
+                />
               ))}
             </div>
           </QueryBoundary>
@@ -724,37 +779,83 @@ export default function DashboardPage() {
             errorTitle="分类数据加载失败"
           >
             <div className="dashboard-category-layout">
-              <div className="dashboard-category-visual">
-                <ReactECharts option={categoryOption} className="dashboard-category-chart" />
-                <div className="dashboard-category-total">
-                  <Typography.Text type="secondary">总条目</Typography.Text>
-                  <Typography.Title level={4}>{formatNumber(categoryTotal)}</Typography.Title>
+              <section className="dashboard-category-summary" aria-label="分类概览">
+                <div className="dashboard-category-summary__total">
+                  <Typography.Text type="secondary">分类文档</Typography.Text>
+                  <Typography.Title level={3}>{formatNumber(categoryTotal)}</Typography.Title>
+                  <Typography.Text type="secondary">
+                    覆盖 {formatNumber(categories.length)} 个知识分类
+                  </Typography.Text>
                 </div>
-              </div>
-              <div className="dashboard-category-details">
-                {categories.map((row, index) => {
+                <div className="dashboard-category-summary__leader">
+                  <Typography.Text type="secondary">最大分类</Typography.Text>
+                  <Typography.Text strong>{leadingCategory?.category_name ?? "-"}</Typography.Text>
+                  <Typography.Text type="secondary">
+                    {formatPercent(leadingShare)}，{formatNumber(leadingCategory?.total_files ?? 0)}{" "}
+                    条
+                  </Typography.Text>
+                </div>
+                <div className="dashboard-category-summary__stats">
+                  <span>
+                    <Typography.Text type="secondary">未分类</Typography.Text>
+                    <Typography.Text strong>{formatNumber(unclassifiedTotal)}</Typography.Text>
+                  </span>
+                  <span>
+                    <Typography.Text type="secondary">长尾分类</Typography.Text>
+                    <Typography.Text strong>
+                      {formatNumber(
+                        Math.max(rankedCategories.length - visibleCategories.length, 0),
+                      )}
+                    </Typography.Text>
+                  </span>
+                </div>
+              </section>
+              <div className="dashboard-category-composition">
+                {visibleCategories.map((row, index) => {
                   const tone = CATEGORY_SWATCH_TONES[index % CATEGORY_SWATCH_TONES.length];
-                  const percent =
-                    categoryTotal > 0 ? Math.round((row.total_files / categoryTotal) * 100) : 0;
                   return (
-                    <div
-                      className="dashboard-category-row"
+                    <CategoryCompositionRow
                       key={row.category_id ?? row.category_name}
-                    >
-                      <div className="dashboard-category-row__header">
-                        <span
-                          className={`dashboard-category-row__swatch dashboard-category-row__swatch--${tone}`}
-                        />
-                        <Typography.Text strong>{row.category_name}</Typography.Text>
-                        <Typography.Text type="secondary">{row.total_files} 条</Typography.Text>
-                        <Typography.Text className="dashboard-category-row__percent">
-                          {percent}%
-                        </Typography.Text>
-                      </div>
-                      <Progress percent={percent} showInfo={false} />
-                    </div>
+                      row={row}
+                      totalFiles={categoryTotal}
+                      tone={tone}
+                    />
                   );
                 })}
+                {remainingCategoryTotal > 0 ? (
+                  <div
+                    className="dashboard-category-composition-row dashboard-category-composition-row--muted"
+                    style={
+                      {
+                        "--category-width": `${Math.round(remainingCategoryShare * 100)}%`,
+                      } as CSSProperties
+                    }
+                  >
+                    <span
+                      className="dashboard-category-row__swatch dashboard-category-row__swatch--muted"
+                      aria-hidden="true"
+                    />
+                    <span className="dashboard-category-composition-row__copy">
+                      <Typography.Text strong>其他分类</Typography.Text>
+                      <Typography.Text type="secondary">
+                        {formatNumber(rankedCategories.length - visibleCategories.length)}{" "}
+                        个低频分类
+                      </Typography.Text>
+                    </span>
+                    <span className="dashboard-category-composition-row__value">
+                      <Typography.Text strong>
+                        {formatNumber(remainingCategoryTotal)}
+                      </Typography.Text>
+                      <Typography.Text type="secondary">
+                        {formatPercent(remainingCategoryShare)}
+                      </Typography.Text>
+                    </span>
+                    <span
+                      className="dashboard-category-composition-row__meter"
+                      aria-hidden="true"
+                    />
+                  </div>
+                ) : null}
               </div>
             </div>
           </QueryBoundary>
