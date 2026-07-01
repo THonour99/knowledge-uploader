@@ -144,7 +144,7 @@ describe("TopHeader", () => {
     expect(statusBar).toHaveTextContent("存储");
     expect(within(statusBar).getAllByText("正常")).toHaveLength(3);
     expect(screen.getByText("API /api")).toBeInTheDocument();
-    expect(screen.getByText("仪表盘")).toBeInTheDocument();
+    expect(screen.getByText("运营总览")).toBeInTheDocument();
     expect(screen.getByText("王明")).toBeInTheDocument();
     expect(screen.getByText("系统管理员")).toBeInTheDocument();
     expect(document.querySelector(".ant-badge-count")).toHaveTextContent("2");

@@ -276,7 +276,7 @@ describe("StatisticsPage", () => {
 
     renderWithProviders(<StatisticsPage />);
 
-    expect(await screen.findByRole("heading", { name: "统计分析" })).toBeInTheDocument();
+    expect(await screen.findByRole("heading", { name: "统计报表" })).toBeInTheDocument();
     expect((await screen.findAllByText("18,560")).length).toBeGreaterThan(0);
     expect(screen.getByText("236")).toBeInTheDocument();
     expect(screen.getByText("92.4%")).toBeInTheDocument();
@@ -346,7 +346,7 @@ describe("StatisticsPage", () => {
 
     renderWithProviders(<StatisticsPage />);
 
-    expect(await screen.findByRole("heading", { name: "统计分析" })).toBeInTheDocument();
+    expect(await screen.findByRole("heading", { name: "统计报表" })).toBeInTheDocument();
     expect((await screen.findAllByText("18,560")).length).toBeGreaterThan(0);
     expect(await screen.findByText("过期统计接口暂不可用")).toBeInTheDocument();
   });

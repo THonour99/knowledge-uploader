@@ -825,7 +825,7 @@ export default function FileManagementPage() {
 
   return (
     <PageContainer
-      title="文件管理"
+      title="文件审核"
       description="管理平台内所有文件的审核与同步状态，保障数据质量与合规安全。"
     >
       <div className="metric-grid">

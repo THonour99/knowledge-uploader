@@ -23,7 +23,7 @@ describe("PageContainer", () => {
         <PageContainer
           title="文件详情"
           breadcrumb={[
-            { label: "文件管理", path: "/files" },
+            { label: "文件审核", path: "/files" },
             { label: "report.pdf" },
           ]}
         >
@@ -31,7 +31,7 @@ describe("PageContainer", () => {
         </PageContainer>
       </MemoryRouter>,
     );
-    expect(screen.getByText("文件管理")).toBeInTheDocument();
+    expect(screen.getByText("文件审核")).toBeInTheDocument();
     expect(screen.getByText("report.pdf")).toBeInTheDocument();
   });
 

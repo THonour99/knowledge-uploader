@@ -27,13 +27,13 @@ import { useAuthStore } from "../store/auth.store";
 type HealthStatusValue = "ok" | "error" | "unknown";
 
 const GLOBAL_SEARCH_ALIASES: Record<string, string[]> = {
-  "/dashboard": ["运营", "看板", "统计", "概览"],
+  "/dashboard": ["运营", "看板", "总览", "概览", "仪表盘"],
   "/upload": ["上传", "贡献", "新增文件"],
   "/my-files": ["我的文档", "个人文件", "同步状态"],
   "/files": ["文件审核", "文件管理", "审核", "同步", "RAGFlow"],
   "/datasets": ["Dataset", "数据集", "分类映射", "RAGFlow 配置"],
   "/ai-config": ["AI", "模型", "Prompt", "敏感规则"],
-  "/statistics": ["统计", "报表", "贡献排行"],
+  "/statistics": ["统计", "报表", "贡献排行", "统计分析"],
   "/users": ["用户", "账号", "权限", "部门"],
   "/settings": ["设置", "系统配置", "安全", "上传策略"],
   "/audit-logs": ["审计", "操作日志", "管理员操作"],

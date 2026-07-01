@@ -744,7 +744,7 @@ export default function StatisticsPage() {
 
   return (
     <PageContainer
-      title="统计分析"
+      title="统计报表"
       description="查看上传趋势、部门贡献、分类分布和用户上传明细。"
       actions={
         <Space wrap className="statistics-page-actions">

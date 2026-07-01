@@ -485,7 +485,7 @@ export default function FileDetailPage() {
       title={file?.original_name ?? "文件详情"}
       description="文件基础信息、AI 分析结果与审核同步状态。"
       breadcrumb={[
-        { label: "文件管理", path: "/files" },
+        { label: "文件审核", path: "/files" },
         { label: file?.original_name ?? "加载中" },
       ]}
       actions={
