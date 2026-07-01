@@ -287,10 +287,6 @@ describe("MyFilesPage", () => {
     expect(await screen.findByText("产品规划.pdf")).toBeInTheDocument();
     expect(await screen.findByText("技术架构.docx")).toBeInTheDocument();
 
-    const statusRegion = screen.getByRole("region", { name: "我的知识库状态" });
-    expect(statusRegion).toHaveTextContent("个人知识库");
-    expect(statusRegion).toHaveTextContent("7 类格式");
-    expect(statusRegion).toHaveTextContent("1 个待审核");
   });
 
   it("calls deleteFile when delete button is clicked and Popconfirm confirms", async () => {

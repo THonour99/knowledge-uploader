@@ -13,9 +13,7 @@ import {
 } from "antd";
 import {
   CheckCircleOutlined,
-  CloudSyncOutlined,
   CloudUploadOutlined,
-  FileSearchOutlined,
   FileTextOutlined,
   InboxOutlined,
   InfoCircleOutlined,
@@ -24,7 +22,6 @@ import {
   WarningOutlined,
 } from "@ant-design/icons";
 import { useState, useCallback, useMemo, useRef } from "react";
-import type { ReactNode } from "react";
 import { useNavigate } from "react-router-dom";
 import { useQuery } from "@tanstack/react-query";
 import type { UploadFile } from "antd/es/upload/interface";
@@ -62,134 +59,6 @@ interface UploadFormValues {
   description?: string;
   submitAfterUpload: boolean;
   aiAnalyze: boolean;
-}
-
-type PipelineTone = "primary" | "success" | "warning" | "danger" | "muted";
-
-interface UploadPipelineStep {
-  key: string;
-  title: string;
-  description: string;
-  icon: ReactNode;
-  tone: PipelineTone;
-  status: {
-    kind: "dataset" | "sync" | "health";
-    value: string;
-  };
-}
-
-function UploadPipelineStrip({
-  uploadEnabled,
-  allowMultiFile,
-  allowedExtensionCount,
-  queuedCount,
-  completedCount,
-  failedCount,
-  isUploading,
-  aiAnalysisEnabled,
-}: {
-  uploadEnabled: boolean;
-  allowMultiFile: boolean;
-  allowedExtensionCount: number;
-  queuedCount: number;
-  completedCount: number;
-  failedCount: number;
-  isUploading: boolean;
-  aiAnalysisEnabled: boolean;
-}) {
-  const steps: UploadPipelineStep[] = [
-    {
-      key: "entry",
-      title: "上传入口",
-      description: uploadEnabled ? "员工上传通道已开放" : "员工上传通道已关闭",
-      icon: <CloudUploadOutlined />,
-      tone: uploadEnabled ? "success" : "danger",
-      status: {
-        kind: uploadEnabled ? "health" : "dataset",
-        value: uploadEnabled ? "ok" : "disabled",
-      },
-    },
-    {
-      key: "validate",
-      title: "格式校验",
-      description: `${allowedExtensionCount || 0} 类白名单，${allowMultiFile ? "支持批量" : "单文件模式"}`,
-      icon: <FileSearchOutlined />,
-      tone: allowedExtensionCount > 0 ? "primary" : "warning",
-      status: { kind: "dataset", value: allowedExtensionCount > 0 ? "enabled" : "pending" },
-    },
-    {
-      key: "dedupe",
-      title: "去重入库",
-      description: queuedCount > 0 ? `当前 ${queuedCount} 个文件待处理` : "选择文件后进入队列",
-      icon: <InboxOutlined />,
-      tone: queuedCount > 0 ? "warning" : "muted",
-      status: { kind: "sync", value: queuedCount > 0 ? "queued" : "not_synced" },
-    },
-    {
-      key: "ai",
-      title: "AI 分析",
-      description: aiAnalysisEnabled
-        ? isUploading
-          ? "上传完成后触发分析"
-          : "可在右侧开关中启用或跳过"
-        : "当前上传将跳过 AI 分析",
-      icon: <SafetyCertificateOutlined />,
-      tone: !aiAnalysisEnabled ? "muted" : isUploading ? "primary" : "success",
-      status: { kind: "dataset", value: aiAnalysisEnabled ? "enabled" : "disabled" },
-    },
-    {
-      key: "review",
-      title: "审核流转",
-      description:
-        completedCount > 0 ? `${completedCount} 个文件已进入后续流程` : "上传后可自动提交审核",
-      icon: <CheckCircleOutlined />,
-      tone: completedCount > 0 ? "success" : "muted",
-      status: { kind: "sync", value: completedCount > 0 ? "succeeded" : "queued" },
-    },
-    {
-      key: "sync",
-      title: "RAGFlow 同步",
-      description: failedCount > 0 ? `${failedCount} 个文件需重新处理` : "审核通过后进入同步队列",
-      icon: <CloudSyncOutlined />,
-      tone: failedCount > 0 ? "danger" : "primary",
-      status: { kind: "sync", value: failedCount > 0 ? "failed" : "queued" },
-    },
-  ];
-
-  return (
-    <section className="upload-pipeline-strip" aria-label="上传流程状态">
-      <div className="upload-pipeline-strip__main">
-        <span className="upload-pipeline-strip__icon">
-          <CloudUploadOutlined />
-        </span>
-        <span className="upload-pipeline-strip__copy">
-          <Typography.Text strong className="upload-pipeline-strip__title">
-            上传流水线
-          </Typography.Text>
-          <Typography.Text type="secondary">
-            文件会依次经过格式校验、去重、AI 分析、管理员审核和 RAGFlow 同步。
-          </Typography.Text>
-        </span>
-      </div>
-      <div className="upload-pipeline-strip__steps" aria-label="上传流程节点">
-        {steps.map((step, index) => (
-          <div className={`upload-pipeline-step upload-pipeline-step--${step.tone}`} key={step.key}>
-            <span className="upload-pipeline-step__index">{index + 1}</span>
-            <span className="upload-pipeline-step__icon">{step.icon}</span>
-            <span className="upload-pipeline-step__body">
-              <span className="upload-pipeline-step__topline">
-                <Typography.Text strong>{step.title}</Typography.Text>
-                <StatusTag kind={step.status.kind} value={step.status.value} variant="dot" />
-              </span>
-              <Typography.Text type="secondary" className="upload-pipeline-step__description">
-                {step.description}
-              </Typography.Text>
-            </span>
-          </div>
-        ))}
-      </div>
-    </section>
-  );
 }
 
 function normalizeUploadFile(event: { fileList?: UploadFile[] } | UploadFile[]): UploadFile[] {
@@ -376,7 +245,6 @@ export default function UploadPage() {
   }, [form]);
 
   const selectedFiles: UploadFile[] = Form.useWatch("file", form) ?? [];
-  const aiAnalysisEnabled = Form.useWatch("aiAnalyze", form) ?? true;
   const queuedCount = queue.length > 0 ? queue.length : selectedFiles.length;
   const completedCount = queue.filter(
     (item) => item.status === "success" || item.status === "duplicate",
@@ -430,17 +298,6 @@ export default function UploadPage() {
           tone={failedCount > 0 ? "danger" : "success"}
         />
       </div>
-
-      <UploadPipelineStrip
-        aiAnalysisEnabled={aiAnalysisEnabled}
-        allowMultiFile={allowMultiFile}
-        allowedExtensionCount={allowedExtensions.length}
-        completedCount={completedCount}
-        failedCount={failedCount}
-        isUploading={isUploading}
-        queuedCount={queuedCount}
-        uploadEnabled={uploadEnabled}
-      />
 
       <Form<UploadFormValues>
         form={form}

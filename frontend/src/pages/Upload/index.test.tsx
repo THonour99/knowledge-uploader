@@ -308,47 +308,6 @@ describe("UploadPage rendering", () => {
     expect(screen.getByText(/拖拽文件到此处/)).toBeInTheDocument();
   });
 
-  it("renders the upload pipeline status strip", async () => {
-    renderWithProviders(<UploadPage />);
-
-    const pipeline = await screen.findByRole("region", { name: "上传流程状态" });
-    expect(pipeline).toHaveTextContent("上传流水线");
-    expect(pipeline).toHaveTextContent("上传入口");
-    expect(pipeline).toHaveTextContent("格式校验");
-    expect(pipeline).toHaveTextContent("去重入库");
-    expect(pipeline).toHaveTextContent("AI 分析");
-    expect(pipeline).toHaveTextContent("审核流转");
-    expect(pipeline).toHaveTextContent("RAGFlow 同步");
-    expect(pipeline).toHaveTextContent("7 类白名单，支持批量");
-  });
-
-  it("shows closed upload entry in the pipeline when upload is disabled", async () => {
-    vi.mocked(getUploadPolicy).mockResolvedValueOnce({
-      ...uploadPolicyResponse,
-      upload_enabled: false,
-    });
-
-    renderWithProviders(<UploadPage />);
-
-    await screen.findByText("当前系统已关闭员工上传");
-
-    const pipeline = await screen.findByRole("region", { name: "上传流程状态" });
-    expect(pipeline).toHaveTextContent("员工上传通道已关闭");
-    expect(pipeline).toHaveTextContent("已禁用");
-  });
-  it("reflects skipped AI analysis in the pipeline when the switch is off", async () => {
-    renderWithProviders(<UploadPage />);
-
-    const pipeline = await screen.findByRole("region", { name: "上传流程状态" });
-    expect(pipeline).toHaveTextContent("可在右侧开关中启用或跳过");
-
-    const switches = screen.getAllByRole("switch");
-    fireEvent.click(switches[1]);
-
-    await screen.findByText("当前上传将跳过 AI 分析");
-    expect(pipeline).toHaveTextContent("已禁用");
-  });
-
   it("honors upload.allow_multi_file=false in upload config", async () => {
     vi.mocked(getUploadPolicy).mockResolvedValueOnce({
       ...uploadPolicyResponse,
