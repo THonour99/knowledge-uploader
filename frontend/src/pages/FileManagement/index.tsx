@@ -27,8 +27,10 @@ import {
   FileProtectOutlined,
   FilePptOutlined,
   FileWordOutlined,
+  DownOutlined,
   FilterOutlined,
   InboxOutlined,
+  UpOutlined,
   ReloadOutlined,
   SafetyOutlined,
   StarOutlined,
@@ -257,6 +259,7 @@ export default function FileManagementPage() {
   const [syncFilter, setSyncFilter] = useState("all");
   const [riskFilter, setRiskFilter] = useState("all");
   const [uploadedRange, setUploadedRange] = useState<[Dayjs, Dayjs] | null>(null);
+  const [filtersExpanded, setFiltersExpanded] = useState(false);
   const [bulkApproving, setBulkApproving] = useState(false);
   const [bulkSyncing, setBulkSyncing] = useState(false);
   // 新增：服务端筛选参数
@@ -922,18 +925,6 @@ export default function FileManagementPage() {
           />
           <Select
             className="filter-toolbar__control"
-            value={uploaderFilter}
-            options={[{ label: "上传人：全部", value: "all" }, ...uploaderOptions]}
-            onChange={setUploaderFilter}
-          />
-          <Select
-            className="filter-toolbar__control"
-            value={categoryFilter}
-            options={[{ label: "分类：全部", value: "all" }, ...categoryOptions]}
-            onChange={setCategoryFilter}
-          />
-          <Select
-            className="filter-toolbar__control"
             value={reviewFilter}
             options={[
               { label: "审核状态：全部", value: "all" },
@@ -955,40 +946,62 @@ export default function FileManagementPage() {
             ]}
             onChange={setSyncFilter}
           />
-          <Select
-            className="filter-toolbar__control"
-            value={riskFilter}
-            options={[
-              { label: "风险等级：全部", value: "all" },
-              { label: "低风险", value: "low" },
-              { label: "中风险", value: "medium" },
-              { label: "高风险", value: "high" },
-            ]}
-            onChange={setRiskFilter}
-          />
-          {/* 新增：文件类型筛选（服务端过滤） */}
-          <Select
-            className="filter-toolbar__control"
-            value={extensionFilter ?? "all"}
-            options={extensionOptions}
-            onChange={(value) => setExtensionFilter(value === "all" ? undefined : value)}
-            placeholder="文件类型：全部"
-          />
-          {/* 新增：标签筛选（服务端过滤） */}
-          <Select
-            className="filter-toolbar__control"
-            value={tagIdFilter ?? "all"}
-            options={tagOptions}
-            onChange={(value) => setTagIdFilter(value === "all" ? undefined : value)}
-            loading={tagsQuery.isLoading}
-            placeholder="标签：全部"
-          />
-          <RangePicker
-            className="filter-toolbar__range"
-            placeholder={["开始日期", "结束日期"]}
-            value={uploadedRange}
-            onChange={(value) => setUploadedRange(value as [Dayjs, Dayjs] | null)}
-          />
+          <Button
+            type="text"
+            icon={filtersExpanded ? <UpOutlined /> : <DownOutlined />}
+            onClick={() => setFiltersExpanded((prev) => !prev)}
+            aria-label="更多筛选"
+          >
+            更多筛选
+          </Button>
+          {filtersExpanded ? (
+            <>
+              <Select
+                className="filter-toolbar__control"
+                value={uploaderFilter}
+                options={[{ label: "上传人：全部", value: "all" }, ...uploaderOptions]}
+                onChange={setUploaderFilter}
+              />
+              <Select
+                className="filter-toolbar__control"
+                value={categoryFilter}
+                options={[{ label: "分类：全部", value: "all" }, ...categoryOptions]}
+                onChange={setCategoryFilter}
+              />
+              <Select
+                className="filter-toolbar__control"
+                value={riskFilter}
+                options={[
+                  { label: "风险等级：全部", value: "all" },
+                  { label: "低风险", value: "low" },
+                  { label: "中风险", value: "medium" },
+                  { label: "高风险", value: "high" },
+                ]}
+                onChange={setRiskFilter}
+              />
+              <Select
+                className="filter-toolbar__control"
+                value={extensionFilter ?? "all"}
+                options={extensionOptions}
+                onChange={(value) => setExtensionFilter(value === "all" ? undefined : value)}
+                placeholder="文件类型：全部"
+              />
+              <Select
+                className="filter-toolbar__control"
+                value={tagIdFilter ?? "all"}
+                options={tagOptions}
+                onChange={(value) => setTagIdFilter(value === "all" ? undefined : value)}
+                loading={tagsQuery.isLoading}
+                placeholder="标签：全部"
+              />
+              <RangePicker
+                className="filter-toolbar__range"
+                placeholder={["开始日期", "结束日期"]}
+                value={uploadedRange}
+                onChange={(value) => setUploadedRange(value as [Dayjs, Dayjs] | null)}
+              />
+            </>
+          ) : null}
         </div>
 
         <div className="review-command-strip" role="region" aria-label="审核队列摘要">

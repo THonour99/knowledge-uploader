@@ -440,6 +440,9 @@ describe("FileManagementPage — 标签筛选", () => {
       expect(listReviewFiles).toHaveBeenCalledTimes(1);
     });
 
+    // 展开高级筛选
+    fireEvent.click(screen.getByRole("button", { name: "更多筛选" }));
+
     // 找到标签筛选的 MockSelect（aria-label="标签：全部"）
     const tagSelect = screen.getByRole("combobox", { name: "标签：全部" });
     expect(tagSelect).toBeInTheDocument();
@@ -463,6 +466,9 @@ describe("FileManagementPage — 标签筛选", () => {
     await waitFor(() => {
       expect(listReviewFiles).toHaveBeenCalledTimes(1);
     });
+
+    // 展开高级筛选
+    fireEvent.click(screen.getByRole("button", { name: "更多筛选" }));
 
     // MockSelect for 文件类型 has aria-label="文件类型：全部"
     const typeSelect = screen.getByRole("combobox", { name: "文件类型：全部" });
