@@ -77,6 +77,9 @@ class FileAnalysisDetail(BaseModel):
     sensitive_risk_level: str
     quality_score: float | None = None
     extracted_text_preview: str | None
+    tables_json: list[dict[str, object]] = []
+    table_count: int = 0
+    similar_file_ids: list[str] = []
     error_message: str | None
     finished_at: datetime | None
 

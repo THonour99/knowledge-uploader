@@ -350,12 +350,15 @@ class DocumentService:
                     status=analysis.status,
                     summary=analysis.summary,
                     sensitive_risk_level=analysis.sensitive_risk_level,
-                    quality_score=None,
+                    quality_score=analysis.quality_score,
                     extracted_text_preview=(
                         analysis.extracted_text[:EXTRACTED_TEXT_PREVIEW_CHARS]
                         if analysis.extracted_text is not None
                         else None
                     ),
+                    tables_json=analysis.tables_json,
+                    table_count=analysis.table_count,
+                    similar_file_ids=analysis.similar_file_ids,
                     error_message=analysis.error_message,
                     finished_at=analysis.finished_at,
                 )

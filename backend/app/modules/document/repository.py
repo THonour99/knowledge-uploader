@@ -5,9 +5,21 @@ from dataclasses import dataclass
 from datetime import datetime
 from typing import cast
 
-from sqlalchemy import Boolean, Column, DateTime, MetaData, String, Table, Text, case, func, select
+from sqlalchemy import (
+    Boolean,
+    Column,
+    DateTime,
+    Integer,
+    MetaData,
+    String,
+    Table,
+    Text,
+    case,
+    func,
+    select,
+)
 from sqlalchemy import update as sql_update
-from sqlalchemy.dialects.postgresql import UUID
+from sqlalchemy.dialects.postgresql import JSONB, UUID
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.modules.document.models import File
@@ -31,6 +43,10 @@ DOCUMENT_ANALYSIS = Table(
     Column("extracted_text", Text),
     Column("error_message", Text),
     Column("finished_at", DateTime(timezone=True)),
+    Column("quality_score", Integer),
+    Column("tables_json", JSONB),
+    Column("table_count", Integer),
+    Column("similar_file_ids", JSONB),
 )
 
 SYNC_TASKS = Table(
@@ -67,6 +83,10 @@ class DocumentAnalysisRecord:
     extracted_text: str | None
     error_message: str | None
     finished_at: datetime | None
+    quality_score: int | None
+    tables_json: list[dict[str, object]]
+    table_count: int
+    similar_file_ids: list[str]
 
 
 @dataclass(frozen=True)
@@ -182,6 +202,10 @@ class DocumentRepository:
                 DOCUMENT_ANALYSIS.c.extracted_text,
                 DOCUMENT_ANALYSIS.c.error_message,
                 DOCUMENT_ANALYSIS.c.finished_at,
+                DOCUMENT_ANALYSIS.c.quality_score,
+                DOCUMENT_ANALYSIS.c.tables_json,
+                DOCUMENT_ANALYSIS.c.table_count,
+                DOCUMENT_ANALYSIS.c.similar_file_ids,
             ).where(DOCUMENT_ANALYSIS.c.file_id == file_id)
         )
         row = result.mappings().one_or_none()
@@ -194,6 +218,10 @@ class DocumentRepository:
             extracted_text=cast(str | None, row["extracted_text"]),
             error_message=cast(str | None, row["error_message"]),
             finished_at=cast(datetime | None, row["finished_at"]),
+            quality_score=cast(int | None, row["quality_score"]),
+            tables_json=cast(list[dict[str, object]], row["tables_json"] or []),
+            table_count=cast(int, row["table_count"] or 0),
+            similar_file_ids=cast(list[str], row["similar_file_ids"] or []),
         )
 
     async def get_latest_failed_sync_error(self, file_id: uuid.UUID) -> str | None:
