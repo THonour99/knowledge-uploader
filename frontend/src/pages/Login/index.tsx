@@ -1,4 +1,3 @@
-import { LockOutlined, MailOutlined } from "@ant-design/icons";
 import { App as AntdApp, Button, Checkbox, Form, Input, Typography } from "antd";
 import type { CheckboxChangeEvent } from "antd/es/checkbox";
 import { useMutation } from "@tanstack/react-query";
@@ -42,8 +41,8 @@ export default function LoginPage() {
 
   return (
     <AuthLayout
-      title="欢迎登录"
-      description="使用公司邮箱登录，进入知识库贡献与审核工作台"
+      title="欢迎回来"
+      description="使用公司邮箱登录知识库工作台"
       footer={
         <Typography.Text type="secondary">
           还没有账号？ <Link to="/register">立即注册</Link>
@@ -66,12 +65,7 @@ export default function LoginPage() {
             { type: "email", message: "请输入有效邮箱" },
           ]}
         >
-          <Input
-            placeholder="name@company.com"
-            autoComplete="email"
-            size="large"
-            prefix={<MailOutlined />}
-          />
+          <Input placeholder="name@company.com" autoComplete="email" size="large" />
         </Form.Item>
 
         <Form.Item label="密码" name="password" rules={[{ required: true, message: "请输入密码" }]}>
@@ -79,7 +73,6 @@ export default function LoginPage() {
             placeholder="请输入密码"
             autoComplete="current-password"
             size="large"
-            prefix={<LockOutlined />}
           />
         </Form.Item>
 
