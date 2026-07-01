@@ -493,11 +493,11 @@ async def test_ragflow_delete_worker_does_not_claim_non_delete_task_id(
     await tasks.run_ragflow_delete_task_async(str(task_id))
 
     async with AsyncSessionFactory() as session:
-        task = await session.get(SyncTask, task_id)
-        assert task is not None
+        reloaded = await session.get(SyncTask, task_id)
+        assert reloaded is not None
+        assert reloaded.status == task_status
+        assert reloaded.finished_at is None
 
-    assert task.status == task_status
-    assert task.finished_at is None
     assert client.deletes == []
 
 
