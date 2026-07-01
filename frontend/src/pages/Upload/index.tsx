@@ -17,7 +17,6 @@ import {
   FileTextOutlined,
   InboxOutlined,
   InfoCircleOutlined,
-  SafetyCertificateOutlined,
   TagsOutlined,
   WarningOutlined,
 } from "@ant-design/icons";
@@ -29,7 +28,6 @@ import type { UploadFile } from "antd/es/upload/interface";
 import type { RcFile } from "antd/es/upload";
 
 import { type KnowledgeFile, getUploadPolicy, uploadDocument } from "../../api/client";
-import { KpiCard } from "../../components/KpiCard";
 import { StatusTag } from "../../components/StatusTag";
 import { PageContainer } from "../../layouts/PageContainer";
 import {
@@ -245,13 +243,6 @@ export default function UploadPage() {
   }, [form]);
 
   const selectedFiles: UploadFile[] = Form.useWatch("file", form) ?? [];
-  const queuedCount = queue.length > 0 ? queue.length : selectedFiles.length;
-  const completedCount = queue.filter(
-    (item) => item.status === "success" || item.status === "duplicate",
-  ).length;
-  const failedCount = queue.filter((item) => item.status === "error").length;
-  const supportedFormatValue =
-    allowedExtensions.length > 0 ? `${allowedExtensions.length} 类` : "读取中";
 
   // Sync queue when the file list changes and we are not uploading.
   const handleFormValuesChange = useCallback(
@@ -268,37 +259,6 @@ export default function UploadPage() {
       title="上传知识文件"
       description="上传文件后进入校验、去重、AI 分析与管理员审核流程。"
     >
-      <div className="metric-grid">
-        <KpiCard
-          icon={<FileTextOutlined />}
-          title="支持格式"
-          value={supportedFormatValue}
-          description={allowedExtensionText || "读取上传配置"}
-          tone="primary"
-        />
-        <KpiCard
-          icon={<CloudUploadOutlined />}
-          title="并发上传"
-          value={CONCURRENCY_LIMIT}
-          description="最多同时处理文件"
-          tone="info"
-        />
-        <KpiCard
-          icon={<InboxOutlined />}
-          title="当前队列"
-          value={queuedCount}
-          description={isUploading ? "上传进行中" : "待处理文件"}
-          tone="warning"
-        />
-        <KpiCard
-          icon={<SafetyCertificateOutlined />}
-          title="成功 / 失败"
-          value={`${completedCount} / ${failedCount}`}
-          description="本次上传结果"
-          tone={failedCount > 0 ? "danger" : "success"}
-        />
-      </div>
-
       <Form<UploadFormValues>
         form={form}
         className="upload-workspace"
@@ -349,7 +309,8 @@ export default function UploadPage() {
                 <p className="ant-upload-text">拖拽文件到此处，或点击选择文件</p>
                 <p className="ant-upload-hint">
                   支持 {allowedExtensionText}
-                  {allowMultiFile ? "，可同时选择多个文件。" : "，当前仅允许单文件上传。"}
+                  {allowMultiFile ? "，可同时选择多个文件" : "，当前仅允许单文件上传"}
+                  ，最多 {CONCURRENCY_LIMIT} 个并发上传。
                 </p>
               </Upload.Dragger>
             </Form.Item>
