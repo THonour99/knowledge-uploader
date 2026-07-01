@@ -259,12 +259,43 @@ export interface AiProviderConfig {
   base_url?: string | null;
   chat_model?: string | null;
   embedding_model?: string | null;
+  vision_model?: string | null;
+  is_internal: boolean;
   enabled: boolean;
   priority: number;
+  timeout_seconds: number;
+  max_retry_count: number;
+  max_input_tokens?: number | null;
+  max_output_tokens?: number | null;
+  temperature: number;
+  top_p?: number | null;
+  has_api_key: boolean;
   api_key_masked?: string | null;
   last_test_status?: string | null;
   last_test_latency_ms?: number | null;
   last_tested_at?: string | null;
+  created_at?: string;
+  updated_at?: string;
+}
+
+export interface AiProviderPayload {
+  name: string;
+  provider_type: string;
+  base_url?: string | null;
+  api_key?: string | null;
+  clear_api_key?: boolean;
+  chat_model?: string | null;
+  embedding_model?: string | null;
+  vision_model?: string | null;
+  is_internal: boolean;
+  enabled: boolean;
+  priority: number;
+  timeout_seconds: number;
+  max_retry_count: number;
+  max_input_tokens?: number | null;
+  max_output_tokens?: number | null;
+  temperature: number;
+  top_p?: number | null;
 }
 
 export interface AiPromptTemplate {
@@ -771,6 +802,27 @@ export async function updateAiFeature(
 ): Promise<AiFeatureConfig> {
   const response = await apiClient.patch<ApiEnvelope<AiFeatureConfig> | AiFeatureConfig>(
     `/admin/ai/features/${featureKey}`,
+    payload,
+  );
+
+  return unwrapResponse(response.data);
+}
+
+export async function createAiProvider(payload: AiProviderPayload): Promise<AiProviderConfig> {
+  const response = await apiClient.post<ApiEnvelope<AiProviderConfig> | AiProviderConfig>(
+    "/admin/ai/providers",
+    payload,
+  );
+
+  return unwrapResponse(response.data);
+}
+
+export async function updateAiProvider(
+  providerId: string,
+  payload: AiProviderPayload,
+): Promise<AiProviderConfig> {
+  const response = await apiClient.patch<ApiEnvelope<AiProviderConfig> | AiProviderConfig>(
+    `/admin/ai/providers/${providerId}`,
     payload,
   );
 

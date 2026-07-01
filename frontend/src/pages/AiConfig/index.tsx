@@ -1,10 +1,16 @@
+import { useEffect, useState } from "react";
 import {
   Alert,
   App as AntdApp,
   Button,
   Card,
   Empty,
+  Form,
+  Input,
+  InputNumber,
+  Modal,
   Progress,
+  Select,
   Space,
   Switch,
   Table,
@@ -14,8 +20,10 @@ import {
 import {
   ApiOutlined,
   ClockCircleOutlined,
+  EditOutlined,
   ExperimentOutlined,
   FileTextOutlined,
+  PlusOutlined,
   SafetyCertificateOutlined,
   ThunderboltOutlined,
 } from "@ant-design/icons";
@@ -28,11 +36,14 @@ import {
   type AiFeatureConfig,
   type AiPromptTemplate,
   type AiProviderConfig,
+  type AiProviderPayload,
   type AiProviderTestResult,
   type AiSensitiveRule,
+  createAiProvider,
   getAiConfig,
   testAiProvider,
   updateAiFeature,
+  updateAiProvider,
 } from "../../api/client";
 import { KpiCard } from "../../components/KpiCard";
 import { StatusTag } from "../../components/StatusTag";
@@ -93,6 +104,111 @@ const formatDateTime = (value?: string | null) =>
   value ? dayjs(value).format("YYYY-MM-DD HH:mm") : "-";
 
 const compactNumber = new Intl.NumberFormat("zh-CN", { maximumFractionDigits: 0 });
+
+const providerTypeOptions = [
+  { label: "OpenAI-compatible", value: "openai_compatible" },
+  { label: "本地 OpenAI-compatible", value: "local_openai_compatible" },
+  { label: "vLLM", value: "vllm" },
+  { label: "Ollama", value: "ollama" },
+  { label: "LM Studio", value: "lmstudio" },
+  { label: "自定义", value: "custom" },
+  { label: "Mock", value: "mock" },
+  { label: "禁用", value: "disabled" },
+];
+
+const providerTypesWithoutEndpoint = new Set(["mock", "disabled"]);
+
+type ProviderFormMode = "create" | "edit";
+
+type ProviderModalState = {
+  mode: ProviderFormMode;
+  provider?: AiProviderConfig;
+};
+
+type AiProviderFormValues = AiProviderPayload;
+
+const providerDefaultValues: AiProviderFormValues = {
+  name: "",
+  provider_type: "openai_compatible",
+  base_url: "",
+  api_key: "",
+  clear_api_key: false,
+  chat_model: "",
+  embedding_model: "",
+  vision_model: "",
+  is_internal: false,
+  enabled: true,
+  priority: 100,
+  timeout_seconds: 60,
+  max_retry_count: 2,
+  max_input_tokens: null,
+  max_output_tokens: null,
+  temperature: 0.2,
+  top_p: null,
+};
+
+function optionalText(value?: string | null): string | null {
+  const cleaned = value?.trim();
+  return cleaned ? cleaned : null;
+}
+
+function optionalNumber(value?: number | null): number | null {
+  return typeof value === "number" ? value : null;
+}
+
+function providerFormValues(provider?: AiProviderConfig): AiProviderFormValues {
+  if (!provider) {
+    return { ...providerDefaultValues };
+  }
+
+  return {
+    name: provider.name,
+    provider_type: provider.provider_type,
+    base_url: provider.base_url ?? "",
+    api_key: "",
+    clear_api_key: false,
+    chat_model: provider.chat_model ?? "",
+    embedding_model: provider.embedding_model ?? "",
+    vision_model: provider.vision_model ?? "",
+    is_internal: provider.is_internal,
+    enabled: provider.enabled,
+    priority: provider.priority,
+    timeout_seconds: provider.timeout_seconds,
+    max_retry_count: provider.max_retry_count,
+    max_input_tokens: provider.max_input_tokens ?? null,
+    max_output_tokens: provider.max_output_tokens ?? null,
+    temperature: provider.temperature,
+    top_p: provider.top_p ?? null,
+  };
+}
+
+function providerPayloadFromValues(values: AiProviderFormValues): AiProviderPayload {
+  const apiKey = optionalText(values.api_key);
+  const payload: AiProviderPayload = {
+    name: values.name.trim(),
+    provider_type: values.provider_type,
+    base_url: optionalText(values.base_url),
+    clear_api_key: Boolean(values.clear_api_key),
+    chat_model: optionalText(values.chat_model),
+    embedding_model: optionalText(values.embedding_model),
+    vision_model: optionalText(values.vision_model),
+    is_internal: Boolean(values.is_internal),
+    enabled: Boolean(values.enabled),
+    priority: values.priority,
+    timeout_seconds: values.timeout_seconds,
+    max_retry_count: values.max_retry_count,
+    max_input_tokens: optionalNumber(values.max_input_tokens),
+    max_output_tokens: optionalNumber(values.max_output_tokens),
+    temperature: values.temperature,
+    top_p: optionalNumber(values.top_p),
+  };
+
+  if (apiKey) {
+    payload.api_key = apiKey;
+  }
+
+  return payload;
+}
 
 function countEnabled(items: Array<{ enabled: boolean }>): number {
   return items.filter((item) => item.enabled).length;
@@ -363,12 +479,177 @@ function FeaturesPanel({
   );
 }
 
+function ProviderFormModal({
+  open,
+  mode,
+  provider,
+  confirmLoading,
+  onCancel,
+  onSubmit,
+}: {
+  open: boolean;
+  mode: ProviderFormMode;
+  provider?: AiProviderConfig;
+  confirmLoading?: boolean;
+  onCancel: () => void;
+  onSubmit: (payload: AiProviderPayload) => void;
+}) {
+  const [form] = Form.useForm<AiProviderFormValues>();
+  const selectedType = Form.useWatch("provider_type", form);
+  const clearApiKey = Form.useWatch("clear_api_key", form);
+  const requiresEndpoint = !providerTypesWithoutEndpoint.has(selectedType ?? "openai_compatible");
+
+  useEffect(() => {
+    if (open) {
+      form.setFieldsValue(providerFormValues(provider));
+    } else {
+      form.resetFields();
+    }
+  }, [form, open, provider]);
+
+  return (
+    <Modal
+      title={mode === "create" ? "新增模型供应商" : "编辑模型供应商"}
+      open={open}
+      width={760}
+      okText={mode === "create" ? "创建" : "保存"}
+      cancelText="取消"
+      confirmLoading={confirmLoading}
+      onCancel={onCancel}
+      onOk={() => form.submit()}
+    >
+      <Alert
+        className="ai-provider-form-alert"
+        type="info"
+        showIcon
+        message="Base URL 填 OpenAI 协议根地址，系统会请求 /chat/completions。"
+      />
+      <Form<AiProviderFormValues>
+        form={form}
+        layout="vertical"
+        requiredMark={false}
+        onFinish={(values) => onSubmit(providerPayloadFromValues(values))}
+      >
+        <div className="ai-provider-form-grid">
+          <Form.Item
+            label="供应商名称"
+            name="name"
+            rules={[{ required: true, whitespace: true, message: "请输入供应商名称" }]}
+          >
+            <Input placeholder="OpenAI 兼容供应商" />
+          </Form.Item>
+          <Form.Item
+            label="供应商类型"
+            name="provider_type"
+            rules={[{ required: true, message: "请选择供应商类型" }]}
+          >
+            <Select options={providerTypeOptions} />
+          </Form.Item>
+          <Form.Item
+            className="ai-provider-form-grid__wide"
+            label="Base URL"
+            name="base_url"
+            rules={
+              requiresEndpoint
+                ? [{ required: true, whitespace: true, message: "请输入 Base URL" }]
+                : []
+            }
+            extra="示例：https://api.openai.com/v1、https://api.deepseek.com/v1、http://localhost:8000/v1"
+          >
+            <Input placeholder="https://api.openai.com/v1" />
+          </Form.Item>
+          <Form.Item
+            label="API Key"
+            name="api_key"
+            extra={
+              mode === "edit"
+                ? `留空则保持当前密钥：${provider?.api_key_masked ?? "未配置"}`
+                : "本地服务如无需鉴权可留空"
+            }
+          >
+            <Input.Password
+              autoComplete="off"
+              disabled={Boolean(clearApiKey)}
+              placeholder={mode === "edit" ? "留空则不变" : "sk-..."}
+            />
+          </Form.Item>
+          <Form.Item label="清空 API Key" name="clear_api_key" valuePropName="checked">
+            <Switch disabled={mode === "create"} />
+          </Form.Item>
+          <Form.Item
+            label="对话模型"
+            name="chat_model"
+            rules={
+              requiresEndpoint
+                ? [{ required: true, whitespace: true, message: "请输入对话模型" }]
+                : []
+            }
+          >
+            <Input placeholder="gpt-4o-mini / deepseek-chat / qwen-plus" />
+          </Form.Item>
+          <Form.Item label="向量模型" name="embedding_model">
+            <Input placeholder="text-embedding-3-small" />
+          </Form.Item>
+          <Form.Item label="视觉模型" name="vision_model">
+            <Input placeholder="gpt-4o-mini" />
+          </Form.Item>
+          <Form.Item label="优先级" name="priority" rules={[{ required: true, message: "请输入优先级" }]}>
+            <InputNumber min={0} precision={0} className="ai-provider-form-number" />
+          </Form.Item>
+          <Form.Item
+            label="超时秒数"
+            name="timeout_seconds"
+            rules={[{ required: true, message: "请输入超时秒数" }]}
+          >
+            <InputNumber min={1} precision={0} className="ai-provider-form-number" />
+          </Form.Item>
+          <Form.Item
+            label="最大重试"
+            name="max_retry_count"
+            rules={[{ required: true, message: "请输入最大重试次数" }]}
+          >
+            <InputNumber min={0} precision={0} className="ai-provider-form-number" />
+          </Form.Item>
+          <Form.Item label="输入 Token 上限" name="max_input_tokens">
+            <InputNumber min={1} precision={0} className="ai-provider-form-number" />
+          </Form.Item>
+          <Form.Item label="输出 Token 上限" name="max_output_tokens">
+            <InputNumber min={1} precision={0} className="ai-provider-form-number" />
+          </Form.Item>
+          <Form.Item
+            label="Temperature"
+            name="temperature"
+            rules={[{ required: true, message: "请输入 Temperature" }]}
+          >
+            <InputNumber min={0} max={2} step={0.1} className="ai-provider-form-number" />
+          </Form.Item>
+          <Form.Item label="Top P" name="top_p">
+            <InputNumber min={0} max={1} step={0.05} className="ai-provider-form-number" />
+          </Form.Item>
+          <Form.Item label="内部服务" name="is_internal" valuePropName="checked">
+            <Switch />
+          </Form.Item>
+          <Form.Item label="启用供应商" name="enabled" valuePropName="checked">
+            <Switch />
+          </Form.Item>
+        </div>
+      </Form>
+    </Modal>
+  );
+}
+
 function ProvidersPanel({
   providers,
+  allowExternalLlm,
+  onCreate,
+  onEdit,
   onTest,
   testingProviderId,
 }: {
   providers: AiProviderConfig[];
+  allowExternalLlm: boolean;
+  onCreate: () => void;
+  onEdit: (provider: AiProviderConfig) => void;
   onTest: (provider: AiProviderConfig) => void;
   testingProviderId?: string;
 }) {
@@ -481,16 +762,21 @@ function ProvidersPanel({
     {
       title: "操作",
       key: "actions",
-      width: 120,
+      width: 210,
       fixed: "right",
       render: (_, record) => (
-        <Button
-          icon={<ExperimentOutlined />}
-          loading={testingProviderId === record.id}
-          onClick={() => onTest(record)}
-        >
-          测试连接
-        </Button>
+        <Space size={8}>
+          <Button icon={<EditOutlined />} onClick={() => onEdit(record)}>
+            编辑
+          </Button>
+          <Button
+            icon={<ExperimentOutlined />}
+            loading={testingProviderId === record.id}
+            onClick={() => onTest(record)}
+          >
+            测试连接
+          </Button>
+        </Space>
       ),
     },
   ];
@@ -513,15 +799,28 @@ function ProvidersPanel({
             当前维护 {providers.length} 个供应商，{testedProviders} 个已通过测试
           </Typography.Text>
         </span>
-        <StatusTag kind="health" value={failedProviders > 0 ? "error" : "ok"} variant="dot" />
+        <Space size={8}>
+          <StatusTag kind="health" value={failedProviders > 0 ? "error" : "ok"} variant="dot" />
+          <Button type="primary" icon={<PlusOutlined />} onClick={onCreate}>
+            新增供应商
+          </Button>
+        </Space>
       </div>
+      {!allowExternalLlm ? (
+        <Alert
+          className="ai-config-provider-alert"
+          type="warning"
+          showIcon
+          message="外部模型当前被禁用，外网 Base URL 的连接测试会被阻止。"
+        />
+      ) : null}
       <Table<AiProviderConfig>
         rowKey="id"
         columns={columns}
         dataSource={providers}
         locale={{ emptyText: "暂无模型供应商" }}
         pagination={false}
-        scroll={{ x: 1370 }}
+        scroll={{ x: 1460 }}
       />
     </Card>
   );
@@ -722,6 +1021,7 @@ function SensitiveRulesPanel({ rules }: { rules: AiSensitiveRule[] }) {
 export default function AiConfigPage() {
   const { message } = AntdApp.useApp();
   const queryClient = useQueryClient();
+  const [providerModal, setProviderModal] = useState<ProviderModalState | null>(null);
 
   const configQuery = useQuery({
     queryKey: aiConfigQueryKey,
@@ -737,6 +1037,31 @@ export default function AiConfigPage() {
       updateAiFeature(featureKey, { enabled }),
     onSuccess: async (_, variables) => {
       message.success(variables.enabled ? "功能已启用" : "功能已停用");
+      await refreshConfig();
+    },
+    onError: (error) => {
+      message.error(error.message);
+    },
+  });
+
+  const createProviderMutation = useMutation({
+    mutationFn: createAiProvider,
+    onSuccess: async () => {
+      message.success("供应商已创建");
+      setProviderModal(null);
+      await refreshConfig();
+    },
+    onError: (error) => {
+      message.error(error.message);
+    },
+  });
+
+  const updateProviderMutation = useMutation({
+    mutationFn: ({ providerId, payload }: { providerId: string; payload: AiProviderPayload }) =>
+      updateAiProvider(providerId, payload),
+    onSuccess: async () => {
+      message.success("供应商已更新");
+      setProviderModal(null);
       await refreshConfig();
     },
     onError: (error) => {
@@ -760,6 +1085,15 @@ export default function AiConfigPage() {
       message.error(error.message);
     },
   });
+
+  const submitProvider = (payload: AiProviderPayload) => {
+    if (providerModal?.mode === "edit" && providerModal.provider) {
+      updateProviderMutation.mutate({ providerId: providerModal.provider.id, payload });
+      return;
+    }
+
+    createProviderMutation.mutate(payload);
+  };
 
   const config = configQuery.data;
   const isLoading = configQuery.isLoading;
@@ -826,11 +1160,14 @@ export default function AiConfigPage() {
                 children: (
                   <ProvidersPanel
                     providers={config.providers}
+                    allowExternalLlm={config.global.allow_external_llm}
                     testingProviderId={
                       providerTestMutation.isPending
                         ? providerTestMutation.variables?.id
                         : undefined
                     }
+                    onCreate={() => setProviderModal({ mode: "create" })}
+                    onEdit={(provider) => setProviderModal({ mode: "edit", provider })}
                     onTest={(provider) => providerTestMutation.mutate(provider)}
                   />
                 ),
@@ -851,6 +1188,16 @@ export default function AiConfigPage() {
           <EmptyBlock description="暂无 AI 配置数据" />
         )}
       </Card>
+      {providerModal ? (
+        <ProviderFormModal
+          open
+          mode={providerModal.mode}
+          provider={providerModal.provider}
+          confirmLoading={createProviderMutation.isPending || updateProviderMutation.isPending}
+          onCancel={() => setProviderModal(null)}
+          onSubmit={submitProvider}
+        />
+      ) : null}
     </PageContainer>
   );
 }

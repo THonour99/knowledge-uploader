@@ -6,9 +6,11 @@ import { afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 
 import {
   type AiConfigResponse,
+  createAiProvider,
   getAiConfig,
   testAiProvider,
   updateAiFeature,
+  updateAiProvider,
 } from "../../api/client";
 import type * as ApiClientModule from "../../api/client";
 import { themeCssVariables } from "../../theme/tokens";
@@ -19,9 +21,11 @@ vi.mock("../../api/client", async () => {
 
   return {
     ...actual,
+    createAiProvider: vi.fn(),
     getAiConfig: vi.fn(),
     testAiProvider: vi.fn(),
     updateAiFeature: vi.fn(),
+    updateAiProvider: vi.fn(),
   };
 });
 
@@ -49,16 +53,27 @@ const mockConfig: AiConfigResponse = {
     {
       id: "provider-1",
       name: "OpenAI 兼容供应商",
-      provider_type: "openai-compatible",
+      provider_type: "openai_compatible",
       base_url: "https://api.openai.com/v1",
       chat_model: "gpt-4o-mini",
       embedding_model: "text-embedding-3-small",
+      vision_model: "gpt-4o-mini",
+      is_internal: false,
       enabled: true,
       priority: 1,
+      timeout_seconds: 60,
+      max_retry_count: 2,
+      max_input_tokens: 128000,
+      max_output_tokens: 4096,
+      temperature: 0.2,
+      top_p: null,
+      has_api_key: true,
       api_key_masked: "sk-****abcd",
       last_test_status: "success",
       last_test_latency_ms: 268,
       last_tested_at: "2026-06-06T10:00:00Z",
+      created_at: "2026-06-06T09:00:00Z",
+      updated_at: "2026-06-06T10:00:00Z",
     },
   ],
   prompt_templates: [
@@ -190,6 +205,74 @@ describe("AiConfigPage", () => {
     await waitFor(() => {
       expect(testAiProvider).toHaveBeenCalledWith("provider-1");
     });
+  });
+
+  it("creates an OpenAI-compatible provider from the modal", async () => {
+    vi.mocked(getAiConfig).mockResolvedValue(mockConfig);
+    vi.mocked(createAiProvider).mockResolvedValue({
+      ...mockConfig.providers[0],
+      id: "provider-2",
+      name: "DeepSeek",
+      base_url: "https://api.deepseek.com/v1",
+      chat_model: "deepseek-chat",
+    });
+
+    renderWithProviders(<AiConfigPage />);
+
+    fireEvent.click(await screen.findByRole("tab", { name: "模型供应商" }));
+    fireEvent.click(screen.getByRole("button", { name: /新增供应商/ }));
+
+    expect(await screen.findByRole("dialog", { name: "新增模型供应商" })).toBeInTheDocument();
+    fireEvent.change(screen.getByLabelText("供应商名称"), { target: { value: "DeepSeek" } });
+    fireEvent.change(screen.getByLabelText("Base URL"), {
+      target: { value: "https://api.deepseek.com/v1" },
+    });
+    fireEvent.change(screen.getByLabelText("API Key"), { target: { value: "sk-deepseek" } });
+    fireEvent.change(screen.getByLabelText("对话模型"), { target: { value: "deepseek-chat" } });
+    fireEvent.click(screen.getByRole("button", { name: /创\s*建/ }));
+
+    await waitFor(() => {
+      expect(createAiProvider).toHaveBeenCalled();
+    });
+    expect(vi.mocked(createAiProvider).mock.calls[0][0]).toEqual(
+      expect.objectContaining({
+        name: "DeepSeek",
+        provider_type: "openai_compatible",
+        base_url: "https://api.deepseek.com/v1",
+        api_key: "sk-deepseek",
+        chat_model: "deepseek-chat",
+        enabled: true,
+      }),
+    );
+  });
+
+  it("updates a provider without sending an empty API key", async () => {
+    vi.mocked(getAiConfig).mockResolvedValue(mockConfig);
+    vi.mocked(updateAiProvider).mockResolvedValue({
+      ...mockConfig.providers[0],
+      priority: 5,
+    });
+
+    renderWithProviders(<AiConfigPage />);
+
+    fireEvent.click(await screen.findByRole("tab", { name: "模型供应商" }));
+    fireEvent.click(screen.getByRole("button", { name: /编辑/ }));
+
+    expect(await screen.findByRole("dialog", { name: "编辑模型供应商" })).toBeInTheDocument();
+    fireEvent.change(screen.getByLabelText("优先级"), { target: { value: "5" } });
+    fireEvent.click(screen.getByRole("button", { name: /保\s*存/ }));
+
+    await waitFor(() => {
+      expect(updateAiProvider).toHaveBeenCalledWith(
+        "provider-1",
+        expect.objectContaining({
+          name: "OpenAI 兼容供应商",
+          provider_type: "openai_compatible",
+          priority: 5,
+        }),
+      );
+    });
+    expect(vi.mocked(updateAiProvider).mock.calls[0][1]).not.toHaveProperty("api_key");
   });
 
   it("updates feature switches through the feature mutation", async () => {

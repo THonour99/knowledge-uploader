@@ -260,6 +260,25 @@
   padding: 32px 0;
 }
 
+.ai-config-provider-alert,
+.ai-provider-form-alert {
+  margin-bottom: 12px;
+}
+
+.ai-provider-form-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  column-gap: 16px;
+}
+
+.ai-provider-form-grid__wide {
+  grid-column: 1 / -1;
+}
+
+.ai-provider-form-number {
+  width: 100%;
+}
+
 @media (max-width: 1279px) {
   .ai-config-kpi-grid {
     grid-template-columns: repeat(3, minmax(0, 1fr));
