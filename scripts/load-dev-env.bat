@@ -59,6 +59,8 @@ if defined REDIS_PASSWORD (
 )
 set "VITE_API_BASE_URL=/api"
 set "PYTHONUTF8=1"
+if not defined NO_PROXY set "NO_PROXY=localhost,127.0.0.1,192.168.*,10.*,172.16.*,172.17.*,172.18.*,172.19.*,172.20.*,172.21.*,172.22.*,172.23.*,172.24.*,172.25.*,172.26.*,172.27.*,172.28.*,172.29.*,172.30.*,172.31.*"
+if not defined no_proxy set "no_proxy=%NO_PROXY%"
 
 set "DEV_COMPOSE_FILE=%ROOT%\docker-compose.yml"
 set "DEV_COMPOSE_OVERRIDE=%ROOT%\docker-compose.override.yml.example"
