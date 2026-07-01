@@ -19,14 +19,14 @@ describe("route role matrix", () => {
     const labels = navigationLabelsForRole(Roles.DEPT_ADMIN);
 
     expect(labels).toEqual(
-      expect.arrayContaining(["文件上传", "我的文件", "文件管理", "任务日志"]),
+      expect.arrayContaining(["上传文件", "我的文件", "文件审核", "任务日志"]),
     );
 
     for (const hiddenLabel of [
-      "仪表盘",
+      "运营总览",
       "Dataset 配置",
       "AI 配置",
-      "统计分析",
+      "统计报表",
       "用户管理",
       "系统设置",
       "操作日志",

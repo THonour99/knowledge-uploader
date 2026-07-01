@@ -7,6 +7,7 @@ import {
 } from "react";
 import { Spin } from "antd";
 import {
+  AppstoreOutlined,
   AuditOutlined,
   BarChartOutlined,
   CloudUploadOutlined,
@@ -61,6 +62,7 @@ function routeElement(Page: LazyExoticComponent<ComponentType>) {
 export interface RouteNavigation {
   label: string;
   icon: ReactNode;
+  group?: string;
 }
 
 export interface AppRoute {
@@ -82,23 +84,23 @@ export const appRoutes: AppRoute[] = [
     path: "/dashboard",
     element: routeElement(DashboardPage),
     roles: [Roles.SYSTEM_ADMIN],
-    nav: { label: "仪表盘", icon: <DashboardOutlined /> },
+    nav: { label: "运营总览", icon: <DashboardOutlined />, group: "工作台" },
   },
   {
     path: "/upload",
     element: routeElement(UploadPage),
-    nav: { label: "文件上传", icon: <CloudUploadOutlined /> },
+    nav: { label: "上传文件", icon: <CloudUploadOutlined />, group: "文档" },
   },
   {
     path: "/my-files",
     element: routeElement(MyFilesPage),
-    nav: { label: "我的文件", icon: <FileTextOutlined /> },
+    nav: { label: "我的文件", icon: <FileTextOutlined />, group: "文档" },
   },
   {
     path: "/files",
     element: routeElement(FileManagementPage),
     roles: [Roles.DEPT_ADMIN, Roles.SYSTEM_ADMIN],
-    nav: { label: "文件管理", icon: <FolderOpenOutlined /> },
+    nav: { label: "文件审核", icon: <FolderOpenOutlined />, group: "文档" },
   },
   {
     path: "/files/:id",
@@ -108,55 +110,55 @@ export const appRoutes: AppRoute[] = [
     path: "/datasets",
     element: routeElement(DatasetConfigPage),
     roles: [Roles.SYSTEM_ADMIN],
-    nav: { label: "Dataset 配置", icon: <DatabaseOutlined /> },
+    nav: { label: "Dataset 配置", icon: <DatabaseOutlined />, group: "知识库" },
   },
   {
     path: "/ai-config",
     element: routeElement(AiConfigPage),
     roles: [Roles.SYSTEM_ADMIN],
-    nav: { label: "AI 配置", icon: <RobotOutlined /> },
+    nav: { label: "AI 配置", icon: <RobotOutlined />, group: "系统" },
   },
   {
     path: "/statistics",
     element: routeElement(StatisticsPage),
     roles: [Roles.SYSTEM_ADMIN],
-    nav: { label: "统计分析", icon: <BarChartOutlined /> },
+    nav: { label: "统计报表", icon: <BarChartOutlined />, group: "系统" },
   },
   {
     path: "/users",
     element: routeElement(UsersPage),
     roles: [Roles.SYSTEM_ADMIN],
-    nav: { label: "用户管理", icon: <TeamOutlined /> },
+    nav: { label: "用户管理", icon: <TeamOutlined />, group: "系统" },
   },
   {
     path: "/settings",
     element: routeElement(SettingsPage),
     roles: [Roles.SYSTEM_ADMIN],
-    nav: { label: "系统设置", icon: <SettingOutlined /> },
+    nav: { label: "系统设置", icon: <SettingOutlined />, group: "系统" },
   },
   {
     path: "/audit-logs",
     element: routeElement(AuditLogsPage),
     roles: [Roles.SYSTEM_ADMIN],
-    nav: { label: "操作日志", icon: <AuditOutlined /> },
+    nav: { label: "操作日志", icon: <AuditOutlined />, group: "系统" },
   },
   {
     path: "/task-logs",
     element: routeElement(TaskLogsPage),
     roles: [Roles.DEPT_ADMIN, Roles.SYSTEM_ADMIN],
-    nav: { label: "任务日志", icon: <OrderedListOutlined /> },
+    nav: { label: "任务日志", icon: <OrderedListOutlined />, group: "系统" },
   },
   {
     path: "/categories",
     element: routeElement(CategoriesPage),
     roles: [Roles.SYSTEM_ADMIN],
-    nav: { label: "分类管理", icon: <TagsOutlined /> },
+    nav: { label: "分类管理", icon: <AppstoreOutlined />, group: "知识库" },
   },
   {
     path: "/tags",
     element: routeElement(TagsPage),
     roles: [Roles.SYSTEM_ADMIN],
-    nav: { label: "标签管理", icon: <TagsOutlined /> },
+    nav: { label: "标签管理", icon: <TagsOutlined />, group: "知识库" },
   },
   {
     path: "/profile",
