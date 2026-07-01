@@ -365,6 +365,18 @@ a {
   margin: 0;
 }
 
+.page-breadcrumb {
+  margin-bottom: 8px;
+}
+
+.page-breadcrumb .ant-breadcrumb-link a {
+  color: var(--ku-text-secondary);
+}
+
+.page-breadcrumb .ant-breadcrumb-link a:hover {
+  color: var(--ku-color-primary);
+}
+
 .page-header {
   display: flex;
   align-items: flex-start;

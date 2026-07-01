@@ -484,6 +484,10 @@ export default function FileDetailPage() {
     <PageContainer
       title={file?.original_name ?? "文件详情"}
       description="文件基础信息、AI 分析结果与审核同步状态。"
+      breadcrumb={[
+        { label: "文件管理", path: "/files" },
+        { label: file?.original_name ?? "加载中" },
+      ]}
       actions={
         <Space>
           <Button icon={<ArrowLeftOutlined />} onClick={() => navigate("/my-files")}>
