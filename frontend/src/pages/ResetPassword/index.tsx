@@ -1,4 +1,3 @@
-import { LockOutlined } from "@ant-design/icons";
 import { App as AntdApp, Button, Form, Input, Typography } from "antd";
 import { useMutation } from "@tanstack/react-query";
 import { Link, useNavigate, useParams } from "react-router-dom";
@@ -36,7 +35,9 @@ export default function ResetPasswordPage() {
       footer={
         <>
           {!hasToken ? (
-            <Typography.Text type="secondary">当前链接缺少重置令牌，请重新发起找回密码。</Typography.Text>
+            <Typography.Text type="secondary">
+              当前链接缺少重置令牌，请重新发起找回密码。
+            </Typography.Text>
           ) : null}
           <Link to="/login">返回登录</Link>
         </>
@@ -49,8 +50,12 @@ export default function ResetPasswordPage() {
         disabled={!hasToken}
         onFinish={(values) => mutation.mutate(values)}
       >
-        <Form.Item label="新密码" name="password" rules={[{ required: true, message: "请输入新密码" }]}>
-          <Input.Password size="large" placeholder="请输入新密码" prefix={<LockOutlined />} />
+        <Form.Item
+          label="新密码"
+          name="password"
+          rules={[{ required: true, message: "请输入新密码" }]}
+        >
+          <Input.Password size="large" placeholder="请输入新密码" />
         </Form.Item>
         <Form.Item
           label="确认密码"
@@ -69,7 +74,7 @@ export default function ResetPasswordPage() {
             }),
           ]}
         >
-          <Input.Password size="large" placeholder="请再次输入新密码" prefix={<LockOutlined />} />
+          <Input.Password size="large" placeholder="请再次输入新密码" />
         </Form.Item>
         <Button
           type="primary"

@@ -611,9 +611,7 @@ export interface DocumentListQuery {
 }
 
 export async function getUploadPolicy(): Promise<UploadPolicy> {
-  const response = await apiClient.get<ApiEnvelope<UploadPolicy> | UploadPolicy>(
-    "/upload-policy",
-  );
+  const response = await apiClient.get<ApiEnvelope<UploadPolicy> | UploadPolicy>("/upload-policy");
 
   return unwrapResponse(response.data);
 }

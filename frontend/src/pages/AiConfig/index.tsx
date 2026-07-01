@@ -709,7 +709,11 @@ function ProviderFormModal({
           >
             <Input placeholder={providerModelNamePlaceholders[selectedModelKind]} />
           </Form.Item>
-          <Form.Item label="优先级" name="priority" rules={[{ required: true, message: "请输入优先级" }]}>
+          <Form.Item
+            label="优先级"
+            name="priority"
+            rules={[{ required: true, message: "请输入优先级" }]}
+          >
             <InputNumber min={0} precision={0} className="ai-provider-form-number" />
           </Form.Item>
           <Form.Item

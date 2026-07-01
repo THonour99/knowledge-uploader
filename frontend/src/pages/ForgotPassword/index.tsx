@@ -1,4 +1,3 @@
-import { MailOutlined } from "@ant-design/icons";
 import { App as AntdApp, Button, Form, Input } from "antd";
 import { useMutation } from "@tanstack/react-query";
 import { Link } from "react-router-dom";
@@ -43,7 +42,7 @@ export default function ForgotPasswordPage() {
             { type: "email", message: "请输入有效邮箱" },
           ]}
         >
-          <Input size="large" placeholder="name@company.com" prefix={<MailOutlined />} />
+          <Input size="large" placeholder="name@company.com" />
         </Form.Item>
         <Button type="primary" htmlType="submit" size="large" block loading={mutation.isPending}>
           发送重置邮件

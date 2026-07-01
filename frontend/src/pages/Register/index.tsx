@@ -1,10 +1,3 @@
-import {
-  ApartmentOutlined,
-  LockOutlined,
-  MailOutlined,
-  PhoneOutlined,
-  UserOutlined,
-} from "@ant-design/icons";
 import { App as AntdApp, Button, Form, Input, Typography } from "antd";
 import { useMutation } from "@tanstack/react-query";
 import { Link, useNavigate } from "react-router-dom";
@@ -61,10 +54,10 @@ export default function RegisterPage() {
       >
         <div className="auth-form-grid">
           <Form.Item label="姓名" name="name" rules={[{ required: true, message: "请输入姓名" }]}>
-            <Input size="large" placeholder="请输入姓名" prefix={<UserOutlined />} />
+            <Input size="large" placeholder="请输入姓名" />
           </Form.Item>
           <Form.Item label="部门" name="department">
-            <Input size="large" placeholder="请选择或填写部门" prefix={<ApartmentOutlined />} />
+            <Input size="large" placeholder="请选择或填写部门" />
           </Form.Item>
         </div>
         <Form.Item
@@ -75,13 +68,13 @@ export default function RegisterPage() {
             { type: "email", message: "请输入有效邮箱" },
           ]}
         >
-          <Input size="large" placeholder="name@company.com" prefix={<MailOutlined />} />
+          <Input size="large" placeholder="name@company.com" />
         </Form.Item>
         <Form.Item label="手机号" name="phone">
-          <Input size="large" placeholder="可选" prefix={<PhoneOutlined />} />
+          <Input size="large" placeholder="可选" />
         </Form.Item>
         <Form.Item label="密码" name="password" rules={[{ required: true, message: "请输入密码" }]}>
-          <Input.Password size="large" placeholder="请输入密码" prefix={<LockOutlined />} />
+          <Input.Password size="large" placeholder="请输入密码" />
         </Form.Item>
         <Form.Item
           label="确认密码"
@@ -100,7 +93,7 @@ export default function RegisterPage() {
             }),
           ]}
         >
-          <Input.Password size="large" placeholder="请再次输入密码" prefix={<LockOutlined />} />
+          <Input.Password size="large" placeholder="请再次输入密码" />
         </Form.Item>
         <Button type="primary" htmlType="submit" size="large" block loading={mutation.isPending}>
           提交注册

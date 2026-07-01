@@ -1900,18 +1900,33 @@ a {
 /* ── Auth page ── */
 
 @keyframes auth-float-1 {
-  0%, 100% { transform: translate(0, 0); }
-  50% { transform: translate(30px, -20px); }
+  0%,
+  100% {
+    transform: translate(0, 0);
+  }
+  50% {
+    transform: translate(30px, -20px);
+  }
 }
 
 @keyframes auth-float-2 {
-  0%, 100% { transform: translate(0, 0); }
-  50% { transform: translate(-20px, 30px); }
+  0%,
+  100% {
+    transform: translate(0, 0);
+  }
+  50% {
+    transform: translate(-20px, 30px);
+  }
 }
 
 @keyframes auth-float-3 {
-  0%, 100% { transform: translate(0, 0); }
-  50% { transform: translate(20px, 25px); }
+  0%,
+  100% {
+    transform: translate(0, 0);
+  }
+  50% {
+    transform: translate(20px, 25px);
+  }
 }
 
 @keyframes auth-card-enter {
@@ -2090,7 +2105,7 @@ a {
   align-items: center;
   justify-content: space-between;
   gap: 12px;
-  margin-bottom: 20px;
+  margin-bottom: 24px;
 }
 
 .auth-card__footer {
@@ -2098,6 +2113,10 @@ a {
   padding-top: 20px;
   border-top: 1px solid var(--ku-border);
   text-align: center;
+}
+
+.auth-mobile-brand {
+  display: none;
 }
 
 @media (prefers-reduced-motion: reduce) {
@@ -2141,14 +2160,23 @@ a {
     background: linear-gradient(135deg, #eef5ff, #f8fafc);
   }
 
-  .auth-panel::before {
-    content: "";
-    position: absolute;
-    top: 24px;
-    left: 24px;
+  .auth-mobile-brand {
     display: flex;
     align-items: center;
     gap: 10px;
+    margin-bottom: 32px;
+  }
+
+  .auth-mobile-brand .auth-brand__mark {
+    width: 32px;
+    height: 32px;
+    font-size: 18px;
+  }
+
+  .auth-mobile-brand .auth-brand__name {
+    color: var(--ku-text-primary);
+    font-size: 15px;
+    font-weight: 700;
   }
 
   .top-header__search {

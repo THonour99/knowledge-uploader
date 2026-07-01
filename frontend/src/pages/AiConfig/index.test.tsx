@@ -244,9 +244,7 @@ describe("AiConfigPage", () => {
 
     fireEvent.click(await screen.findByRole("tab", { name: "模型供应商" }));
 
-    expect(
-      screen.getByText("存在公网 Base URL，外部模型关闭时测试会被阻止。"),
-    ).toBeInTheDocument();
+    expect(screen.getByText("存在公网 Base URL，外部模型关闭时测试会被阻止。")).toBeInTheDocument();
   });
 
   it("creates an OpenAI-compatible provider from the modal", async () => {

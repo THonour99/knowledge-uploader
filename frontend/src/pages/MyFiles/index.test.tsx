@@ -286,7 +286,6 @@ describe("MyFilesPage", () => {
 
     expect(await screen.findByText("产品规划.pdf")).toBeInTheDocument();
     expect(await screen.findByText("技术架构.docx")).toBeInTheDocument();
-
   });
 
   it("calls deleteFile when delete button is clicked and Popconfirm confirms", async () => {

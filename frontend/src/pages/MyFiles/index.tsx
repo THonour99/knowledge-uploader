@@ -40,10 +40,7 @@ import {
 import { KpiCard, type KpiTone } from "../../components/KpiCard";
 import { StatusTag } from "../../components/StatusTag";
 import { PageContainer } from "../../layouts/PageContainer";
-import {
-  allowUserDeleteFromPolicy,
-  allowedExtensionsFromPolicy,
-} from "../../utils/uploadConfig";
+import { allowUserDeleteFromPolicy, allowedExtensionsFromPolicy } from "../../utils/uploadConfig";
 
 const { RangePicker } = DatePicker;
 

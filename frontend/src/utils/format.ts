@@ -17,10 +17,7 @@ export function formatNumber(value: number | null | undefined): string {
 /**
  * 比率（0~1）转百分比文案。空值 / NaN 回退为 "-"。
  */
-export function formatPercent(
-  value: number | null | undefined,
-  fractionDigits = 1,
-): string {
+export function formatPercent(value: number | null | undefined, fractionDigits = 1): string {
   if (value === null || value === undefined || Number.isNaN(value)) {
     return "-";
   }

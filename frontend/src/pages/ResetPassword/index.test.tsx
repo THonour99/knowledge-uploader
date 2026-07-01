@@ -139,8 +139,6 @@ describe("ResetPasswordPage", () => {
     renderResetPasswordPage("/reset-password");
 
     expect(screen.getByRole("button", { name: "重置密码" })).toBeDisabled();
-    expect(
-      screen.getByText("当前链接缺少重置令牌，请重新发起找回密码。"),
-    ).toBeInTheDocument();
+    expect(screen.getByText("当前链接缺少重置令牌，请重新发起找回密码。")).toBeInTheDocument();
   });
 });

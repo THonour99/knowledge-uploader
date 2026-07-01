@@ -13,9 +13,9 @@ export function AuthLayout({ title, description, children, footer }: AuthLayoutP
   return (
     <main className="auth-page">
       <section className="auth-hero" aria-label="品牌展示">
-        <div className="auth-orb auth-orb--1" />
-        <div className="auth-orb auth-orb--2" />
-        <div className="auth-orb auth-orb--3" />
+        <div className="auth-orb auth-orb--1" aria-hidden="true" />
+        <div className="auth-orb auth-orb--2" aria-hidden="true" />
+        <div className="auth-orb auth-orb--3" aria-hidden="true" />
 
         <div className="auth-brand">
           <span className="auth-brand__mark">
@@ -27,6 +27,12 @@ export function AuthLayout({ title, description, children, footer }: AuthLayoutP
       </section>
 
       <section className="auth-panel" aria-label={title}>
+        <div className="auth-mobile-brand">
+          <span className="auth-brand__mark">
+            <DatabaseOutlined />
+          </span>
+          <span className="auth-brand__name">知识库贡献平台</span>
+        </div>
         <div className="auth-card">
           <div className="auth-card__icon">
             <DatabaseOutlined />

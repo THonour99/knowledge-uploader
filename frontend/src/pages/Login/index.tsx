@@ -69,11 +69,7 @@ export default function LoginPage() {
         </Form.Item>
 
         <Form.Item label="密码" name="password" rules={[{ required: true, message: "请输入密码" }]}>
-          <Input.Password
-            placeholder="请输入密码"
-            autoComplete="current-password"
-            size="large"
-          />
+          <Input.Password placeholder="请输入密码" autoComplete="current-password" size="large" />
         </Form.Item>
 
         <div className="auth-form-row">

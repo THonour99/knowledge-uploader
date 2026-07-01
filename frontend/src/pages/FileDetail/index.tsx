@@ -477,7 +477,8 @@ export default function FileDetailPage() {
   const detailSyncStatus = file ? syncStatus(file) : "not_synced";
   const detailAnalysisHealth =
     file?.analysis?.status === "failed" ? "error" : file?.analysis ? "ok" : "unknown";
-  const detailMetadataHealth = file && (file.category_name || file.tags.length > 0) ? "ok" : "unknown";
+  const detailMetadataHealth =
+    file && (file.category_name || file.tags.length > 0) ? "ok" : "unknown";
   const detailRiskLevel = file?.analysis?.sensitive_risk_level ?? "none";
 
   return (
@@ -592,7 +593,9 @@ export default function FileDetailPage() {
                   <StatusTag kind="health" value={detailAnalysisHealth} variant="dot" />
                 </span>
                 <strong>{file.analysis ? qualityLevel(detailQualityScore) : "未生成分析"}</strong>
-                <Typography.Text type="secondary">风险：{riskLevelLabel(detailRiskLevel)}</Typography.Text>
+                <Typography.Text type="secondary">
+                  风险：{riskLevelLabel(detailRiskLevel)}
+                </Typography.Text>
               </span>
             </div>
 

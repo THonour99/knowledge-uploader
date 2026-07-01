@@ -90,7 +90,6 @@ describe("ProfilePage", () => {
     expect(screen.getByText("技术部")).toBeInTheDocument();
     // Role should be displayed in Chinese
     expect(screen.getAllByText("部门管理员").length).toBeGreaterThan(0);
-
   });
 
   it("calls changePassword with correct params and resets form on success", async () => {

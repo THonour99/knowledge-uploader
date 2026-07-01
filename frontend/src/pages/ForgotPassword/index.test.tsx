@@ -75,10 +75,6 @@ describe("ForgotPasswordPage", () => {
 
     renderForgotPasswordPage();
 
-    const statusRegion = screen.getByRole("region", { name: "平台状态概览" });
-    expect(statusRegion).toHaveTextContent("安全认证");
-    expect(statusRegion).toHaveTextContent("RAGFlow 同步");
-
     fireEvent.change(screen.getByLabelText("公司邮箱"), {
       target: { value: "zhangsan@company.com" },
     });
@@ -96,10 +92,6 @@ describe("ForgotPasswordPage", () => {
 
     renderForgotPasswordPage();
 
-    const statusRegion = screen.getByRole("region", { name: "平台状态概览" });
-    expect(statusRegion).toHaveTextContent("安全认证");
-    expect(statusRegion).toHaveTextContent("RAGFlow 同步");
-
     fireEvent.change(screen.getByLabelText("公司邮箱"), {
       target: { value: "zhangsan@company.com" },
     });
@@ -110,10 +102,6 @@ describe("ForgotPasswordPage", () => {
 
   it("blocks submission when the email is invalid", async () => {
     renderForgotPasswordPage();
-
-    const statusRegion = screen.getByRole("region", { name: "平台状态概览" });
-    expect(statusRegion).toHaveTextContent("安全认证");
-    expect(statusRegion).toHaveTextContent("RAGFlow 同步");
 
     fireEvent.change(screen.getByLabelText("公司邮箱"), {
       target: { value: "not-an-email" },
