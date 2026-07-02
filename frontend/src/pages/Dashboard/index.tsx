@@ -84,10 +84,16 @@ function buildTrendOption(points: StatisticsTrendPoint[]): EChartsOption {
 
   return {
     color: [primaryColor, successColor, warningColor],
-    grid: { top: 28, right: 20, bottom: 28, left: 42 },
+    grid: { top: 24, right: 14, bottom: 22, left: 36 },
     tooltip: { trigger: "axis" },
-    legend: { top: 0, right: 0, itemWidth: 10, itemHeight: 10 },
-    animationDuration: 700,
+    legend: {
+      top: 0,
+      right: 0,
+      itemWidth: 8,
+      itemHeight: 8,
+      textStyle: { color: textColor, fontSize: 12 },
+    },
+    animationDuration: 500,
     animationEasing: "cubicOut",
     xAxis: {
       type: "category",
@@ -173,7 +179,7 @@ function UserRankingRow({
       <span className="dashboard-ranking-row__copy">
         <Typography.Text strong>{user.user_name}</Typography.Text>
         <Typography.Text type="secondary">
-          {user.department ?? "未设置"} / {lastUpload}
+          {user.department ?? "未设置"} / {lastUpload} · 占排行 {formatPercent(share)}
         </Typography.Text>
       </span>
       <span className="dashboard-ranking-row__metrics">
@@ -182,9 +188,6 @@ function UserRankingRow({
         <Typography.Text type="secondary">{formatPercent(syncRate, 0)} 同步</Typography.Text>
       </span>
       <span className="dashboard-ranking-row__bar" aria-hidden="true" />
-      <Typography.Text className="dashboard-ranking-row__share" type="secondary">
-        占排行 {formatPercent(share)}
-      </Typography.Text>
     </div>
   );
 }

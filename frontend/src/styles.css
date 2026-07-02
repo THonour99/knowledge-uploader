@@ -2614,3 +2614,24 @@ a {
   border-radius: var(--ku-radius-control);
   font-weight: 600;
 }
+@media (max-width: 640px) {
+  .top-header {
+    gap: 8px;
+    padding: 0 10px;
+  }
+
+  .top-header__context {
+    flex: 1 1 auto;
+    min-width: 0;
+  }
+
+  .top-header__page-title {
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  .top-header__search {
+    display: none;
+  }
+}
