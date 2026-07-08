@@ -207,6 +207,7 @@ async def test_system_admin_reads_all_config_groups_with_seed_items(
     security_items = _items_by_key(await _get_group(config_client, token, "security"))
     assert security_items["security.allowed_email_domains"]["value"] == ["company.com"]
     assert security_items["security.login_max_failed_attempts"]["value"] == 5
+    assert security_items["security.require_email_verification"]["value"] is False
 
     ragflow_items = _items_by_key(await _get_group(config_client, token, "ragflow"))
     api_key_item = ragflow_items["ragflow.api_key"]

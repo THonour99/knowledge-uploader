@@ -14,6 +14,7 @@ from sqlalchemy import (
     String,
     Table,
     Text,
+    delete,
     func,
     or_,
     select,
@@ -158,11 +159,26 @@ class AiRepository:
         )
         return list(result.scalars())
 
+    async def get_prompt_template(self, template_id: uuid.UUID) -> PromptTemplate | None:
+        result = await self._session.execute(
+            select(PromptTemplate).where(PromptTemplate.id == template_id)
+        )
+        return result.scalar_one_or_none()
+
+    async def get_prompt_template_by_key(self, template_key: str) -> PromptTemplate | None:
+        result = await self._session.execute(
+            select(PromptTemplate).where(PromptTemplate.template_key == template_key)
+        )
+        return result.scalar_one_or_none()
+
     async def add_prompt_template(self, template: PromptTemplate) -> PromptTemplate:
         self._session.add(template)
         await self._session.flush()
         await self._session.refresh(template)
         return template
+
+    async def delete_prompt_template(self, template_id: uuid.UUID) -> None:
+        await self._session.execute(delete(PromptTemplate).where(PromptTemplate.id == template_id))
 
     async def list_sensitive_rules(self, *, enabled_only: bool = False) -> list[SensitiveRule]:
         statement = select(SensitiveRule).order_by(
@@ -174,11 +190,20 @@ class AiRepository:
         result = await self._session.execute(statement)
         return list(result.scalars())
 
+    async def get_sensitive_rule(self, rule_id: uuid.UUID) -> SensitiveRule | None:
+        result = await self._session.execute(
+            select(SensitiveRule).where(SensitiveRule.id == rule_id)
+        )
+        return result.scalar_one_or_none()
+
     async def add_sensitive_rule(self, rule: SensitiveRule) -> SensitiveRule:
         self._session.add(rule)
         await self._session.flush()
         await self._session.refresh(rule)
         return rule
+
+    async def delete_sensitive_rule(self, rule_id: uuid.UUID) -> None:
+        await self._session.execute(delete(SensitiveRule).where(SensitiveRule.id == rule_id))
 
     async def increment_sensitive_rule_hits(self, rule_ids: list[uuid.UUID]) -> None:
         if not rule_ids:

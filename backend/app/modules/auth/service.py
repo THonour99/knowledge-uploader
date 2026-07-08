@@ -285,18 +285,6 @@ class AuthService:
                 locked_until=NULL_VALUE,
                 failed_login_count=0,
             )
-        if not user.email_verified or user.status == "pending_email_verification":
-            await self._record_login_audit(
-                user=user,
-                email=normalized_email,
-                success=False,
-                failure_reason="email_not_verified",
-                client_ip=client_ip,
-                user_agent=user_agent,
-                commit=True,
-            )
-            raise exceptions.email_not_verified()
-
         user = await self._user_store.record_verification_state(
             user_id=user.id,
             status="active",
@@ -373,7 +361,7 @@ class AuthService:
             password_hash=hash_password(request.new_password),
             failed_login_count=0,
             locked_until=NULL_VALUE,
-            status="active" if user.email_verified else None,
+            status="active",
         )
         token.used_at = now
         await self._session.commit()

@@ -2,7 +2,7 @@
 
 公司内部知识库文件贡献与 RAGFlow 同步平台。
 
-员工通过 Web 上传文档，平台完成文件校验、去重、可选 AI 分析、管理员审核和 RAGFlow Dataset 同步，最终供钉钉客服机器人检索使用。前端不直接访问 RAGFlow 或 AI Provider，所有外部密钥只在后端和 Worker 环境中使用。
+员工通过 Web 上传文档，平台完成文件校验、去重、可选 AI 分析、管理员审核和 RAGFlow Dataset 同步，最终提供给下游问答服务使用。前端不直接访问 RAGFlow 或 AI Provider，所有外部密钥只在后端和 Worker 环境中使用。
 
 ## 当前交付
 
@@ -10,7 +10,7 @@
 
 - FastAPI 后端、React + TypeScript 前端、Nginx 反向代理。
 - PostgreSQL 16、RabbitMQ、Redis、MinIO、Celery Worker、Outbox Dispatcher、Scheduler 的 Docker Compose 编排。
-- 注册登录、邮箱验证、密码重置、登录锁定、JWT 注销。
+- 注册登录、账号密码登录、密码重置、登录锁定、JWT 注销。
 - 文件上传、白名单校验、MIME 二次校验、去重、MinIO 存储、个人文件列表。
 - 分类与 Dataset 映射、文件审核、RAGFlow 上传任务、重试与取消。
 - AI 配置、默认 Prompt/敏感规则、文档分析状态机。
@@ -99,12 +99,13 @@ Remove-Item Env:\SEED_ADMIN_PASSWORD
 | `/forgot-password` | 公开 | 找回密码 |
 | `/upload` | 登录用户 | 文件上传 |
 | `/my-files` | 登录用户 | 我的文件 |
-| `/dashboard` | 知识库管理员、系统管理员 | 仪表盘 |
-| `/files` | 知识库管理员、系统管理员 | 文件管理与审核 |
+| `/dashboard` | 系统管理员 | 仪表盘 |
+| `/files` | 部门管理员、系统管理员 | 文件管理与审核 |
 | `/datasets` | 系统管理员 | Dataset 配置 |
 | `/ai-config` | 系统管理员 | AI 配置 |
-| `/statistics` | 知识库管理员、系统管理员 | 统计分析 |
+| `/statistics` | 系统管理员 | 统计分析 |
 | `/users` | 系统管理员 | 用户管理 |
+| `/departments` | 系统管理员 | 部门管理 |
 | `/settings` | 系统管理员 | 系统设置占位页 |
 
 前端视觉以 `docs/design/design.md` 和 `docs/design/images/` 为权威参考。

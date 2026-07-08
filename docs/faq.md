@@ -107,7 +107,7 @@ Remove-Item Env:\SEED_ADMIN_PASSWORD
 这些页面需要管理员角色：
 
 - `/datasets`、`/ai-config`、`/users` 需要 `system_admin`；`/settings` 当前是系统设置占位页，也受 `system_admin` 前端路由保护。
-- `/dashboard`、`/files`、`/statistics` 需要 `knowledge_admin` 或 `system_admin`。
+- `/dashboard`、`/statistics` 需要 `system_admin`；`/files` 需要 `dept_admin` 或 `system_admin`，部门管理员按管辖部门隔离。
 - `/upload`、`/my-files` 对登录用户开放。
 
 后端也有对应权限校验，前端路由保护不是唯一防线。

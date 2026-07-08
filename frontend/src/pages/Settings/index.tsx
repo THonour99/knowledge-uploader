@@ -75,7 +75,6 @@ const labelMap: Record<string, string> = {
   "security.password_min_length": "密码最小长度",
   "security.login_max_failed_attempts": "登录失败锁定阈值",
   "security.login_lock_minutes": "锁定时长（分钟）",
-  "security.require_email_verification": "要求邮箱验证",
   "security.require_review_before_sync": "同步前需审核",
   "security.block_critical_sensitive_sync": "阻断严重敏感内容同步",
   // ragflow
@@ -89,6 +88,12 @@ const labelMap: Record<string, string> = {
   "ragflow.delete_remote_on_file_delete": "删除文件时删除远端",
   "ragflow.keep_remote_on_archive": "归档时保留远端",
 };
+
+const hiddenCurrentFlowConfigKeys = new Set(["security.require_email_verification"]);
+
+function visibleConfigItems(items: ConfigItem[]): ConfigItem[] {
+  return items.filter((item) => !hiddenCurrentFlowConfigKeys.has(item.key));
+}
 
 function getLabel(item: ConfigItem): string {
   return labelMap[item.key] ?? item.description ?? item.key;
@@ -176,7 +181,7 @@ const settingsSummaryItems: SettingsSummaryItem[] = [
     key: "security",
     title: "安全审计",
     meta: "强制审计",
-    description: "登录锁定、邮箱验证和敏感阻断",
+    description: "登录锁定、审核和敏感阻断",
     icon: <SafetyCertificateOutlined />,
     tone: "purple",
     status: { kind: "dataset", value: "enabled" },
@@ -569,7 +574,7 @@ function ConfigPanel({ group, cardTitle, dangerConfirm = false }: ConfigPanelPro
   // Populate form when data arrives — use useEffect to avoid calling setFieldsValue during render
   useEffect(() => {
     if (query.data) {
-      form.setFieldsValue(buildInitialValues(query.data.items));
+      form.setFieldsValue(buildInitialValues(visibleConfigItems(query.data.items)));
     }
   }, [form, query.data]);
 
@@ -586,7 +591,7 @@ function ConfigPanel({ group, cardTitle, dangerConfirm = false }: ConfigPanelPro
 
   function handleSave() {
     void form.validateFields().then((values: FormValues) => {
-      const configItems = query.data?.items ?? [];
+      const configItems = visibleConfigItems(query.data?.items ?? []);
       const payload = buildPayload(values, configItems);
 
       if (dangerConfirm) {
@@ -621,7 +626,7 @@ function ConfigPanel({ group, cardTitle, dangerConfirm = false }: ConfigPanelPro
     );
   }
 
-  const items = query.data?.items ?? [];
+  const items = visibleConfigItems(query.data?.items ?? []);
 
   return (
     <Card className="settings-panel" title={cardTitle}>
@@ -669,7 +674,7 @@ function RagflowPanel() {
 
   useEffect(() => {
     if (query.data) {
-      form.setFieldsValue(buildInitialValues(query.data.items));
+      form.setFieldsValue(buildInitialValues(visibleConfigItems(query.data.items)));
     }
   }, [form, query.data]);
 
@@ -696,7 +701,7 @@ function RagflowPanel() {
 
   function handleSave() {
     void form.validateFields().then((values: FormValues) => {
-      const configItems = query.data?.items ?? [];
+      const configItems = visibleConfigItems(query.data?.items ?? []);
       saveMutation.mutate(buildPayload(values, configItems));
     });
   }
@@ -717,7 +722,7 @@ function RagflowPanel() {
     );
   }
 
-  const items = query.data?.items ?? [];
+  const items = visibleConfigItems(query.data?.items ?? []);
 
   return (
     <div className="settings-panel-stack">
@@ -852,14 +857,17 @@ export default function SettingsPage() {
   const loadedGroupCount = overviewResults.filter(({ query }) => Boolean(query.data)).length;
   const hasOverviewError = overviewResults.some(({ query }) => query.isError);
   const hasOverviewLoading = overviewResults.some(({ query }) => query.isLoading);
-  const overviewItems = overviewResults.flatMap(({ query }) => query.data?.items ?? []);
+  const overviewItems = overviewResults.flatMap(({ query }) =>
+    visibleConfigItems(query.data?.items ?? []),
+  );
   const pendingConfigCount = overviewItems.filter(isPendingConfigItem).length;
   const secretConfigCount = overviewItems.filter(
     (item) => item.is_secret || item.value_type === "secret",
   ).length;
   const switchConfigCount = overviewItems.filter((item) => item.value_type === "bool").length;
-  const securityItems =
-    overviewResults.find(({ group }) => group === "security")?.query.data?.items ?? [];
+  const securityItems = visibleConfigItems(
+    overviewResults.find(({ group }) => group === "security")?.query.data?.items ?? [],
+  );
   const enabledSecuritySwitches = securityItems.filter(
     (item) => item.value_type === "bool" && item.value === true,
   ).length;
@@ -889,7 +897,7 @@ export default function SettingsPage() {
         securitySwitchCount > 0
           ? `${enabledSecuritySwitches}/${securitySwitchCount}`
           : `${securityItems.length} 项`,
-      description: "邮箱验证、审核与敏感阻断",
+      description: "登录锁定、审核与敏感阻断",
       icon: <SafetyCertificateOutlined />,
       tone: "purple",
     },
@@ -907,7 +915,7 @@ export default function SettingsPage() {
     }
 
     const result = overviewResults.find(({ group }) => group === item.key);
-    const configItems = result?.query.data?.items ?? [];
+    const configItems = visibleConfigItems(result?.query.data?.items ?? []);
     const groupPendingCount = configItems.filter(isPendingConfigItem).length;
 
     return {

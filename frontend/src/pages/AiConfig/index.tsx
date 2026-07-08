@@ -9,6 +9,7 @@ import {
   Input,
   InputNumber,
   Modal,
+  Popconfirm,
   Progress,
   Select,
   Space,
@@ -20,12 +21,14 @@ import {
 import {
   ApiOutlined,
   ClockCircleOutlined,
+  DeleteOutlined,
   EditOutlined,
   ExperimentOutlined,
   FileTextOutlined,
   PlusOutlined,
   SafetyCertificateOutlined,
   ThunderboltOutlined,
+  UndoOutlined,
 } from "@ant-design/icons";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import type { ColumnsType } from "antd/es/table";
@@ -38,12 +41,23 @@ import {
   type AiProviderConfig,
   type AiProviderPayload,
   type AiProviderTestResult,
+  type AiPromptTemplatePayload,
+  type AiSensitiveRulePayload,
+  type AiSensitiveRuleTestResponse,
   type AiSensitiveRule,
+  createAiPromptTemplate,
   createAiProvider,
+  createAiSensitiveRule,
+  deleteAiPromptTemplate,
+  deleteAiSensitiveRule,
   getAiConfig,
+  restoreAiPromptTemplateDefault,
   testAiProvider,
+  testAiSensitiveRules,
   updateAiFeature,
+  updateAiPromptTemplate,
   updateAiProvider,
+  updateAiSensitiveRule,
 } from "../../api/client";
 import { KpiCard } from "../../components/KpiCard";
 import { StatusTag } from "../../components/StatusTag";
@@ -126,6 +140,16 @@ type ProviderModalState = {
   provider?: AiProviderConfig;
 };
 
+type PromptModalState = {
+  mode: ProviderFormMode;
+  template?: AiPromptTemplate;
+};
+
+type SensitiveRuleModalState = {
+  mode: ProviderFormMode;
+  rule?: AiSensitiveRule;
+};
+
 type AiProviderFormValues = Omit<
   AiProviderPayload,
   "chat_model" | "embedding_model" | "vision_model"
@@ -133,6 +157,25 @@ type AiProviderFormValues = Omit<
   model_kind: ProviderModelKind;
   model_name: string;
 };
+
+interface AiPromptTemplateFormValues {
+  template_key: string;
+  name: string;
+  description?: string;
+  prompt_text: string;
+  variables?: string;
+  enabled: boolean;
+}
+
+interface AiSensitiveRuleFormValues {
+  name: string;
+  rule_type: "keyword" | "regex";
+  pattern?: string;
+  keywords?: string;
+  risk_level: "low" | "medium" | "high" | "critical";
+  action: "flag" | "require_review" | "block_sync";
+  enabled: boolean;
+}
 
 const providerModelKindLabels: Record<ProviderModelKind, string> = {
   chat: "对话",
@@ -171,9 +214,53 @@ const providerDefaultValues: AiProviderFormValues = {
   top_p: null,
 };
 
+const promptDefaultValues: AiPromptTemplateFormValues = {
+  template_key: "",
+  name: "",
+  description: "",
+  prompt_text: "",
+  variables: "",
+  enabled: true,
+};
+
+const sensitiveRuleDefaultValues: AiSensitiveRuleFormValues = {
+  name: "",
+  rule_type: "keyword",
+  pattern: "",
+  keywords: "",
+  risk_level: "medium",
+  action: "require_review",
+  enabled: true,
+};
+
+const sensitiveRuleTypeOptions = [
+  { label: "关键词", value: "keyword" },
+  { label: "正则表达式", value: "regex" },
+];
+
+const sensitiveRiskOptions = [
+  { label: "低风险", value: "low" },
+  { label: "中风险", value: "medium" },
+  { label: "高风险", value: "high" },
+  { label: "严重风险", value: "critical" },
+];
+
+const sensitiveActionOptions = [
+  { label: "仅标记", value: "flag" },
+  { label: "进入敏感审核", value: "require_review" },
+  { label: "阻断同步", value: "block_sync" },
+];
+
 function optionalText(value?: string | null): string | null {
   const cleaned = value?.trim();
   return cleaned ? cleaned : null;
+}
+
+function splitList(value?: string | null): string[] {
+  return (value ?? "")
+    .split(/[,，\n]/)
+    .map((item) => item.trim())
+    .filter(Boolean);
 }
 
 function optionalNumber(value?: number | null): number | null {
@@ -322,6 +409,64 @@ function providerPayloadFromValues(values: AiProviderFormValues): AiProviderPayl
   }
 
   return payload;
+}
+
+function promptFormValues(template?: AiPromptTemplate): AiPromptTemplateFormValues {
+  if (!template) {
+    return { ...promptDefaultValues };
+  }
+  return {
+    template_key: template.template_key,
+    name: template.name,
+    description: template.description ?? "",
+    prompt_text: template.prompt_text,
+    variables: template.variables.join(", "),
+    enabled: template.enabled,
+  };
+}
+
+function promptPayloadFromValues(
+  values: AiPromptTemplateFormValues,
+  mode: ProviderFormMode,
+): AiPromptTemplatePayload {
+  const payload: AiPromptTemplatePayload = {
+    name: values.name.trim(),
+    description: optionalText(values.description),
+    prompt_text: values.prompt_text.trim(),
+    variables: splitList(values.variables),
+    enabled: Boolean(values.enabled),
+  };
+  if (mode === "create") {
+    payload.template_key = values.template_key.trim();
+  }
+  return payload;
+}
+
+function sensitiveRuleFormValues(rule?: AiSensitiveRule): AiSensitiveRuleFormValues {
+  if (!rule) {
+    return { ...sensitiveRuleDefaultValues };
+  }
+  return {
+    name: rule.name,
+    rule_type: rule.rule_type === "regex" ? "regex" : "keyword",
+    pattern: rule.pattern ?? "",
+    keywords: rule.keywords.join(", "),
+    risk_level: rule.risk_level as AiSensitiveRuleFormValues["risk_level"],
+    action: rule.action as AiSensitiveRuleFormValues["action"],
+    enabled: rule.enabled,
+  };
+}
+
+function sensitiveRulePayloadFromValues(values: AiSensitiveRuleFormValues): AiSensitiveRulePayload {
+  return {
+    name: values.name.trim(),
+    rule_type: values.rule_type,
+    pattern: values.rule_type === "regex" ? optionalText(values.pattern) : null,
+    keywords: values.rule_type === "keyword" ? splitList(values.keywords) : [],
+    risk_level: values.risk_level,
+    action: values.action,
+    enabled: Boolean(values.enabled),
+  };
 }
 
 function countEnabled(items: Array<{ enabled: boolean }>): number {
@@ -758,6 +903,264 @@ function ProviderFormModal({
   );
 }
 
+function PromptTemplateFormModal({
+  open,
+  mode,
+  template,
+  confirmLoading,
+  onCancel,
+  onSubmit,
+}: {
+  open: boolean;
+  mode: ProviderFormMode;
+  template?: AiPromptTemplate;
+  confirmLoading?: boolean;
+  onCancel: () => void;
+  onSubmit: (payload: AiPromptTemplatePayload) => void;
+}) {
+  const [form] = Form.useForm<AiPromptTemplateFormValues>();
+
+  useEffect(() => {
+    if (open) {
+      form.setFieldsValue(promptFormValues(template));
+    } else {
+      form.resetFields();
+    }
+  }, [form, open, template]);
+
+  return (
+    <Modal
+      title={mode === "create" ? "新增 Prompt 模板" : "编辑 Prompt 模板"}
+      open={open}
+      width={760}
+      okText={mode === "create" ? "创建" : "保存"}
+      cancelText="取消"
+      confirmLoading={confirmLoading}
+      onCancel={onCancel}
+      onOk={() => form.submit()}
+    >
+      <Form<AiPromptTemplateFormValues>
+        form={form}
+        layout="vertical"
+        requiredMark={false}
+        onFinish={(values) => onSubmit(promptPayloadFromValues(values, mode))}
+      >
+        <div className="ai-provider-form-grid">
+          <Form.Item
+            label="模板 Key"
+            name="template_key"
+            rules={[{ required: true, whitespace: true, message: "请输入模板 Key" }]}
+            extra="创建后不可修改，仅支持字母、数字、下划线和短横线。"
+          >
+            <Input disabled={mode === "edit"} placeholder="custom_summary" />
+          </Form.Item>
+          <Form.Item
+            label="模板名称"
+            name="name"
+            rules={[{ required: true, whitespace: true, message: "请输入模板名称" }]}
+          >
+            <Input placeholder="文档摘要" />
+          </Form.Item>
+          <Form.Item className="ai-provider-form-grid__wide" label="说明" name="description">
+            <Input placeholder="给审核人员使用的摘要模板" />
+          </Form.Item>
+          <Form.Item
+            className="ai-provider-form-grid__wide"
+            label="Prompt 内容"
+            name="prompt_text"
+            rules={[{ required: true, whitespace: true, message: "请输入 Prompt 内容" }]}
+          >
+            <Input.TextArea rows={7} placeholder="请总结文档核心内容：{text}" />
+          </Form.Item>
+          <Form.Item
+            className="ai-provider-form-grid__wide"
+            label="变量"
+            name="variables"
+            extra="用逗号或换行分隔，例如：text, categories。"
+          >
+            <Input.TextArea rows={2} placeholder="text, categories" />
+          </Form.Item>
+          <Form.Item label="启用模板" name="enabled" valuePropName="checked">
+            <Switch />
+          </Form.Item>
+        </div>
+      </Form>
+    </Modal>
+  );
+}
+
+function SensitiveRuleFormModal({
+  open,
+  mode,
+  rule,
+  confirmLoading,
+  onCancel,
+  onSubmit,
+}: {
+  open: boolean;
+  mode: ProviderFormMode;
+  rule?: AiSensitiveRule;
+  confirmLoading?: boolean;
+  onCancel: () => void;
+  onSubmit: (payload: AiSensitiveRulePayload) => void;
+}) {
+  const [form] = Form.useForm<AiSensitiveRuleFormValues>();
+  const ruleType = Form.useWatch("rule_type", form) ?? "keyword";
+
+  useEffect(() => {
+    if (open) {
+      form.setFieldsValue(sensitiveRuleFormValues(rule));
+    } else {
+      form.resetFields();
+    }
+  }, [form, open, rule]);
+
+  return (
+    <Modal
+      title={mode === "create" ? "新增敏感规则" : "编辑敏感规则"}
+      open={open}
+      width={720}
+      okText={mode === "create" ? "创建" : "保存"}
+      cancelText="取消"
+      confirmLoading={confirmLoading}
+      onCancel={onCancel}
+      onOk={() => form.submit()}
+    >
+      <Form<AiSensitiveRuleFormValues>
+        form={form}
+        layout="vertical"
+        requiredMark={false}
+        onFinish={(values) => onSubmit(sensitiveRulePayloadFromValues(values))}
+      >
+        <div className="ai-provider-form-grid">
+          <Form.Item
+            label="规则名称"
+            name="name"
+            rules={[{ required: true, whitespace: true, message: "请输入规则名称" }]}
+          >
+            <Input placeholder="客户机密编号" />
+          </Form.Item>
+          <Form.Item
+            label="匹配类型"
+            name="rule_type"
+            rules={[{ required: true, message: "请选择匹配类型" }]}
+          >
+            <Select options={sensitiveRuleTypeOptions} />
+          </Form.Item>
+          {ruleType === "regex" ? (
+            <Form.Item
+              className="ai-provider-form-grid__wide"
+              label="正则表达式"
+              name="pattern"
+              rules={[{ required: true, whitespace: true, message: "请输入正则表达式" }]}
+            >
+              <Input.TextArea rows={3} placeholder="客户\\d{4}" />
+            </Form.Item>
+          ) : (
+            <Form.Item
+              className="ai-provider-form-grid__wide"
+              label="关键词"
+              name="keywords"
+              rules={[{ required: true, whitespace: true, message: "请输入关键词" }]}
+              extra="用逗号或换行分隔，至少填写一个关键词。"
+            >
+              <Input.TextArea rows={3} placeholder="密钥, 客户机密编号" />
+            </Form.Item>
+          )}
+          <Form.Item
+            label="风险等级"
+            name="risk_level"
+            rules={[{ required: true, message: "请选择风险等级" }]}
+          >
+            <Select options={sensitiveRiskOptions} />
+          </Form.Item>
+          <Form.Item
+            label="处理方式"
+            name="action"
+            rules={[{ required: true, message: "请选择处理方式" }]}
+          >
+            <Select options={sensitiveActionOptions} />
+          </Form.Item>
+          <Form.Item label="启用规则" name="enabled" valuePropName="checked">
+            <Switch />
+          </Form.Item>
+        </div>
+      </Form>
+    </Modal>
+  );
+}
+
+function SensitiveRuleTestModal({
+  open,
+  result,
+  confirmLoading,
+  onCancel,
+  onSubmit,
+}: {
+  open: boolean;
+  result?: AiSensitiveRuleTestResponse | null;
+  confirmLoading?: boolean;
+  onCancel: () => void;
+  onSubmit: (text: string) => void;
+}) {
+  const [form] = Form.useForm<{ text: string }>();
+
+  useEffect(() => {
+    if (!open) {
+      form.resetFields();
+    }
+  }, [form, open]);
+
+  return (
+    <Modal
+      title="测试敏感规则"
+      open={open}
+      width={720}
+      okText="测试"
+      cancelText="关闭"
+      confirmLoading={confirmLoading}
+      onCancel={onCancel}
+      onOk={() => form.submit()}
+    >
+      <Form<{ text: string }>
+        form={form}
+        layout="vertical"
+        requiredMark={false}
+        onFinish={(values) => onSubmit(values.text)}
+      >
+        <Form.Item
+          label="测试文本"
+          name="text"
+          rules={[{ required: true, whitespace: true, message: "请输入测试文本" }]}
+        >
+          <Input.TextArea rows={6} placeholder="输入一段文档内容，检查当前启用规则命中情况。" />
+        </Form.Item>
+      </Form>
+      {result ? (
+        <div className="ai-sensitive-test-result">
+          <Typography.Text strong>命中结果</Typography.Text>
+          {result.hits.length > 0 ? (
+            result.hits.map((hit) => (
+              <div className="ai-sensitive-test-hit" key={`${hit.rule_id}-${hit.match}`}>
+                <span>
+                  <Typography.Text strong>{hit.rule_name}</Typography.Text>
+                  <Typography.Text type="secondary">命中：{hit.match}</Typography.Text>
+                </span>
+                <Space size={6}>
+                  <StatusTag kind="risk" value={hit.risk_level} />
+                  <Typography.Text>{ruleActionLabels[hit.action] ?? hit.action}</Typography.Text>
+                </Space>
+              </div>
+            ))
+          ) : (
+            <Typography.Text type="secondary">未命中任何启用规则。</Typography.Text>
+          )}
+        </div>
+      ) : null}
+    </Modal>
+  );
+}
+
 function ProvidersPanel({
   providers,
   allowExternalLlm,
@@ -949,7 +1352,19 @@ function ProvidersPanel({
   );
 }
 
-function PromptTemplatesPanel({ templates }: { templates: AiPromptTemplate[] }) {
+function PromptTemplatesPanel({
+  templates,
+  onCreate,
+  onEdit,
+  onRestore,
+  onDelete,
+}: {
+  templates: AiPromptTemplate[];
+  onCreate: () => void;
+  onEdit: (template: AiPromptTemplate) => void;
+  onRestore: (template: AiPromptTemplate) => void;
+  onDelete: (template: AiPromptTemplate) => void;
+}) {
   const columns: ColumnsType<AiPromptTemplate> = [
     {
       title: "模板名称",
@@ -980,9 +1395,21 @@ function PromptTemplatesPanel({ templates }: { templates: AiPromptTemplate[] }) 
       title: "说明",
       dataIndex: "description",
       key: "description",
+      width: 220,
       render: (value?: string | null) => (
         <Typography.Text className="single-line-text" title={value ?? "-"}>
           {value ?? "-"}
+        </Typography.Text>
+      ),
+    },
+    {
+      title: "Prompt",
+      dataIndex: "prompt_text",
+      key: "prompt_text",
+      width: 260,
+      render: (value: string) => (
+        <Typography.Text className="single-line-text" title={value}>
+          {value}
         </Typography.Text>
       ),
     },
@@ -1019,6 +1446,39 @@ function PromptTemplatesPanel({ templates }: { templates: AiPromptTemplate[] }) 
       width: 150,
       render: formatDateTime,
     },
+    {
+      title: "操作",
+      key: "actions",
+      width: 230,
+      fixed: "right",
+      render: (_, record) => (
+        <Space size={8}>
+          <Button icon={<EditOutlined />} onClick={() => onEdit(record)}>
+            编辑
+          </Button>
+          {record.is_default ? (
+            <Button icon={<UndoOutlined />} onClick={() => onRestore(record)}>
+              恢复默认
+            </Button>
+          ) : null}
+          <Popconfirm
+            title={record.is_default ? "停用默认模板" : "删除模板"}
+            description={
+              record.is_default
+                ? "默认模板会被停用，不会物理删除。"
+                : "删除后该自定义模板将不再可用。"
+            }
+            okText={record.is_default ? "停用" : "删除"}
+            cancelText="取消"
+            onConfirm={() => onDelete(record)}
+          >
+            <Button icon={<DeleteOutlined />} danger>
+              {record.is_default ? "停用" : "删除"}
+            </Button>
+          </Popconfirm>
+        </Space>
+      ),
+    },
   ];
 
   const enabledTemplates = countEnabled(templates);
@@ -1036,7 +1496,12 @@ function PromptTemplatesPanel({ templates }: { templates: AiPromptTemplate[] }) 
             个启用
           </Typography.Text>
         </span>
-        <StatusTag kind="health" value={defaultTemplates > 0 ? "ok" : "unknown"} variant="dot" />
+        <Space size={8}>
+          <StatusTag kind="health" value={defaultTemplates > 0 ? "ok" : "unknown"} variant="dot" />
+          <Button type="primary" icon={<PlusOutlined />} onClick={onCreate}>
+            新增模板
+          </Button>
+        </Space>
       </div>
       <Table<AiPromptTemplate>
         rowKey="id"
@@ -1044,13 +1509,25 @@ function PromptTemplatesPanel({ templates }: { templates: AiPromptTemplate[] }) 
         dataSource={templates}
         locale={{ emptyText: "暂无 Prompt 模板" }}
         pagination={{ pageSize: 10, showSizeChanger: false }}
-        scroll={{ x: 980 }}
+        scroll={{ x: 1260 }}
       />
     </Card>
   );
 }
 
-function SensitiveRulesPanel({ rules }: { rules: AiSensitiveRule[] }) {
+function SensitiveRulesPanel({
+  rules,
+  onCreate,
+  onEdit,
+  onDelete,
+  onTest,
+}: {
+  rules: AiSensitiveRule[];
+  onCreate: () => void;
+  onEdit: (rule: AiSensitiveRule) => void;
+  onDelete: (rule: AiSensitiveRule) => void;
+  onTest: () => void;
+}) {
   const columns: ColumnsType<AiSensitiveRule> = [
     {
       title: "规则名称",
@@ -1072,6 +1549,20 @@ function SensitiveRulesPanel({ rules }: { rules: AiSensitiveRule[] }) {
           </span>
         </span>
       ),
+    },
+    {
+      title: "匹配内容",
+      key: "matcher",
+      width: 220,
+      render: (_, record) => {
+        const value =
+          record.rule_type === "regex" ? (record.pattern ?? "-") : record.keywords.join(", ");
+        return (
+          <Typography.Text className="single-line-text" title={value}>
+            {value || "-"}
+          </Typography.Text>
+        );
+      },
     },
     {
       title: "风险等级",
@@ -1110,6 +1601,30 @@ function SensitiveRulesPanel({ rules }: { rules: AiSensitiveRule[] }) {
       width: 150,
       render: formatDateTime,
     },
+    {
+      title: "操作",
+      key: "actions",
+      width: 180,
+      fixed: "right",
+      render: (_, record) => (
+        <Space size={8}>
+          <Button icon={<EditOutlined />} onClick={() => onEdit(record)}>
+            编辑
+          </Button>
+          <Popconfirm
+            title="删除敏感规则"
+            description="删除后该规则将立即停止参与检测。"
+            okText="删除"
+            cancelText="取消"
+            onConfirm={() => onDelete(record)}
+          >
+            <Button icon={<DeleteOutlined />} danger>
+              删除
+            </Button>
+          </Popconfirm>
+        </Space>
+      ),
+    },
   ];
 
   const enabledRules = countEnabled(rules);
@@ -1127,7 +1642,15 @@ function SensitiveRulesPanel({ rules }: { rules: AiSensitiveRule[] }) {
             次累计命中
           </Typography.Text>
         </span>
-        <StatusTag kind="risk" value={ruleHits > 0 ? "high" : "low"} variant="dot" />
+        <Space size={8}>
+          <StatusTag kind="risk" value={ruleHits > 0 ? "high" : "low"} variant="dot" />
+          <Button icon={<ExperimentOutlined />} onClick={onTest}>
+            测试规则
+          </Button>
+          <Button type="primary" icon={<PlusOutlined />} onClick={onCreate}>
+            新增规则
+          </Button>
+        </Space>
       </div>
       <Table<AiSensitiveRule>
         rowKey="id"
@@ -1135,7 +1658,7 @@ function SensitiveRulesPanel({ rules }: { rules: AiSensitiveRule[] }) {
         dataSource={rules}
         locale={{ emptyText: "暂无敏感规则" }}
         pagination={{ pageSize: 10, showSizeChanger: false }}
-        scroll={{ x: 860 }}
+        scroll={{ x: 1120 }}
       />
     </Card>
   );
@@ -1145,6 +1668,13 @@ export default function AiConfigPage() {
   const { message } = AntdApp.useApp();
   const queryClient = useQueryClient();
   const [providerModal, setProviderModal] = useState<ProviderModalState | null>(null);
+  const [promptModal, setPromptModal] = useState<PromptModalState | null>(null);
+  const [sensitiveRuleModal, setSensitiveRuleModal] = useState<SensitiveRuleModalState | null>(
+    null,
+  );
+  const [sensitiveTestOpen, setSensitiveTestOpen] = useState(false);
+  const [sensitiveTestResult, setSensitiveTestResult] =
+    useState<AiSensitiveRuleTestResponse | null>(null);
 
   const configQuery = useQuery({
     queryKey: aiConfigQueryKey,
@@ -1209,6 +1739,105 @@ export default function AiConfigPage() {
     },
   });
 
+  const createPromptMutation = useMutation({
+    mutationFn: createAiPromptTemplate,
+    onSuccess: async () => {
+      message.success("Prompt 模板已创建");
+      setPromptModal(null);
+      await refreshConfig();
+    },
+    onError: (error) => {
+      message.error(error.message);
+    },
+  });
+
+  const updatePromptMutation = useMutation({
+    mutationFn: ({
+      templateId,
+      payload,
+    }: {
+      templateId: string;
+      payload: AiPromptTemplatePayload;
+    }) => updateAiPromptTemplate(templateId, payload),
+    onSuccess: async () => {
+      message.success("Prompt 模板已更新");
+      setPromptModal(null);
+      await refreshConfig();
+    },
+    onError: (error) => {
+      message.error(error.message);
+    },
+  });
+
+  const restorePromptMutation = useMutation({
+    mutationFn: (template: AiPromptTemplate) => restoreAiPromptTemplateDefault(template.id),
+    onSuccess: async () => {
+      message.success("Prompt 模板已恢复默认");
+      await refreshConfig();
+    },
+    onError: (error) => {
+      message.error(error.message);
+    },
+  });
+
+  const deletePromptMutation = useMutation({
+    mutationFn: (template: AiPromptTemplate) => deleteAiPromptTemplate(template.id),
+    onSuccess: async (_, template) => {
+      message.success(template.is_default ? "默认模板已停用" : "Prompt 模板已删除");
+      await refreshConfig();
+    },
+    onError: (error) => {
+      message.error(error.message);
+    },
+  });
+
+  const createSensitiveRuleMutation = useMutation({
+    mutationFn: createAiSensitiveRule,
+    onSuccess: async () => {
+      message.success("敏感规则已创建");
+      setSensitiveRuleModal(null);
+      await refreshConfig();
+    },
+    onError: (error) => {
+      message.error(error.message);
+    },
+  });
+
+  const updateSensitiveRuleMutation = useMutation({
+    mutationFn: ({ ruleId, payload }: { ruleId: string; payload: AiSensitiveRulePayload }) =>
+      updateAiSensitiveRule(ruleId, payload),
+    onSuccess: async () => {
+      message.success("敏感规则已更新");
+      setSensitiveRuleModal(null);
+      await refreshConfig();
+    },
+    onError: (error) => {
+      message.error(error.message);
+    },
+  });
+
+  const deleteSensitiveRuleMutation = useMutation({
+    mutationFn: (rule: AiSensitiveRule) => deleteAiSensitiveRule(rule.id),
+    onSuccess: async () => {
+      message.success("敏感规则已删除");
+      await refreshConfig();
+    },
+    onError: (error) => {
+      message.error(error.message);
+    },
+  });
+
+  const testSensitiveRuleMutation = useMutation({
+    mutationFn: testAiSensitiveRules,
+    onSuccess: (result) => {
+      setSensitiveTestResult(result);
+      message.success(result.hits.length > 0 ? "测试完成，存在命中" : "测试完成，未命中规则");
+    },
+    onError: (error) => {
+      message.error(error.message);
+    },
+  });
+
   const submitProvider = (payload: AiProviderPayload) => {
     if (providerModal?.mode === "edit" && providerModal.provider) {
       updateProviderMutation.mutate({ providerId: providerModal.provider.id, payload });
@@ -1216,6 +1845,22 @@ export default function AiConfigPage() {
     }
 
     createProviderMutation.mutate(payload);
+  };
+
+  const submitPromptTemplate = (payload: AiPromptTemplatePayload) => {
+    if (promptModal?.mode === "edit" && promptModal.template) {
+      updatePromptMutation.mutate({ templateId: promptModal.template.id, payload });
+      return;
+    }
+    createPromptMutation.mutate(payload);
+  };
+
+  const submitSensitiveRule = (payload: AiSensitiveRulePayload) => {
+    if (sensitiveRuleModal?.mode === "edit" && sensitiveRuleModal.rule) {
+      updateSensitiveRuleMutation.mutate({ ruleId: sensitiveRuleModal.rule.id, payload });
+      return;
+    }
+    createSensitiveRuleMutation.mutate(payload);
   };
 
   const config = configQuery.data;
@@ -1298,12 +1943,31 @@ export default function AiConfigPage() {
               {
                 key: "prompts",
                 label: "Prompt 模板",
-                children: <PromptTemplatesPanel templates={config.prompt_templates} />,
+                children: (
+                  <PromptTemplatesPanel
+                    templates={config.prompt_templates}
+                    onCreate={() => setPromptModal({ mode: "create" })}
+                    onEdit={(template) => setPromptModal({ mode: "edit", template })}
+                    onRestore={(template) => restorePromptMutation.mutate(template)}
+                    onDelete={(template) => deletePromptMutation.mutate(template)}
+                  />
+                ),
               },
               {
                 key: "rules",
                 label: "敏感规则",
-                children: <SensitiveRulesPanel rules={config.sensitive_rules} />,
+                children: (
+                  <SensitiveRulesPanel
+                    rules={config.sensitive_rules}
+                    onCreate={() => setSensitiveRuleModal({ mode: "create" })}
+                    onEdit={(rule) => setSensitiveRuleModal({ mode: "edit", rule })}
+                    onDelete={(rule) => deleteSensitiveRuleMutation.mutate(rule)}
+                    onTest={() => {
+                      setSensitiveTestResult(null);
+                      setSensitiveTestOpen(true);
+                    }}
+                  />
+                ),
               },
             ]}
           />
@@ -1321,6 +1985,35 @@ export default function AiConfigPage() {
           onSubmit={submitProvider}
         />
       ) : null}
+      {promptModal ? (
+        <PromptTemplateFormModal
+          open
+          mode={promptModal.mode}
+          template={promptModal.template}
+          confirmLoading={createPromptMutation.isPending || updatePromptMutation.isPending}
+          onCancel={() => setPromptModal(null)}
+          onSubmit={submitPromptTemplate}
+        />
+      ) : null}
+      {sensitiveRuleModal ? (
+        <SensitiveRuleFormModal
+          open
+          mode={sensitiveRuleModal.mode}
+          rule={sensitiveRuleModal.rule}
+          confirmLoading={
+            createSensitiveRuleMutation.isPending || updateSensitiveRuleMutation.isPending
+          }
+          onCancel={() => setSensitiveRuleModal(null)}
+          onSubmit={submitSensitiveRule}
+        />
+      ) : null}
+      <SensitiveRuleTestModal
+        open={sensitiveTestOpen}
+        result={sensitiveTestResult}
+        confirmLoading={testSensitiveRuleMutation.isPending}
+        onCancel={() => setSensitiveTestOpen(false)}
+        onSubmit={(text) => testSensitiveRuleMutation.mutate(text)}
+      />
     </PageContainer>
   );
 }

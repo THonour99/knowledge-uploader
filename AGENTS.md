@@ -4,7 +4,7 @@
 
 ## 1. 项目一句话
 
-公司员工通过 Web 上传文档 → 校验/去重/可选 AI 分析 → 管理员审核 → 同步到 RAGFlow → 喂给钉钉客服机器人。
+公司员工通过 Web 上传文档 → 校验/去重/可选 AI 分析 → 管理员审核 → 同步到 RAGFlow Dataset → 提供给下游问答服务。
 
 ## 2. 必读文档（按优先级）
 
@@ -84,7 +84,7 @@ modules/<module>/
 - 密码：Argon2id（`argon2-cffi`）
 - JWT：HS256，secret 至少 32 字节随机；过期 24h（可配）
 - API Key 字段级加密：Fernet（key 从环境变量 `ENCRYPTION_KEY` 加载）
-- 邮箱验证 token / 重置密码 token：入库前 SHA256 hash，原文只在邮件中出现一次
+- 邮箱验证 token（兼容能力）/ 重置密码 token：入库前 SHA256 hash，原文只在邮件中出现一次
 - 文件上传：扩展名白名单 + `filetype` 二次校验 + 文件名清洗 + 大小限制
 - 限流：登录失败 5 次锁 15 分钟；上传 10 次/分钟/用户
 - 日志中所有 API Key 字段统一脱敏为 `sk-****abcd`
@@ -130,7 +130,7 @@ type(scope):中文描述
 ### 示例
 
 ```text
-feat(auth): 添加邮箱验证流程
+feat(auth): 添加账号登录流程
 fix(document): 修复连续 5 次失败登录未锁定的问题
 refactor(ragflow): 把 RagflowClient 拆分为接口与实现
 docs(spark): 添加 P0 实施补充 spec v1.1

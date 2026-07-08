@@ -487,11 +487,27 @@ async def test_statistics_failures_export_and_permission(
         email="stats-employee@company.com",
         password="password123",
     )
+    await _create_user(
+        email="stats-dept-admin@company.com",
+        password="password123",
+        name="部门管理员",
+        department="研发中心",
+        role="dept_admin",
+    )
+    dept_admin_token = await _login(
+        statistics_client,
+        email="stats-dept-admin@company.com",
+        password="password123",
+    )
     admin_headers = {"Authorization": f"Bearer {admin_token}"}
 
     denied_response = await statistics_client.get(
         "/api/admin/statistics/overview",
         headers={"Authorization": f"Bearer {employee_token}"},
+    )
+    dept_admin_denied_response = await statistics_client.get(
+        "/api/admin/statistics/overview",
+        headers={"Authorization": f"Bearer {dept_admin_token}"},
     )
     failures_response = await statistics_client.get(
         "/api/admin/statistics/failures",
@@ -505,6 +521,8 @@ async def test_statistics_failures_export_and_permission(
 
     assert denied_response.status_code == 403
     assert denied_response.json()["error_code"] == "PERMISSION_DENIED"
+    assert dept_admin_denied_response.status_code == 403
+    assert dept_admin_denied_response.json()["error_code"] == "PERMISSION_DENIED"
 
     assert failures_response.status_code == 200
     failures = failures_response.json()["data"]

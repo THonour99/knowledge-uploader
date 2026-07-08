@@ -1,0 +1,72 @@
+.departments-kpi-grid {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: var(--ku-spacing-section);
+  margin-bottom: var(--ku-spacing-section);
+}
+
+.departments-kpi-grid .kpi-card .ant-card-body {
+  min-height: 104px;
+}
+
+.departments-panel {
+  border-color: var(--ku-border);
+  border-radius: var(--ku-radius-card);
+}
+
+.departments-toolbar {
+  display: flex;
+  gap: 12px;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 16px;
+}
+
+.departments-search {
+  width: min(320px, 64vw);
+}
+
+.departments-status-filter {
+  width: 140px;
+}
+
+.departments-name-icon {
+  color: var(--ku-color-primary);
+}
+
+.departments-name-cell {
+  display: inline-grid;
+  min-width: 0;
+  gap: 2px;
+}
+
+.departments-name-cell .ant-typography {
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+.departments-form {
+  padding-top: 8px;
+}
+
+@media (max-width: 1180px) {
+  .departments-kpi-grid {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .departments-toolbar {
+    align-items: stretch;
+    flex-direction: column;
+  }
+}
+
+@media (max-width: 640px) {
+  .departments-kpi-grid {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .departments-search,
+  .departments-status-filter {
+    width: 100%;
+  }
+}

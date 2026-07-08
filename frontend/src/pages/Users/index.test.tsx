@@ -16,6 +16,7 @@ import {
   listDepartments,
   replaceManagedDepartments,
   resetUserPassword,
+  setUserDepartment,
 } from "../../api/client";
 import type * as ApiClientModule from "../../api/client";
 import { themeCssVariables } from "../../theme/tokens";
@@ -33,6 +34,7 @@ vi.mock("../../api/client", async () => {
     listDepartments: vi.fn(),
     getManagedDepartments: vi.fn(),
     replaceManagedDepartments: vi.fn(),
+    setUserDepartment: vi.fn(),
   };
 });
 
@@ -149,10 +151,10 @@ describe("UsersPage", () => {
     expect(governance).toHaveTextContent("账号治理状态");
     expect(governance).toHaveTextContent("2 个正常账号");
     expect(governance).toHaveTextContent("当前视图 3 个账号，平台共 3 条");
-    expect(governance).toHaveTextContent("0 个待激活");
-    expect(governance).toHaveTextContent("邮箱验证完成 2/3");
+    expect(governance).toHaveTextContent("3 个已归属");
+    expect(governance).toHaveTextContent("当前视图 3 个账号可维护所属部门");
     expect(governance).toHaveTextContent("1 个部门管理员");
-    expect(governance).toHaveTextContent("1 个已配置管辖部门");
+    expect(governance).toHaveTextContent("管辖部门在详情弹窗中按后端返回回显");
     expect(governance).toHaveTextContent("1 个禁用/锁定");
     expect(governance).toHaveTextContent("当前列表未应用筛选条件");
 
@@ -160,7 +162,7 @@ describe("UsersPage", () => {
     expect(screen.getByText("当前显示 3 个账号，共 3 条记录，1 个需处理")).toBeInTheDocument();
     const roleOverview = screen.getByRole("region", { name: "角色权限概览" });
     expect(roleOverview).toHaveTextContent("当前页 3 个账号");
-    expect(roleOverview).toHaveTextContent("部门管理员覆盖 1/1");
+    expect(roleOverview).toHaveTextContent("1 个部门管理员");
     expect(screen.getAllByText("1 人")).toHaveLength(3);
 
     // Role labels
@@ -342,6 +344,68 @@ describe("UsersPage", () => {
 
     await waitFor(() => {
       expect(replaceManagedDepartments).toHaveBeenCalledWith("user-002", ["dept-support"]);
+    });
+  });
+
+  it("updates a user's assigned department", async () => {
+    const departments: DepartmentListResponse = {
+      items: [
+        {
+          id: "dept-support",
+          name: "技术支持部",
+          code: "support",
+          status: "active",
+          created_at: "2026-06-01T00:00:00Z",
+          updated_at: "2026-06-01T00:00:00Z",
+        },
+        {
+          id: "dept-hr",
+          name: "人事行政部",
+          code: "hr",
+          status: "active",
+          created_at: "2026-06-01T00:00:00Z",
+          updated_at: "2026-06-01T00:00:00Z",
+        },
+      ],
+      total: 2,
+    };
+    vi.mocked(listAdminUsers).mockResolvedValue(mockUsersResponse);
+    vi.mocked(listDepartments).mockResolvedValue(departments);
+    vi.mocked(setUserDepartment).mockResolvedValue({
+      id: mockUser1.id,
+      name: mockUser1.name,
+      email: mockUser1.email,
+      role: mockUser1.role,
+      status: mockUser1.status,
+      email_verified: mockUser1.email_verified,
+      department_id: "dept-hr",
+      department_name: "人事行政部",
+      department_code: "hr",
+      department: "人事行政部",
+      phone: null,
+    });
+
+    renderWithProviders(<UsersPage />);
+
+    await screen.findByText("张维");
+    const departmentButtons = screen.getAllByRole("button", { name: "所属部门" });
+    fireEvent.click(departmentButtons[0]);
+
+    expect(await screen.findByText("编辑所属部门")).toBeInTheDocument();
+    await waitFor(() => {
+      expect(listDepartments).toHaveBeenCalledWith({ page_size: 200 });
+    });
+
+    const selector = document.querySelector(".ant-modal .ant-select-selector") as HTMLElement;
+    fireEvent.mouseDown(selector);
+    const hrOption = await screen.findByTitle("人事行政部 (hr)");
+    fireEvent.click(hrOption);
+
+    const okButton = document.querySelector(".ant-modal-footer .ant-btn-primary") as HTMLElement;
+    fireEvent.click(okButton);
+
+    await waitFor(() => {
+      expect(setUserDepartment).toHaveBeenCalledWith("user-001", "dept-hr");
     });
   });
 

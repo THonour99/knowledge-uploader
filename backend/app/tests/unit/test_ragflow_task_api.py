@@ -1360,7 +1360,7 @@ async def test_ragflow_upload_worker_blocks_critical_sensitive_file_before_exter
                     {
                         "rule_name": "生产环境凭据",
                         "risk_level": "critical",
-                        "action": "block_sync",
+                        "action": "flag",
                     }
                 ],
             )
@@ -1441,7 +1441,8 @@ async def test_ragflow_upload_worker_allows_critical_file_when_block_config_disa
         task_id = await create_ragflow_upload_sync_task(session=session, file_id=file_id)
         await session.commit()
 
-    # 管理员显式关闭 critical 阻断后, critical 文件允许同步
+    # 管理员显式关闭 critical 兜底阻断后, action=flag 的 critical 文件允许同步。
+    # action=block_sync 不受此开关影响, 始终阻断。
     await set_system_config("security.block_critical_sensitive_sync", False)
 
     storage = _FakeReadableStorage(b"critical but allowed body")

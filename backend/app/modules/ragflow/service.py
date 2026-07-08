@@ -337,10 +337,7 @@ class RagflowTaskService:
         )
         if file.status not in MANUAL_SYNC_SOURCE_STATUSES or file.review_status != "approved":
             raise exceptions.file_not_syncable()
-        if (
-            await self._repository.get_file_sensitive_risk_level(file.id) == "critical"
-            and await block_critical_sensitive_sync()
-        ):
+        if await self._sensitive_policy_blocks_sync(file):
             raise exceptions.sync_blocked_by_sensitive_policy()
         try:
             dataset_id = self._require_dataset_id(file)
@@ -714,11 +711,16 @@ class RagflowTaskService:
         runtime_settings = await resolve_ragflow_runtime_settings()
         return is_ragflow_dataset_allowed(dataset_id, runtime_settings)
 
-    async def _ensure_ai_sync_policy_allows(self, file: RagflowSyncFileRecord) -> None:
-        if (
+    async def _sensitive_policy_blocks_sync(self, file: RagflowSyncFileRecord) -> bool:
+        if await self._repository.has_block_sync_sensitive_hit(file.id):
+            return True
+        return (
             await self._repository.get_file_sensitive_risk_level(file.id) == "critical"
             and await block_critical_sensitive_sync()
-        ):
+        )
+
+    async def _ensure_ai_sync_policy_allows(self, file: RagflowSyncFileRecord) -> None:
+        if await self._sensitive_policy_blocks_sync(file):
             raise RagflowSyncPreconditionError
         analysis_status = await self._repository.get_file_analysis_status(file.id)
         if analysis_status != "failed":

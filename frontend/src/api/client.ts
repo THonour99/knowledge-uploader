@@ -303,21 +303,56 @@ export interface AiPromptTemplate {
   template_key: string;
   name: string;
   description?: string | null;
+  prompt_text: string;
+  variables: string[];
   enabled: boolean;
   is_default: boolean;
   version: number;
   updated_at?: string | null;
 }
 
+export interface AiPromptTemplatePayload {
+  template_key?: string;
+  name?: string;
+  description?: string | null;
+  prompt_text?: string;
+  variables?: string[];
+  enabled?: boolean;
+}
+
 export interface AiSensitiveRule {
   id: string;
   name: string;
   rule_type: string;
+  pattern?: string | null;
+  keywords: string[];
   risk_level: string;
   action: string;
   enabled: boolean;
   hit_count: number;
   updated_at?: string | null;
+}
+
+export interface AiSensitiveRulePayload {
+  name?: string;
+  rule_type?: "keyword" | "regex";
+  pattern?: string | null;
+  keywords?: string[];
+  risk_level?: "low" | "medium" | "high" | "critical";
+  action?: "flag" | "require_review" | "block_sync";
+  enabled?: boolean;
+}
+
+export interface AiSensitiveRuleTestHit {
+  rule_id: string;
+  rule_name: string;
+  risk_level: string;
+  action: string;
+  match: string;
+}
+
+export interface AiSensitiveRuleTestResponse {
+  hits: AiSensitiveRuleTestHit[];
 }
 
 export interface AiConfigResponse {
@@ -851,6 +886,86 @@ export async function testAiProvider(providerId: string): Promise<AiProviderTest
   return unwrapResponse(response.data);
 }
 
+export async function createAiPromptTemplate(
+  payload: AiPromptTemplatePayload,
+): Promise<AiPromptTemplate> {
+  const response = await apiClient.post<ApiEnvelope<AiPromptTemplate> | AiPromptTemplate>(
+    "/admin/ai/prompt-templates",
+    payload,
+  );
+
+  return unwrapResponse(response.data);
+}
+
+export async function updateAiPromptTemplate(
+  templateId: string,
+  payload: AiPromptTemplatePayload,
+): Promise<AiPromptTemplate> {
+  const response = await apiClient.patch<ApiEnvelope<AiPromptTemplate> | AiPromptTemplate>(
+    `/admin/ai/prompt-templates/${templateId}`,
+    payload,
+  );
+
+  return unwrapResponse(response.data);
+}
+
+export async function restoreAiPromptTemplateDefault(
+  templateId: string,
+): Promise<AiPromptTemplate> {
+  const response = await apiClient.post<ApiEnvelope<AiPromptTemplate> | AiPromptTemplate>(
+    `/admin/ai/prompt-templates/${templateId}/restore-default`,
+  );
+
+  return unwrapResponse(response.data);
+}
+
+export async function deleteAiPromptTemplate(templateId: string): Promise<void> {
+  const response = await apiClient.delete<ApiEnvelope<Record<string, never>>>(
+    `/admin/ai/prompt-templates/${templateId}`,
+  );
+
+  unwrapResponse(response.data);
+}
+
+export async function createAiSensitiveRule(
+  payload: AiSensitiveRulePayload,
+): Promise<AiSensitiveRule> {
+  const response = await apiClient.post<ApiEnvelope<AiSensitiveRule> | AiSensitiveRule>(
+    "/admin/ai/sensitive-rules",
+    payload,
+  );
+
+  return unwrapResponse(response.data);
+}
+
+export async function updateAiSensitiveRule(
+  ruleId: string,
+  payload: AiSensitiveRulePayload,
+): Promise<AiSensitiveRule> {
+  const response = await apiClient.patch<ApiEnvelope<AiSensitiveRule> | AiSensitiveRule>(
+    `/admin/ai/sensitive-rules/${ruleId}`,
+    payload,
+  );
+
+  return unwrapResponse(response.data);
+}
+
+export async function deleteAiSensitiveRule(ruleId: string): Promise<void> {
+  const response = await apiClient.delete<ApiEnvelope<Record<string, never>>>(
+    `/admin/ai/sensitive-rules/${ruleId}`,
+  );
+
+  unwrapResponse(response.data);
+}
+
+export async function testAiSensitiveRules(text: string): Promise<AiSensitiveRuleTestResponse> {
+  const response = await apiClient.post<
+    ApiEnvelope<AiSensitiveRuleTestResponse> | AiSensitiveRuleTestResponse
+  >("/admin/ai/sensitive-rules/test", { text });
+
+  return unwrapResponse(response.data);
+}
+
 export interface ReviewFilesQuery {
   extension?: string;
   tag_id?: string;
@@ -1214,11 +1329,30 @@ export interface Department {
 export interface DepartmentListResponse {
   items: Department[];
   total: number;
+  page?: number;
+  page_size?: number;
+}
+
+export interface DepartmentListQuery {
+  page?: number;
+  page_size?: number;
+  search?: string;
+  status?: Department["status"];
+}
+
+export interface DepartmentPayload {
+  name: string;
+  code: string;
+}
+
+export interface DepartmentUpdatePayload {
+  name?: string;
+  status?: Department["status"];
 }
 
 export interface ManagedDepartmentsResponse {
   user_id: string;
-  managed_department_ids: string[];
+  managed_department_ids?: string[];
   managed_departments?: Department[];
   departments?: Department[];
 }
@@ -1260,12 +1394,60 @@ export async function changeUserRole(id: string, role: AdminUserRole): Promise<U
   return unwrapResponse(response.data);
 }
 
-export async function listDepartments(): Promise<DepartmentListResponse> {
-  const response = await apiClient.get<
-    ApiEnvelope<DepartmentListResponse> | DepartmentListResponse
-  >("/admin/departments");
+export async function setUserDepartment(id: string, departmentId: string): Promise<UserProfile> {
+  const response = await apiClient.patch<ApiEnvelope<UserProfile> | UserProfile>(
+    `/users/${id}/department`,
+    { department_id: departmentId },
+  );
 
   return unwrapResponse(response.data);
+}
+
+export async function listDepartments(
+  params: DepartmentListQuery = {},
+): Promise<DepartmentListResponse> {
+  const response = await apiClient.get<
+    ApiEnvelope<DepartmentListResponse> | DepartmentListResponse
+  >("/admin/departments", { params });
+
+  return unwrapResponse(response.data);
+}
+
+export async function getDepartment(id: string): Promise<Department> {
+  const response = await apiClient.get<ApiEnvelope<Department> | Department>(
+    `/admin/departments/${id}`,
+  );
+
+  return unwrapResponse(response.data);
+}
+
+export async function createDepartment(payload: DepartmentPayload): Promise<Department> {
+  const response = await apiClient.post<ApiEnvelope<Department> | Department>(
+    "/admin/departments",
+    payload,
+  );
+
+  return unwrapResponse(response.data);
+}
+
+export async function updateDepartment(
+  id: string,
+  payload: DepartmentUpdatePayload,
+): Promise<Department> {
+  const response = await apiClient.patch<ApiEnvelope<Department> | Department>(
+    `/admin/departments/${id}`,
+    payload,
+  );
+
+  return unwrapResponse(response.data);
+}
+
+export async function disableDepartment(id: string): Promise<void> {
+  const response = await apiClient.delete<ApiEnvelope<Record<string, never>>>(
+    `/admin/departments/${id}`,
+  );
+
+  unwrapResponse(response.data);
 }
 
 export async function getManagedDepartments(id: string): Promise<ManagedDepartmentsResponse> {

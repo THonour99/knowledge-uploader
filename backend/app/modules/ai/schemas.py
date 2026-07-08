@@ -1,9 +1,10 @@
 from __future__ import annotations
 
 from datetime import datetime
+from typing import Literal
 from uuid import UUID
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 
 class AiModuleStatus(BaseModel):
@@ -104,21 +105,91 @@ class PromptTemplateResponse(BaseModel):
     template_key: str
     name: str
     description: str | None
+    prompt_text: str
+    variables: list[str]
     enabled: bool
     is_default: bool
     version: int
     updated_at: datetime
 
 
+class PromptTemplateCreateRequest(BaseModel):
+    template_key: str = Field(min_length=1, max_length=80)
+    name: str = Field(min_length=1, max_length=120)
+    description: str | None = None
+    prompt_text: str = Field(min_length=1)
+    variables: list[str] = Field(default_factory=list)
+    enabled: bool = True
+
+    @field_validator("template_key")
+    @classmethod
+    def validate_template_key(cls, value: str) -> str:
+        cleaned = value.strip()
+        if not cleaned:
+            raise ValueError("template_key is required")
+        return cleaned
+
+
+class PromptTemplateUpdateRequest(BaseModel):
+    name: str | None = Field(default=None, min_length=1, max_length=120)
+    description: str | None = None
+    prompt_text: str | None = Field(default=None, min_length=1)
+    variables: list[str] | None = None
+    enabled: bool | None = None
+
+
 class SensitiveRuleResponse(BaseModel):
     id: UUID
     name: str
     rule_type: str
+    pattern: str | None
+    keywords: list[str]
     risk_level: str
     action: str
     enabled: bool
     hit_count: int
     updated_at: datetime
+
+
+SensitiveRuleType = Literal["keyword", "regex"]
+SensitiveRiskLevel = Literal["low", "medium", "high", "critical"]
+SensitiveRuleAction = Literal["flag", "require_review", "block_sync"]
+
+
+class SensitiveRuleCreateRequest(BaseModel):
+    name: str = Field(min_length=1, max_length=120)
+    rule_type: SensitiveRuleType
+    pattern: str | None = None
+    keywords: list[str] = Field(default_factory=list)
+    risk_level: SensitiveRiskLevel
+    action: SensitiveRuleAction
+    enabled: bool = True
+
+
+class SensitiveRuleUpdateRequest(BaseModel):
+    name: str | None = Field(default=None, min_length=1, max_length=120)
+    rule_type: SensitiveRuleType | None = None
+    pattern: str | None = None
+    keywords: list[str] | None = None
+    risk_level: SensitiveRiskLevel | None = None
+    action: SensitiveRuleAction | None = None
+    enabled: bool | None = None
+
+
+class SensitiveRuleTestRequest(BaseModel):
+    text: str = Field(min_length=1)
+
+
+class SensitiveRuleHitResponse(BaseModel):
+    rule_id: UUID
+    rule_name: str
+    risk_level: str
+    action: str
+    match: str
+
+
+class SensitiveRuleTestResponse(BaseModel):
+    hits: list[SensitiveRuleHitResponse]
 
 
 class AiConfigResponse(BaseModel):

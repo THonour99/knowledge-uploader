@@ -127,7 +127,7 @@ const mockSecurityGroup: ConfigGroupResponse = {
       value_type: "bool",
       is_secret: false,
       masked_value: null,
-      description: "要求邮箱验证",
+      description: "兼容开关",
       updated_at: "2026-06-10T00:00:00Z",
     },
   ],
@@ -256,9 +256,9 @@ describe("SettingsPage", () => {
 
     expect(await screen.findByText("5/5")).toBeInTheDocument();
     expect(screen.getByText("配置已同步")).toBeInTheDocument();
-    expect(screen.getByText("11")).toBeInTheDocument();
-    expect(screen.getByText("3 个开关 / 1 个密钥")).toBeInTheDocument();
-    expect(screen.getByText("1/1")).toBeInTheDocument();
+    expect(screen.getByText("10")).toBeInTheDocument();
+    expect(screen.getByText("2 个开关 / 1 个密钥")).toBeInTheDocument();
+    expect(screen.getAllByText("1 项").length).toBeGreaterThan(0);
     expect(screen.getByText("无待处理项")).toBeInTheDocument();
 
     const summary = screen.getByRole("region", { name: "配置运行摘要" });
@@ -326,6 +326,33 @@ describe("SettingsPage", () => {
         "upload",
         expect.objectContaining({ "upload.max_file_size_mb": expect.anything() }),
       );
+    });
+  });
+
+  it("hides dormant email verification config from the current security flow", async () => {
+    setupMocks();
+    vi.mocked(updateConfigs).mockResolvedValue(mockSecurityGroup);
+
+    renderWithProviders(<SettingsPage />);
+
+    fireEvent.click(await screen.findByRole("tab", { name: "安全" }));
+
+    expect(await screen.findByText("登录失败锁定阈值")).toBeInTheDocument();
+    expect(screen.queryByText("兼容开关")).not.toBeInTheDocument();
+
+    const saveBtn = await screen.findByRole("button", { name: /保存/ });
+    fireEvent.click(saveBtn);
+    await waitFor(() => {
+      expect(document.querySelector(".ant-modal-confirm-btns .ant-btn-primary")).not.toBeNull();
+    });
+    fireEvent.click(
+      document.querySelector(".ant-modal-confirm-btns .ant-btn-primary") as HTMLElement,
+    );
+
+    await waitFor(() => {
+      expect(updateConfigs).toHaveBeenCalled();
+      const [, items] = vi.mocked(updateConfigs).mock.calls[0];
+      expect(items).not.toHaveProperty("security.require_email_verification");
     });
   });
 

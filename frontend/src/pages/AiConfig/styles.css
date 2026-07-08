@@ -279,6 +279,34 @@
   width: 100%;
 }
 
+.ai-sensitive-test-result {
+  display: grid;
+  gap: 10px;
+  margin-top: 12px;
+  padding: 12px;
+  border: 1px solid var(--ku-border);
+  border-radius: var(--ku-radius-control);
+  background: var(--ku-bg-base);
+}
+
+.ai-sensitive-test-hit {
+  display: flex;
+  gap: 12px;
+  align-items: center;
+  justify-content: space-between;
+  min-width: 0;
+  padding: 10px 12px;
+  border: 1px solid rgba(229, 234, 242, 0.95);
+  border-radius: var(--ku-radius-control);
+  background: #fff;
+}
+
+.ai-sensitive-test-hit > span {
+  display: grid;
+  min-width: 0;
+  gap: 2px;
+}
+
 @media (max-width: 1279px) {
   .ai-config-kpi-grid {
     grid-template-columns: repeat(3, minmax(0, 1fr));

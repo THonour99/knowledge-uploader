@@ -38,7 +38,31 @@ def feature_not_found() -> AiError:
     )
 
 
+def prompt_template_not_found() -> AiError:
+    return AiError(
+        ErrorCode.VALIDATION_ERROR,
+        "prompt template not found",
+        status.HTTP_404_NOT_FOUND,
+    )
+
+
+def sensitive_rule_not_found() -> AiError:
+    return AiError(
+        ErrorCode.VALIDATION_ERROR,
+        "sensitive rule not found",
+        status.HTTP_404_NOT_FOUND,
+    )
+
+
 def invalid_provider_config(message: str = "invalid ai provider config") -> AiError:
+    return AiError(
+        ErrorCode.VALIDATION_ERROR,
+        message,
+        status.HTTP_400_BAD_REQUEST,
+    )
+
+
+def invalid_ai_config(message: str = "invalid ai config") -> AiError:
     return AiError(
         ErrorCode.VALIDATION_ERROR,
         message,

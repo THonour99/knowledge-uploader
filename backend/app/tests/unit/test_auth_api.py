@@ -225,6 +225,30 @@ async def test_register_existing_email_returns_generic_success(client: AsyncClie
         assert result.scalar_one() == 1
 
 
+async def test_register_creates_active_user_without_email_verification_by_default(
+    client: AsyncClient,
+) -> None:
+    from sqlalchemy import select
+
+    from app.core.database import AsyncSessionFactory
+    from app.modules.user.models import User
+
+    response = await client.post(
+        "/api/auth/register",
+        json={"name": "No Verify", "email": "no-verify@company.com", "password": "password123"},
+    )
+
+    assert response.status_code == 201
+
+    async with AsyncSessionFactory() as session:
+        user = (
+            await session.execute(select(User).where(User.email == "no-verify@company.com"))
+        ).scalar_one()
+
+    assert user.status == "active"
+    assert user.email_verified is True
+
+
 async def test_register_writes_verification_outbox_without_replayable_token(
     verification_client: AsyncClient,
 ) -> None:
@@ -375,6 +399,33 @@ async def test_verify_email_activates_pending_user(client: AsyncClient) -> None:
         json={"email": "pending@company.com", "password": "password123"},
     )
     assert login.status_code == 200
+
+
+async def test_pending_unverified_user_can_login_as_password_account(
+    client: AsyncClient,
+) -> None:
+    from app.core.database import AsyncSessionFactory
+    from app.modules.user.models import User
+
+    user_id = await _create_user(
+        email="pending-login@company.com",
+        password="password123",
+        status="pending_email_verification",
+        email_verified=False,
+    )
+
+    login = await client.post(
+        "/api/auth/login",
+        json={"email": "pending-login@company.com", "password": "password123"},
+    )
+
+    assert login.status_code == 200
+    assert login.json()["data"]["user"]["status"] == "active"
+
+    async with AsyncSessionFactory() as session:
+        user = await session.get(User, user_id)
+        assert user is not None
+        assert user.status == "active"
 
 
 async def test_reset_password_allows_login_with_new_password(client: AsyncClient) -> None:

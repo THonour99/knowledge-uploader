@@ -398,6 +398,44 @@ async def test_sensitive_high_risk_requires_sensitive_review() -> None:
         assert analysis.sensitive_hits[0]["action"] == "require_review"
 
 
+async def test_sensitive_flag_action_records_hit_without_review() -> None:
+    from app.core.database import AsyncSessionFactory
+    from app.modules.ai.models import DocumentAnalysis, SensitiveRule
+    from app.modules.document.models import File
+
+    uploader_id = await _create_user()
+    await _create_category()
+    file_id = await _create_file(uploader_id=uploader_id)
+    async with AsyncSessionFactory() as session:
+        session.add(
+            SensitiveRule(
+                name="仅标记词",
+                rule_type="keyword",
+                keywords=["公开标记词"],
+                risk_level="high",
+                action="flag",
+                enabled=True,
+            )
+        )
+        await session.commit()
+
+    await _run_analysis(
+        file_id,
+        FakeAiStorage(content="handbook 包含公开标记词".encode()),
+    )
+
+    async with AsyncSessionFactory() as session:
+        file = await session.get(File, file_id)
+        assert file is not None
+        assert file.status == "analyzed"
+        result = await session.execute(
+            select(DocumentAnalysis).where(DocumentAnalysis.file_id == file_id)
+        )
+        analysis = result.scalar_one()
+        assert analysis.sensitive_risk_level == "high"
+        assert analysis.sensitive_hits[0]["action"] == "flag"
+
+
 async def test_ai_failure_marks_analysis_failed_without_deleting_file() -> None:
     from app.core.database import AsyncSessionFactory
     from app.modules.ai.models import DocumentAnalysis

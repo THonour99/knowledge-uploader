@@ -79,6 +79,7 @@ DOCUMENT_ANALYSIS = Table(
     Column("file_id", UUID(as_uuid=True), primary_key=True),
     Column("status", String(30), nullable=False),
     Column("sensitive_risk_level", String(20), nullable=False),
+    Column("sensitive_hits", JSONB, nullable=False),
 )
 
 AI_FEATURE_CONFIGS = Table(
@@ -238,6 +239,15 @@ class RagflowTaskRepository:
             )
         )
         return cast(str | None, result.scalar_one_or_none())
+
+    async def has_block_sync_sensitive_hit(self, file_id: uuid.UUID) -> bool:
+        result = await self._session.execute(
+            select(DOCUMENT_ANALYSIS.c.sensitive_hits).where(DOCUMENT_ANALYSIS.c.file_id == file_id)
+        )
+        hits = result.scalar_one_or_none()
+        if not isinstance(hits, list):
+            return False
+        return any(isinstance(hit, dict) and hit.get("action") == "block_sync" for hit in hits)
 
     async def get_file_analysis_status(self, file_id: uuid.UUID) -> str | None:
         result = await self._session.execute(

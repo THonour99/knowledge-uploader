@@ -16,11 +16,12 @@ from app.adapters.minio_client import STORAGE_TRANSIENT_ERRORS, is_transient_sto
 from app.core.audit import record_admin_audit_log
 from app.core.config import Settings
 from app.core.document_state import DocumentStateError, DocumentStateMachine
+from app.core.outbox import OutboxRepository
 from app.core.runtime_config import get_config as get_runtime_config
 from app.core.security import decrypt_api_key, encrypt_api_key
 from app.modules.user.schemas import AuthUserRecord
 
-from . import exceptions
+from . import events, exceptions
 from .models import AiFeatureConfig, AiProvider, DocumentAnalysis, PromptTemplate, SensitiveRule
 from .parsers import (
     MAX_EXTRACTED_TEXT_LENGTH,
@@ -44,8 +45,15 @@ from .schemas import (
     AiProviderResponse,
     AiProviderTestResponse,
     AiProviderUpdateRequest,
+    PromptTemplateCreateRequest,
     PromptTemplateResponse,
+    PromptTemplateUpdateRequest,
+    SensitiveRuleCreateRequest,
+    SensitiveRuleHitResponse,
     SensitiveRuleResponse,
+    SensitiveRuleTestRequest,
+    SensitiveRuleTestResponse,
+    SensitiveRuleUpdateRequest,
 )
 from .simhash import compute_simhash, hamming_distance, simhash_bands
 
@@ -80,6 +88,9 @@ AI_ANALYSIS_SUCCEEDED_FILE_STATUSES = frozenset(
         "failed",
     }
 )
+PROMPT_TEMPLATE_KEY_RE = re.compile(r"^[A-Za-z0-9_-]{1,80}$")
+SENSITIVE_RISK_LEVELS = {"low", "medium", "high", "critical"}
+SENSITIVE_RULE_ACTIONS = {"flag", "require_review", "block_sync"}
 
 
 class AiObjectStorage(Protocol):
@@ -348,6 +359,334 @@ class AiConfigService:
             message=result.message,
         )
 
+    async def create_prompt_template(
+        self,
+        *,
+        current_user: AuthUserRecord,
+        request: PromptTemplateCreateRequest,
+        context: RequestContext,
+    ) -> PromptTemplateResponse:
+        self._require_system_admin(current_user)
+        await self._ensure_defaults()
+        template_key = self._normalize_template_key(request.template_key)
+        if await self._repository.get_prompt_template_by_key(template_key) is not None:
+            raise exceptions.invalid_ai_config("prompt template key already exists")
+        template = PromptTemplate(
+            template_key=template_key,
+            name=self._required_text(request.name, "prompt template name"),
+            description=clean_optional_text(request.description),
+            prompt_text=self._required_text(request.prompt_text, "prompt text"),
+            variables=self._normalize_variables(request.variables),
+            enabled=request.enabled,
+            is_default=False,
+            version=1,
+        )
+        await self._repository.add_prompt_template(template)
+        await self._record_ai_config_change(
+            current_user=current_user,
+            action="ai.prompt.create",
+            target_type="ai_prompt_template",
+            target_id=template.id,
+            context=context,
+            metadata_json={
+                "template_key": template.template_key,
+                "name": template.name,
+                "enabled": template.enabled,
+                "version": template.version,
+                "changed_fields": [
+                    "template_key",
+                    "name",
+                    "description",
+                    "prompt_text",
+                    "variables",
+                    "enabled",
+                ],
+            },
+        )
+        await self._session.commit()
+        await self._session.refresh(template)
+        return self._prompt_template_response(template)
+
+    async def update_prompt_template(
+        self,
+        *,
+        current_user: AuthUserRecord,
+        template_id: uuid.UUID,
+        request: PromptTemplateUpdateRequest,
+        context: RequestContext,
+    ) -> PromptTemplateResponse:
+        self._require_system_admin(current_user)
+        template = await self._get_prompt_template_or_raise(template_id)
+        changed_fields: list[str] = []
+        if request.name is not None:
+            template.name = self._required_text(request.name, "prompt template name")
+            changed_fields.append("name")
+        if "description" in request.model_fields_set:
+            template.description = clean_optional_text(request.description)
+            changed_fields.append("description")
+        if request.prompt_text is not None:
+            template.prompt_text = self._required_text(request.prompt_text, "prompt text")
+            template.version += 1
+            changed_fields.append("prompt_text")
+        if request.variables is not None:
+            template.variables = self._normalize_variables(request.variables)
+            if "prompt_text" not in changed_fields:
+                template.version += 1
+            changed_fields.append("variables")
+        if request.enabled is not None:
+            template.enabled = request.enabled
+            changed_fields.append("enabled")
+        if changed_fields:
+            await self._record_ai_config_change(
+                current_user=current_user,
+                action="ai.prompt.update",
+                target_type="ai_prompt_template",
+                target_id=template.id,
+                context=context,
+                metadata_json={
+                    "template_key": template.template_key,
+                    "name": template.name,
+                    "enabled": template.enabled,
+                    "version": template.version,
+                    "changed_fields": changed_fields,
+                },
+            )
+        await self._session.commit()
+        await self._session.refresh(template)
+        return self._prompt_template_response(template)
+
+    async def restore_prompt_template_default(
+        self,
+        *,
+        current_user: AuthUserRecord,
+        template_id: uuid.UUID,
+        context: RequestContext,
+    ) -> PromptTemplateResponse:
+        self._require_system_admin(current_user)
+        template = await self._get_prompt_template_or_raise(template_id)
+        defaults = {
+            definition.template_key: definition for definition in _default_prompt_definitions()
+        }
+        definition = defaults.get(template.template_key)
+        if definition is None:
+            raise exceptions.invalid_ai_config("prompt template has no default")
+        template.name = definition.name
+        template.description = definition.description
+        template.prompt_text = definition.prompt_text
+        template.variables = definition.variables
+        template.enabled = True
+        template.is_default = True
+        template.version += 1
+        await self._record_ai_config_change(
+            current_user=current_user,
+            action="ai.prompt.restore_default",
+            target_type="ai_prompt_template",
+            target_id=template.id,
+            context=context,
+            metadata_json={
+                "template_key": template.template_key,
+                "name": template.name,
+                "enabled": template.enabled,
+                "version": template.version,
+                "changed_fields": [
+                    "name",
+                    "description",
+                    "prompt_text",
+                    "variables",
+                    "enabled",
+                    "is_default",
+                ],
+            },
+        )
+        await self._session.commit()
+        await self._session.refresh(template)
+        return self._prompt_template_response(template)
+
+    async def delete_prompt_template(
+        self,
+        *,
+        current_user: AuthUserRecord,
+        template_id: uuid.UUID,
+        context: RequestContext,
+    ) -> None:
+        self._require_system_admin(current_user)
+        template = await self._get_prompt_template_or_raise(template_id)
+        metadata = {
+            "template_key": template.template_key,
+            "name": template.name,
+            "enabled": False,
+            "version": template.version,
+            "changed_fields": ["enabled"] if template.is_default else ["deleted"],
+        }
+        if template.is_default:
+            template.enabled = False
+        else:
+            await self._repository.delete_prompt_template(template.id)
+        await self._record_ai_config_change(
+            current_user=current_user,
+            action="ai.prompt.delete",
+            target_type="ai_prompt_template",
+            target_id=template_id,
+            context=context,
+            metadata_json=metadata,
+        )
+        await self._session.commit()
+
+    async def create_sensitive_rule(
+        self,
+        *,
+        current_user: AuthUserRecord,
+        request: SensitiveRuleCreateRequest,
+        context: RequestContext,
+    ) -> SensitiveRuleResponse:
+        self._require_system_admin(current_user)
+        rule_type, pattern, keywords = self._normalize_sensitive_rule_matcher(
+            rule_type=request.rule_type,
+            pattern=request.pattern,
+            keywords=request.keywords,
+        )
+        rule = SensitiveRule(
+            name=self._required_text(request.name, "sensitive rule name"),
+            rule_type=rule_type,
+            pattern=pattern,
+            keywords=keywords,
+            risk_level=self._normalize_risk_level(request.risk_level),
+            action=self._normalize_rule_action(request.action),
+            enabled=request.enabled,
+        )
+        await self._repository.add_sensitive_rule(rule)
+        await self._record_ai_config_change(
+            current_user=current_user,
+            action="ai.sensitive_rule.create",
+            target_type="ai_sensitive_rule",
+            target_id=rule.id,
+            context=context,
+            metadata_json=self._sensitive_rule_audit_metadata(
+                rule,
+                changed_fields=[
+                    "name",
+                    "rule_type",
+                    "pattern",
+                    "keywords",
+                    "risk_level",
+                    "action",
+                    "enabled",
+                ],
+            ),
+        )
+        await self._session.commit()
+        await self._session.refresh(rule)
+        return self._sensitive_rule_response(rule)
+
+    async def update_sensitive_rule(
+        self,
+        *,
+        current_user: AuthUserRecord,
+        rule_id: uuid.UUID,
+        request: SensitiveRuleUpdateRequest,
+        context: RequestContext,
+    ) -> SensitiveRuleResponse:
+        self._require_system_admin(current_user)
+        rule = await self._get_sensitive_rule_or_raise(rule_id)
+        next_rule_type = request.rule_type or rule.rule_type
+        next_pattern = request.pattern if "pattern" in request.model_fields_set else rule.pattern
+        next_keywords = request.keywords if request.keywords is not None else rule.keywords
+        rule_type, pattern, keywords = self._normalize_sensitive_rule_matcher(
+            rule_type=next_rule_type,
+            pattern=next_pattern,
+            keywords=next_keywords,
+        )
+        changed_fields: list[str] = []
+        if request.name is not None:
+            rule.name = self._required_text(request.name, "sensitive rule name")
+            changed_fields.append("name")
+        if request.rule_type is not None:
+            rule.rule_type = rule_type
+            changed_fields.append("rule_type")
+        if "pattern" in request.model_fields_set:
+            rule.pattern = pattern
+            changed_fields.append("pattern")
+        if request.keywords is not None:
+            rule.keywords = keywords
+            changed_fields.append("keywords")
+        if request.risk_level is not None:
+            rule.risk_level = self._normalize_risk_level(request.risk_level)
+            changed_fields.append("risk_level")
+        if request.action is not None:
+            rule.action = self._normalize_rule_action(request.action)
+            changed_fields.append("action")
+        if request.enabled is not None:
+            rule.enabled = request.enabled
+            changed_fields.append("enabled")
+        if changed_fields:
+            await self._record_ai_config_change(
+                current_user=current_user,
+                action="ai.sensitive_rule.update",
+                target_type="ai_sensitive_rule",
+                target_id=rule.id,
+                context=context,
+                metadata_json=self._sensitive_rule_audit_metadata(
+                    rule,
+                    changed_fields=changed_fields,
+                ),
+            )
+        await self._session.commit()
+        await self._session.refresh(rule)
+        return self._sensitive_rule_response(rule)
+
+    async def delete_sensitive_rule(
+        self,
+        *,
+        current_user: AuthUserRecord,
+        rule_id: uuid.UUID,
+        context: RequestContext,
+    ) -> None:
+        self._require_system_admin(current_user)
+        rule = await self._get_sensitive_rule_or_raise(rule_id)
+        metadata = self._sensitive_rule_audit_metadata(rule, changed_fields=["deleted"])
+        await self._repository.delete_sensitive_rule(rule.id)
+        await self._record_ai_config_change(
+            current_user=current_user,
+            action="ai.sensitive_rule.delete",
+            target_type="ai_sensitive_rule",
+            target_id=rule_id,
+            context=context,
+            metadata_json=metadata,
+        )
+        await self._session.commit()
+
+    async def test_sensitive_rules(
+        self,
+        *,
+        current_user: AuthUserRecord,
+        request: SensitiveRuleTestRequest,
+        context: RequestContext,
+    ) -> SensitiveRuleTestResponse:
+        self._require_system_admin(current_user)
+        rules = await self._repository.list_sensitive_rules(enabled_only=True)
+        hits = detect_sensitive_hits(request.text, rules)
+        await self._record_admin_audit(
+            current_user=current_user,
+            action="ai.sensitive_rule.test",
+            target_type="ai_sensitive_rule",
+            target_id=current_user.id,
+            context=context,
+            metadata_json={"hit_count": len(hits), "enabled_rule_count": len(rules)},
+        )
+        await self._session.commit()
+        return SensitiveRuleTestResponse(
+            hits=[
+                SensitiveRuleHitResponse(
+                    rule_id=uuid.UUID(str(hit["rule_id"])),
+                    rule_name=str(hit["rule_name"]),
+                    risk_level=str(hit["risk_level"]),
+                    action=str(hit["action"]),
+                    match=str(hit["match"]),
+                )
+                for hit in hits
+            ]
+        )
+
     def _feature_response(self, feature: AiFeatureConfig) -> AiFeatureResponse:
         metadata = feature.config_json
         return AiFeatureResponse(
@@ -390,6 +729,8 @@ class AiConfigService:
             template_key=template.template_key,
             name=template.name,
             description=template.description,
+            prompt_text=template.prompt_text,
+            variables=template.variables,
             enabled=template.enabled,
             is_default=template.is_default,
             version=template.version,
@@ -401,6 +742,8 @@ class AiConfigService:
             id=rule.id,
             name=rule.name,
             rule_type=rule.rule_type,
+            pattern=rule.pattern,
+            keywords=rule.keywords,
             risk_level=rule.risk_level,
             action=rule.action,
             enabled=rule.enabled,
@@ -413,6 +756,123 @@ class AiConfigService:
         if provider is None:
             raise exceptions.provider_not_found()
         return provider
+
+    async def _get_prompt_template_or_raise(self, template_id: uuid.UUID) -> PromptTemplate:
+        template = await self._repository.get_prompt_template(template_id)
+        if template is None:
+            raise exceptions.prompt_template_not_found()
+        return template
+
+    async def _get_sensitive_rule_or_raise(self, rule_id: uuid.UUID) -> SensitiveRule:
+        rule = await self._repository.get_sensitive_rule(rule_id)
+        if rule is None:
+            raise exceptions.sensitive_rule_not_found()
+        return rule
+
+    def _normalize_template_key(self, value: str) -> str:
+        cleaned = value.strip()
+        if not PROMPT_TEMPLATE_KEY_RE.fullmatch(cleaned):
+            raise exceptions.invalid_ai_config("invalid prompt template key")
+        return cleaned
+
+    def _required_text(self, value: str, field_name: str) -> str:
+        cleaned = value.strip()
+        if not cleaned:
+            raise exceptions.invalid_ai_config(f"{field_name} is required")
+        return cleaned
+
+    def _normalize_variables(self, variables: Sequence[str]) -> list[str]:
+        result: list[str] = []
+        seen: set[str] = set()
+        for variable in variables:
+            cleaned = variable.strip()
+            if not cleaned:
+                continue
+            if not re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]{0,63}", cleaned):
+                raise exceptions.invalid_ai_config("invalid prompt variable")
+            if cleaned in seen:
+                continue
+            seen.add(cleaned)
+            result.append(cleaned)
+        return result
+
+    def _normalize_sensitive_rule_matcher(
+        self,
+        *,
+        rule_type: str,
+        pattern: str | None,
+        keywords: Sequence[str],
+    ) -> tuple[str, str | None, list[str]]:
+        if rule_type == "keyword":
+            normalized_keywords = unique_ordered([keyword.strip() for keyword in keywords])
+            if not normalized_keywords:
+                raise exceptions.invalid_ai_config("keyword rule requires keywords")
+            return rule_type, None, normalized_keywords
+        if rule_type == "regex":
+            cleaned_pattern = clean_optional_text(pattern)
+            if cleaned_pattern is None:
+                raise exceptions.invalid_ai_config("regex rule requires pattern")
+            try:
+                re.compile(cleaned_pattern)
+            except re.error as exc:
+                raise exceptions.invalid_ai_config("invalid regex pattern") from exc
+            return rule_type, cleaned_pattern, []
+        raise exceptions.invalid_ai_config("invalid sensitive rule type")
+
+    def _normalize_risk_level(self, value: str) -> str:
+        if value not in SENSITIVE_RISK_LEVELS:
+            raise exceptions.invalid_ai_config("invalid sensitive risk level")
+        return value
+
+    def _normalize_rule_action(self, value: str) -> str:
+        if value not in SENSITIVE_RULE_ACTIONS:
+            raise exceptions.invalid_ai_config("invalid sensitive rule action")
+        return value
+
+    def _sensitive_rule_audit_metadata(
+        self,
+        rule: SensitiveRule,
+        *,
+        changed_fields: list[str],
+    ) -> dict[str, object]:
+        return {
+            "rule_name": rule.name,
+            "rule_type": rule.rule_type,
+            "risk_level": rule.risk_level,
+            "action": rule.action,
+            "enabled": rule.enabled,
+            "changed_fields": changed_fields,
+        }
+
+    async def _record_ai_config_change(
+        self,
+        *,
+        current_user: AuthUserRecord,
+        action: str,
+        target_type: str,
+        target_id: uuid.UUID,
+        context: RequestContext,
+        metadata_json: dict[str, object],
+    ) -> None:
+        await self._record_admin_audit(
+            current_user=current_user,
+            action=action,
+            target_type=target_type,
+            target_id=target_id,
+            context=context,
+            metadata_json=metadata_json,
+        )
+        await OutboxRepository(self._session).append(
+            event_type=events.AI_CONFIG_CHANGED,
+            aggregate_type=target_type,
+            aggregate_id=str(target_id),
+            payload={
+                "action": action,
+                "target_type": target_type,
+                "target_id": str(target_id),
+                "changed_fields": metadata_json.get("changed_fields", []),
+            },
+        )
 
     async def _ensure_defaults(self) -> None:
         existing_features = {
@@ -791,7 +1251,7 @@ class AiAnalysisService:
 
             target_status = (
                 "sensitive_review_required"
-                if RISK_ORDER[risk_level] >= RISK_ORDER["high"]
+                if requires_sensitive_review(sensitive_hits)
                 else "analyzed"
             )
             file.tags = merge_tags(file.tags, tags)
@@ -1084,6 +1544,10 @@ def highest_risk_level(levels: Iterable[object]) -> str:
         if RISK_ORDER.get(level, 0) > RISK_ORDER[highest]:
             highest = level
     return highest
+
+
+def requires_sensitive_review(hits: Sequence[Mapping[str, object]]) -> bool:
+    return any(str(hit.get("action")) in {"require_review", "block_sync"} for hit in hits)
 
 
 def merge_tags(existing: list[str], generated: list[str]) -> list[str]:

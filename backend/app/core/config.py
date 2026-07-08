@@ -66,7 +66,7 @@ class Settings(BaseSettings):
     encryption_key: str = DEFAULT_DEV_ENCRYPTION_KEY
 
     allow_register: bool = True
-    require_email_verification: bool = True
+    require_email_verification: bool = False
     allowed_email_domains: str = "company.com"
     password_min_length: int = 8
     login_max_failed_attempts: int = 5

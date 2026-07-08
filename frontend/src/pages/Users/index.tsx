@@ -41,6 +41,7 @@ import {
   listDepartments,
   replaceManagedDepartments,
   resetUserPassword,
+  setUserDepartment,
 } from "../../api/client";
 import { KpiCard } from "../../components/KpiCard";
 import { StatusTag } from "../../components/StatusTag";
@@ -63,7 +64,6 @@ const roleOptions = [
 const statusOptions = [
   { label: "状态：全部", value: "" },
   { label: "正常", value: "active" },
-  { label: "待激活", value: "pending_email_verification" },
   { label: "锁定中", value: "locked" },
   { label: "已禁用", value: "disabled" },
 ];
@@ -94,32 +94,34 @@ interface ManagedDepartmentsModalState {
   selectedDepartmentIds: string[];
 }
 
+interface UserDepartmentModalState {
+  open: boolean;
+  user: AdminUserItem | null;
+  selectedDepartmentId: string;
+}
+
 interface UserGovernanceStripProps {
   activeCount: number;
+  assignedDepartmentCount: number;
   deptAdminCount: number;
   disabledOrLockedCount: number;
-  managedDeptAdminCount: number;
   pageCount: number;
-  pendingCount: number;
   roleFilter: AdminUserRole | "";
   search: string;
   statusFilter: string;
   total: number;
-  verifiedCount: number;
 }
 
 function UserGovernanceStrip({
   activeCount,
+  assignedDepartmentCount,
   deptAdminCount,
   disabledOrLockedCount,
-  managedDeptAdminCount,
   pageCount,
-  pendingCount,
   roleFilter,
   search,
   statusFilter,
   total,
-  verifiedCount,
 }: UserGovernanceStripProps) {
   const hasFilters = Boolean(search.trim() || roleFilter || statusFilter);
   const lanes = [
@@ -132,25 +134,25 @@ function UserGovernanceStrip({
       status: { kind: "health" as const, value: disabledOrLockedCount > 0 ? "unknown" : "ok" },
     },
     {
-      key: "activation",
-      icon: <MailOutlined />,
-      title: "邮箱激活",
-      primary: `${pendingCount} 个待激活`,
-      secondary: `邮箱验证完成 ${verifiedCount}/${pageCount}`,
+      key: "department",
+      icon: <ApartmentOutlined />,
+      title: "部门归属",
+      primary: `${assignedDepartmentCount} 个已归属`,
+      secondary: `当前视图 ${pageCount} 个账号可维护所属部门`,
       status: {
-        kind: "user" as const,
-        value: pendingCount > 0 ? "pending_email_verification" : "active",
+        kind: "health" as const,
+        value: assignedDepartmentCount === pageCount ? "ok" : "unknown",
       },
     },
     {
       key: "permission",
-      icon: <ApartmentOutlined />,
-      title: "权限覆盖",
+      icon: <UserSwitchOutlined />,
+      title: "角色治理",
       primary: `${deptAdminCount} 个部门管理员`,
-      secondary: `${managedDeptAdminCount} 个已配置管辖部门`,
+      secondary: "管辖部门在详情弹窗中按后端返回回显",
       status: {
         kind: "health" as const,
-        value: deptAdminCount === managedDeptAdminCount ? "ok" : "unknown",
+        value: deptAdminCount > 0 ? "ok" : "unknown",
       },
     },
     {
@@ -230,6 +232,11 @@ export default function UsersPage() {
       user: null,
       selectedDepartmentIds: [],
     });
+  const [userDepartmentModal, setUserDepartmentModal] = useState<UserDepartmentModalState>({
+    open: false,
+    user: null,
+    selectedDepartmentId: "",
+  });
   const [actionLoading, setActionLoading] = useState<Record<string, boolean>>({});
 
   const queryParams: AdminUserListQuery = {
@@ -253,14 +260,14 @@ export default function UsersPage() {
 
     return {
       active: users.filter((user) => user.status === "active").length,
-      pending: users.filter((user) => user.status === "pending_email_verification").length,
       disabledOrLocked: users.filter(
         (user) => user.status === "disabled" || user.status === "locked",
       ).length,
-      verified: users.filter((user) => user.email_verified).length,
       deptAdmin: deptAdmins.length,
-      managedDeptAdmin: deptAdmins.filter((user) => (user.managed_department_ids?.length ?? 0) > 0)
-        .length,
+      assignedDepartment: users.filter((user) => {
+        const departmentName = user.department_name ?? user.department ?? "";
+        return Boolean(departmentName) && departmentName !== "未分配";
+      }).length,
     };
   }, [users]);
 
@@ -288,8 +295,8 @@ export default function UsersPage() {
 
   const departmentsQuery = useQuery({
     queryKey: ["admin-departments"],
-    queryFn: listDepartments,
-    enabled: managedDepartmentsModal.open,
+    queryFn: () => listDepartments({ page_size: 200 }),
+    enabled: managedDepartmentsModal.open || userDepartmentModal.open,
   });
   const managedDepartmentsQuery = useQuery({
     queryKey: ["admin-users", managedDepartmentsModal.user?.id, "managed-departments"],
@@ -431,6 +438,14 @@ export default function UsersPage() {
     });
   }, []);
 
+  const openUserDepartmentModal = useCallback((record: AdminUserItem) => {
+    setUserDepartmentModal({
+      open: true,
+      user: record,
+      selectedDepartmentId: record.department_id ?? "",
+    });
+  }, []);
+
   const handleManagedDepartmentsChange = useCallback((departmentIds: string[]) => {
     setManagedDepartmentsModal((prev) => ({ ...prev, selectedDepartmentIds: departmentIds }));
   }, []);
@@ -456,6 +471,25 @@ export default function UsersPage() {
       setActionLoading((prev) => ({ ...prev, [`managed-${userId}`]: false }));
     }
   }, [invalidate, managedDepartmentsModal, message, queryClient]);
+
+  const handleSaveUserDepartment = useCallback(async () => {
+    const userId = userDepartmentModal.user?.id;
+    if (!userId || !userDepartmentModal.selectedDepartmentId) {
+      return;
+    }
+
+    setActionLoading((prev) => ({ ...prev, [`department-${userId}`]: true }));
+    try {
+      await setUserDepartment(userId, userDepartmentModal.selectedDepartmentId);
+      message.success("所属部门已更新");
+      setUserDepartmentModal({ open: false, user: null, selectedDepartmentId: "" });
+      invalidate();
+    } catch (err) {
+      message.error(err instanceof Error ? err.message : "操作失败");
+    } finally {
+      setActionLoading((prev) => ({ ...prev, [`department-${userId}`]: false }));
+    }
+  }, [invalidate, message, userDepartmentModal]);
 
   const handleResetPassword = useCallback(async () => {
     setActionLoading((prev) => ({ ...prev, [`reset-${resetModal.userId}`]: true }));
@@ -511,7 +545,16 @@ export default function UsersPage() {
       dataIndex: "department",
       key: "department",
       width: 140,
-      render: (value: string | null, record) => record.department_name ?? value ?? "-",
+      render: (value: string | null, record) => (
+        <Space direction="vertical" size={0}>
+          <Typography.Text>{record.department_name ?? value ?? "-"}</Typography.Text>
+          {record.department_code ? (
+            <Typography.Text type="secondary" style={{ fontSize: 11 }}>
+              {record.department_code}
+            </Typography.Text>
+          ) : null}
+        </Space>
+      ),
     },
     {
       title: "上传统计",
@@ -529,7 +572,7 @@ export default function UsersPage() {
     {
       title: "操作",
       key: "actions",
-      width: 310,
+      width: 390,
       fixed: "right" as const,
       render: (_, record) => {
         const isDisabled = record.status === "disabled";
@@ -567,6 +610,16 @@ export default function UsersPage() {
             >
               改角色
             </Button>
+            <Button
+              type="text"
+              size="small"
+              icon={<ApartmentOutlined />}
+              loading={actionLoading[`department-${record.id}`]}
+              onClick={() => openUserDepartmentModal(record)}
+              aria-label="所属部门"
+            >
+              所属部门
+            </Button>
             {record.role === "dept_admin" ? (
               <Button
                 type="text"
@@ -595,7 +648,7 @@ export default function UsersPage() {
   ];
 
   return (
-    <PageContainer title="用户管理" description="管理员工账号、权限角色、邮箱验证与登录状态。">
+    <PageContainer title="用户管理" description="管理员工账号、权限角色、所属部门与登录状态。">
       <div className="users-kpi-grid">
         <KpiCard
           icon={<TeamOutlined />}
@@ -612,11 +665,11 @@ export default function UsersPage() {
           tone="success"
         />
         <KpiCard
-          icon={<MailOutlined />}
-          title="当前页待激活"
-          value={pageStats.pending}
-          description="邮箱验证待完成"
-          tone="warning"
+          icon={<ApartmentOutlined />}
+          title="当前页已归属"
+          value={pageStats.assignedDepartment}
+          description="已分配部门"
+          tone="info"
         />
         <KpiCard
           icon={<LockOutlined />}
@@ -629,16 +682,14 @@ export default function UsersPage() {
 
       <UserGovernanceStrip
         activeCount={pageStats.active}
+        assignedDepartmentCount={pageStats.assignedDepartment}
         deptAdminCount={pageStats.deptAdmin}
         disabledOrLockedCount={pageStats.disabledOrLocked}
-        managedDeptAdminCount={pageStats.managedDeptAdmin}
         pageCount={users.length}
-        pendingCount={pageStats.pending}
         roleFilter={roleFilter}
         search={search}
         statusFilter={statusFilter}
         total={total}
-        verifiedCount={pageStats.verified}
       />
 
       <div className="users-main-grid">
@@ -698,7 +749,7 @@ export default function UsersPage() {
               showTotal: (t) => `共 ${t} 条`,
               onChange: (p) => setPage(p),
             }}
-            scroll={{ x: 1080 }}
+            scroll={{ x: 1160 }}
             locale={{ emptyText: "暂无用户数据" }}
           />
         </Card>
@@ -711,12 +762,12 @@ export default function UsersPage() {
             <span className="users-role-panel__copy">
               <Typography.Text strong>角色权限概览</Typography.Text>
               <Typography.Text type="secondary">
-                {`当前页 ${users.length} 个账号，部门管理员覆盖 ${pageStats.managedDeptAdmin}/${pageStats.deptAdmin}`}
+                {`当前页 ${users.length} 个账号，${pageStats.deptAdmin} 个部门管理员`}
               </Typography.Text>
             </span>
             <StatusTag
               kind="health"
-              value={pageStats.deptAdmin === pageStats.managedDeptAdmin ? "ok" : "unknown"}
+              value={pageStats.deptAdmin > 0 ? "ok" : "unknown"}
               variant="dot"
             />
           </section>
@@ -783,6 +834,60 @@ export default function UsersPage() {
             options={changeRoleOptions}
             onChange={(value: AdminUserRole) =>
               setRoleModal((prev) => ({ ...prev, selectedRole: value }))
+            }
+          />
+        </div>
+      </Modal>
+
+      {/* User department modal */}
+      <Modal
+        title="编辑所属部门"
+        open={userDepartmentModal.open}
+        onCancel={() =>
+          setUserDepartmentModal({ open: false, user: null, selectedDepartmentId: "" })
+        }
+        onOk={() => void handleSaveUserDepartment()}
+        confirmLoading={
+          Boolean(userDepartmentModal.user?.id) &&
+          actionLoading[`department-${userDepartmentModal.user?.id}`]
+        }
+        okText="保存"
+        cancelText="取消"
+        destroyOnClose
+      >
+        <div className="user-modal-stack">
+          <section className="user-modal-summary" role="region" aria-label="所属部门摘要">
+            <span className="user-modal-summary__icon">
+              <ApartmentOutlined />
+            </span>
+            <span className="user-modal-summary__copy">
+              <Typography.Text strong>
+                {userDepartmentModal.user?.name ?? "当前用户"}
+              </Typography.Text>
+              <Typography.Text type="secondary">
+                {userDepartmentModal.user?.department_name ??
+                  userDepartmentModal.user?.department ??
+                  "未分配"}
+              </Typography.Text>
+            </span>
+            <span className="user-modal-summary__metric">
+              <strong>归属</strong>
+              <small>立即生效</small>
+            </span>
+          </section>
+          <Select
+            showSearch
+            optionFilterProp="label"
+            placeholder="选择所属部门"
+            style={{ width: "100%" }}
+            loading={departmentsQuery.isLoading}
+            value={userDepartmentModal.selectedDepartmentId || undefined}
+            options={departmentOptions}
+            onChange={(departmentId: string) =>
+              setUserDepartmentModal((prev) => ({
+                ...prev,
+                selectedDepartmentId: departmentId,
+              }))
             }
           />
         </div>
@@ -862,7 +967,7 @@ export default function UsersPage() {
             </span>
             <span className="user-modal-summary__metric">
               <strong>邮箱</strong>
-              <small>验证链接</small>
+              <small>重置链接</small>
             </span>
           </section>
           <Typography.Text>

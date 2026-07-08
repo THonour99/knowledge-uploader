@@ -35,6 +35,7 @@ const GLOBAL_SEARCH_ALIASES: Record<string, string[]> = {
   "/ai-config": ["AI", "模型", "Prompt", "敏感规则"],
   "/statistics": ["统计", "报表", "贡献排行", "统计分析"],
   "/users": ["用户", "账号", "权限", "部门"],
+  "/departments": ["部门", "组织", "启停", "管辖"],
   "/settings": ["设置", "系统配置", "安全", "上传策略"],
   "/audit-logs": ["审计", "操作日志", "管理员操作"],
   "/task-logs": ["任务", "队列", "同步任务", "解析任务"],

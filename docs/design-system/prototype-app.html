@@ -1,0 +1,571 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>知识库平台 · 高保真原型(主应用)</title>
+<style>
+  :root{
+    --brand:#059669;--brand-hover:#047857;--brand-soft:#D1FAE5;
+    --accent:#0D9488;--accent-soft:#CCFBF1;
+    --success:#16A34A;--success-soft:#DCFCE7;--success-ink:#15803D;
+    --warning:#D97706;--warning-soft:#FEF3C7;--warning-ink:#B45309;
+    --danger:#DC2626;--danger-soft:#FEE2E2;--danger-ink:#B91C1C;
+    --info:#2563EB;--info-soft:#DBEAFE;--info-ink:#1D4ED8;
+    --bg:#FAFAF9;--card:#FFFFFF;--subtle:#F5F5F4;
+    --text:#1C1917;--text2:#57534E;--text3:#A8A29E;
+    --border:#E7E5E4;--border2:#D6D3D1;
+    --sh-sm:0 1px 3px rgba(28,25,23,.06),0 1px 2px rgba(28,25,23,.04);
+    --sh-md:0 4px 12px rgba(28,25,23,.08);
+    --mono:'JetBrains Mono','Fira Code',Consolas,monospace;
+  }
+  *{box-sizing:border-box;margin:0;padding:0;}
+  html,body{height:100%;}
+  body{font-family:'Inter','PingFang SC','Microsoft YaHei',system-ui,sans-serif;background:var(--bg);color:var(--text);font-size:14px;line-height:1.5;-webkit-font-smoothing:antialiased;}
+  .shell{display:flex;height:100vh;overflow:hidden;}
+  .side{width:220px;flex:0 0 220px;background:var(--card);border-right:1px solid var(--border);display:flex;flex-direction:column;}
+  .logo{display:flex;align-items:center;gap:10px;padding:16px 18px;border-bottom:1px solid var(--border);}
+  .logo__m{width:32px;height:32px;border-radius:9px;background:linear-gradient(135deg,var(--brand),var(--accent));display:flex;align-items:center;justify-content:center;box-shadow:0 6px 16px rgba(5,150,105,.28);}
+  .logo__t{font-size:15px;font-weight:800;}
+  .nav{flex:1;overflow-y:auto;padding:12px 10px;}
+  .nav__g{font-size:10px;font-weight:700;color:var(--text3);text-transform:uppercase;letter-spacing:.06em;padding:14px 10px 5px;}
+  .nav__g:first-child{padding-top:2px;}
+  .nav__i{display:flex;align-items:center;gap:10px;height:38px;padding:0 11px;border-radius:8px;color:var(--text2);font-size:13.5px;font-weight:600;cursor:pointer;margin-bottom:2px;user-select:none;}
+  .nav__i svg{width:17px;height:17px;opacity:.85;flex:0 0 17px;}
+  .nav__i:hover{background:var(--subtle);color:var(--text);}
+  .nav__i.on{background:var(--brand-soft);color:var(--brand);position:relative;}
+  .nav__i.on::before{content:'';position:absolute;left:-10px;top:7px;bottom:7px;width:3px;border-radius:0 3px 3px 0;background:var(--brand);}
+  .nav__i.on svg{opacity:1;}
+  .side__foot{margin:10px;padding:10px 12px;border:1px solid var(--border);border-radius:9px;display:flex;align-items:center;gap:9px;background:var(--subtle);}
+  .dot{width:8px;height:8px;border-radius:999px;background:var(--success);box-shadow:0 0 0 3px var(--success-soft);flex:0 0 8px;}
+  .side__foot b{font-size:12px;font-weight:700;display:block;}
+  .side__foot span{font-size:11px;color:var(--text2);}
+  .main{flex:1;display:flex;flex-direction:column;min-width:0;}
+  .top{height:56px;flex:0 0 56px;border-bottom:1px solid var(--border);background:var(--card);display:flex;align-items:center;gap:14px;padding:0 20px;}
+  .top__title{font-size:16px;font-weight:700;}
+  .top__search{margin-left:auto;width:240px;height:34px;border:1px solid var(--border2);border-radius:8px;background:var(--bg);display:flex;align-items:center;padding:0 11px;gap:8px;color:var(--text3);font-size:13px;}
+  .top__ic{width:34px;height:34px;border-radius:8px;display:flex;align-items:center;justify-content:center;color:var(--text2);cursor:pointer;}
+  .top__ic:hover{background:var(--subtle);}
+  .top__ava{width:32px;height:32px;border-radius:999px;background:linear-gradient(135deg,var(--brand),var(--accent));color:#fff;display:flex;align-items:center;justify-content:center;font-size:13px;font-weight:700;cursor:pointer;}
+  .wrap{flex:1;overflow-y:auto;padding:22px 24px;}
+  .page{display:none;}
+  .page.on{display:block;animation:fade .25s ease;}
+  @keyframes fade{from{opacity:0;transform:translateY(6px);}to{opacity:1;transform:none;}}
+  .phead{display:flex;align-items:flex-start;justify-content:space-between;gap:16px;margin-bottom:18px;}
+  .phead h1{font-size:22px;font-weight:800;letter-spacing:-.01em;}
+  .phead p{color:var(--text2);font-size:13.5px;margin-top:4px;}
+  .btn{font-size:13px;font-weight:600;padding:8px 15px;border-radius:8px;border:1px solid transparent;cursor:pointer;display:inline-flex;align-items:center;gap:7px;}
+  .btn svg{width:15px;height:15px;}
+  .btn-p{background:var(--brand);color:#fff;box-shadow:0 1px 2px rgba(5,150,105,.3);}
+  .btn-p:hover{background:var(--brand-hover);}
+  .btn-s{background:var(--card);color:var(--text);border-color:var(--border2);}
+  .btn-s:hover{background:var(--subtle);}
+  .btn-d{background:var(--danger);color:#fff;}
+  .btn-g{background:transparent;color:var(--text2);}
+  .btn-g:hover{background:var(--subtle);}
+  .btn-sm{padding:5px 10px;font-size:12px;}
+  .card{background:var(--card);border:1px solid var(--border);border-radius:12px;box-shadow:var(--sh-sm);}
+  .card__h{display:flex;align-items:center;justify-content:space-between;padding:14px 16px;border-bottom:1px solid var(--border);}
+  .card__t{font-size:14px;font-weight:700;}
+  .card__b{padding:16px;}
+  .tag{display:inline-flex;align-items:center;gap:5px;font-size:12px;font-weight:600;padding:3px 10px;border-radius:999px;white-space:nowrap;}
+  .tag::before{content:'';width:5px;height:5px;border-radius:999px;background:currentColor;}
+  .t-success{background:var(--success-soft);color:var(--success-ink);}
+  .t-warning{background:var(--warning-soft);color:var(--warning-ink);}
+  .t-danger{background:var(--danger-soft);color:var(--danger-ink);}
+  .t-info{background:var(--info-soft);color:var(--info-ink);}
+  .t-accent{background:var(--accent-soft);color:#0f766e;}
+  .t-muted{background:var(--subtle);color:var(--text3);}
+  .kpis{display:grid;grid-template-columns:repeat(auto-fit,minmax(200px,1fr));gap:14px;margin-bottom:16px;}
+  .kpi{background:var(--card);border:1px solid var(--border);border-radius:12px;padding:15px 16px;box-shadow:var(--sh-sm);}
+  .kpi__top{display:flex;align-items:center;justify-content:space-between;margin-bottom:10px;}
+  .kpi__ic{width:36px;height:36px;border-radius:10px;display:flex;align-items:center;justify-content:center;}
+  .kpi__ic svg{width:19px;height:19px;}
+  .kpi__d{font-size:12px;font-weight:600;}
+  .kpi__v{font-size:28px;font-weight:800;line-height:1;font-variant-numeric:tabular-nums;}
+  .kpi__l{font-size:12.5px;color:var(--text2);margin-top:5px;}
+  .ic-brand{background:var(--brand-soft);color:var(--brand);}
+  .ic-success{background:var(--success-soft);color:var(--success);}
+  .ic-warning{background:var(--warning-soft);color:var(--warning);}
+  .ic-danger{background:var(--danger-soft);color:var(--danger);}
+  .ic-accent{background:var(--accent-soft);color:var(--accent);}
+  .ic-info{background:var(--info-soft);color:var(--info);}
+  .up{color:var(--success);}.down{color:var(--danger);}
+  table{width:100%;border-collapse:collapse;}
+  th{text-align:left;font-size:12px;font-weight:700;color:var(--text2);padding:11px 14px;background:var(--subtle);border-bottom:1px solid var(--border);}
+  td{padding:12px 14px;font-size:13px;border-bottom:1px solid var(--border);}
+  tbody tr:last-child td{border-bottom:0;}
+  tbody tr:hover td{background:var(--subtle);}
+  .fname{display:flex;align-items:center;gap:9px;}
+  .fname svg{width:16px;height:16px;color:var(--text3);flex:0 0 16px;}
+  .flink{color:var(--text);cursor:pointer;}
+  .flink:hover{color:var(--brand);}
+  .num{text-align:right;font-variant-numeric:tabular-nums;color:var(--text2);}
+  .muted{color:var(--text2);}
+  .mono{font-family:var(--mono);font-size:12px;}
+  .toolbar{display:flex;flex-wrap:wrap;gap:10px;align-items:center;margin-bottom:14px;}
+  .field{height:34px;border:1px solid var(--border2);border-radius:8px;background:var(--card);display:flex;align-items:center;padding:0 11px;gap:7px;color:var(--text3);font-size:13px;}
+  .field.grow{flex:1;min-width:200px;max-width:300px;}
+  .grid2{display:grid;grid-template-columns:2fr 1fr;gap:16px;align-items:start;}
+  .grid-dash{display:grid;grid-template-columns:repeat(12,1fr);gap:16px;}
+  .span8{grid-column:span 8;}.span4{grid-column:span 4;}.span6{grid-column:span 6;}.span12{grid-column:span 12;}
+  .strip{display:grid;grid-template-columns:auto 1fr auto;gap:16px;align-items:center;padding:14px 16px;border:1px solid var(--border);border-radius:12px;background:linear-gradient(120deg,var(--brand-soft),var(--card));margin-bottom:16px;}
+  .strip__ic{width:40px;height:40px;border-radius:10px;background:var(--card);color:var(--brand);display:flex;align-items:center;justify-content:center;box-shadow:var(--sh-sm);}
+  .strip__ic svg{width:20px;height:20px;}
+  .strip__stats{display:flex;gap:22px;flex-wrap:wrap;}
+  .strip__s b{font-size:19px;font-weight:800;font-variant-numeric:tabular-nums;}
+  .strip__s span{font-size:12px;color:var(--text2);display:block;}
+  .bars{display:flex;align-items:flex-end;gap:8px;height:150px;padding-top:10px;}
+  .bars .b{flex:1;background:linear-gradient(180deg,var(--brand),var(--brand-soft));border-radius:5px 5px 0 0;min-height:6px;}
+  .rank{display:flex;align-items:center;gap:11px;padding:9px 0;border-bottom:1px solid var(--border);}
+  .rank:last-child{border:0;}
+  .rank__n{width:20px;font-weight:800;color:var(--text3);font-size:13px;}
+  .rank__a{width:30px;height:30px;border-radius:999px;background:var(--brand-soft);color:var(--brand);display:flex;align-items:center;justify-content:center;font-weight:700;font-size:12px;}
+  .rank__b{flex:1;}
+  .rank__bar{height:6px;background:var(--subtle);border-radius:999px;margin-top:5px;overflow:hidden;}
+  .rank__bar i{display:block;height:100%;background:var(--brand);border-radius:999px;}
+  .catrow{display:flex;align-items:center;gap:10px;padding:8px 0;}
+  .catrow .sw{width:10px;height:10px;border-radius:3px;flex:0 0 10px;}
+  .catrow .bar{flex:1;height:8px;background:var(--subtle);border-radius:999px;overflow:hidden;}
+  .catrow .bar i{display:block;height:100%;border-radius:999px;}
+  .split{display:grid;grid-template-columns:1.6fr 1fr;gap:16px;align-items:start;}
+  .kv{display:flex;justify-content:space-between;padding:11px 0;border-bottom:1px solid var(--border);font-size:13px;gap:12px;}
+  .kv:last-child{border:0;}
+  .kv span{color:var(--text2);}
+  .kv b{font-weight:600;text-align:right;}
+  .drop{border:1.5px dashed var(--border2);border-radius:12px;background:var(--bg);padding:34px;text-align:center;color:var(--text2);}
+  .drop svg{width:38px;height:38px;color:var(--brand);margin-bottom:10px;}
+  .qrow{display:flex;align-items:center;gap:12px;padding:11px 0;border-bottom:1px solid var(--border);}
+  .qrow:last-child{border:0;}
+  .qrow__ic{width:34px;height:34px;border-radius:8px;background:var(--brand-soft);color:var(--brand);display:flex;align-items:center;justify-content:center;flex:0 0 34px;}
+  .prog{height:6px;background:var(--subtle);border-radius:999px;overflow:hidden;margin-top:6px;}
+  .prog i{display:block;height:100%;background:var(--brand);border-radius:999px;}
+  .switchrow{display:flex;align-items:center;justify-content:space-between;padding:12px 0;border-bottom:1px solid var(--border);font-size:13px;gap:12px;}
+  .switchrow:last-child{border:0;}
+  .switchrow small{display:block;color:var(--text3);font-size:11.5px;margin-top:2px;font-weight:400;}
+  .sw-toggle{width:38px;height:22px;border-radius:999px;background:var(--brand);position:relative;flex:0 0 38px;cursor:pointer;}
+  .sw-toggle::after{content:'';position:absolute;top:2px;right:2px;width:18px;height:18px;border-radius:999px;background:#fff;}
+  .sw-toggle.off{background:var(--border2);}
+  .sw-toggle.off::after{right:auto;left:2px;}
+  .ta{width:100%;height:96px;border:1px solid var(--border2);border-radius:8px;padding:10px;font-family:inherit;font-size:13px;color:var(--text3);resize:none;}
+  .promptbox{background:var(--subtle);border-radius:8px;padding:12px;font-family:var(--mono);font-size:12px;color:var(--text2);line-height:1.7;white-space:pre-wrap;}
+  .tagcloud{display:flex;flex-wrap:wrap;gap:8px;}
+  .lbl{font-size:12px;color:var(--text2);margin-bottom:6px;}
+  .inp{height:34px;border:1px solid var(--border2);border-radius:8px;background:var(--card);display:flex;align-items:center;padding:0 11px;color:var(--text2);font-size:13px;width:100%;}
+  .timeline{position:relative;padding-left:22px;}
+  .timeline::before{content:'';position:absolute;left:6px;top:4px;bottom:4px;width:2px;background:var(--border);}
+  .tl{position:relative;padding:0 0 16px 0;}
+  .tl::before{content:'';position:absolute;left:-19px;top:4px;width:9px;height:9px;border-radius:999px;background:var(--brand);box-shadow:0 0 0 3px var(--brand-soft);}
+  .tl:last-child{padding-bottom:0;}
+  .tl b{font-size:13px;}
+  .tl span{font-size:12px;color:var(--text3);}
+</style>
+</head>
+<body>
+<div class="shell">
+  <aside class="side">
+    <div class="logo"><span class="logo__m"><svg viewBox="0 0 24 24" fill="none" stroke="#fff" stroke-width="2"><path d="M4 5a2 2 0 0 1 2-2h9l5 5v11a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2z"/><path d="M14 3v6h6"/></svg></span><span class="logo__t">知识库平台</span></div>
+    <nav class="nav" id="nav">
+      <div class="nav__g">工作台</div>
+      <div class="nav__i on" data-p="overview"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="3" width="7" height="9"/><rect x="14" y="3" width="7" height="5"/><rect x="14" y="12" width="7" height="9"/><rect x="3" y="16" width="7" height="5"/></svg>运营总览</div>
+      <div class="nav__g">文档</div>
+      <div class="nav__i" data-p="upload"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 15V6a2 2 0 0 0-2-2h-7l-2-2H5a2 2 0 0 0-2 2v13"/><path d="M12 11v6M9 14h6"/></svg>上传文件</div>
+      <div class="nav__i" data-p="myfiles"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><path d="M14 2v6h6"/></svg>我的文件</div>
+      <div class="nav__i" data-p="review"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M9 11l3 3L22 4"/><path d="M21 12v7a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11"/></svg>文件审核</div>
+      <div class="nav__g">知识库</div>
+      <div class="nav__i" data-p="datasets"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><ellipse cx="12" cy="5" rx="9" ry="3"/><path d="M3 5v14a9 3 0 0 0 18 0V5"/></svg>Dataset 配置</div>
+      <div class="nav__i" data-p="categories"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="3" width="7" height="7"/><rect x="14" y="3" width="7" height="7"/><rect x="14" y="14" width="7" height="7"/><rect x="3" y="14" width="7" height="7"/></svg>分类管理</div>
+      <div class="nav__i" data-p="tags"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M20.59 13.41 13.42 20.6a2 2 0 0 1-2.83 0L2 12V2h10l8.59 8.59a2 2 0 0 1 0 2.82z"/><circle cx="7" cy="7" r="1.5"/></svg>标签管理</div>
+      <div class="nav__g">系统</div>
+      <div class="nav__i" data-p="ai"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="4" y="8" width="16" height="12" rx="2"/><path d="M12 2v4M9 4h6M9 14h.01M15 14h.01"/></svg>AI 配置</div>
+      <div class="nav__i" data-p="stats"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M3 3v18h18"/><path d="m7 14 3-4 4 3 5-6"/></svg>统计报表</div>
+      <div class="nav__i" data-p="users"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M16 21v-2a4 4 0 0 0-4-4H6a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M22 21v-2a4 4 0 0 0-3-3.87"/></svg>用户管理</div>
+      <div class="nav__i" data-p="settings"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-2.82 1.17V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 8 19.4l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06A1.65 1.65 0 0 0 4.6 15H4a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 6 8"/></svg>系统设置</div>
+      <div class="nav__i" data-p="audit"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><path d="M9 15h6M9 11h6"/></svg>操作日志</div>
+      <div class="nav__i" data-p="tasks"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M8 6h13M8 12h13M8 18h13M3 6h.01M3 12h.01M3 18h.01"/></svg>任务日志</div>
+    </nav>
+    <div class="side__foot"><span class="dot"></span><span><b>服务链路正常</b><span>API · 队列 · 存储</span></span></div>
+  </aside>
+
+  <div class="main">
+    <header class="top">
+      <span class="top__title" id="ptitle">运营总览</span>
+      <span class="top__search"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="11" cy="11" r="8"/><path d="m21 21-4.3-4.3"/></svg>搜索文件、用户…</span>
+      <span class="top__ic"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M18 8A6 6 0 0 0 6 8c0 7-3 9-3 9h18s-3-2-3-9"/><path d="M13.73 21a2 2 0 0 1-3.46 0"/></svg></span>
+      <span class="top__ava" data-goto="profile" title="个人中心">K</span>
+    </header>
+    <div class="wrap">
+
+      <!-- 运营总览 -->
+      <section class="page on" id="p-overview">
+        <div class="phead"><div><h1>运营总览</h1><p>汇总上传、审核、AI 分析与 RAGFlow 同步的关键指标</p></div><div><button class="btn btn-s"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 12a9 9 0 1 1-3-6.7L21 8"/><path d="M21 3v5h-5"/></svg>刷新</button> <button class="btn btn-p"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><path d="M7 10l5 5 5-5M12 15V3"/></svg>导出报表</button></div></div>
+        <div class="kpis">
+          <div class="kpi"><div class="kpi__top"><span class="kpi__ic ic-brand"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><path d="M14 2v6h6"/></svg></span><span class="kpi__d up">▲ 12.4%</span></div><div class="kpi__v">1,248</div><div class="kpi__l">文件总数</div></div>
+          <div class="kpi"><div class="kpi__top"><span class="kpi__ic ic-success"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M20 6 9 17l-5-5"/></svg></span><span class="kpi__d up">▲ 8.1%</span></div><div class="kpi__v">1,032</div><div class="kpi__l">已同步 RAGFlow · 成功率 96%</div></div>
+          <div class="kpi"><div class="kpi__top"><span class="kpi__ic ic-warning"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="9"/><path d="M12 7v5l3 3"/></svg></span><span class="kpi__d down">▲ 5</span></div><div class="kpi__v">47</div><div class="kpi__l">待审核</div></div>
+          <div class="kpi"><div class="kpi__top"><span class="kpi__ic ic-danger"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M10.29 3.86 1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z"/><path d="M12 9v4M12 17h.01"/></svg></span></div><div class="kpi__v">6</div><div class="kpi__l">处理失败 · 需介入</div></div>
+        </div>
+        <div class="grid-dash">
+          <div class="card span8"><div class="card__h"><span class="card__t">上传与同步趋势</span><span class="tag t-muted">近 14 天</span></div><div class="card__b"><div class="bars"><div class="b" style="height:40%"></div><div class="b" style="height:55%"></div><div class="b" style="height:35%"></div><div class="b" style="height:70%"></div><div class="b" style="height:60%"></div><div class="b" style="height:85%"></div><div class="b" style="height:50%"></div><div class="b" style="height:75%"></div><div class="b" style="height:65%"></div><div class="b" style="height:90%"></div><div class="b" style="height:70%"></div><div class="b" style="height:80%"></div><div class="b" style="height:95%"></div><div class="b" style="height:78%"></div></div></div></div>
+          <div class="card span4"><div class="card__h"><span class="card__t">用户上传排行</span></div><div class="card__b">
+            <div class="rank"><span class="rank__n">01</span><span class="rank__a">张</span><span class="rank__b"><b>张伟</b><div class="rank__bar"><i style="width:100%"></i></div></span></div>
+            <div class="rank"><span class="rank__n">02</span><span class="rank__a">李</span><span class="rank__b"><b>李娜</b><div class="rank__bar"><i style="width:78%"></i></div></span></div>
+            <div class="rank"><span class="rank__n">03</span><span class="rank__a">王</span><span class="rank__b"><b>王芳</b><div class="rank__bar"><i style="width:56%"></i></div></span></div>
+            <div class="rank"><span class="rank__n">04</span><span class="rank__a">刘</span><span class="rank__b"><b>刘强</b><div class="rank__bar"><i style="width:34%"></i></div></span></div>
+          </div></div>
+          <div class="card span6"><div class="card__h"><span class="card__t">知识分类占比</span></div><div class="card__b">
+            <div class="catrow"><span class="sw" style="background:#059669"></span><span style="width:64px">产品文档</span><span class="bar"><i style="width:82%;background:#059669"></i></span><b class="num" style="width:40px">412</b></div>
+            <div class="catrow"><span class="sw" style="background:#0D9488"></span><span style="width:64px">规章制度</span><span class="bar"><i style="width:60%;background:#0D9488"></i></span><b class="num" style="width:40px">298</b></div>
+            <div class="catrow"><span class="sw" style="background:#2563EB"></span><span style="width:64px">培训资料</span><span class="bar"><i style="width:44%;background:#2563EB"></i></span><b class="num" style="width:40px">201</b></div>
+            <div class="catrow"><span class="sw" style="background:#D97706"></span><span style="width:64px">客户 FAQ</span><span class="bar"><i style="width:30%;background:#D97706"></i></span><b class="num" style="width:40px">156</b></div>
+          </div></div>
+          <div class="card span6"><div class="card__h"><span class="card__t">系统状态</span></div><div class="card__b">
+            <div class="kv"><span>整体状态</span><span class="tag t-success">正常</span></div>
+            <div class="kv"><span>数据库 PostgreSQL</span><span class="tag t-success">正常</span></div>
+            <div class="kv"><span>消息队列 RabbitMQ</span><span class="tag t-success">正常</span></div>
+            <div class="kv"><span>对象存储 MinIO</span><span class="tag t-success">正常</span></div>
+            <div class="kv"><span>缓存 Redis</span><span class="tag t-warning">延迟偏高</span></div>
+          </div></div>
+        </div>
+      </section>
+
+      <!-- 上传文件 -->
+      <section class="page" id="p-upload">
+        <div class="phead"><div><h1>上传知识文件</h1><p>上传后进入校验、去重、AI 分析与管理员审核流程</p></div></div>
+        <div class="grid2">
+          <div style="display:grid;gap:16px">
+            <div class="card"><div class="card__h"><span class="card__t">选择文件</span></div><div class="card__b">
+              <div class="drop"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><path d="M7 10l5-5 5 5M12 5v12"/></svg><div><b>拖拽文件到此处，或点击选择</b></div><div style="font-size:12px;margin-top:6px;color:var(--text3)">支持 PDF、DOCX、PPTX、XLSX，最多 3 个并发</div></div>
+            </div></div>
+            <div class="card"><div class="card__h"><span class="card__t">上传队列</span></div><div class="card__b">
+              <div class="qrow"><span class="qrow__ic"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/></svg></span><div style="flex:1"><b style="font-size:13px">产品需求说明书.pdf</b><div class="prog"><i style="width:100%"></i></div></div><span class="tag t-success">完成</span></div>
+              <div class="qrow"><span class="qrow__ic"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/></svg></span><div style="flex:1"><b style="font-size:13px">员工手册 2024.docx</b><div class="prog"><i style="width:64%"></i></div></div><span class="tag t-info">上传中</span></div>
+            </div></div>
+          </div>
+          <div class="card"><div class="card__h"><span class="card__t">文件信息</span></div><div class="card__b">
+            <div class="lbl">说明</div>
+            <textarea class="ta" placeholder="补充用途、来源或审核备注"></textarea>
+            <div style="margin-top:14px">
+              <div class="switchrow"><span>上传后提交审核</span><span class="sw-toggle"></span></div>
+              <div class="switchrow"><span>启用 AI 分析</span><span class="sw-toggle"></span></div>
+            </div>
+            <div style="display:flex;gap:10px;margin-top:16px"><button class="btn btn-s" style="flex:1">保存草稿</button><button class="btn btn-p" style="flex:1">开始上传</button></div>
+          </div></div>
+        </div>
+      </section>
+
+      <!-- 我的文件 -->
+      <section class="page" id="p-myfiles">
+        <div class="phead"><div><h1>我的文件</h1><p>查看自己上传的文件、审核状态和同步进度</p></div><div><button class="btn btn-p" data-goto="upload"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><path d="M7 10l5-5 5 5M12 5v12"/></svg>上传文件</button></div></div>
+        <div class="kpis">
+          <div class="kpi"><div class="kpi__top"><span class="kpi__ic ic-brand"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><path d="M14 2v6h6"/></svg></span></div><div class="kpi__v">86</div><div class="kpi__l">我的文件</div></div>
+          <div class="kpi"><div class="kpi__top"><span class="kpi__ic ic-success"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M20 6 9 17l-5-5"/></svg></span></div><div class="kpi__v">72</div><div class="kpi__l">审核通过</div></div>
+          <div class="kpi"><div class="kpi__top"><span class="kpi__ic ic-warning"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="9"/><path d="M12 7v5l3 3"/></svg></span></div><div class="kpi__v">11</div><div class="kpi__l">待审核</div></div>
+          <div class="kpi"><div class="kpi__top"><span class="kpi__ic ic-danger"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M18 6 6 18M6 6l12 12"/></svg></span></div><div class="kpi__v">3</div><div class="kpi__l">同步失败</div></div>
+        </div>
+        <div class="card"><div class="card__b">
+          <div class="toolbar"><span class="field grow"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="11" cy="11" r="8"/><path d="m21 21-4.3-4.3"/></svg>搜索文件名、说明</span><span class="field">文件状态：全部 ▾</span><span class="field">审核状态：全部 ▾</span><span class="field">类型 ▾</span></div>
+          <table>
+            <thead><tr><th>文件名</th><th>文件状态</th><th>审核</th><th>同步</th><th class="num">大小</th><th>上传时间</th></tr></thead>
+            <tbody>
+              <tr><td><span class="fname"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><path d="M14 2v6h6"/></svg><span class="flink" data-goto="detail">产品需求说明书.pdf</span></span></td><td><span class="tag t-accent">分析完成</span></td><td><span class="tag t-success">已通过</span></td><td><span class="tag t-success">已同步</span></td><td class="num">2.4 MB</td><td class="muted">07-01 14:22</td></tr>
+              <tr><td><span class="fname"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><path d="M14 2v6h6"/></svg><span class="flink" data-goto="detail">员工手册 2024.docx</span></span></td><td><span class="tag t-info">AI 分析中</span></td><td><span class="tag t-warning">待审核</span></td><td><span class="tag t-muted">未同步</span></td><td class="num">1.1 MB</td><td class="muted">07-02 09:10</td></tr>
+              <tr><td><span class="fname"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><path d="M14 2v6h6"/></svg><span class="flink" data-goto="detail">财务报销流程.pptx</span></span></td><td><span class="tag t-accent">分析完成</span></td><td><span class="tag t-success">已通过</span></td><td><span class="tag t-info">同步中</span></td><td class="num">3.8 MB</td><td class="muted">07-02 10:35</td></tr>
+              <tr><td><span class="fname"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><path d="M14 2v6h6"/></svg><span class="flink" data-goto="detail">安全规范手册.pdf</span></span></td><td><span class="tag t-danger">敏感审核</span></td><td><span class="tag t-danger">已拒绝</span></td><td><span class="tag t-muted">—</span></td><td class="num">1.9 MB</td><td class="muted">06-30 16:48</td></tr>
+            </tbody>
+          </table>
+        </div></div>
+      </section>
+
+      <!-- 文件审核 -->
+      <section class="page" id="p-review">
+        <div class="phead"><div><h1>文件审核</h1><p>审核员工上传的文档，通过后进入 RAGFlow 同步队列</p></div></div>
+        <div class="strip">
+          <span class="strip__ic"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M9 11l3 3L22 4"/><path d="M21 12v7a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11"/></svg></span>
+          <div class="strip__stats"><div class="strip__s"><b>47</b><span>待审核</span></div><div class="strip__s"><b style="color:var(--danger)">5</b><span>敏感待处理</span></div><div class="strip__s"><b>238</b><span>本月已审</span></div><div class="strip__s"><b style="color:var(--success)">92%</b><span>通过率</span></div></div>
+          <div style="display:flex;gap:8px"><button class="btn btn-s btn-sm">批量拒绝</button><button class="btn btn-p btn-sm">批量通过</button></div>
+        </div>
+        <div class="card"><div class="card__b">
+          <div class="toolbar"><span class="field grow"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="11" cy="11" r="8"/><path d="m21 21-4.3-4.3"/></svg>搜索</span><span class="field">分类：全部 ▾</span><span class="field">风险：全部 ▾</span><span class="field">上传人 ▾</span></div>
+          <table>
+            <thead><tr><th style="width:34px"><input type="checkbox"></th><th>文件名</th><th>上传人</th><th>风险</th><th>AI 分类</th><th>操作</th></tr></thead>
+            <tbody>
+              <tr><td><input type="checkbox"></td><td><span class="fname"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><path d="M14 2v6h6"/></svg><span class="flink" data-goto="detail">员工手册 2024.docx</span></span></td><td class="muted">李娜</td><td><span class="tag t-success">低风险</span></td><td class="muted">规章制度</td><td><button class="btn btn-g btn-sm">拒绝</button> <button class="btn btn-p btn-sm">通过</button></td></tr>
+              <tr><td><input type="checkbox"></td><td><span class="fname"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><path d="M14 2v6h6"/></svg><span class="flink" data-goto="detail">客户名单汇总.xlsx</span></span></td><td class="muted">王芳</td><td><span class="tag t-danger">高风险</span></td><td class="muted">客户 FAQ</td><td><button class="btn btn-g btn-sm">拒绝</button> <button class="btn btn-p btn-sm">通过</button></td></tr>
+              <tr><td><input type="checkbox"></td><td><span class="fname"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><path d="M14 2v6h6"/></svg><span class="flink" data-goto="detail">产品路线图.pptx</span></span></td><td class="muted">张伟</td><td><span class="tag t-warning">中风险</span></td><td class="muted">产品文档</td><td><button class="btn btn-g btn-sm">拒绝</button> <button class="btn btn-p btn-sm">通过</button></td></tr>
+            </tbody>
+          </table>
+        </div></div>
+      </section>
+
+      <!-- 文件详情 -->
+      <section class="page" id="p-detail">
+        <div class="phead"><div><h1>产品需求说明书.pdf</h1><p>上传于 2026-07-01 14:22 · 张伟 · 2.4 MB</p></div><div><button class="btn btn-s" data-goto="myfiles">返回</button> <button class="btn btn-p">通过审核</button></div></div>
+        <div class="split">
+          <div style="display:grid;gap:16px">
+            <div class="card"><div class="card__h"><span class="card__t">AI 分析结果</span><span class="tag t-accent">分析完成</span></div><div class="card__b">
+              <div style="display:grid;grid-template-columns:repeat(3,1fr);gap:12px;margin-bottom:14px">
+                <div style="padding:12px;background:var(--subtle);border-radius:8px"><div style="font-size:12px;color:var(--text2)">建议分类</div><b style="font-size:15px">产品文档</b></div>
+                <div style="padding:12px;background:var(--subtle);border-radius:8px"><div style="font-size:12px;color:var(--text2)">风险等级</div><b style="font-size:15px;color:var(--success)">低风险</b></div>
+                <div style="padding:12px;background:var(--subtle);border-radius:8px"><div style="font-size:12px;color:var(--text2)">敏感命中</div><b style="font-size:15px">0 项</b></div>
+              </div>
+              <div class="lbl">AI 摘要</div>
+              <p style="font-size:13px;color:var(--text2);line-height:1.7">本文档描述了知识库平台 V2 的产品需求，涵盖上传、审核、RAGFlow Dataset 同步与下游问答服务四大模块，明确了三种角色的权限边界与文档状态流转规则……</p>
+              <div style="margin-top:14px;display:flex;gap:8px;flex-wrap:wrap"><span class="tag t-muted">需求文档</span><span class="tag t-muted">V2</span><span class="tag t-muted">RAGFlow</span><span class="tag t-muted">权限</span></div>
+            </div></div>
+            <div class="card"><div class="card__h"><span class="card__t">文档预览</span></div><div class="card__b"><div style="height:200px;background:var(--subtle);border-radius:8px;display:flex;align-items:center;justify-content:center;color:var(--text3)">PDF 预览区</div></div></div>
+          </div>
+          <div style="display:grid;gap:16px">
+            <div class="card"><div class="card__h"><span class="card__t">状态</span></div><div class="card__b">
+              <div class="kv"><span>文件状态</span><span class="tag t-accent">分析完成</span></div>
+              <div class="kv"><span>审核状态</span><span class="tag t-warning">待审核</span></div>
+              <div class="kv"><span>同步状态</span><span class="tag t-muted">未同步</span></div>
+            </div></div>
+            <div class="card"><div class="card__h"><span class="card__t">审核操作</span></div><div class="card__b">
+              <textarea class="ta" placeholder="审核备注（可选）"></textarea>
+              <div style="display:flex;gap:10px;margin-top:12px"><button class="btn btn-s" style="flex:1">拒绝</button><button class="btn btn-p" style="flex:1">通过并同步</button></div>
+            </div></div>
+          </div>
+        </div>
+      </section>
+
+      <!-- Dataset 配置 -->
+      <section class="page" id="p-datasets">
+        <div class="phead"><div><h1>Dataset 配置</h1><p>配置分类到 RAGFlow Dataset 的映射与同步策略</p></div></div>
+        <div class="strip"><span class="strip__ic"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><ellipse cx="12" cy="5" rx="9" ry="3"/><path d="M3 5v14a9 3 0 0 0 18 0V5"/></svg></span><div class="strip__stats"><div class="strip__s"><b>8</b><span>Dataset</span></div><div class="strip__s"><b>6</b><span>已映射分类</span></div><div class="strip__s"><b style="color:var(--warning)">2</b><span>待映射</span></div><div class="strip__s"><b style="color:var(--success)">96%</b><span>同步成功率</span></div></div><div style="display:flex;gap:8px"><button class="btn btn-s btn-sm">测试连接</button><button class="btn btn-p btn-sm">新增映射</button></div></div>
+        <div class="card"><div class="card__b">
+          <div class="toolbar"><span class="field grow"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="11" cy="11" r="8"/><path d="m21 21-4.3-4.3"/></svg>搜索分类或 Dataset</span><span class="field">状态：全部 ▾</span></div>
+          <table><thead><tr><th>知识分类</th><th>RAGFlow Dataset</th><th>切块方式</th><th class="num">文档数</th><th>状态</th><th>操作</th></tr></thead><tbody>
+            <tr><td>产品文档</td><td class="mono muted">ds_product_docs</td><td class="muted">chunk · 512</td><td class="num">412</td><td><span class="tag t-success">已启用</span></td><td><button class="btn btn-g btn-sm">编辑</button></td></tr>
+            <tr><td>规章制度</td><td class="mono muted">ds_policies</td><td class="muted">chunk · 512</td><td class="num">298</td><td><span class="tag t-success">已启用</span></td><td><button class="btn btn-g btn-sm">编辑</button></td></tr>
+            <tr><td>培训资料</td><td class="mono muted">ds_training</td><td class="muted">chunk · 1024</td><td class="num">201</td><td><span class="tag t-success">已启用</span></td><td><button class="btn btn-g btn-sm">编辑</button></td></tr>
+            <tr><td>客户 FAQ</td><td class="muted">—</td><td class="muted">—</td><td class="num">156</td><td><span class="tag t-warning">待映射</span></td><td><button class="btn btn-p btn-sm">配置</button></td></tr>
+            <tr><td>财务制度</td><td class="mono muted">ds_finance</td><td class="muted">chunk · 512</td><td class="num">88</td><td><span class="tag t-danger">同步失败</span></td><td><button class="btn btn-g btn-sm">重试</button></td></tr>
+          </tbody></table>
+        </div></div>
+      </section>
+
+      <!-- 分类管理 -->
+      <section class="page" id="p-categories">
+        <div class="phead"><div><h1>分类管理</h1><p>维护知识分类目录，分类可绑定到 RAGFlow Dataset</p></div><div><button class="btn btn-p"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 5v14M5 12h14"/></svg>新增分类</button></div></div>
+        <div class="card"><div class="card__b">
+          <div class="toolbar"><span class="field grow"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="11" cy="11" r="8"/><path d="m21 21-4.3-4.3"/></svg>搜索分类名</span><span class="field">状态：全部 ▾</span></div>
+          <table><thead><tr><th>分类名称</th><th>标识 Key</th><th class="num">文档数</th><th>绑定 Dataset</th><th>状态</th><th>操作</th></tr></thead><tbody>
+            <tr><td><span class="fname"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="3" width="7" height="7"/><rect x="14" y="3" width="7" height="7"/><rect x="3" y="14" width="7" height="7"/></svg>产品文档</span></td><td class="mono muted">product</td><td class="num">412</td><td><span class="tag t-success">已绑定</span></td><td><span class="tag t-success">启用</span></td><td><button class="btn btn-g btn-sm">编辑</button></td></tr>
+            <tr><td><span class="fname"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="3" width="7" height="7"/><rect x="14" y="3" width="7" height="7"/><rect x="3" y="14" width="7" height="7"/></svg>规章制度</span></td><td class="mono muted">policy</td><td class="num">298</td><td><span class="tag t-success">已绑定</span></td><td><span class="tag t-success">启用</span></td><td><button class="btn btn-g btn-sm">编辑</button></td></tr>
+            <tr><td><span class="fname"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="3" width="7" height="7"/><rect x="14" y="3" width="7" height="7"/><rect x="3" y="14" width="7" height="7"/></svg>客户 FAQ</span></td><td class="mono muted">faq</td><td class="num">156</td><td><span class="tag t-warning">未绑定</span></td><td><span class="tag t-success">启用</span></td><td><button class="btn btn-g btn-sm">编辑</button></td></tr>
+            <tr><td><span class="fname"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="3" width="7" height="7"/><rect x="14" y="3" width="7" height="7"/><rect x="3" y="14" width="7" height="7"/></svg>历史归档</span></td><td class="mono muted">archive</td><td class="num">34</td><td><span class="tag t-muted">—</span></td><td><span class="tag t-muted">停用</span></td><td><button class="btn btn-g btn-sm">编辑</button></td></tr>
+          </tbody></table>
+        </div></div>
+      </section>
+
+      <!-- 标签管理 -->
+      <section class="page" id="p-tags">
+        <div class="phead"><div><h1>标签管理</h1><p>维护文档标签，用于检索与筛选</p></div><div><button class="btn btn-p"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 5v14M5 12h14"/></svg>新增标签</button></div></div>
+        <div class="grid2">
+          <div class="card"><div class="card__h"><span class="card__t">全部标签</span><span class="tag t-muted">共 42 个</span></div><div class="card__b">
+            <table><thead><tr><th>标签</th><th class="num">使用次数</th><th>状态</th><th>操作</th></tr></thead><tbody>
+              <tr><td><span class="tag t-accent">RAGFlow</span></td><td class="num">218</td><td><span class="tag t-success">启用</span></td><td><button class="btn btn-g btn-sm">编辑</button></td></tr>
+              <tr><td><span class="tag t-accent">需求文档</span></td><td class="num">156</td><td><span class="tag t-success">启用</span></td><td><button class="btn btn-g btn-sm">编辑</button></td></tr>
+              <tr><td><span class="tag t-accent">财务</span></td><td class="num">98</td><td><span class="tag t-success">启用</span></td><td><button class="btn btn-g btn-sm">编辑</button></td></tr>
+              <tr><td><span class="tag t-accent">培训</span></td><td class="num">64</td><td><span class="tag t-success">启用</span></td><td><button class="btn btn-g btn-sm">编辑</button></td></tr>
+              <tr><td><span class="tag t-muted">废弃标签</span></td><td class="num">2</td><td><span class="tag t-muted">停用</span></td><td><button class="btn btn-g btn-sm">编辑</button></td></tr>
+            </tbody></table>
+          </div></div>
+          <div class="card"><div class="card__h"><span class="card__t">热门标签云</span></div><div class="card__b">
+            <div class="tagcloud">
+              <span class="tag t-accent" style="font-size:15px;padding:5px 14px">RAGFlow</span>
+              <span class="tag t-accent" style="font-size:14px;padding:4px 12px">需求文档</span>
+              <span class="tag t-muted">财务</span>
+              <span class="tag t-accent" style="font-size:13px">培训</span>
+              <span class="tag t-muted">制度</span>
+              <span class="tag t-muted" style="font-size:12px">V2</span>
+              <span class="tag t-accent">权限</span>
+              <span class="tag t-muted">客户</span>
+              <span class="tag t-muted" style="font-size:12px">安全</span>
+              <span class="tag t-muted">流程</span>
+            </div>
+          </div></div>
+        </div>
+      </section>
+
+      <!-- AI 配置 -->
+      <section class="page" id="p-ai">
+        <div class="phead"><div><h1>AI 配置</h1><p>AI Provider、Prompt 模板与敏感规则</p></div></div>
+        <div class="grid2">
+          <div style="display:grid;gap:16px">
+            <div class="card"><div class="card__h"><span class="card__t">Prompt 模板</span><button class="btn btn-s btn-sm">编辑</button></div><div class="card__b">
+              <div class="lbl">分类 & 打标签 Prompt</div>
+              <div class="promptbox">你是知识库分类助手。请根据文档内容，从给定分类列表中选择最合适的一个分类，并提取 3-5 个关键词标签。输出 JSON：{ category, tags[] }</div>
+              <div class="lbl" style="margin-top:14px">敏感内容检测 Prompt</div>
+              <div class="promptbox">检测文档是否包含：个人隐私、商业机密、财务敏感数据。输出风险等级（none/low/medium/high/critical）与命中项。</div>
+            </div></div>
+            <div class="card"><div class="card__h"><span class="card__t">敏感规则</span><button class="btn btn-p btn-sm">新增规则</button></div><div class="card__b">
+              <table><thead><tr><th>规则</th><th>匹配</th><th>风险等级</th><th>动作</th></tr></thead><tbody>
+                <tr><td>身份证号</td><td class="mono muted">regex</td><td><span class="tag t-danger">高</span></td><td class="muted">拦截同步</td></tr>
+                <tr><td>银行卡号</td><td class="mono muted">regex</td><td><span class="tag t-danger">高</span></td><td class="muted">拦截同步</td></tr>
+                <tr><td>「内部机密」</td><td class="mono muted">关键词</td><td><span class="tag t-warning">中</span></td><td class="muted">转人工审核</td></tr>
+              </tbody></table>
+            </div></div>
+          </div>
+          <div class="card"><div class="card__h"><span class="card__t">AI Provider</span><span class="tag t-success">已连接</span></div><div class="card__b">
+            <div class="kv"><span>Provider</span><b>通义千问</b></div>
+            <div class="kv"><span>模型</span><b class="mono">qwen-max</b></div>
+            <div class="kv"><span>API Key</span><b class="mono">•••••••• 已配置</b></div>
+            <div class="kv"><span>并发上限</span><b>5</b></div>
+            <div class="kv"><span>本月调用</span><b>3,412 次</b></div>
+            <button class="btn btn-s" style="width:100%;justify-content:center;margin-top:14px">测试连接</button>
+          </div></div>
+        </div>
+      </section>
+
+      <!-- 统计报表 -->
+      <section class="page" id="p-stats">
+        <div class="phead"><div><h1>统计报表</h1><p>贡献排行、分类分布与失败分析</p></div><div><button class="btn btn-p"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><path d="M7 10l5 5 5-5M12 15V3"/></svg>导出 CSV</button></div></div>
+        <div class="kpis">
+          <div class="kpi"><div class="kpi__top"><span class="kpi__ic ic-brand"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><path d="M14 2v6h6"/></svg></span></div><div class="kpi__v">1,248</div><div class="kpi__l">累计文件</div></div>
+          <div class="kpi"><div class="kpi__top"><span class="kpi__ic ic-success"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M16 21v-2a4 4 0 0 0-4-4H6a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/></svg></span></div><div class="kpi__v">42</div><div class="kpi__l">活跃上传者</div></div>
+          <div class="kpi"><div class="kpi__top"><span class="kpi__ic ic-accent"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="3" width="7" height="7"/><rect x="14" y="3" width="7" height="7"/><rect x="14" y="14" width="7" height="7"/><rect x="3" y="14" width="7" height="7"/></svg></span></div><div class="kpi__v">18</div><div class="kpi__l">知识分类</div></div>
+          <div class="kpi"><div class="kpi__top"><span class="kpi__ic ic-info"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 12a9 9 0 1 1-3-6.7"/><path d="M21 3v5h-5"/></svg></span></div><div class="kpi__v">96%</div><div class="kpi__l">同步成功率</div></div>
+        </div>
+        <div class="grid-dash">
+          <div class="card span8"><div class="card__h"><span class="card__t">月度上传趋势</span><span class="tag t-muted">近 12 个月</span></div><div class="card__b"><div class="bars"><div class="b" style="height:45%"></div><div class="b" style="height:52%"></div><div class="b" style="height:60%"></div><div class="b" style="height:48%"></div><div class="b" style="height:70%"></div><div class="b" style="height:82%"></div><div class="b" style="height:65%"></div><div class="b" style="height:75%"></div><div class="b" style="height:88%"></div><div class="b" style="height:80%"></div><div class="b" style="height:92%"></div><div class="b" style="height:100%"></div></div></div></div>
+          <div class="card span4"><div class="card__h"><span class="card__t">失败原因分析</span></div><div class="card__b">
+            <div class="catrow"><span style="width:64px;font-size:12px">解析超时</span><span class="bar"><i style="width:70%;background:var(--danger)"></i></span><b class="num" style="width:30px">14</b></div>
+            <div class="catrow"><span style="width:64px;font-size:12px">格式不支持</span><span class="bar"><i style="width:45%;background:var(--warning)"></i></span><b class="num" style="width:30px">9</b></div>
+            <div class="catrow"><span style="width:64px;font-size:12px">敏感拦截</span><span class="bar"><i style="width:30%;background:var(--danger)"></i></span><b class="num" style="width:30px">6</b></div>
+            <div class="catrow"><span style="width:64px;font-size:12px">连接失败</span><span class="bar"><i style="width:15%;background:var(--text3)"></i></span><b class="num" style="width:30px">3</b></div>
+          </div></div>
+          <div class="card span12"><div class="card__h"><span class="card__t">贡献排行 Top 5</span></div><div class="card__b"><table><thead><tr><th>排名</th><th>用户</th><th>部门</th><th class="num">上传</th><th class="num">已同步</th><th class="num">同步率</th></tr></thead><tbody>
+            <tr><td><b>01</b></td><td>张伟</td><td class="muted">技术部</td><td class="num">128</td><td class="num">124</td><td class="num">97%</td></tr>
+            <tr><td><b>02</b></td><td>李娜</td><td class="muted">人事部</td><td class="num">96</td><td class="num">90</td><td class="num">94%</td></tr>
+            <tr><td><b>03</b></td><td>王芳</td><td class="muted">财务部</td><td class="num">72</td><td class="num">70</td><td class="num">97%</td></tr>
+            <tr><td><b>04</b></td><td>刘强</td><td class="muted">市场部</td><td class="num">54</td><td class="num">48</td><td class="num">89%</td></tr>
+            <tr><td><b>05</b></td><td>陈静</td><td class="muted">产品部</td><td class="num">41</td><td class="num">40</td><td class="num">98%</td></tr>
+          </tbody></table></div></div>
+        </div>
+      </section>
+
+      <!-- 用户管理 -->
+      <section class="page" id="p-users">
+        <div class="phead"><div><h1>用户管理</h1><p>账号、角色与部门管理</p></div><div><button class="btn btn-p"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 5v14M5 12h14"/></svg>新增用户</button></div></div>
+        <div class="card"><div class="card__b">
+          <div class="toolbar"><span class="field grow"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="11" cy="11" r="8"/><path d="m21 21-4.3-4.3"/></svg>搜索姓名 / 邮箱</span><span class="field">角色：全部 ▾</span><span class="field">部门 ▾</span><span class="field">状态 ▾</span></div>
+          <table><thead><tr><th>姓名</th><th>邮箱</th><th>角色</th><th>部门</th><th>状态</th><th>操作</th></tr></thead><tbody>
+            <tr><td><span class="fname"><span class="rank__a" style="width:26px;height:26px;font-size:11px">张</span>张伟</span></td><td class="mono muted">zhang@corp.com</td><td><span class="tag t-info">系统管理员</span></td><td class="muted">技术部</td><td><span class="tag t-success">正常</span></td><td><button class="btn btn-g btn-sm">编辑</button></td></tr>
+            <tr><td><span class="fname"><span class="rank__a" style="width:26px;height:26px;font-size:11px">李</span>李娜</span></td><td class="mono muted">lina@corp.com</td><td><span class="tag t-accent">部门管理员</span></td><td class="muted">人事部</td><td><span class="tag t-success">正常</span></td><td><button class="btn btn-g btn-sm">编辑</button></td></tr>
+            <tr><td><span class="fname"><span class="rank__a" style="width:26px;height:26px;font-size:11px">王</span>王芳</span></td><td class="mono muted">wangf@corp.com</td><td><span class="tag t-muted">员工</span></td><td class="muted">财务部</td><td><span class="tag t-success">正常</span></td><td><button class="btn btn-g btn-sm">编辑</button></td></tr>
+            <tr><td><span class="fname"><span class="rank__a" style="width:26px;height:26px;font-size:11px">刘</span>刘强</span></td><td class="mono muted">liuq@corp.com</td><td><span class="tag t-muted">员工</span></td><td class="muted">市场部</td><td><span class="tag t-success">正常</span></td><td><button class="btn btn-g btn-sm">编辑</button></td></tr>
+          </tbody></table>
+        </div></div>
+      </section>
+
+      <!-- 系统设置 -->
+      <section class="page" id="p-settings">
+        <div class="phead"><div><h1>系统设置</h1><p>上传策略、文件限制与外部服务连接</p></div><div><button class="btn btn-p">保存更改</button></div></div>
+        <div class="grid2">
+          <div style="display:grid;gap:16px">
+            <div class="card"><div class="card__h"><span class="card__t">上传策略</span></div><div class="card__b">
+              <div class="switchrow"><span>开放员工上传<small>关闭后员工无法提交新文件</small></span><span class="sw-toggle"></span></div>
+              <div class="switchrow"><span>允许员工删除自己的文件<small>仅影响未同步的文件</small></span><span class="sw-toggle off"></span></div>
+              <div class="switchrow"><span>允许多文件上传</span><span class="sw-toggle"></span></div>
+              <div class="switchrow"><span>上传后默认启用 AI 分析</span><span class="sw-toggle"></span></div>
+            </div></div>
+            <div class="card"><div class="card__h"><span class="card__t">文件限制</span></div><div class="card__b">
+              <div class="kv"><span>允许的文件类型</span><b>PDF · DOCX · PPTX · XLSX</b></div>
+              <div class="kv"><span>单文件大小上限</span><b>50 MB</b></div>
+              <div class="kv"><span>单次并发上传</span><b>3</b></div>
+              <div class="kv"><span>去重方式</span><b>SHA-256 内容哈希</b></div>
+            </div></div>
+          </div>
+          <div class="card"><div class="card__h"><span class="card__t">RAGFlow 连接</span><span class="tag t-success">已连接</span></div><div class="card__b">
+            <div class="lbl">API 地址</div><div class="inp mono">https://ragflow.internal/api</div>
+            <div class="lbl" style="margin-top:12px">API Key</div><div class="inp mono">•••••••••••• 已配置</div>
+            <div class="lbl" style="margin-top:12px">默认切块大小</div><div class="inp">512 tokens</div>
+            <button class="btn btn-s" style="width:100%;justify-content:center;margin-top:14px">测试连接</button>
+          </div></div>
+        </div>
+      </section>
+
+      <!-- 操作日志 -->
+      <section class="page" id="p-audit">
+        <div class="phead"><div><h1>操作日志</h1><p>管理员操作审计记录</p></div></div>
+        <div class="card"><div class="card__b">
+          <div class="toolbar"><span class="field grow"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="11" cy="11" r="8"/><path d="m21 21-4.3-4.3"/></svg>搜索操作人 / 对象</span><span class="field">操作类型：全部 ▾</span><span class="field">时间范围 ▾</span></div>
+          <table><thead><tr><th>时间</th><th>操作人</th><th>操作</th><th>对象</th><th class="mono">IP</th></tr></thead><tbody>
+            <tr><td class="muted">07-02 10:42</td><td>张伟</td><td><span class="tag t-success">审核通过</span></td><td class="muted">产品需求说明书.pdf</td><td class="mono muted">10.0.2.15</td></tr>
+            <tr><td class="muted">07-02 10:38</td><td>张伟</td><td><span class="tag t-danger">审核拒绝</span></td><td class="muted">客户名单汇总.xlsx</td><td class="mono muted">10.0.2.15</td></tr>
+            <tr><td class="muted">07-02 09:55</td><td>李娜</td><td><span class="tag t-info">角色变更</span></td><td class="muted">王芳 → 部门管理员</td><td class="mono muted">10.0.3.22</td></tr>
+            <tr><td class="muted">07-02 09:20</td><td>张伟</td><td><span class="tag t-warning">修改配置</span></td><td class="muted">上传策略 · 关闭删除</td><td class="mono muted">10.0.2.15</td></tr>
+            <tr><td class="muted">07-01 18:03</td><td>张伟</td><td><span class="tag t-accent">新增映射</span></td><td class="muted">财务制度 → ds_finance</td><td class="mono muted">10.0.2.15</td></tr>
+          </tbody></table>
+        </div></div>
+      </section>
+
+      <!-- 任务日志 -->
+      <section class="page" id="p-tasks">
+        <div class="phead"><div><h1>任务日志</h1><p>Celery 同步 / 解析 / AI 分析任务</p></div></div>
+        <div class="strip"><span class="strip__ic"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M8 6h13M8 12h13M8 18h13M3 6h.01M3 12h.01M3 18h.01"/></svg></span><div class="strip__stats"><div class="strip__s"><b style="color:var(--info)">3</b><span>运行中</span></div><div class="strip__s"><b>12</b><span>排队</span></div><div class="strip__s"><b style="color:var(--success)">1,286</b><span>今日成功</span></div><div class="strip__s"><b style="color:var(--danger)">6</b><span>失败</span></div></div><div style="display:flex;gap:8px"><button class="btn btn-s btn-sm">清空已完成</button><button class="btn btn-p btn-sm">重试失败</button></div></div>
+        <div class="card"><div class="card__b">
+          <div class="toolbar"><span class="field grow"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="11" cy="11" r="8"/><path d="m21 21-4.3-4.3"/></svg>搜索任务 / 文件</span><span class="field">类型：全部 ▾</span><span class="field">状态：全部 ▾</span></div>
+          <table><thead><tr><th class="mono">任务 ID</th><th>类型</th><th>关联文件</th><th>状态</th><th class="num">耗时</th><th>时间</th></tr></thead><tbody>
+            <tr><td class="mono muted">tsk_9f2a</td><td><span class="tag t-accent">RAGFlow 同步</span></td><td class="muted">财务报销流程.pptx</td><td><span class="tag t-info">运行中</span></td><td class="num">—</td><td class="muted">10:41</td></tr>
+            <tr><td class="mono muted">tsk_9f18</td><td><span class="tag t-accent">AI 分析</span></td><td class="muted">员工手册 2024.docx</td><td><span class="tag t-info">运行中</span></td><td class="num">—</td><td class="muted">10:40</td></tr>
+            <tr><td class="mono muted">tsk_9e77</td><td><span class="tag t-muted">文本抽取</span></td><td class="muted">产品需求说明书.pdf</td><td><span class="tag t-success">成功</span></td><td class="num">2.3s</td><td class="muted">10:22</td></tr>
+            <tr><td class="mono muted">tsk_9e51</td><td><span class="tag t-accent">RAGFlow 同步</span></td><td class="muted">安全规范手册.pdf</td><td><span class="tag t-danger">失败</span></td><td class="num">30s</td><td class="muted">09:48</td></tr>
+          </tbody></table>
+        </div></div>
+      </section>
+
+      <!-- 个人中心 -->
+      <section class="page" id="p-profile">
+        <div class="phead"><div><h1>个人中心</h1><p>账号资料、认证状态与登录安全</p></div></div>
+        <div class="kpis">
+          <div class="kpi"><div class="kpi__top"><span class="kpi__ic ic-success"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M9 12l2 2 4-4"/><circle cx="12" cy="12" r="9"/></svg></span></div><div class="kpi__v" style="font-size:20px">正常</div><div class="kpi__l">账号状态</div></div>
+          <div class="kpi"><div class="kpi__top"><span class="kpi__ic ic-success"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M4 4h16v16H4z"/><path d="m4 6 8 6 8-6"/></svg></span></div><div class="kpi__v" style="font-size:20px">已认证</div><div class="kpi__l">邮箱认证</div></div>
+          <div class="kpi"><div class="kpi__top"><span class="kpi__ic ic-info"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M16 21v-2a4 4 0 0 0-4-4H6a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/></svg></span></div><div class="kpi__v" style="font-size:20px">系统级</div><div class="kpi__l">权限范围</div></div>
+          <div class="kpi"><div class="kpi__top"><span class="kpi__ic ic-brand"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M22 16.92v3a2 2 0 0 1-2.18 2 19.79 19.79 0 0 1-8.63-3.07 19.5 19.5 0 0 1-6-6 19.79 19.79 0 0 1-3.07-8.67A2 2 0 0 1 4.11 2h3a2 2 0 0 1 2 1.72"/></svg></span></div><div class="kpi__v" style="font-size:20px">已登记</div><div class="kpi__l">联系方式</div></div>
+        </div>
+        <div class="grid2">
+          <div style="display:grid;gap:16px">
+            <div class="card"><div class="card__h"><span class="card__t">个人资料</span></div><div class="card__b">
+              <div class="kv"><span>姓名</span><b>张伟</b></div>
+              <div class="kv"><span>邮箱</span><b class="mono">zhang@corp.com</b></div>
+              <div class="kv"><span>角色</span><span class="tag t-info">系统管理员</span></div>
+              <div class="kv"><span>部门</span><b>技术部</b></div>
+              <div class="kv"><span>手机</span><b class="mono">138****6688</b></div>
+            </div></div>
+            <div class="card"><div class="card__h"><span class="card__t">账号安全</span></div><div class="card__b">
+              <div class="switchrow"><span>账号密码登录<small>邮箱作为账号标识，注册默认激活</small></span><span class="tag t-success">启用</span></div>
+              <div class="switchrow"><span>密码策略<small>至少 8 位，不能与旧密码相同</small></span><span class="tag t-success">符合</span></div>
+              <div class="switchrow"><span>访问范围<small>由管理员按组织维护</small></span><span class="tag t-success">系统级</span></div>
+            </div></div>
+          </div>
+          <div class="card"><div class="card__h"><span class="card__t">修改密码</span></div><div class="card__b">
+            <div class="lbl">当前密码</div><div class="inp">••••••••</div>
+            <div class="lbl" style="margin-top:12px">新密码</div><div class="inp">请输入新密码（至少 8 位）</div>
+            <div class="lbl" style="margin-top:12px">确认新密码</div><div class="inp">请再次输入新密码</div>
+            <button class="btn btn-p" style="width:100%;justify-content:center;margin-top:16px">修改密码</button>
+          </div></div>
+        </div>
+      </section>
+
+    </div>
+  </div>
+</div>
+<script>
+  const titles={overview:'运营总览',upload:'上传文件',myfiles:'我的文件',review:'文件审核',detail:'文件详情',datasets:'Dataset 配置',categories:'分类管理',tags:'标签管理',ai:'AI 配置',stats:'统计报表',users:'用户管理',settings:'系统设置',audit:'操作日志',tasks:'任务日志',profile:'个人中心'};
+  function go(p){
+    document.querySelectorAll('.nav__i').forEach(n=>n.classList.toggle('on',n.dataset.p===p));
+    document.querySelectorAll('.page').forEach(pg=>pg.classList.remove('on'));
+    const el=document.getElementById('p-'+p); if(el) el.classList.add('on');
+    document.getElementById('ptitle').textContent=titles[p]||'';
+    document.querySelector('.wrap').scrollTop=0;
+  }
+  document.addEventListener('click',e=>{
+    const nav=e.target.closest('.nav__i'); if(nav){go(nav.dataset.p);return;}
+    const gt=e.target.closest('[data-goto]'); if(gt){go(gt.dataset.goto);}
+  });
+</script>
+</body>
+</html>

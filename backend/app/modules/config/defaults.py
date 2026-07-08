@@ -157,8 +157,8 @@ CONFIG_DEFINITIONS: tuple[ConfigDefinition, ...] = (
         key="security.require_email_verification",
         group="security",
         value_type="bool",
-        default=True,
-        description="注册后是否要求邮箱验证",
+        default=False,
+        description="注册后是否要求邮箱验证 - 当前默认关闭",
     ),
     ConfigDefinition(
         key="security.require_review_before_sync",

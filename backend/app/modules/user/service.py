@@ -181,7 +181,7 @@ class UserService:
         user_agent: str,
     ) -> User:
         target = await self.get_user(target_id)
-        target.status = "active" if target.email_verified else "pending_email_verification"
+        target.status = "active"
         await record_admin_audit_log(
             self._session,
             actor_id=actor.id,

@@ -30,6 +30,7 @@ const AuditLogsPage = lazy(() => import("../pages/AuditLogs"));
 const CategoriesPage = lazy(() => import("../pages/Categories"));
 const DashboardPage = lazy(() => import("../pages/Dashboard"));
 const DatasetConfigPage = lazy(() => import("../pages/DatasetConfig"));
+const DepartmentsPage = lazy(() => import("../pages/Departments"));
 const FileDetailPage = lazy(() => import("../pages/FileDetail"));
 const FileManagementPage = lazy(() => import("../pages/FileManagement"));
 const ForgotPasswordPage = lazy(() => import("../pages/ForgotPassword"));
@@ -129,6 +130,12 @@ export const appRoutes: AppRoute[] = [
     element: routeElement(UsersPage),
     roles: [Roles.SYSTEM_ADMIN],
     nav: { label: "用户管理", icon: <TeamOutlined />, group: "系统" },
+  },
+  {
+    path: "/departments",
+    element: routeElement(DepartmentsPage),
+    roles: [Roles.SYSTEM_ADMIN],
+    nav: { label: "部门管理", icon: <TeamOutlined />, group: "系统" },
   },
   {
     path: "/settings",

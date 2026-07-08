@@ -59,10 +59,8 @@ export default function ProfilePage() {
     });
   }
 
-  const emailVerifiedValue = profile?.email_verified ? "active" : "pending_email_verification";
-
   return (
-    <PageContainer title="个人中心" description="查看当前账号资料、认证状态与登录安全设置。">
+    <PageContainer title="个人中心" description="查看当前账号资料、组织归属与登录安全设置。">
       {profile ? (
         <div className="metric-grid profile-kpi-grid">
           <KpiCard
@@ -74,10 +72,10 @@ export default function ProfilePage() {
           />
           <KpiCard
             icon={<MailOutlined />}
-            title="邮箱认证"
-            value={profile.email_verified ? "已认证" : "待激活"}
-            description="公司邮箱校验"
-            tone={profile.email_verified ? "success" : "warning"}
+            title="账号邮箱"
+            value="可登录"
+            description={profile.email}
+            tone="primary"
           />
           <KpiCard
             icon={<TeamOutlined />}
@@ -110,8 +108,8 @@ export default function ProfilePage() {
                 </Descriptions.Item>
                 <Descriptions.Item label="部门">{profile.department ?? "—"}</Descriptions.Item>
                 <Descriptions.Item label="手机">{profile.phone ?? "—"}</Descriptions.Item>
-                <Descriptions.Item label="邮箱状态">
-                  <StatusTag kind="user" value={emailVerifiedValue} />
+                <Descriptions.Item label="账号状态">
+                  <StatusTag kind="user" value={profile.status} />
                 </Descriptions.Item>
               </Descriptions>
             ) : null}
@@ -121,10 +119,12 @@ export default function ProfilePage() {
             <div className="profile-security-list">
               <div className="profile-security-row">
                 <span className="profile-security-copy">
-                  <Typography.Text strong>邮箱验证</Typography.Text>
-                  <Typography.Text type="secondary">控制账号激活与通知送达状态</Typography.Text>
+                  <Typography.Text strong>账号密码登录</Typography.Text>
+                  <Typography.Text type="secondary">
+                    邮箱作为账号标识，不作为登录前置验证
+                  </Typography.Text>
                 </span>
-                <StatusTag kind="user" value={emailVerifiedValue} />
+                <StatusTag kind="user" value={profile?.status ?? "active"} />
               </div>
               <div className="profile-security-row">
                 <span className="profile-security-copy">

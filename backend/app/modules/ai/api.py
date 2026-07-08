@@ -18,6 +18,11 @@ from .schemas import (
     AiFeatureUpdateRequest,
     AiProviderCreateRequest,
     AiProviderUpdateRequest,
+    PromptTemplateCreateRequest,
+    PromptTemplateUpdateRequest,
+    SensitiveRuleCreateRequest,
+    SensitiveRuleTestRequest,
+    SensitiveRuleUpdateRequest,
 )
 from .service import (  # noqa: TID251 - same-module service dependency
     AiConfigService,
@@ -147,3 +152,159 @@ async def test_ai_provider(
     except exceptions.AiError as error:
         _raise_ai_error(error)
     return success_response(response.model_dump(mode="json"), request)
+
+
+@router.post("/prompt-templates", status_code=201)
+async def create_prompt_template(
+    payload: PromptTemplateCreateRequest,
+    request: Request,
+    current_user: SystemAdminDep,
+    session: SessionDep,
+    settings: SettingsDep,
+) -> dict[str, object]:
+    try:
+        response = await _service(session, settings).create_prompt_template(
+            current_user=current_user,
+            request=payload,
+            context=_context_from(request),
+        )
+    except exceptions.AiError as error:
+        _raise_ai_error(error)
+    return success_response(response.model_dump(mode="json"), request)
+
+
+@router.patch("/prompt-templates/{template_id}")
+async def update_prompt_template(
+    template_id: UUID,
+    payload: PromptTemplateUpdateRequest,
+    request: Request,
+    current_user: SystemAdminDep,
+    session: SessionDep,
+    settings: SettingsDep,
+) -> dict[str, object]:
+    try:
+        response = await _service(session, settings).update_prompt_template(
+            current_user=current_user,
+            template_id=template_id,
+            request=payload,
+            context=_context_from(request),
+        )
+    except exceptions.AiError as error:
+        _raise_ai_error(error)
+    return success_response(response.model_dump(mode="json"), request)
+
+
+@router.post("/prompt-templates/{template_id}/restore-default")
+async def restore_prompt_template_default(
+    template_id: UUID,
+    request: Request,
+    current_user: SystemAdminDep,
+    session: SessionDep,
+    settings: SettingsDep,
+) -> dict[str, object]:
+    try:
+        response = await _service(session, settings).restore_prompt_template_default(
+            current_user=current_user,
+            template_id=template_id,
+            context=_context_from(request),
+        )
+    except exceptions.AiError as error:
+        _raise_ai_error(error)
+    return success_response(response.model_dump(mode="json"), request)
+
+
+@router.delete("/prompt-templates/{template_id}")
+async def delete_prompt_template(
+    template_id: UUID,
+    request: Request,
+    current_user: SystemAdminDep,
+    session: SessionDep,
+    settings: SettingsDep,
+) -> dict[str, object]:
+    try:
+        await _service(session, settings).delete_prompt_template(
+            current_user=current_user,
+            template_id=template_id,
+            context=_context_from(request),
+        )
+    except exceptions.AiError as error:
+        _raise_ai_error(error)
+    return success_response({}, request)
+
+
+@router.post("/sensitive-rules", status_code=201)
+async def create_sensitive_rule(
+    payload: SensitiveRuleCreateRequest,
+    request: Request,
+    current_user: SystemAdminDep,
+    session: SessionDep,
+    settings: SettingsDep,
+) -> dict[str, object]:
+    try:
+        response = await _service(session, settings).create_sensitive_rule(
+            current_user=current_user,
+            request=payload,
+            context=_context_from(request),
+        )
+    except exceptions.AiError as error:
+        _raise_ai_error(error)
+    return success_response(response.model_dump(mode="json"), request)
+
+
+@router.post("/sensitive-rules/test")
+async def test_sensitive_rules(
+    payload: SensitiveRuleTestRequest,
+    request: Request,
+    current_user: SystemAdminDep,
+    session: SessionDep,
+    settings: SettingsDep,
+) -> dict[str, object]:
+    try:
+        response = await _service(session, settings).test_sensitive_rules(
+            current_user=current_user,
+            request=payload,
+            context=_context_from(request),
+        )
+    except exceptions.AiError as error:
+        _raise_ai_error(error)
+    return success_response(response.model_dump(mode="json"), request)
+
+
+@router.patch("/sensitive-rules/{rule_id}")
+async def update_sensitive_rule(
+    rule_id: UUID,
+    payload: SensitiveRuleUpdateRequest,
+    request: Request,
+    current_user: SystemAdminDep,
+    session: SessionDep,
+    settings: SettingsDep,
+) -> dict[str, object]:
+    try:
+        response = await _service(session, settings).update_sensitive_rule(
+            current_user=current_user,
+            rule_id=rule_id,
+            request=payload,
+            context=_context_from(request),
+        )
+    except exceptions.AiError as error:
+        _raise_ai_error(error)
+    return success_response(response.model_dump(mode="json"), request)
+
+
+@router.delete("/sensitive-rules/{rule_id}")
+async def delete_sensitive_rule(
+    rule_id: UUID,
+    request: Request,
+    current_user: SystemAdminDep,
+    session: SessionDep,
+    settings: SettingsDep,
+) -> dict[str, object]:
+    try:
+        await _service(session, settings).delete_sensitive_rule(
+            current_user=current_user,
+            rule_id=rule_id,
+            context=_context_from(request),
+        )
+    except exceptions.AiError as error:
+        _raise_ai_error(error)
+    return success_response({}, request)
