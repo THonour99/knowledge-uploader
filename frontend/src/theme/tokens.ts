@@ -27,19 +27,19 @@ export const colors = {
 
 export const statusTagColors = {
   default: colors.textDisabled,
-  info: colors.info,
+  info: colors.primary,
   primary: colors.primary,
-  processing: colors.info,
-  geekblue: colors.geekblue,
+  processing: colors.primary,
+  geekblue: colors.primary,
   queued: colors.warning,
   success: colors.success,
   warning: colors.warning,
   danger: colors.danger,
-  volcano: colors.volcano,
-  dangerDeep: colors.dangerDeep,
-  ai: colors.purple,
-  orange: colors.orange,
-  cyan: colors.cyan,
+  volcano: colors.danger,
+  dangerDeep: colors.danger,
+  ai: colors.primary,
+  orange: colors.warning,
+  cyan: colors.primary,
 } as const;
 
 export const radius = {

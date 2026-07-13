@@ -1268,11 +1268,6 @@ a {
   align-items: center;
   gap: 6px;
   width: fit-content;
-  min-height: 24px;
-  padding: 2px 9px;
-  border: 1px solid color-mix(in srgb, currentColor 16%, transparent);
-  border-radius: 999px;
-  background: color-mix(in srgb, currentColor 7%, white);
   color: var(--ku-text-disabled);
   font-size: 12px;
   font-weight: 600;
@@ -1299,34 +1294,19 @@ a {
 }
 
 .status-tag-dot--danger,
-.status-tag-dot--dangerDeep {
+.status-tag-dot--dangerDeep,
+.status-tag-dot--volcano {
   color: var(--ku-color-danger);
 }
 
-.status-tag-dot--primary {
-  color: var(--ku-color-primary);
-}
-
+.status-tag-dot--primary,
 .status-tag-dot--info,
-.status-tag-dot--processing {
-  color: var(--ku-color-info);
-}
-
-.status-tag-dot--cyan {
-  color: var(--ku-color-cyan);
-}
-
-.status-tag-dot--geekblue {
-  color: var(--ku-color-geekblue);
-}
-
-.status-tag-dot--volcano {
-  color: var(--ku-color-volcano);
-}
-
+.status-tag-dot--processing,
+.status-tag-dot--cyan,
+.status-tag-dot--geekblue,
 .status-tag-dot--ai,
 .status-tag-dot--purple {
-  color: var(--ku-color-purple);
+  color: var(--ku-color-primary);
 }
 
 .status-tag-dot--default {
@@ -1455,16 +1435,12 @@ a {
 
 .status-tag.ant-tag {
   margin-inline-end: 0;
-  border: 1px solid color-mix(in srgb, var(--status-color) 24%, transparent);
+  border: 1px solid var(--ku-border);
   border-radius: 999px;
-  background: color-mix(in srgb, var(--status-color) 11%, white);
+  background: var(--ku-bg-card);
   color: var(--status-color);
   font-weight: 600;
   line-height: 20px;
-}
-
-.status-tag--processing.ant-tag {
-  box-shadow: 0 0 0 1px color-mix(in srgb, var(--status-color) 18%, transparent);
 }
 
 .status-tag--italic {
