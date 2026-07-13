@@ -16,7 +16,6 @@ import {
   DatabaseOutlined,
   FileSearchOutlined,
   ReloadOutlined,
-  UserOutlined,
 } from "@ant-design/icons";
 import { useQuery } from "@tanstack/react-query";
 import dayjs, { type Dayjs } from "dayjs";
@@ -124,7 +123,6 @@ export default function AuditLogsPage() {
 
   const logs = logsQuery.data?.items ?? [];
   const total = logsQuery.data?.total ?? 0;
-  const pageActorCount = new Set(logs.map((log) => log.actor_id)).size;
   const configActionCount = logs.filter((log) => log.action.includes("config")).length;
   const fileActionCount = logs.filter((log) => log.action.startsWith("file.")).length;
 
@@ -249,13 +247,6 @@ export default function AuditLogsPage() {
           value={total}
           description="满足当前筛选条件"
           tone="primary"
-        />
-        <KpiCard
-          icon={<UserOutlined />}
-          title="当前页操作人"
-          value={pageActorCount}
-          description="去重管理员账号"
-          tone="success"
         />
         <KpiCard
           icon={<DatabaseOutlined />}

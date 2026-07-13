@@ -22,7 +22,6 @@ import {
   DeleteOutlined,
   DownloadOutlined,
   FileExcelOutlined,
-  FileAddOutlined,
   FileOutlined,
   FilePdfOutlined,
   FileProtectOutlined,
@@ -747,13 +746,6 @@ export default function FileManagementPage() {
           value={files.filter((file) => syncStatus(file) === "failed").length}
           description="需人工处理"
           tone="purple"
-        />
-        <KpiCard
-          icon={<FileAddOutlined />}
-          title="今日新增"
-          value={files.filter((file) => dayjs(file.uploaded_at).isSame(dayjs(), "day")).length}
-          description="当日上传"
-          tone="info"
         />
       </div>
 

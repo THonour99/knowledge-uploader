@@ -20,7 +20,7 @@
 
 .statistics-kpi-grid {
   display: grid;
-  grid-template-columns: repeat(5, minmax(0, 1fr));
+  grid-template-columns: repeat(3, minmax(0, 1fr));
   gap: var(--ku-spacing-section);
   margin-bottom: var(--ku-spacing-section);
 }
@@ -195,16 +195,10 @@
 
 .statistics-contribution-workbench__icon {
   display: inline-flex;
-  flex: 0 0 40px;
   align-items: center;
   justify-content: center;
-  width: 40px;
-  height: 40px;
-  border-radius: var(--ku-radius-control);
-  background: var(--ku-bg-card);
-  color: var(--ku-color-primary);
+  color: var(--ku-text-secondary);
   font-size: 20px;
-  box-shadow: var(--ku-shadow-card);
 }
 
 .statistics-contribution-workbench__copy {

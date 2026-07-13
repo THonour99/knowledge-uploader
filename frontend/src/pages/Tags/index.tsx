@@ -14,7 +14,6 @@ import {
 } from "antd";
 import {
   CheckCircleOutlined,
-  DatabaseOutlined,
   MergeOutlined,
   PlusOutlined,
   ReloadOutlined,
@@ -86,7 +85,6 @@ export default function TagsPage() {
   const tags = tagsQuery.data?.items ?? [];
   const total = tagsQuery.data?.total ?? 0;
   const enabledTagCount = tags.filter((tag) => tag.enabled).length;
-  const systemGeneratedCount = tags.filter((tag) => tag.is_system_generated).length;
   const unusedTagCount = tags.filter((tag) => tag.usage_count === 0).length;
 
   const refreshTags = async () => {
@@ -351,13 +349,6 @@ export default function TagsPage() {
           value={enabledTagCount}
           description="可用于文件关联"
           tone="success"
-        />
-        <KpiCard
-          icon={<DatabaseOutlined />}
-          title="系统标签"
-          value={systemGeneratedCount}
-          description="AI 或规则生成"
-          tone="info"
         />
         <KpiCard
           icon={<MergeOutlined />}

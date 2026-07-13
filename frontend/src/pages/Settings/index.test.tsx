@@ -256,8 +256,6 @@ describe("SettingsPage", () => {
 
     expect(await screen.findByText("5/5")).toBeInTheDocument();
     expect(screen.getByText("配置已同步")).toBeInTheDocument();
-    expect(screen.getByText("10")).toBeInTheDocument();
-    expect(screen.getByText("2 个开关 / 1 个密钥")).toBeInTheDocument();
     expect(screen.getAllByText("1 项").length).toBeGreaterThan(0);
     expect(screen.getByText("无待处理项")).toBeInTheDocument();
 

@@ -1,10 +1,8 @@
 import {
   BarChartOutlined,
   ClockCircleOutlined,
-  CloudSyncOutlined,
   CloudUploadOutlined,
   DownloadOutlined,
-  FileDoneOutlined,
   ReloadOutlined,
   RiseOutlined,
   TeamOutlined,
@@ -392,7 +390,6 @@ export default function DashboardPage() {
   const readiness = readinessQuery.data;
 
   const trendTotals = trends.map((point) => point.total_files);
-  const trendSynced = trends.map((point) => point.synced_files);
   const trendPending = trends.map((point) => point.pending_review_files);
   const trendFailed = trends.map((point) => point.failed_files);
 
@@ -497,17 +494,6 @@ export default function DashboardPage() {
             onClick={() => navigate("/files")}
           />
           <KpiCard
-            icon={<CloudSyncOutlined />}
-            title="已同步 RAGFlow"
-            value={overview?.synced_files ?? 0}
-            description={`成功率 ${syncSuccessRateStr}`}
-            tone="success"
-            trend={trendSynced}
-            deltaPct={periodDelta(trendSynced)}
-            deltaLabel="环比上期"
-            onClick={() => navigate("/files")}
-          />
-          <KpiCard
             icon={<ClockCircleOutlined />}
             title="待审核"
             value={overview?.pending_review_files ?? 0}
@@ -530,14 +516,6 @@ export default function DashboardPage() {
             deltaLabel="环比上期"
             deltaPositiveIsGood={false}
             onClick={() => navigate("/task-logs")}
-          />
-          <KpiCard
-            icon={<FileDoneOutlined />}
-            title="风险文件"
-            value={overview?.sensitive_files ?? 0}
-            description={`已拒绝 ${formatNumber(overview?.rejected_files ?? 0)} 个`}
-            tone="purple"
-            onClick={() => navigate("/files")}
           />
         </div>
       </QueryBoundary>

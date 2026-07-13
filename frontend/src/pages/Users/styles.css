@@ -7,7 +7,7 @@
 
 .users-kpi-grid {
   display: grid;
-  grid-template-columns: repeat(4, minmax(0, 1fr));
+  grid-template-columns: repeat(3, minmax(0, 1fr));
   gap: var(--ku-spacing-section);
   margin-bottom: var(--ku-spacing-section);
 }
@@ -49,11 +49,7 @@
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  width: 36px;
-  height: 36px;
-  border-radius: var(--ku-radius-control);
-  background: var(--ku-color-primary-light);
-  color: var(--ku-color-primary);
+  color: var(--ku-text-secondary);
   font-size: 18px;
 }
 
@@ -155,11 +151,7 @@
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  width: 36px;
-  height: 36px;
-  border-radius: var(--ku-radius-control);
-  background: var(--ku-color-primary-light);
-  color: var(--ku-color-primary);
+  color: var(--ku-text-secondary);
   font-size: 18px;
 }
 
@@ -222,12 +214,7 @@
   }
 
   .users-role-panel__icon,
-  .user-modal-summary__icon {
-    width: 38px;
-    height: 38px;
-  }
-
-  .users-role-panel__header > .status-tag-dot,
+.users-role-panel__header > .status-tag-dot,
   .user-modal-summary__metric {
     grid-column: 1 / -1;
     justify-items: start;

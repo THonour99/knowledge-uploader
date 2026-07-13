@@ -24,7 +24,6 @@ import {
   FolderAddOutlined,
   LinkOutlined,
   ReloadOutlined,
-  StopOutlined,
 } from "@ant-design/icons";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useMemo, useState } from "react";
@@ -265,7 +264,6 @@ export default function DatasetConfigPage() {
   const categories = categoriesQuery.data?.items ?? [];
   const datasets = datasetsQuery.data?.items ?? [];
   const enabledMappings = datasets.filter((mapping) => mapping.enabled);
-  const disabledMappings = datasets.filter((mapping) => !mapping.enabled);
   const categoryOptions = categories.map((category) => ({
     label: `${category.name} (${category.code})`,
     value: category.id,
@@ -590,13 +588,6 @@ export default function DatasetConfigPage() {
           value={rows.filter((row) => row.status === "pending").length}
           description="未绑定 Dataset"
           tone="warning"
-        />
-        <KpiCard
-          icon={<StopOutlined />}
-          title="禁用映射数"
-          value={disabledMappings.length}
-          description="已禁用映射"
-          tone="purple"
         />
       </div>
 

@@ -474,13 +474,10 @@ function countEnabled(items: Array<{ enabled: boolean }>): number {
 
 
 function AiOverview({ config }: { config: AiConfigResponse }) {
-  const enabledFeatures = countEnabled(config.features);
   const enabledProviders = countEnabled(config.providers);
   const testedProviders = config.providers.filter(
     (provider) => provider.enabled && provider.last_test_status === "success",
   ).length;
-  const enabledPrompts = countEnabled(config.prompt_templates);
-  const defaultPrompts = config.prompt_templates.filter((template) => template.is_default).length;
   const enabledRules = countEnabled(config.sensitive_rules);
   const ruleHits = config.sensitive_rules.reduce((total, rule) => total + rule.hit_count, 0);
 
@@ -492,13 +489,6 @@ function AiOverview({ config }: { config: AiConfigResponse }) {
         value={config.global.ai_analysis_enabled ? "已开启" : "已关闭"}
         description={config.global.allow_external_llm ? "允许外部模型" : "仅内部模型"}
         tone={config.global.ai_analysis_enabled ? "success" : "warning"}
-      />
-      <KpiCard
-        icon={<ExperimentOutlined />}
-        title="启用功能"
-        value={`${enabledFeatures}/${config.features.length}`}
-        description="文档分析能力覆盖"
-        tone={enabledFeatures > 0 ? "primary" : "warning"}
       />
       <KpiCard
         icon={<ApiOutlined />}
@@ -513,13 +503,6 @@ function AiOverview({ config }: { config: AiConfigResponse }) {
         value={enabledRules}
         description={`${compactNumber.format(ruleHits)} 次累计命中`}
         tone={ruleHits > 0 ? "warning" : "purple"}
-      />
-      <KpiCard
-        icon={<FileTextOutlined />}
-        title="Prompt 模板"
-        value={enabledPrompts}
-        description={`${defaultPrompts} 个默认模板`}
-        tone="info"
       />
     </div>
   );

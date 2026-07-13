@@ -13,7 +13,6 @@ import {
   Typography,
 } from "antd";
 import {
-  CheckCircleOutlined,
   CloudSyncOutlined,
   CloudUploadOutlined,
   DeleteOutlined,
@@ -186,13 +185,6 @@ export default function MyFilesPage() {
         description: "已上传文件总数",
         icon: <FileTextOutlined />,
         tone: "primary",
-      },
-      {
-        title: "审核通过",
-        value: approvedCount,
-        description: "可进入同步流程",
-        icon: <CheckCircleOutlined />,
-        tone: "success",
       },
       {
         title: "待审核",

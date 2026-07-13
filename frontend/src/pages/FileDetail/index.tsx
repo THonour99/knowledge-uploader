@@ -18,7 +18,6 @@ import {
   CloudUploadOutlined,
   FileProtectOutlined,
   SafetyOutlined,
-  TagsOutlined,
 } from "@ant-design/icons";
 import { useQuery } from "@tanstack/react-query";
 import dayjs from "dayjs";
@@ -477,13 +476,6 @@ export default function FileDetailPage() {
             value={file.extension.toUpperCase()}
             description={formatFileSize(file.size)}
             tone="primary"
-          />
-          <KpiCard
-            icon={<TagsOutlined />}
-            title="标签数量"
-            value={file.tags.length}
-            description={file.category_name ? "分类已设置" : "未分类"}
-            tone="info"
           />
           <KpiCard
             icon={<SafetyOutlined />}

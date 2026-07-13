@@ -278,7 +278,6 @@ describe("StatisticsPage", () => {
 
     expect(await screen.findByRole("heading", { name: "统计报表" })).toBeInTheDocument();
     expect((await screen.findAllByText("18,560")).length).toBeGreaterThan(0);
-    expect(screen.getByText("236")).toBeInTheDocument();
     expect(screen.getByText("92.4%")).toBeInTheDocument();
     expect(screen.getByText("上传趋势")).toBeInTheDocument();
     expect(screen.getByText("部门贡献排行")).toBeInTheDocument();

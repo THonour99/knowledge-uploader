@@ -272,7 +272,6 @@ export default function TaskLogsPage() {
   const totalTasks = tasksQuery.data?.total ?? 0;
   const runningTasks = tasks.filter((task) => task.status === "running").length;
   const failedTasks = tasks.filter((task) => task.status === "failed").length;
-  const queuedTasks = tasks.filter((task) => task.status === "queued").length;
 
   const retryMutation = useMutation({
     mutationFn: (id: string) => retryTask(id),
@@ -416,13 +415,6 @@ export default function TaskLogsPage() {
           value={failedTasks}
           description="需要重试或排查"
           tone="danger"
-        />
-        <KpiCard
-          icon={<ClockCircleOutlined />}
-          title="队列中"
-          value={queuedTasks}
-          description="等待 Worker 消费"
-          tone="warning"
         />
       </div>
 

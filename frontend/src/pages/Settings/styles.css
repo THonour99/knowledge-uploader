@@ -7,7 +7,7 @@
 
 .settings-status-grid {
   display: grid;
-  grid-template-columns: repeat(4, minmax(0, 1fr));
+  grid-template-columns: repeat(3, minmax(0, 1fr));
   gap: var(--ku-spacing-section);
   margin-bottom: var(--ku-spacing-section);
 }
@@ -90,16 +90,10 @@
 
 .settings-command-strip__icon {
   display: inline-flex;
-  flex: 0 0 44px;
   align-items: center;
   justify-content: center;
-  width: 36px;
-  height: 36px;
-  border-radius: 12px;
-  background: var(--ku-bg-card);
-  color: var(--ku-color-primary);
+  color: var(--ku-text-secondary);
   font-size: 22px;
-  box-shadow: var(--ku-shadow-card);
 }
 
 .settings-command-strip__copy {
@@ -154,27 +148,20 @@
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  width: 34px;
-  height: 34px;
-  border-radius: 10px;
-  color: var(--ku-color-primary);
-  background: var(--ku-color-primary-light);
+  color: var(--ku-text-secondary);
   font-size: 18px;
 }
 
 .settings-command-card--success .settings-command-card__icon {
-  color: var(--ku-color-success);
-  background: var(--ku-color-success-light);
+  color: var(--ku-text-secondary);
 }
 
 .settings-command-card--warning .settings-command-card__icon {
-  color: var(--ku-color-orange);
-  background: var(--ku-color-warning-light);
+  color: var(--ku-text-secondary);
 }
 
 .settings-command-card--purple .settings-command-card__icon {
-  color: var(--ku-color-purple);
-  background: var(--ku-color-purple-light);
+  color: var(--ku-text-secondary);
 }
 
 .settings-command-card__body {

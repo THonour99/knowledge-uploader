@@ -861,10 +861,6 @@ export default function SettingsPage() {
     visibleConfigItems(query.data?.items ?? []),
   );
   const pendingConfigCount = overviewItems.filter(isPendingConfigItem).length;
-  const secretConfigCount = overviewItems.filter(
-    (item) => item.is_secret || item.value_type === "secret",
-  ).length;
-  const switchConfigCount = overviewItems.filter((item) => item.value_type === "bool").length;
   const securityItems = visibleConfigItems(
     overviewResults.find(({ group }) => group === "security")?.query.data?.items ?? [],
   );
@@ -883,13 +879,6 @@ export default function SettingsPage() {
           : "配置已同步",
       icon: <SettingOutlined />,
       tone: hasOverviewError ? "danger" : "primary",
-    },
-    {
-      title: "配置项",
-      value: overviewItems.length,
-      description: `${switchConfigCount} 个开关 / ${secretConfigCount} 个密钥`,
-      icon: <CheckCircleOutlined />,
-      tone: "success",
     },
     {
       title: "安全策略",

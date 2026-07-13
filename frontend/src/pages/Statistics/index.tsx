@@ -15,7 +15,6 @@ import {
 import {
   BellOutlined,
   CheckCircleOutlined,
-  ClockCircleOutlined,
   DownloadOutlined,
   FileTextOutlined,
   ReloadOutlined,
@@ -722,14 +721,6 @@ export default function StatisticsPage() {
           tone="primary"
         />
         <KpiCard
-          icon={<TeamOutlined />}
-          title="上传人数"
-          value={overview?.active_uploaders ?? 0}
-          formatter={formatNumber}
-          description="有上传记录的用户"
-          tone="success"
-        />
-        <KpiCard
           icon={<CheckCircleOutlined />}
           title="同步成功率"
           value={overview?.sync_success_rate ?? 0}
@@ -737,14 +728,6 @@ export default function StatisticsPage() {
           description={`${formatNumber(overview?.synced_files ?? 0)} 个文件已同步`}
           trend={trends.map((point) => point.synced_files)}
           tone="purple"
-        />
-        <KpiCard
-          icon={<ClockCircleOutlined />}
-          title="待审核数量"
-          value={overview?.pending_review_files ?? 0}
-          formatter={formatNumber}
-          description={`${formatNumber(overview?.sensitive_files ?? 0)} 个敏感风险`}
-          tone="warning"
         />
         <KpiCard
           icon={<WarningOutlined />}

@@ -1,7 +1,6 @@
 import { App as AntdApp, Button, Card, Descriptions, Form, Input, Typography } from "antd";
 import {
   LockOutlined,
-  MailOutlined,
   PhoneOutlined,
   SafetyCertificateOutlined,
   TeamOutlined,
@@ -69,13 +68,6 @@ export default function ProfilePage() {
             value={profile.status === "active" ? "正常" : "需处理"}
             description="访问权限可用"
             tone={profile.status === "active" ? "success" : "warning"}
-          />
-          <KpiCard
-            icon={<MailOutlined />}
-            title="账号邮箱"
-            value="可登录"
-            description={profile.email}
-            tone="primary"
           />
           <KpiCard
             icon={<TeamOutlined />}

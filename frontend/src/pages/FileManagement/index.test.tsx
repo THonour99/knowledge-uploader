@@ -7,7 +7,6 @@ import { fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 
 import {
-  type DatasetMapping,
   type FileListResponse,
   type KnowledgeFile,
   type Tag,
@@ -149,19 +148,6 @@ function makeFile(overrides: Partial<KnowledgeFile> = {}): KnowledgeFile {
   };
 }
 
-function makeDatasetMapping(overrides: Partial<DatasetMapping> = {}): DatasetMapping {
-  return {
-    id: "mapping-1",
-    name: "默认知识库",
-    category_id: "category-1",
-    ragflow_dataset_id: "dataset-1",
-    ragflow_dataset_name: "RAGFlow 默认知识库",
-    enabled: true,
-    created_at: "2026-06-01T00:00:00Z",
-    updated_at: "2026-06-01T00:00:00Z",
-    ...overrides,
-  };
-}
 function makeTag(overrides: Partial<Tag> = {}): Tag {
   return {
     id: "tag-1",

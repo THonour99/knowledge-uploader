@@ -82,7 +82,6 @@ export default function DepartmentsPage() {
   const total = departmentsQuery.data?.total ?? 0;
   const activeCount = departments.filter((department) => department.status === "active").length;
   const disabledCount = departments.filter((department) => department.status === "disabled").length;
-  const unassignedCount = departments.filter(isUnassignedDepartment).length;
 
   const refreshDepartments = async () => {
     await queryClient.invalidateQueries({ queryKey: ["admin-departments"] });
@@ -276,13 +275,6 @@ export default function DepartmentsPage() {
           value={disabledCount}
           tone="warning"
           description="暂停分配"
-        />
-        <KpiCard
-          icon={<TeamOutlined />}
-          title="受保护部门"
-          value={unassignedCount}
-          tone="info"
-          description="未分配不可编辑"
         />
       </div>
 

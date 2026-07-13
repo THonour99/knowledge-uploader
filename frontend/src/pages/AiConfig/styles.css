@@ -7,7 +7,7 @@
 }
 
 .ai-config-kpi-grid {
-  grid-template-columns: repeat(5, minmax(0, 1fr));
+  grid-template-columns: repeat(3, minmax(0, 1fr));
 }
 
 .ai-config-kpi-grid .kpi-card .ant-card-body {
@@ -53,14 +53,9 @@
 .ai-config-feature-row__icon,
 .ai-config-provider-cell__icon {
   display: inline-flex;
-  flex: 0 0 32px;
   align-items: center;
   justify-content: center;
-  width: 32px;
-  height: 32px;
-  border-radius: 8px;
-  background: var(--ku-color-primary-light);
-  color: var(--ku-color-primary);
+  color: var(--ku-text-secondary);
 }
 
 .ai-config-switch-card__copy,

@@ -17,7 +17,6 @@ import {
   CloudSyncOutlined,
   PlusOutlined,
   ReloadOutlined,
-  RobotOutlined,
 } from "@ant-design/icons";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useState } from "react";
@@ -157,7 +156,6 @@ export default function CategoriesPage() {
     value: dm.id,
   }));
   const boundCategoryCount = categories.filter((category) => category.default_dataset_id).length;
-  const aiEnabledCount = categories.filter((category) => category.ai_analysis_enabled).length;
   const autoSyncCount = categories.filter((category) => category.auto_sync_enabled).length;
 
   const refreshCategories = async () => {
@@ -383,13 +381,6 @@ export default function CategoriesPage() {
           value={boundCategoryCount}
           description="配置默认知识库"
           tone="success"
-        />
-        <KpiCard
-          icon={<RobotOutlined />}
-          title="AI 启用分类"
-          value={aiEnabledCount}
-          description="允许自动分析"
-          tone="info"
         />
         <KpiCard
           icon={<CloudSyncOutlined />}

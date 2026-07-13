@@ -229,9 +229,8 @@ describe("DashboardPage", () => {
     // 指标卡应显示 mock 数值，而非旧硬编码值（如 "1,248" / "1,102" / "976" / "64" / "8"）
     const ninetyNine = await screen.findAllByText("99,999");
     expect(ninetyNine.length).toBeGreaterThan(0);
-    // failed_tasks=33 和 sensitive_files=22
+    // failed_tasks=33
     expect(screen.getAllByText("33").length).toBeGreaterThan(0);
-    expect(screen.getAllByText("22").length).toBeGreaterThan(0);
 
     // 旧硬编码值不应出现
     expect(screen.queryByText("1,248")).not.toBeInTheDocument();

@@ -562,13 +562,6 @@ export default function UsersPage() {
           tone="success"
         />
         <KpiCard
-          icon={<ApartmentOutlined />}
-          title="当前页已归属"
-          value={pageStats.assignedDepartment}
-          description="已分配部门"
-          tone="info"
-        />
-        <KpiCard
           icon={<LockOutlined />}
           title="当前页禁用/锁定"
           value={pageStats.disabledOrLocked}

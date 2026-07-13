@@ -163,8 +163,6 @@ describe("AiConfigPage", () => {
     expect(screen.getByRole("tab", { name: "模型供应商" })).toBeInTheDocument();
     expect(screen.getByRole("tab", { name: "Prompt 模板" })).toBeInTheDocument();
     expect(screen.getByRole("tab", { name: "敏感规则" })).toBeInTheDocument();
-    expect(screen.getByText("启用功能")).toBeInTheDocument();
-    expect(screen.getByText("1/2")).toBeInTheDocument();
     expect(screen.getByText("可用供应商")).toBeInTheDocument();
     expect(screen.getByText("敏感治理")).toBeInTheDocument();
     expect(screen.getAllByText("356 次累计命中").length).toBeGreaterThan(0);
