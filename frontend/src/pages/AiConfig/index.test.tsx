@@ -168,14 +168,6 @@ describe("AiConfigPage", () => {
     expect(screen.getByText("可用供应商")).toBeInTheDocument();
     expect(screen.getByText("敏感治理")).toBeInTheDocument();
     expect(screen.getAllByText("356 次累计命中").length).toBeGreaterThan(0);
-    const governance = screen.getByRole("region", { name: "AI 治理总览" });
-    expect(governance).toHaveTextContent("AI 治理总览");
-    expect(governance).toHaveTextContent("1/2 项已开启");
-    expect(governance).toHaveTextContent("覆盖率 50%");
-    expect(governance).toHaveTextContent("1/1 个通过测试");
-    expect(governance).toHaveTextContent("1 个默认模板");
-    expect(governance).toHaveTextContent("1 条已启用");
-    expect(governance).toHaveTextContent("供应商就绪度100%");
     expect(screen.getAllByText("AI 总开关").length).toBeGreaterThan(0);
     expect(screen.getByText("文档摘要")).toBeInTheDocument();
     expect(screen.getByText("敏感检测")).toBeInTheDocument();

@@ -1,6 +1,5 @@
 import {
   BarChartOutlined,
-  CheckCircleOutlined,
   ClockCircleOutlined,
   CloudSyncOutlined,
   CloudUploadOutlined,
@@ -14,7 +13,7 @@ import {
 import { App as AntdApp, Avatar, Button, Card, Skeleton, Space, Typography } from "antd";
 import type { EChartsOption } from "echarts";
 import ReactECharts from "echarts-for-react";
-import { useMemo, useState, type CSSProperties, type ReactNode } from "react";
+import { useMemo, useState, type CSSProperties } from "react";
 import { useNavigate } from "react-router-dom";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 
@@ -30,11 +29,10 @@ import {
   type StatisticsFailureRow,
   type StatisticsTrendPoint,
   type StatisticsUserRow,
-  type SystemReadiness,
 } from "../../api/client";
 import { KpiCard } from "../../components/KpiCard";
 import { QueryBoundary } from "../../components/QueryBoundary";
-import { StatusTag, type StatusKind } from "../../components/StatusTag";
+import { StatusTag } from "../../components/StatusTag";
 import { PageContainer } from "../../layouts/PageContainer";
 import { downloadBlob } from "../../utils/download";
 import { formatDateTime, formatNumber, formatPercent } from "../../utils/format";
@@ -281,131 +279,6 @@ const TIMELINE_LANES: TimelineLane[] = [
   },
 ];
 
-interface DashboardOperationsStripProps {
-  activeUploaders: number;
-  categoryCount: number;
-  failedTasks: number;
-  pendingReviewFiles: number;
-  readiness?: SystemReadiness;
-  rankedUsers: number;
-  sensitiveFiles: number;
-  trendCount: number;
-}
-
-interface DashboardOperationsLane {
-  key: string;
-  icon: ReactNode;
-  title: string;
-  primary: string;
-  secondary: string;
-  status: {
-    kind: StatusKind;
-    value: string;
-  };
-}
-
-function DashboardOperationsStrip({
-  activeUploaders,
-  categoryCount,
-  failedTasks,
-  pendingReviewFiles,
-  readiness,
-  rankedUsers,
-  sensitiveFiles,
-  trendCount,
-}: DashboardOperationsStripProps) {
-  const dependencies = Object.values(readiness?.dependencies ?? {});
-  const dependencyTotal = dependencies.length;
-  const dependencyOkCount = dependencies.filter((dependency) => dependency.status === "ok").length;
-  const dependencyFailedCount = dependencies.filter(
-    (dependency) => dependency.status === "error",
-  ).length;
-  const chartReadyCount = Number(trendCount > 0) + Number(categoryCount > 0);
-  const serviceStatus = dependencyFailedCount > 0 ? "error" : (readiness?.status ?? "unknown");
-  const governanceStatus =
-    failedTasks > 0 || sensitiveFiles > 0
-      ? ({ kind: "sync", value: "failed" } as const)
-      : pendingReviewFiles > 0
-        ? ({ kind: "review", value: "pending" } as const)
-        : ({ kind: "review", value: "approved" } as const);
-
-  const lanes: DashboardOperationsLane[] = [
-    {
-      key: "services",
-      icon: <CheckCircleOutlined />,
-      title: "服务依赖",
-      primary:
-        dependencyTotal > 0 ? `${dependencyOkCount}/${dependencyTotal} 个依赖正常` : "等待依赖探针",
-      secondary:
-        dependencyFailedCount > 0 ? `${dependencyFailedCount} 个异常需要检查` : "核心依赖可用",
-      status: { kind: "health", value: serviceStatus },
-    },
-    {
-      key: "charts",
-      icon: <BarChartOutlined />,
-      title: "图表覆盖",
-      primary: `${chartReadyCount}/2 张图表有数据`,
-      secondary: "趋势与分类视图已接入 ECharts",
-      status: { kind: "health", value: chartReadyCount === 2 ? "ok" : "unknown" },
-    },
-    {
-      key: "queue",
-      icon: <WarningOutlined />,
-      title: "治理队列",
-      primary: `${formatNumber(pendingReviewFiles)} 个待审核`,
-      secondary: `${formatNumber(failedTasks)} 个失败任务，${formatNumber(sensitiveFiles)} 个风险文件`,
-      status: governanceStatus,
-    },
-    {
-      key: "users",
-      icon: <TeamOutlined />,
-      title: "活跃贡献",
-      primary: `${formatNumber(activeUploaders)} 位活跃上传者`,
-      secondary: `排行展示 ${formatNumber(rankedUsers)} 位重点用户`,
-      status: { kind: "health", value: activeUploaders > 0 ? "ok" : "unknown" },
-    },
-  ];
-
-  return (
-    <section className="dashboard-operations-strip" aria-label="运营状态总览">
-      <div className="dashboard-operations-strip__summary">
-        <span
-          className={`dashboard-operations-strip__signal dashboard-operations-strip__signal--${serviceStatus}`}
-        >
-          <CheckCircleOutlined />
-        </span>
-        <div className="dashboard-operations-strip__copy">
-          <div className="dashboard-operations-strip__title-row">
-            <Typography.Text strong>运营状态</Typography.Text>
-            <StatusTag kind="health" value={serviceStatus} />
-          </div>
-          <Typography.Title level={4}>
-            {dependencyFailedCount > 0 ? "依赖异常待处理" : "核心链路运行中"}
-          </Typography.Title>
-          <Typography.Text type="secondary">
-            上传、审核、AI 分析与 RAGFlow 同步首屏聚合
-          </Typography.Text>
-        </div>
-      </div>
-
-      <div className="dashboard-operations-strip__lanes">
-        {lanes.map((lane) => (
-          <div className="dashboard-operations-lane" key={lane.key}>
-            <span className="dashboard-operations-lane__icon">{lane.icon}</span>
-            <div className="dashboard-operations-lane__content">
-              <div className="dashboard-operations-lane__header">
-                <Typography.Text type="secondary">{lane.title}</Typography.Text>
-                <StatusTag kind={lane.status.kind} value={lane.status.value} />
-              </div>
-              <Typography.Text strong>{lane.primary}</Typography.Text>
-              <Typography.Text type="secondary">{lane.secondary}</Typography.Text>
-            </div>
-          </div>
-        ))}
-      </div>
-    </section>
-  );
-}
 function DashboardHealthTimeline({ points }: { points: StatisticsTrendPoint[] }) {
   const visiblePoints = points.slice(-8);
 
@@ -668,17 +541,6 @@ export default function DashboardPage() {
           />
         </div>
       </QueryBoundary>
-
-      <DashboardOperationsStrip
-        activeUploaders={overview?.active_uploaders ?? 0}
-        categoryCount={categories.length}
-        failedTasks={overview?.failed_tasks ?? 0}
-        pendingReviewFiles={overview?.pending_review_files ?? 0}
-        readiness={readiness}
-        rankedUsers={users.length}
-        sensitiveFiles={overview?.sensitive_files ?? 0}
-        trendCount={trends.length}
-      />
 
       <div className="dashboard-content-grid">
         {/* 上传趋势图 */}

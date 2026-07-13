@@ -75,11 +75,10 @@
   gap: 12px;
   align-items: stretch;
   margin-bottom: var(--ku-spacing-section);
-  padding: 12px;
-  border: 1px solid rgba(229, 234, 242, 0.95);
-  border-radius: var(--ku-radius-card);
-  background: var(--ku-bg-card);
-  box-shadow: var(--ku-shadow-card);
+  padding: 0;
+  border: 0;
+  background: transparent;
+  box-shadow: none;
 }
 
 .settings-command-strip__main {

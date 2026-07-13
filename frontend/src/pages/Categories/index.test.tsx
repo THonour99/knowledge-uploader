@@ -150,16 +150,6 @@ describe("CategoriesPage", () => {
     expect(await screen.findByText("技术文档")).toBeInTheDocument();
     expect(screen.getByText("人事档案")).toBeInTheDocument();
 
-    const policyStrip = screen.getByRole("region", { name: "分类策略状态" });
-    expect(policyStrip).toHaveTextContent("分类策略状态");
-    expect(policyStrip).toHaveTextContent("1 个分类已绑定");
-    expect(policyStrip).toHaveTextContent("1 个分类待绑定知识库");
-    expect(policyStrip).toHaveTextContent("1 个启用 AI");
-    expect(policyStrip).toHaveTextContent("1 个启用敏感检测");
-    expect(policyStrip).toHaveTextContent("1 个需要审核");
-    expect(policyStrip).toHaveTextContent("1 个员工可选分类");
-    expect(policyStrip).toHaveTextContent("1 个自动同步");
-
     expect(screen.getByText("分类策略列表")).toBeInTheDocument();
     expect(screen.getByText("当前维护 2 个分类，1 个已绑定 Dataset")).toBeInTheDocument();
 

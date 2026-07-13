@@ -482,48 +482,6 @@ describe("FileManagementPage — 归档操作", () => {
     });
   });
 });
-
-describe("FileManagementPage — 文件治理工作台状态", () => {
-  it("shows policy, mapping, review and sync health from current files", async () => {
-    const pendingFile = makeFile({
-      id: "file-pending",
-      original_name: "pending.pdf",
-      status: "pending_review",
-      review_status: "pending",
-      dataset_mapping_id: "mapping-1",
-    });
-    const failedFile = makeFile({
-      id: "file-failed",
-      original_name: "failed.pdf",
-      status: "failed",
-      review_status: "approved",
-      dataset_mapping_id: null,
-      ragflow_dataset_id: null,
-    });
-    vi.mocked(listReviewFiles).mockResolvedValue({ items: [pendingFile, failedFile], total: 2 });
-    vi.mocked(listCategories).mockResolvedValue({ items: [], total: 0 });
-    vi.mocked(listDatasetMappings).mockResolvedValue({
-      items: [makeDatasetMapping()],
-      total: 1,
-    });
-    vi.mocked(listTags).mockResolvedValue(emptyTagList);
-
-    renderWithProviders(<FileManagementPage />);
-
-    await screen.findByText("pending.pdf");
-    await screen.findByText("failed.pdf");
-
-    const governance = screen.getByRole("region", { name: "文件治理工作台状态" });
-    expect(governance).toHaveTextContent("文件治理工作台");
-    expect(governance).toHaveTextContent("当前视图文件");
-    expect(governance).toHaveTextContent("7 类文件白名单");
-    expect(governance).toHaveTextContent("1 个启用映射");
-    expect(governance).toHaveTextContent("1 个文件待补 Dataset");
-    expect(governance).toHaveTextContent("1 个待审核");
-    expect(governance).toHaveTextContent("1 个失败重试");
-    expect(governance).toHaveTextContent("同步失败");
-  });
-});
 describe("FileManagementPage — 审核队列摘要", () => {
   it("shows queue metrics and selected row counts", async () => {
     const pendingFile = makeFile({

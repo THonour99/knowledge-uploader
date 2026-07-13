@@ -2,7 +2,6 @@ import { useCallback, useEffect, useMemo, useState } from "react";
 import {
   ApartmentOutlined,
   ExclamationCircleOutlined,
-  FilterOutlined,
   LockOutlined,
   MailOutlined,
   SearchOutlined,
@@ -100,108 +99,6 @@ interface UserDepartmentModalState {
   selectedDepartmentId: string;
 }
 
-interface UserGovernanceStripProps {
-  activeCount: number;
-  assignedDepartmentCount: number;
-  deptAdminCount: number;
-  disabledOrLockedCount: number;
-  pageCount: number;
-  roleFilter: AdminUserRole | "";
-  search: string;
-  statusFilter: string;
-  total: number;
-}
-
-function UserGovernanceStrip({
-  activeCount,
-  assignedDepartmentCount,
-  deptAdminCount,
-  disabledOrLockedCount,
-  pageCount,
-  roleFilter,
-  search,
-  statusFilter,
-  total,
-}: UserGovernanceStripProps) {
-  const hasFilters = Boolean(search.trim() || roleFilter || statusFilter);
-  const lanes = [
-    {
-      key: "health",
-      icon: <SafetyCertificateOutlined />,
-      title: "账号健康",
-      primary: `${activeCount} 个正常账号`,
-      secondary: `当前视图 ${pageCount} 个账号，平台共 ${total} 条`,
-      status: { kind: "health" as const, value: disabledOrLockedCount > 0 ? "unknown" : "ok" },
-    },
-    {
-      key: "department",
-      icon: <ApartmentOutlined />,
-      title: "部门归属",
-      primary: `${assignedDepartmentCount} 个已归属`,
-      secondary: `当前视图 ${pageCount} 个账号可维护所属部门`,
-      status: {
-        kind: "health" as const,
-        value: assignedDepartmentCount === pageCount ? "ok" : "unknown",
-      },
-    },
-    {
-      key: "permission",
-      icon: <UserSwitchOutlined />,
-      title: "角色治理",
-      primary: `${deptAdminCount} 个部门管理员`,
-      secondary: "管辖部门在详情弹窗中按后端返回回显",
-      status: {
-        kind: "health" as const,
-        value: deptAdminCount > 0 ? "ok" : "unknown",
-      },
-    },
-    {
-      key: "queue",
-      icon: <FilterOutlined />,
-      title: "治理队列",
-      primary: `${disabledOrLockedCount} 个禁用/锁定`,
-      secondary: hasFilters ? "当前列表已应用筛选条件" : "当前列表未应用筛选条件",
-      status: { kind: "user" as const, value: disabledOrLockedCount > 0 ? "disabled" : "active" },
-    },
-  ];
-
-  return (
-    <section className="users-governance-strip" role="region" aria-label="账号治理状态">
-      <div className="users-governance-strip__main">
-        <span className="users-governance-strip__icon">
-          <TeamOutlined />
-        </span>
-        <span className="users-governance-strip__copy">
-          <Typography.Text strong className="users-governance-strip__title">
-            账号治理状态
-          </Typography.Text>
-          <Typography.Text type="secondary">
-            汇总当前列表的账号健康、激活进度、权限覆盖和待处理队列。
-          </Typography.Text>
-        </span>
-        <span className="users-governance-strip__total">
-          <strong>{total}</strong>
-          <Typography.Text type="secondary">平台账号</Typography.Text>
-        </span>
-      </div>
-      <div className="users-governance-strip__lanes" aria-label="账号治理指标">
-        {lanes.map((lane) => (
-          <div className="users-governance-lane" key={lane.key}>
-            <span className="users-governance-lane__icon">{lane.icon}</span>
-            <span className="users-governance-lane__body">
-              <span className="users-governance-lane__topline">
-                <Typography.Text strong>{lane.title}</Typography.Text>
-                <StatusTag kind={lane.status.kind} value={lane.status.value} variant="dot" />
-              </span>
-              <strong>{lane.primary}</strong>
-              <Typography.Text type="secondary">{lane.secondary}</Typography.Text>
-            </span>
-          </div>
-        ))}
-      </div>
-    </section>
-  );
-}
 
 export default function UsersPage() {
   const { message, modal } = App.useApp();
@@ -679,18 +576,6 @@ export default function UsersPage() {
           tone="danger"
         />
       </div>
-
-      <UserGovernanceStrip
-        activeCount={pageStats.active}
-        assignedDepartmentCount={pageStats.assignedDepartment}
-        deptAdminCount={pageStats.deptAdmin}
-        disabledOrLockedCount={pageStats.disabledOrLocked}
-        pageCount={users.length}
-        roleFilter={roleFilter}
-        search={search}
-        statusFilter={statusFilter}
-        total={total}
-      />
 
       <div className="users-main-grid">
         <Card className="users-panel table-card">

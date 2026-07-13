@@ -145,15 +145,6 @@ describe("DatasetConfigPage", () => {
     renderWithProviders(<DatasetConfigPage />);
 
     expect(await screen.findByText("制度文档")).toBeInTheDocument();
-    const policyStatus = screen.getByRole("region", { name: "Dataset 配置总览" });
-    expect(policyStatus).toHaveTextContent("Dataset 配置总览");
-    expect(policyStatus).toHaveTextContent("1/2 分类已绑定");
-    expect(policyStatus).toHaveTextContent("1 个待绑定，0 个禁用映射");
-    expect(policyStatus).toHaveTextContent("1 类需要审核");
-    expect(policyStatus).toHaveTextContent("1 类开启自动同步");
-    expect(policyStatus).toHaveTextContent("1 类员工可选");
-    expect(policyStatus).toHaveTextContent("2 类允许 AI 推荐分类");
-    expect(policyStatus).toHaveTextContent("1 个映射生效");
     const mappingWorkbench = screen.getByRole("region", { name: "Dataset 映射工作台" });
     expect(mappingWorkbench).toHaveTextContent("Dataset 映射工作台");
     expect(mappingWorkbench).toHaveTextContent("当前筛选 2 类，需审核 1 类");

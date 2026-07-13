@@ -44,21 +44,6 @@ const TASK_TYPE_LABELS: Record<string, string> = {
   ragflow_status_check: "RAGFlow 状态检查",
 };
 
-const REVIEW_STATUS_LABELS: Record<string, string> = {
-  pending: "待审核",
-  in_review: "审核中",
-  approved: "已通过",
-  rejected: "未通过",
-};
-
-const RISK_LEVEL_LABELS: Record<string, string> = {
-  none: "无风险",
-  low: "低风险",
-  medium: "中风险",
-  high: "高风险",
-  critical: "严重风险",
-};
-
 function formatFileSize(size: number): string {
   if (size < 1024) {
     return `${size} B`;
@@ -168,17 +153,6 @@ function syncMetricDescription(file: KnowledgeFile): string {
     return "远端文档已创建";
   }
   return "等待审核通过";
-}
-
-function reviewStatusLabel(status: string): string {
-  return REVIEW_STATUS_LABELS[status] ?? status;
-}
-
-function riskLevelLabel(level: string | null | undefined): string {
-  if (!level) {
-    return "暂无风险结果";
-  }
-  return RISK_LEVEL_LABELS[level] ?? level;
 }
 
 function expiryMeta(expiresAt?: string | null, explicitStatus?: string | null) {
@@ -475,11 +449,6 @@ export default function FileDetailPage() {
       ? clampScore(file.analysis.quality_score)
       : null;
   const detailSyncStatus = file ? syncStatus(file) : "not_synced";
-  const detailAnalysisHealth =
-    file?.analysis?.status === "failed" ? "error" : file?.analysis ? "ok" : "unknown";
-  const detailMetadataHealth =
-    file && (file.category_name || file.tags.length > 0) ? "ok" : "unknown";
-  const detailRiskLevel = file?.analysis?.sensitive_risk_level ?? "none";
 
   return (
     <PageContainer
@@ -531,89 +500,6 @@ export default function FileDetailPage() {
             tone={syncMetricTone(detailSyncStatus)}
           />
         </div>
-      ) : null}
-
-      {file ? (
-        <section className="document-status-strip" aria-label="文档运行状态">
-          <div className="document-status-strip__main">
-            <span className="document-status-strip__icon">
-              <FileProtectOutlined />
-            </span>
-            <span className="document-status-strip__copy">
-              <Typography.Text type="secondary">文档治理</Typography.Text>
-              <Typography.Title level={4} className="document-status-strip__title">
-                文档运行状态
-              </Typography.Title>
-              <Typography.Text type="secondary">
-                {file.extension.toUpperCase()} · {formatFileSize(file.size)} ·{" "}
-                {dayjs(file.uploaded_at).format("YYYY-MM-DD HH:mm")}
-              </Typography.Text>
-            </span>
-            <StatusTag kind="file" value={file.status} variant="dot" />
-          </div>
-
-          <div className="document-status-strip__lanes">
-            <div className="document-status-lane">
-              <span className="document-status-lane__icon">
-                <FileProtectOutlined />
-              </span>
-              <span className="document-status-lane__body">
-                <span className="document-status-lane__topline">
-                  <Typography.Text type="secondary">文件状态</Typography.Text>
-                  <StatusTag kind="file" value={file.status} variant="dot" />
-                </span>
-                <strong>{file.original_name}</strong>
-                <Typography.Text type="secondary">
-                  审核：{reviewStatusLabel(file.review_status)}
-                </Typography.Text>
-              </span>
-            </div>
-
-            <div className="document-status-lane">
-              <span className="document-status-lane__icon document-status-lane__icon--sync">
-                <CloudSyncOutlined />
-              </span>
-              <span className="document-status-lane__body">
-                <span className="document-status-lane__topline">
-                  <Typography.Text type="secondary">同步健康</Typography.Text>
-                  <StatusTag kind="sync" value={detailSyncStatus} variant="dot" />
-                </span>
-                <strong>{syncMetricLabel(detailSyncStatus)}</strong>
-                <Typography.Text type="secondary">{syncMetricDescription(file)}</Typography.Text>
-              </span>
-            </div>
-
-            <div className="document-status-lane">
-              <span className="document-status-lane__icon document-status-lane__icon--risk">
-                <SafetyOutlined />
-              </span>
-              <span className="document-status-lane__body">
-                <span className="document-status-lane__topline">
-                  <Typography.Text type="secondary">AI 治理</Typography.Text>
-                  <StatusTag kind="health" value={detailAnalysisHealth} variant="dot" />
-                </span>
-                <strong>{file.analysis ? qualityLevel(detailQualityScore) : "未生成分析"}</strong>
-                <Typography.Text type="secondary">
-                  风险：{riskLevelLabel(detailRiskLevel)}
-                </Typography.Text>
-              </span>
-            </div>
-
-            <div className="document-status-lane">
-              <span className="document-status-lane__icon document-status-lane__icon--meta">
-                <TagsOutlined />
-              </span>
-              <span className="document-status-lane__body">
-                <span className="document-status-lane__topline">
-                  <Typography.Text type="secondary">元数据</Typography.Text>
-                  <StatusTag kind="health" value={detailMetadataHealth} variant="dot" />
-                </span>
-                <strong>{file.category_name ?? "未分类"}</strong>
-                <Typography.Text type="secondary">{file.tags.length} 个标签</Typography.Text>
-              </span>
-            </div>
-          </div>
-        </section>
       ) : null}
       <div className="document-workspace document-workspace--detail">
         <div className="document-workspace__main">

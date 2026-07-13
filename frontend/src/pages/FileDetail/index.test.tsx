@@ -173,11 +173,6 @@ describe("FileDetailPage", () => {
     expect(screen.getByText("这是一份员工手册的摘要。")).toBeInTheDocument();
     expect(screen.getByText("中风险")).toBeInTheDocument();
 
-    const statusRegion = screen.getByRole("region", { name: "文档运行状态" });
-    expect(statusRegion).toHaveTextContent("文档治理");
-    expect(statusRegion).toHaveTextContent("同步健康");
-    expect(statusRegion).toHaveTextContent("制度文档");
-
     fireEvent.click(screen.getByText("提取文本预览"));
     expect(await screen.findByText("员工手册提取文本前五百字……")).toBeInTheDocument();
   });

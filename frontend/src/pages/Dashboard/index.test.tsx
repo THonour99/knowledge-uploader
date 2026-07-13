@@ -279,23 +279,6 @@ describe("DashboardPage", () => {
     expect(screen.getByTitle("2026-06-10 同步成功: 130")).toBeInTheDocument();
   });
 
-  it("renders first-screen operations status strip from API data", async () => {
-    mockAllApis();
-
-    renderWithProviders(<DashboardPage />);
-
-    const strip = await screen.findByRole("region", { name: "运营状态总览" });
-    await waitFor(() => {
-      expect(strip).toHaveTextContent("运营状态");
-      expect(strip).toHaveTextContent("3/4 个依赖正常");
-      expect(strip).toHaveTextContent("1 个异常需要检查");
-      expect(strip).toHaveTextContent("2/2 张图表有数据");
-      expect(strip).toHaveTextContent("555 个待审核");
-      expect(strip).toHaveTextContent("33 个失败任务，22 个风险文件");
-      expect(strip).toHaveTextContent("777 位活跃上传者");
-    });
-  });
-
   it("renders user upload ranking from API data", async () => {
     mockAllApis();
 

@@ -3,7 +3,6 @@ import {
   ClockCircleOutlined,
   CloseCircleOutlined,
   CheckCircleOutlined,
-  FilterOutlined,
   OrderedListOutlined,
   ReloadOutlined,
   SyncOutlined,
@@ -115,99 +114,6 @@ function logIcon(status: string) {
   }
 }
 
-interface TaskQueueStripProps {
-  failedCount: number;
-  hasFilters: boolean;
-  pageCount: number;
-  queuedCount: number;
-  runningCount: number;
-  total: number;
-  typeCoverage: number;
-}
-
-function TaskQueueStrip({
-  failedCount,
-  hasFilters,
-  pageCount,
-  queuedCount,
-  runningCount,
-  total,
-  typeCoverage,
-}: TaskQueueStripProps) {
-  const activeCount = runningCount + queuedCount;
-  const lanes = [
-    {
-      key: "queue",
-      icon: <SyncOutlined />,
-      title: "队列健康",
-      primary: `${activeCount} 个活跃任务`,
-      secondary: `${runningCount} 个运行中，${queuedCount} 个等待消费`,
-      status: failedCount > 0 ? "error" : "ok",
-    },
-    {
-      key: "recovery",
-      icon: <CloseCircleOutlined />,
-      title: "失败回收",
-      primary: `${failedCount} 个失败任务`,
-      secondary: failedCount > 0 ? "需要重试或排查" : "当前页无失败任务",
-      status: failedCount > 0 ? "error" : "ok",
-    },
-    {
-      key: "coverage",
-      icon: <OrderedListOutlined />,
-      title: "任务覆盖",
-      primary: `${typeCoverage} 类任务类型`,
-      secondary: `当前页 ${pageCount} 条记录，平台共 ${total} 条`,
-      status: typeCoverage > 0 ? "ok" : "unknown",
-    },
-    {
-      key: "filters",
-      icon: <FilterOutlined />,
-      title: "筛选视图",
-      primary: hasFilters ? "已应用筛选条件" : "全部任务视图",
-      secondary: hasFilters ? "按任务类型或状态聚焦" : "展示完整队列范围",
-      status: hasFilters ? "ok" : "unknown",
-    },
-  ];
-
-  return (
-    <section className="task-queue-strip" role="region" aria-label="任务队列状态">
-      <div className="task-queue-strip__summary">
-        <span className="task-queue-strip__icon">
-          <SyncOutlined />
-        </span>
-        <span className="task-queue-strip__copy">
-          <Typography.Text strong className="task-queue-strip__title">
-            任务队列状态
-          </Typography.Text>
-          <Typography.Text type="secondary">
-            汇总当前同步、解析与 AI 分析任务的运行负载、失败回收和筛选范围。
-          </Typography.Text>
-        </span>
-        <span className="task-queue-strip__total">
-          <strong>{total}</strong>
-          <Typography.Text type="secondary">队列任务</Typography.Text>
-        </span>
-      </div>
-
-      <div className="task-queue-strip__lanes" aria-label="任务队列指标">
-        {lanes.map((lane) => (
-          <div className="task-queue-lane" key={lane.key}>
-            <span className="task-queue-lane__icon">{lane.icon}</span>
-            <span className="task-queue-lane__body">
-              <span className="task-queue-lane__topline">
-                <Typography.Text strong>{lane.title}</Typography.Text>
-                <StatusTag kind="health" value={lane.status} variant="dot" />
-              </span>
-              <strong>{lane.primary}</strong>
-              <Typography.Text type="secondary">{lane.secondary}</Typography.Text>
-            </span>
-          </div>
-        ))}
-      </div>
-    </section>
-  );
-}
 
 interface TaskDetailDrawerProps {
   taskId: string | null;
@@ -367,8 +273,6 @@ export default function TaskLogsPage() {
   const runningTasks = tasks.filter((task) => task.status === "running").length;
   const failedTasks = tasks.filter((task) => task.status === "failed").length;
   const queuedTasks = tasks.filter((task) => task.status === "queued").length;
-  const typeCoverage = new Set(tasks.map((task) => task.task_type)).size;
-  const hasFilters = Boolean(filters.task_type || filters.status);
 
   const retryMutation = useMutation({
     mutationFn: (id: string) => retryTask(id),
@@ -521,16 +425,6 @@ export default function TaskLogsPage() {
           tone="warning"
         />
       </div>
-
-      <TaskQueueStrip
-        failedCount={failedTasks}
-        hasFilters={hasFilters}
-        pageCount={tasks.length}
-        queuedCount={queuedTasks}
-        runningCount={runningTasks}
-        total={totalTasks}
-        typeCoverage={typeCoverage}
-      />
 
       <Card className="document-panel table-card">
         <div className="table-section-header">

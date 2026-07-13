@@ -290,14 +290,6 @@ describe("StatisticsPage", () => {
     expect(screen.getAllByText("已过期").length).toBeGreaterThan(0);
     expect(screen.getAllByText("李明").length).toBeGreaterThan(0);
     expect(screen.getByText("RuntimeError")).toBeInTheDocument();
-    const reportStatus = screen.getByRole("region", { name: "统计报表状态" });
-    expect(reportStatus).toHaveTextContent("统计报表状态");
-    expect(reportStatus).toHaveTextContent("3/3 张图表有数据");
-    expect(reportStatus).toHaveTextContent("18,560 个文件进入统计");
-    expect(reportStatus).toHaveTextContent("2 位贡献用户");
-    expect(reportStatus).toHaveTextContent("162 个失败任务");
-    expect(reportStatus).toHaveTextContent("1,240 个待审核，37 个敏感风险");
-    expect(reportStatus).toHaveTextContent("同步失败");
     const contributionWorkbench = screen.getByRole("region", { name: "贡献明细工作台" });
     expect(contributionWorkbench).toHaveTextContent("贡献明细工作台");
     expect(contributionWorkbench).toHaveTextContent("当前视图 2 位用户，样本总数 2 位");

@@ -10,7 +10,6 @@ import {
   InputNumber,
   Modal,
   Popconfirm,
-  Progress,
   Select,
   Space,
   Switch,
@@ -473,112 +472,6 @@ function countEnabled(items: Array<{ enabled: boolean }>): number {
   return items.filter((item) => item.enabled).length;
 }
 
-function AiGovernanceStrip({ config }: { config: AiConfigResponse }) {
-  const enabledFeatures = countEnabled(config.features);
-  const enabledProviders = countEnabled(config.providers);
-  const testedProviders = config.providers.filter(
-    (provider) => provider.enabled && provider.last_test_status === "success",
-  ).length;
-  const failedProviders = config.providers.filter(
-    (provider) => provider.enabled && provider.last_test_status === "failed",
-  ).length;
-  const enabledPrompts = countEnabled(config.prompt_templates);
-  const defaultPrompts = config.prompt_templates.filter((template) => template.is_default).length;
-  const enabledRules = countEnabled(config.sensitive_rules);
-  const ruleHits = config.sensitive_rules.reduce((total, rule) => total + rule.hit_count, 0);
-  const featureCoverage =
-    config.features.length === 0 ? 0 : Math.round((enabledFeatures / config.features.length) * 100);
-  const providerReadiness =
-    enabledProviders === 0 ? 0 : Math.round((testedProviders / enabledProviders) * 100);
-  const stripStatus =
-    config.global.ai_analysis_enabled && enabledProviders > 0 && failedProviders === 0
-      ? "ok"
-      : "unknown";
-  const lanes = [
-    {
-      key: "features",
-      icon: <ExperimentOutlined />,
-      title: "能力覆盖",
-      primary: `${enabledFeatures}/${config.features.length} 项已开启`,
-      secondary: `覆盖率 ${featureCoverage}%`,
-      status: { kind: "dataset" as const, value: enabledFeatures > 0 ? "enabled" : "pending" },
-    },
-    {
-      key: "providers",
-      icon: <ApiOutlined />,
-      title: "模型连通",
-      primary: `${testedProviders}/${enabledProviders} 个通过测试`,
-      secondary: `${config.providers.length} 个供应商，${failedProviders} 个异常`,
-      status: {
-        kind: "health" as const,
-        value: failedProviders > 0 ? "error" : testedProviders > 0 ? "ok" : "unknown",
-      },
-    },
-    {
-      key: "prompts",
-      icon: <FileTextOutlined />,
-      title: "Prompt 默认",
-      primary: `${defaultPrompts} 个默认模板`,
-      secondary: `${enabledPrompts} 个模板可用`,
-      status: { kind: "health" as const, value: defaultPrompts > 0 ? "ok" : "unknown" },
-    },
-    {
-      key: "rules",
-      icon: <SafetyCertificateOutlined />,
-      title: "敏感规则",
-      primary: `${enabledRules} 条已启用`,
-      secondary: `${compactNumber.format(ruleHits)} 次累计命中`,
-      status: { kind: "risk" as const, value: ruleHits > 0 ? "high" : "low" },
-    },
-  ];
-
-  return (
-    <section className="ai-governance-strip" role="region" aria-label="AI 治理总览">
-      <div className="ai-governance-strip__main">
-        <span className="ai-governance-strip__icon">
-          <ThunderboltOutlined />
-        </span>
-        <span className="ai-governance-strip__copy">
-          <span className="ai-governance-strip__title-row">
-            <Typography.Text strong className="ai-governance-strip__title">
-              AI 治理总览
-            </Typography.Text>
-            <StatusTag kind="health" value={stripStatus} variant="dot" />
-          </span>
-          <Typography.Text type="secondary">
-            集中检查分析能力、模型连通、Prompt 模板与敏感规则覆盖。
-          </Typography.Text>
-        </span>
-        <span className="ai-governance-strip__total">
-          <strong>{enabledFeatures}</strong>
-          <Typography.Text type="secondary">启用能力</Typography.Text>
-        </span>
-      </div>
-      <div className="ai-governance-strip__lanes" aria-label="AI 治理指标">
-        {lanes.map((lane) => (
-          <div className="ai-governance-lane" key={lane.key}>
-            <span className="ai-governance-lane__icon">{lane.icon}</span>
-            <span className="ai-governance-lane__body">
-              <span className="ai-governance-lane__topline">
-                <Typography.Text strong>{lane.title}</Typography.Text>
-                <StatusTag kind={lane.status.kind} value={lane.status.value} variant="dot" />
-              </span>
-              <strong>{lane.primary}</strong>
-              <Typography.Text type="secondary">{lane.secondary}</Typography.Text>
-            </span>
-          </div>
-        ))}
-      </div>
-      <div className="ai-governance-strip__readiness" aria-label="模型供应商就绪度">
-        <span className="ai-governance-strip__readiness-copy">
-          <Typography.Text type="secondary">供应商就绪度</Typography.Text>
-          <strong>{providerReadiness}%</strong>
-        </span>
-        <Progress percent={providerReadiness} size="small" showInfo={false} />
-      </div>
-    </section>
-  );
-}
 
 function AiOverview({ config }: { config: AiConfigResponse }) {
   const enabledFeatures = countEnabled(config.features);
@@ -1892,7 +1785,6 @@ export default function AiConfigPage() {
       ) : null}
 
       {config ? <AiOverview config={config} /> : null}
-      {config ? <AiGovernanceStrip config={config} /> : null}
 
       <Card className="document-panel ai-config-tabs-card">
         {isLoading ? (

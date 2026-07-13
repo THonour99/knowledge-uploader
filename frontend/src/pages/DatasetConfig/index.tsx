@@ -16,7 +16,6 @@ import {
 } from "antd";
 import {
   AppstoreOutlined,
-  AuditOutlined,
   CheckCircleOutlined,
   CloudSyncOutlined,
   DatabaseOutlined,
@@ -26,10 +25,9 @@ import {
   LinkOutlined,
   ReloadOutlined,
   StopOutlined,
-  TeamOutlined,
 } from "@ant-design/icons";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { useMemo, useState, type ReactNode } from "react";
+import { useMemo, useState } from "react";
 import type { ColumnsType } from "antd/es/table";
 
 import {
@@ -80,31 +78,6 @@ interface DatasetConfigRow {
   category: Category;
   mapping?: DatasetMapping;
   status: "enabled" | "pending" | "disabled";
-}
-
-interface DatasetPolicyStripProps {
-  aiRecommendCount: number;
-  autoSyncCount: number;
-  boundCategoryCount: number;
-  disabledMappingCount: number;
-  employeeSelectableCount: number;
-  enabledMappingCount: number;
-  pendingMappingCount: number;
-  reviewRequiredCount: number;
-  totalCategoryCount: number;
-  totalMappingCount: number;
-}
-
-interface DatasetPolicyLane {
-  key: string;
-  icon: ReactNode;
-  title: string;
-  primary: string;
-  secondary: string;
-  status: {
-    kind: "dataset" | "health";
-    value: string;
-  };
 }
 
 const defaultCategoryValues: CategoryFormValues = {
@@ -265,91 +238,6 @@ function connectionStatus(
   };
 }
 
-function DatasetPolicyStrip({
-  aiRecommendCount,
-  autoSyncCount,
-  boundCategoryCount,
-  disabledMappingCount,
-  employeeSelectableCount,
-  enabledMappingCount,
-  pendingMappingCount,
-  reviewRequiredCount,
-  totalCategoryCount,
-  totalMappingCount,
-}: DatasetPolicyStripProps) {
-  const coverageReady = totalCategoryCount > 0 && pendingMappingCount === 0;
-  const lanes: DatasetPolicyLane[] = [
-    {
-      key: "coverage",
-      icon: <AppstoreOutlined />,
-      title: "绑定覆盖",
-      primary: `${boundCategoryCount}/${totalCategoryCount} 分类已绑定`,
-      secondary: `${pendingMappingCount} 个待绑定，${disabledMappingCount} 个禁用映射`,
-      status: { kind: "health", value: coverageReady ? "ok" : "unknown" },
-    },
-    {
-      key: "review",
-      icon: <AuditOutlined />,
-      title: "审核策略",
-      primary: `${reviewRequiredCount} 类需要审核`,
-      secondary: `${autoSyncCount} 类开启自动同步`,
-      status: { kind: "dataset", value: reviewRequiredCount > 0 ? "required" : "skipped" },
-    },
-    {
-      key: "employee",
-      icon: <TeamOutlined />,
-      title: "员工入口",
-      primary: `${employeeSelectableCount} 类员工可选`,
-      secondary: `${aiRecommendCount} 类允许 AI 推荐分类`,
-      status: { kind: "health", value: employeeSelectableCount > 0 ? "ok" : "unknown" },
-    },
-    {
-      key: "sync",
-      icon: <CloudSyncOutlined />,
-      title: "同步就绪",
-      primary: `${enabledMappingCount} 个映射生效`,
-      secondary: `${disabledMappingCount} 个已禁用，${totalMappingCount} 个总映射`,
-      status: { kind: "dataset", value: enabledMappingCount > 0 ? "enabled" : "pending" },
-    },
-  ];
-
-  return (
-    <section className="dataset-policy-strip" role="region" aria-label="Dataset 配置总览">
-      <div className="dataset-policy-strip__main">
-        <span className="dataset-policy-strip__icon">
-          <DatabaseOutlined />
-        </span>
-        <span className="dataset-policy-strip__copy">
-          <Typography.Text strong className="dataset-policy-strip__title">
-            Dataset 配置总览
-          </Typography.Text>
-          <Typography.Text type="secondary">
-            集中检查分类覆盖、审核口径、员工入口与同步就绪度。
-          </Typography.Text>
-        </span>
-        <span className="dataset-policy-strip__total">
-          <strong>{enabledMappingCount}</strong>
-          <Typography.Text type="secondary">生效映射</Typography.Text>
-        </span>
-      </div>
-      <div className="dataset-policy-strip__lanes" aria-label="Dataset 配置指标">
-        {lanes.map((lane) => (
-          <div className="dataset-policy-lane" key={lane.key}>
-            <span className="dataset-policy-lane__icon">{lane.icon}</span>
-            <span className="dataset-policy-lane__body">
-              <span className="dataset-policy-lane__topline">
-                <Typography.Text strong>{lane.title}</Typography.Text>
-                <StatusTag kind={lane.status.kind} value={lane.status.value} variant="dot" />
-              </span>
-              <strong>{lane.primary}</strong>
-              <Typography.Text type="secondary">{lane.secondary}</Typography.Text>
-            </span>
-          </div>
-        ))}
-      </div>
-    </section>
-  );
-}
 
 export default function DatasetConfigPage() {
   const { message } = AntdApp.useApp();
@@ -378,12 +266,6 @@ export default function DatasetConfigPage() {
   const datasets = datasetsQuery.data?.items ?? [];
   const enabledMappings = datasets.filter((mapping) => mapping.enabled);
   const disabledMappings = datasets.filter((mapping) => !mapping.enabled);
-  const reviewRequiredCount = categories.filter((category) => category.require_review).length;
-  const employeeSelectableCount = categories.filter(
-    (category) => category.allow_employee_select,
-  ).length;
-  const aiRecommendCount = categories.filter((category) => category.allow_ai_recommend).length;
-  const autoSyncCount = categories.filter((category) => category.auto_sync_enabled).length;
   const categoryOptions = categories.map((category) => ({
     label: `${category.name} (${category.code})`,
     value: category.id,
@@ -755,19 +637,6 @@ export default function DatasetConfigPage() {
           测试连接
         </Button>
       </Card>
-
-      <DatasetPolicyStrip
-        aiRecommendCount={aiRecommendCount}
-        autoSyncCount={autoSyncCount}
-        boundCategoryCount={boundCategoryCount}
-        disabledMappingCount={disabledMappings.length}
-        employeeSelectableCount={employeeSelectableCount}
-        enabledMappingCount={enabledMappings.length}
-        pendingMappingCount={pendingRowCount}
-        reviewRequiredCount={reviewRequiredCount}
-        totalCategoryCount={categories.length}
-        totalMappingCount={datasets.length}
-      />
 
       <Card className="document-panel table-card">
         <section className="dataset-command-strip" role="region" aria-label="Dataset 映射工作台">

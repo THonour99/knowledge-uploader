@@ -147,17 +147,6 @@ describe("UsersPage", () => {
     expect(screen.getByText("lixue@company.com")).toBeInTheDocument();
     expect(screen.getByText("陈晨")).toBeInTheDocument();
 
-    const governance = screen.getByRole("region", { name: "账号治理状态" });
-    expect(governance).toHaveTextContent("账号治理状态");
-    expect(governance).toHaveTextContent("2 个正常账号");
-    expect(governance).toHaveTextContent("当前视图 3 个账号，平台共 3 条");
-    expect(governance).toHaveTextContent("3 个已归属");
-    expect(governance).toHaveTextContent("当前视图 3 个账号可维护所属部门");
-    expect(governance).toHaveTextContent("1 个部门管理员");
-    expect(governance).toHaveTextContent("管辖部门在详情弹窗中按后端返回回显");
-    expect(governance).toHaveTextContent("1 个禁用/锁定");
-    expect(governance).toHaveTextContent("当前列表未应用筛选条件");
-
     expect(screen.getByRole("heading", { name: "账号治理列表" })).toBeInTheDocument();
     expect(screen.getByText("当前显示 3 个账号，共 3 条记录，1 个需处理")).toBeInTheDocument();
     const roleOverview = screen.getByRole("region", { name: "角色权限概览" });
