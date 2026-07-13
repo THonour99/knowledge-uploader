@@ -13,12 +13,6 @@ export function AuthLayout({ title, description, children, footer }: AuthLayoutP
   return (
     <main className="auth-page">
       <section className="auth-hero" aria-label="品牌展示">
-        <div className="auth-hero__grid" aria-hidden="true" />
-        <div className="auth-orb auth-orb--1" aria-hidden="true" />
-        <div className="auth-orb auth-orb--2" aria-hidden="true" />
-        <div className="auth-orb auth-orb--3" aria-hidden="true" />
-        <div className="auth-ring" aria-hidden="true" />
-
         <div className="auth-brand">
           <span className="auth-brand__mark">
             <DatabaseOutlined />
@@ -29,11 +23,6 @@ export function AuthLayout({ title, description, children, footer }: AuthLayoutP
           <Typography.Paragraph className="auth-brand__tagline">
             让企业知识持续沉淀与同步
           </Typography.Paragraph>
-          <div className="auth-brand__badges">
-            <span className="auth-badge">AI 智能分析</span>
-            <span className="auth-badge">多级审核</span>
-            <span className="auth-badge">RAGFlow 同步</span>
-          </div>
         </div>
       </section>
 
@@ -45,9 +34,6 @@ export function AuthLayout({ title, description, children, footer }: AuthLayoutP
           <span className="auth-brand__name">知识库贡献平台</span>
         </div>
         <div className="auth-card">
-          <div className="auth-card__icon">
-            <DatabaseOutlined />
-          </div>
           <Typography.Title level={3} className="auth-card__title">
             {title}
           </Typography.Title>
