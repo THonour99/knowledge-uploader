@@ -1,7 +1,7 @@
 .kpi-card {
   border-color: var(--ku-border);
   border-radius: var(--ku-radius-card);
-  background: linear-gradient(180deg, #ffffff 0%, #fbfdff 100%);
+  background: var(--ku-bg-card);
   box-shadow: var(--ku-shadow-card);
   transition:
     box-shadow 0.2s ease,

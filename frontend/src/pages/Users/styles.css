@@ -20,7 +20,7 @@
   padding: 12px;
   border: 1px solid rgba(229, 234, 242, 0.95);
   border-radius: var(--ku-radius-card);
-  background: linear-gradient(135deg, rgba(230, 244, 255, 0.86), rgba(255, 255, 255, 0.98));
+  background: var(--ku-bg-card);
   box-shadow: var(--ku-shadow-card);
 }
 
@@ -155,7 +155,7 @@
   padding: 12px;
   border: 1px solid rgba(22, 119, 255, 0.14);
   border-radius: var(--ku-radius-control);
-  background: linear-gradient(135deg, rgba(230, 244, 255, 0.9), rgba(255, 255, 255, 0.98));
+  background: var(--ku-bg-base);
 }
 
 .users-role-panel__icon {
@@ -261,7 +261,7 @@
   padding: 12px;
   border: 1px solid rgba(229, 234, 242, 0.95);
   border-radius: var(--ku-radius-card);
-  background: linear-gradient(135deg, rgba(230, 244, 255, 0.82), rgba(255, 255, 255, 0.98));
+  background: var(--ku-bg-card);
 }
 
 .user-modal-summary__icon {
