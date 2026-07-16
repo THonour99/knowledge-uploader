@@ -2,15 +2,23 @@ from __future__ import annotations
 
 from uuid import UUID
 
-from pydantic import BaseModel, EmailStr, Field
+from pydantic import BaseModel, ConfigDict, EmailStr, Field
 
 
 class RegisterRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
     name: str = Field(min_length=1, max_length=100)
     email: EmailStr
     password: str = Field(min_length=1, max_length=128)
-    department: str | None = Field(default=None, max_length=100)
+    department_id: UUID | None = None
     phone: str | None = Field(default=None, max_length=40)
+
+
+class RegistrationDepartmentOption(BaseModel):
+    id: UUID
+    name: str
+    code: str
 
 
 class LoginRequest(BaseModel):
@@ -48,6 +56,7 @@ class UserProfile(BaseModel):
     department: str | None
     phone: str | None
     managed_department_ids: list[UUID] = Field(default_factory=list)
+    department_assigned: bool
 
 
 class LoginResponse(BaseModel):

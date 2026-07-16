@@ -3,16 +3,20 @@ from __future__ import annotations
 import uuid
 from datetime import datetime
 
-from sqlalchemy import Column, MetaData, String, Table, select
+from sqlalchemy import Column, MetaData, String, Table, and_, select
 from sqlalchemy.dialects.postgresql import UUID as PG_UUID
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.sql.elements import ColumnElement
 
-from app.core.identity import NullableDatetimeUpdate, NullableStringUpdate
+from app.core.identity import (
+    UNASSIGNED_DEPARTMENT_ID,
+    NullableDatetimeUpdate,
+    NullableStringUpdate,
+    RegistrationDepartment,
+)
 from app.modules.user.models import User
 from app.modules.user.schemas import AuthUserRecord
 
-UNASSIGNED_DEPARTMENT_ID = uuid.UUID("00000000-0000-0000-0000-000000000001")
 UNASSIGNED_DEPARTMENT_NAME = "未分配"
 
 _DEPARTMENTS = Table(
@@ -70,6 +74,33 @@ class SqlUserIdentityStore:
     async def get_by_id(self, user_id: uuid.UUID) -> AuthUserRecord | None:
         return await self._get_record(User.id == user_id)
 
+    async def get_registration_department(
+        self,
+        department_id: uuid.UUID,
+    ) -> RegistrationDepartment | None:
+        result = await self._session.execute(
+            select(_DEPARTMENTS.c.id, _DEPARTMENTS.c.name, _DEPARTMENTS.c.code).where(
+                _DEPARTMENTS.c.id == department_id,
+                _DEPARTMENTS.c.status == "active",
+                _DEPARTMENTS.c.id != UNASSIGNED_DEPARTMENT_ID,
+            )
+        )
+        row = result.one_or_none()
+        if row is None:
+            return None
+        return RegistrationDepartment(id=row.id, name=row.name, code=row.code)
+
+    async def list_registration_departments(self) -> list[RegistrationDepartment]:
+        result = await self._session.execute(
+            select(_DEPARTMENTS.c.id, _DEPARTMENTS.c.name, _DEPARTMENTS.c.code)
+            .where(
+                _DEPARTMENTS.c.status == "active",
+                _DEPARTMENTS.c.id != UNASSIGNED_DEPARTMENT_ID,
+            )
+            .order_by(_DEPARTMENTS.c.name.asc(), _DEPARTMENTS.c.id.asc())
+        )
+        return [RegistrationDepartment(id=row.id, name=row.name, code=row.code) for row in result]
+
     async def create_user(
         self,
         *,
@@ -77,18 +108,21 @@ class SqlUserIdentityStore:
         email: str,
         email_domain: str,
         password_hash: str,
-        department: str | None,
+        department: RegistrationDepartment | None,
         phone: str | None,
         status: str,
         email_verified: bool,
     ) -> AuthUserRecord:
+        department_id = department.id if department is not None else UNASSIGNED_DEPARTMENT_ID
+        department_name = department.name if department is not None else UNASSIGNED_DEPARTMENT_NAME
+        department_code = department.code if department is not None else "unassigned"
         user = User(
             name=name,
             email=email,
             email_domain=email_domain,
             password_hash=password_hash,
-            department_id=UNASSIGNED_DEPARTMENT_ID,
-            department=UNASSIGNED_DEPARTMENT_NAME,
+            department_id=department_id,
+            department=department_name,
             phone=phone,
             role="employee",
             status=status,
@@ -100,8 +134,8 @@ class SqlUserIdentityStore:
         await self._session.flush()
         return _record(
             user,
-            department_name=UNASSIGNED_DEPARTMENT_NAME,
-            department_code="unassigned",
+            department_name=department_name,
+            department_code=department_code,
             managed_department_ids=[],
         )
 
@@ -157,7 +191,13 @@ class SqlUserIdentityStore:
                 _DEPARTMENTS.c.name.label("department_name"),
                 _DEPARTMENTS.c.code.label("department_code"),
             )
-            .outerjoin(_DEPARTMENTS, User.department_id == _DEPARTMENTS.c.id)
+            .outerjoin(
+                _DEPARTMENTS,
+                and_(
+                    User.department_id == _DEPARTMENTS.c.id,
+                    _DEPARTMENTS.c.status == "active",
+                ),
+            )
             .where(criterion)
         )
         row = result.one_or_none()

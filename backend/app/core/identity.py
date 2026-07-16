@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import uuid
+from dataclasses import dataclass
 from datetime import datetime
 from typing import Protocol
 
@@ -16,12 +17,35 @@ class _NullValue:
 NULL_VALUE = _NullValue()
 NullableDatetimeUpdate = datetime | None | _NullValue
 NullableStringUpdate = str | None | _NullValue
+UNASSIGNED_DEPARTMENT_ID = uuid.UUID("00000000-0000-0000-0000-000000000001")
+
+
+@dataclass(frozen=True)
+class RegistrationDepartment:
+    """A public, active department that may be selected during registration."""
+
+    id: uuid.UUID
+    name: str
+    code: str
+
+
+def has_assigned_department(user: AuthUserRecord) -> bool:
+    """Return whether a user belongs to a real department rather than the sentinel."""
+
+    return user.department_id != UNASSIGNED_DEPARTMENT_ID and user.department_code is not None
 
 
 class UserIdentityStore(Protocol):
     async def get_by_email(self, email: str) -> AuthUserRecord | None: ...
 
     async def get_by_id(self, user_id: uuid.UUID) -> AuthUserRecord | None: ...
+
+    async def get_registration_department(
+        self,
+        department_id: uuid.UUID,
+    ) -> RegistrationDepartment | None: ...
+
+    async def list_registration_departments(self) -> list[RegistrationDepartment]: ...
 
     async def create_user(
         self,
@@ -30,7 +54,7 @@ class UserIdentityStore(Protocol):
         email: str,
         email_domain: str,
         password_hash: str,
-        department: str | None,
+        department: RegistrationDepartment | None,
         phone: str | None,
         status: str,
         email_verified: bool,

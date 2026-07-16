@@ -13,7 +13,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.audit import record_audit_log
 from app.core.config import Settings
-from app.core.identity import NULL_VALUE, UserIdentityStore
+from app.core.identity import NULL_VALUE, RegistrationDepartment, UserIdentityStore
 from app.core.outbox import OutboxRepository
 from app.core.ratelimit import (
     blacklist_jwt,
@@ -107,7 +107,7 @@ class AuthService:
         name: str,
         email: str,
         password: str,
-        department: str | None,
+        department_id: uuid.UUID | None,
         phone: str | None,
         client_ip: str,
         trace_id: str | None = None,
@@ -125,6 +125,14 @@ class AuthService:
             raise exceptions.email_domain_not_allowed()
 
         ensure_password_strength(password, await resolve_password_min_length(self._settings))
+        registration_department: RegistrationDepartment | None = None
+        if department_id is not None:
+            registration_department = await self._user_store.get_registration_department(
+                department_id
+            )
+            if registration_department is None:
+                raise exceptions.registration_department_not_available()
+
         existing_user = await self._user_store.get_by_email(normalized_email)
         if existing_user is not None:
             return RegistrationResult(accepted=True)
@@ -137,7 +145,7 @@ class AuthService:
             email=normalized_email,
             email_domain=email_domain,
             password_hash=hash_password(password),
-            department=department,
+            department=registration_department,
             phone=phone,
             status=status,
             email_verified=email_verified,
@@ -278,6 +286,17 @@ class AuthService:
                 commit=True,
             )
             raise exceptions.user_locked()
+        if user.status == "pending_email_verification" or not user.email_verified:
+            await self._record_login_audit(
+                user=user,
+                email=normalized_email,
+                success=False,
+                failure_reason="email_not_verified",
+                client_ip=client_ip,
+                user_agent=user_agent,
+                commit=True,
+            )
+            raise exceptions.email_not_verified()
         if user.status == "locked":
             user = await self._user_store.record_verification_state(
                 user_id=user.id,
@@ -361,7 +380,7 @@ class AuthService:
             password_hash=hash_password(request.new_password),
             failed_login_count=0,
             locked_until=NULL_VALUE,
-            status="active",
+            status="active" if user.email_verified else "pending_email_verification",
         )
         token.used_at = now
         await self._session.commit()
@@ -382,6 +401,9 @@ class AuthService:
 
     async def get_user_by_id(self, user_id: uuid.UUID) -> AuthUserRecord | None:
         return await self._user_store.get_by_id(user_id)
+
+    async def list_registration_departments(self) -> list[RegistrationDepartment]:
+        return await self._user_store.list_registration_departments()
 
     async def logout(self, token: str) -> None:
         try:
@@ -448,7 +470,7 @@ class AuthService:
         user: AuthUserRecord,
         token: IssuedToken,
     ) -> QueuedEmail:
-        verification_url = self._public_url("/auth/verify-email", token.raw_token)
+        verification_url = self._public_url(f"/verify-email?token={token.raw_token}")
         body = (
             f"{user.name}, 您好:\n\n"
             "请点击下面的链接完成邮箱验证。\n"
@@ -468,7 +490,7 @@ class AuthService:
         user: AuthUserRecord,
         token: IssuedToken,
     ) -> QueuedEmail:
-        reset_url = self._public_url("/auth/reset-password", token.raw_token)
+        reset_url = self._public_url(f"/reset-password/{token.raw_token}")
         body = (
             f"{user.name}, 您好:\n\n"
             "请点击下面的链接重置密码。\n"
@@ -482,9 +504,9 @@ class AuthService:
             body=body,
         )
 
-    def _public_url(self, path: str, token: str) -> str:
+    def _public_url(self, path: str) -> str:
         base_url = self._settings.app_base_url.rstrip("/")
-        return f"{base_url}{path}?token={token}"
+        return f"{base_url}/{path.lstrip('/')}"
 
     def _enqueue_email_if_needed(self, email: QueuedEmail | None) -> None:
         if email is None:
@@ -585,10 +607,10 @@ async def resolve_allowed_email_domains(settings: Settings) -> set[str]:
 
 
 async def resolve_require_email_verification(settings: Settings) -> bool:
-    """解析注册后是否要求邮箱验证 (security.require_email_verification)。"""
+    """以环境设置为安全下限, 数据库运行时配置只能进一步收紧验证门禁。"""
     value = await get_config("security.require_email_verification")
     if isinstance(value, bool):
-        return value
+        return settings.require_email_verification or value
     return settings.require_email_verification
 
 

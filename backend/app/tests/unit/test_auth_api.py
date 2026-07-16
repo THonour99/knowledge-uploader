@@ -168,6 +168,18 @@ async def _create_password_reset_token(user_id: UUID, raw_token: str) -> None:
         await session.commit()
 
 
+async def _create_department(*, name: str, code: str, status: str = "active") -> UUID:
+    from app.core.database import AsyncSessionFactory
+    from app.modules.department.models import Department
+
+    department = Department(name=name, code=code, status=status)
+    async with AsyncSessionFactory() as session:
+        session.add(department)
+        await session.commit()
+        await session.refresh(department)
+        return department.id
+
+
 async def test_register_accepts_allowed_domain_and_rejects_other_domain(
     client: AsyncClient,
 ) -> None:
@@ -223,6 +235,134 @@ async def test_register_existing_email_returns_generic_success(client: AsyncClie
     async with AsyncSessionFactory() as session:
         result = await session.execute(select(func.count()).select_from(User))
         assert result.scalar_one() == 1
+
+
+async def test_register_assigns_only_an_active_department_without_elevating_role(
+    client: AsyncClient,
+) -> None:
+    from sqlalchemy import select
+
+    from app.core.database import AsyncSessionFactory
+    from app.modules.user.models import User
+
+    department_id = await _create_department(name="研发部", code="engineering")
+    response = await client.post(
+        "/api/auth/register",
+        json={
+            "name": "Engineer",
+            "email": "engineer@company.com",
+            "password": "password123",
+            "department_id": str(department_id),
+        },
+    )
+    assert response.status_code == 201
+
+    async with AsyncSessionFactory() as session:
+        user = (
+            await session.execute(select(User).where(User.email == "engineer@company.com"))
+        ).scalar_one()
+
+    assert user.department_id == department_id
+    assert user.department == "研发部"
+    assert user.role == "employee"
+
+
+async def test_disabled_department_stops_counting_as_an_active_assignment(
+    client: AsyncClient,
+) -> None:
+    from app.core.database import AsyncSessionFactory
+    from app.modules.department.models import Department
+
+    department_id = await _create_department(name="Operations", code="operations")
+    await client.post(
+        "/api/auth/register",
+        json={
+            "name": "Operator",
+            "email": "operator@company.com",
+            "password": "password123",
+            "department_id": str(department_id),
+        },
+    )
+
+    first_login = await client.post(
+        "/api/auth/login",
+        json={"email": "operator@company.com", "password": "password123"},
+    )
+    assert first_login.status_code == 200
+    assert first_login.json()["data"]["user"]["department_assigned"] is True
+
+    async with AsyncSessionFactory() as session:
+        department = await session.get(Department, department_id)
+        assert department is not None
+        department.status = "disabled"
+        await session.commit()
+
+    second_login = await client.post(
+        "/api/auth/login",
+        json={"email": "operator@company.com", "password": "password123"},
+    )
+    assert second_login.status_code == 200
+    assert second_login.json()["data"]["user"]["department_assigned"] is False
+    assert second_login.json()["data"]["user"]["department_code"] is None
+
+
+async def test_registration_department_selector_is_minimal_stable_and_public(
+    client: AsyncClient,
+) -> None:
+    await _create_department(name="Beta Department", code="beta")
+    await _create_department(name="Alpha Department", code="alpha")
+    await _create_department(name="Disabled Department", code="disabled", status="disabled")
+
+    response = await client.get("/api/auth/registration-departments")
+
+    assert response.status_code == 200
+    items = response.json()["data"]
+    assert [item["code"] for item in items] == ["alpha", "beta"]
+    assert all(set(item) == {"id", "name", "code"} for item in items)
+
+
+async def test_register_rejects_disabled_unassigned_and_legacy_text_department(
+    client: AsyncClient,
+) -> None:
+    disabled_id = await _create_department(
+        name="Disabled Department",
+        code="disabled",
+        status="disabled",
+    )
+    disabled = await client.post(
+        "/api/auth/register",
+        json={
+            "name": "Disabled Dept",
+            "email": "disabled-dept@company.com",
+            "password": "password123",
+            "department_id": str(disabled_id),
+        },
+    )
+    assert disabled.status_code == 400
+    assert disabled.json()["error_code"] == "DEPARTMENT_NOT_FOUND"
+
+    unassigned = await client.post(
+        "/api/auth/register",
+        json={
+            "name": "Unassigned Dept",
+            "email": "unassigned-dept@company.com",
+            "password": "password123",
+            "department_id": "00000000-0000-0000-0000-000000000001",
+        },
+    )
+    assert unassigned.status_code == 400
+    assert unassigned.json()["error_code"] == "DEPARTMENT_NOT_FOUND"
+
+    legacy = await client.post(
+        "/api/auth/register",
+        json={
+            "name": "Legacy",
+            "email": "legacy-dept@company.com",
+            "password": "password123",
+            "department": "研发部",
+        },
+    )
+    assert legacy.status_code == 422
 
 
 async def test_register_creates_active_user_without_email_verification_by_default(
@@ -393,6 +533,9 @@ async def test_verify_email_activates_pending_user(client: AsyncClient) -> None:
 
     assert verified.status_code == 200
     assert verified.json()["data"]["status"] == "active"
+    replayed = await client.post("/api/auth/verify-email", json={"token": "verify-token"})
+    assert replayed.status_code == 400
+    assert replayed.json()["error_code"] == "INVALID_TOKEN"
 
     login = await client.post(
         "/api/auth/login",
@@ -401,7 +544,7 @@ async def test_verify_email_activates_pending_user(client: AsyncClient) -> None:
     assert login.status_code == 200
 
 
-async def test_pending_unverified_user_can_login_as_password_account(
+async def test_pending_unverified_user_cannot_login(
     client: AsyncClient,
 ) -> None:
     from app.core.database import AsyncSessionFactory
@@ -419,13 +562,40 @@ async def test_pending_unverified_user_can_login_as_password_account(
         json={"email": "pending-login@company.com", "password": "password123"},
     )
 
-    assert login.status_code == 200
-    assert login.json()["data"]["user"]["status"] == "active"
+    assert login.status_code == 403
+    assert login.json()["error_code"] == "EMAIL_NOT_VERIFIED"
 
     async with AsyncSessionFactory() as session:
         user = await session.get(User, user_id)
         assert user is not None
-        assert user.status == "active"
+        assert user.status == "pending_email_verification"
+        assert user.email_verified is False
+
+
+async def test_password_reset_does_not_verify_or_activate_pending_user(
+    client: AsyncClient,
+) -> None:
+    user_id = await _create_user(
+        email="pending-reset@company.com",
+        password="oldpassword123",
+        status="pending_email_verification",
+        email_verified=False,
+    )
+    await _create_password_reset_token(user_id, "pending-reset-token")
+
+    reset = await client.post(
+        "/api/auth/reset-password",
+        json={"token": "pending-reset-token", "new_password": "newpassword123"},
+    )
+    assert reset.status_code == 200
+    assert reset.json()["data"]["status"] == "pending_email_verification"
+
+    login = await client.post(
+        "/api/auth/login",
+        json={"email": "pending-reset@company.com", "password": "newpassword123"},
+    )
+    assert login.status_code == 403
+    assert login.json()["error_code"] == "EMAIL_NOT_VERIFIED"
 
 
 async def test_reset_password_allows_login_with_new_password(client: AsyncClient) -> None:
@@ -531,6 +701,7 @@ async def test_register_verification_token_not_stored_in_db_outbox_or_logs(
     assert raw_token not in str(outbox.payload)
     assert "token" not in outbox.payload
     assert sent[0]["recipient"] == "token-check@company.com"
+    assert f"http://localhost/verify-email?token={raw_token}" in sent[0]["body"]
     assert raw_token in sent[0]["body"]
     assert raw_token not in caplog.text
 
@@ -580,6 +751,7 @@ async def test_forgot_password_token_not_stored_in_db_outbox_or_logs(
     assert "token" not in outbox.payload
     assert "password_reset_token" not in outbox.payload
     assert sent[0]["recipient"] == "reset-token-check@company.com"
+    assert f"http://localhost/reset-password/{raw_token}" in sent[0]["body"]
     assert raw_token in sent[0]["body"]
     assert raw_token not in caplog.text
 

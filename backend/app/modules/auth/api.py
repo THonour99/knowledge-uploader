@@ -8,7 +8,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.core.config import Settings
 from app.core.database import get_session
 from app.core.deps import BearerCredentialsDep, get_app_settings, get_current_user
-from app.core.identity import get_user_identity_store
+from app.core.identity import get_user_identity_store, has_assigned_department
 from app.core.responses import success_response
 from app.modules.auth.exceptions import AuthError
 from app.modules.auth.schemas import (
@@ -17,6 +17,7 @@ from app.modules.auth.schemas import (
     LoginRequest,
     LoginResponse,
     RegisterRequest,
+    RegistrationDepartmentOption,
     ResetPasswordRequest,
     TokenRequest,
     UserProfile,
@@ -55,6 +56,7 @@ def _profile(user: AuthUserRecord) -> UserProfile:
         department=user.department,
         phone=user.phone,
         managed_department_ids=user.managed_department_ids,
+        department_assigned=has_assigned_department(user),
     )
 
 
@@ -87,7 +89,7 @@ async def register(
             name=payload.name,
             email=str(payload.email),
             password=payload.password,
-            department=payload.department,
+            department_id=payload.department_id,
             phone=payload.phone,
             client_ip=_client_ip(request) or "unknown",
             trace_id=_request_id(request),
@@ -95,6 +97,22 @@ async def register(
     except AuthError as error:
         _raise_auth_error(error)
     return success_response({"accepted": result.accepted}, request)
+
+
+@router.get("/registration-departments")
+async def registration_departments(
+    request: Request,
+    session: SessionDep,
+    settings: SettingsDep,
+) -> dict[str, object]:
+    departments = await _service(session, settings).list_registration_departments()
+    payload = [
+        RegistrationDepartmentOption(id=item.id, name=item.name, code=item.code).model_dump(
+            mode="json"
+        )
+        for item in departments
+    ]
+    return success_response(payload, request)
 
 
 @router.post("/login")

@@ -30,6 +30,14 @@ def email_domain_not_allowed() -> AuthError:
     )
 
 
+def registration_department_not_available() -> AuthError:
+    return AuthError(
+        ErrorCode.DEPARTMENT_NOT_FOUND,
+        "department is not available for registration",
+        status.HTTP_400_BAD_REQUEST,
+    )
+
+
 def email_already_registered() -> AuthError:
     return AuthError(
         ErrorCode.EMAIL_ALREADY_REGISTERED,
