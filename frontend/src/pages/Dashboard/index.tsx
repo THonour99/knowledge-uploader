@@ -75,8 +75,8 @@ function buildTrendOption(points: StatisticsTrendPoint[]): EChartsOption {
   const primaryColor = cssVar("--ku-color-primary", "#1677ff");
   const successColor = cssVar("--ku-color-success", "#16a34a");
   const warningColor = cssVar("--ku-color-orange", "#f59e0b");
-  const borderColor = cssVar("--ku-border", "#E5EAF2");
-  const textColor = cssVar("--ku-text-secondary", "#667085");
+  const borderColor = cssVar("--ku-border", "#E7E5E4");
+  const textColor = cssVar("--ku-text-secondary", "#57534E");
 
   return {
     color: [primaryColor, successColor, warningColor],
@@ -119,8 +119,8 @@ function buildTrendOption(points: StatisticsTrendPoint[]): EChartsOption {
             x2: 0,
             y2: 1,
             colorStops: [
-              { offset: 0, color: "rgba(22, 119, 255, 0.18)" },
-              { offset: 1, color: "rgba(22, 119, 255, 0)" },
+              { offset: 0, color: "rgba(5, 150, 105, 0.18)" },
+              { offset: 1, color: "rgba(5, 150, 105, 0)" },
             ],
           },
         },

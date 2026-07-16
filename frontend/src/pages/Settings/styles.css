@@ -134,13 +134,13 @@
 
 .settings-command-card:hover,
 .settings-command-card--active {
-  border-color: rgba(22, 119, 255, 0.34);
-  box-shadow: 0 10px 22px rgba(22, 119, 255, 0.1);
+  border-color: rgba(5, 150, 105, 0.34);
+  box-shadow: 0 10px 22px rgba(5, 150, 105, 0.1);
   transform: translateY(-1px);
 }
 
 .settings-command-card:focus-visible {
-  outline: 2px solid rgba(22, 119, 255, 0.45);
+  outline: 2px solid rgba(5, 150, 105, 0.45);
   outline-offset: 2px;
 }
 

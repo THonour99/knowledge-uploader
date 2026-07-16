@@ -141,7 +141,7 @@ function cssVar(name: string, fallback = ""): string {
 }
 
 function chartTextColor(): string {
-  return cssVar("--ku-text-secondary", "#667085");
+  return cssVar("--ku-text-secondary", "#57534E");
 }
 
 function categoryChartColors(): string[] {

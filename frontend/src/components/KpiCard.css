@@ -83,7 +83,7 @@
 }
 
 .kpi-card--clickable:focus-visible {
-  outline: 3px solid rgba(22, 119, 255, 0.18);
+  outline: 3px solid rgba(5, 150, 105, 0.18);
   outline-offset: 2px;
   border-color: var(--ku-color-primary);
 }

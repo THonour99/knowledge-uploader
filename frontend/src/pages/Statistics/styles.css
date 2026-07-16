@@ -95,7 +95,7 @@
 
 .statistics-category-legend__item:hover,
 .statistics-category-legend__item:focus-visible {
-  border-color: rgba(22, 119, 255, 0.18);
+  border-color: rgba(5, 150, 105, 0.18);
   background: rgba(248, 251, 255, 0.86);
   outline: none;
 }

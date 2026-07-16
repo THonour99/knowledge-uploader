@@ -1,28 +1,37 @@
 export const colors = {
-  primary: "#1677FF",
-  primaryHover: "#4096FF",
-  primaryLight: "#E6F4FF",
+  // Emerald is the product/interaction color. Semantic success remains a
+  // deliberately different green so "clickable" and "completed" never blur.
+  primary: "#059669",
+  primaryHover: "#047857",
+  primaryActive: "#065F46",
+  primaryLight: "#D1FAE5",
+  accent: "#0D9488",
+  accentLight: "#CCFBF1",
   infoLight: "#DBEAFE",
   successLight: "#DCFCE7",
-  warningLight: "#FFF7ED",
+  warningLight: "#FEF3C7",
   dangerLight: "#FEE2E2",
-  purpleLight: "#F3E8FF",
-  bgBase: "#F5F7FA",
+  purpleLight: "#F5F5F4",
+  bgBase: "#FAFAF9",
   bgCard: "#FFFFFF",
-  border: "#E5EAF2",
-  textPrimary: "#1F2937",
-  textSecondary: "#667085",
-  textDisabled: "#98A2B3",
+  bgSubtle: "#F5F5F4",
+  border: "#E7E5E4",
+  borderStrong: "#D6D3D1",
+  textPrimary: "#1C1917",
+  textSecondary: "#57534E",
+  textDisabled: "#A8A29E",
   success: "#16A34A",
-  warning: "#F59E0B",
-  danger: "#EF4444",
-  info: "#3B82F6",
-  purple: "#7C3AED",
-  orange: "#F97316",
-  cyan: "#06B6D4",
-  geekblue: "#2F54EB",
+  warning: "#D97706",
+  danger: "#DC2626",
+  info: "#2563EB",
+  // Compatibility aliases used by legacy status/data visualisations. They are
+  // not product-primary colors and can be removed as those surfaces migrate.
+  purple: "#57534E",
+  orange: "#D97706",
+  cyan: "#0D9488",
+  geekblue: "#2563EB",
   volcano: "#DC2626",
-  dangerDeep: "#9D174D",
+  dangerDeep: "#B91C1C",
 } as const;
 
 export const statusTagColors = {
@@ -37,26 +46,26 @@ export const statusTagColors = {
   danger: colors.danger,
   volcano: colors.danger,
   dangerDeep: colors.danger,
-  ai: colors.primary,
+  ai: colors.accent,
   orange: colors.warning,
-  cyan: colors.primary,
+  cyan: colors.accent,
 } as const;
 
 export const radius = {
   card: 12,
   control: 8,
-  tag: 4,
+  tag: 999,
 } as const;
 
 export const spacing = {
   cardPadding: 20,
   cardPaddingSm: 16,
-  pageGutter: 18,
-  sectionGap: 12,
+  pageGutter: 24,
+  sectionGap: 16,
 } as const;
 
 export const typography = {
-  fontFamily: '"PingFang SC", "Microsoft YaHei", system-ui, sans-serif',
+  fontFamily: '"Inter", "PingFang SC", "Microsoft YaHei", system-ui, sans-serif',
 } as const;
 
 export const layout = {
@@ -67,14 +76,17 @@ export const layout = {
 
 // 卡片立体感档位:rest 态用 card,hover 抬升用 cardHover,与设计稿「轻微阴影 / 悬浮卡」对齐。
 export const shadow = {
-  xs: "0 1px 2px rgba(16, 24, 40, 0.05)",
-  card: "0 2px 8px rgba(16, 24, 40, 0.06)",
-  cardHover: "0 8px 24px rgba(16, 24, 40, 0.1)",
+  xs: "0 1px 2px rgba(28, 25, 23, 0.04)",
+  card: "0 1px 3px rgba(28, 25, 23, 0.06), 0 1px 2px rgba(28, 25, 23, 0.04)",
+  cardHover: "0 4px 12px rgba(28, 25, 23, 0.08)",
 } as const;
 
 export const themeCssVariables = {
   "--ku-color-primary": colors.primary,
+  "--ku-color-primary-hover": colors.primaryHover,
   "--ku-color-primary-light": colors.primaryLight,
+  "--ku-color-accent": colors.accent,
+  "--ku-color-accent-light": colors.accentLight,
   "--ku-color-success": colors.success,
   "--ku-color-warning": colors.warning,
   "--ku-color-danger": colors.danger,
@@ -91,7 +103,9 @@ export const themeCssVariables = {
   "--ku-color-purple-light": colors.purpleLight,
   "--ku-bg-base": colors.bgBase,
   "--ku-bg-card": colors.bgCard,
+  "--ku-bg-subtle": colors.bgSubtle,
   "--ku-border": colors.border,
+  "--ku-border-strong": colors.borderStrong,
   "--ku-text-primary": colors.textPrimary,
   "--ku-text-secondary": colors.textSecondary,
   "--ku-text-disabled": colors.textDisabled,

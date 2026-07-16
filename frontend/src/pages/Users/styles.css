@@ -40,7 +40,7 @@
   align-items: center;
   min-width: 0;
   padding: 12px;
-  border: 1px solid rgba(22, 119, 255, 0.14);
+  border: 1px solid rgba(5, 150, 105, 0.14);
   border-radius: var(--ku-radius-control);
   background: var(--ku-bg-base);
 }

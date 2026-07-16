@@ -11,11 +11,16 @@ export const antdTheme: ThemeConfig = {
     colorInfo: colors.info,
     colorBgLayout: colors.bgBase,
     colorBgContainer: colors.bgCard,
+    colorBgElevated: colors.bgCard,
     colorBorder: colors.border,
+    colorBorderSecondary: colors.border,
     colorText: colors.textPrimary,
     colorTextSecondary: colors.textSecondary,
+    colorTextTertiary: colors.textDisabled,
     borderRadius: radius.control,
     borderRadiusLG: radius.card,
+    controlHeight: 36,
+    fontSize: 14,
     fontFamily: typography.fontFamily,
   },
   components: {
@@ -30,6 +35,9 @@ export const antdTheme: ThemeConfig = {
     },
     Menu: {
       itemBorderRadius: radius.control,
+      itemSelectedBg: colors.primaryLight,
+      itemSelectedColor: colors.primary,
+      itemHoverBg: colors.bgSubtle,
     },
     Tag: {
       borderRadiusSM: radius.tag,

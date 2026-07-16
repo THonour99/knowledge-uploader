@@ -95,7 +95,7 @@
 
 .ai-config-feature-row:hover {
   transform: translateY(-1px);
-  border-color: rgba(22, 119, 255, 0.28);
+  border-color: rgba(5, 150, 105, 0.28);
   box-shadow: var(--ku-shadow-xs);
 }
 
