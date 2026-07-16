@@ -1,177 +1,95 @@
-import React from "react";
-import type { CSSProperties, ReactNode } from "react";
+import type { CSSProperties } from "react";
 import { App as AntdApp, ConfigProvider } from "antd";
-import type * as AntdModule from "antd";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { MemoryRouter } from "react-router-dom";
 import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 
 import {
-  type FileListResponse,
+  ApiError,
   type KnowledgeFile,
-  type Tag,
-  type TagListResponse,
   type UploadPolicy,
   approveFile,
-  archiveFile,
-  deleteFile,
+  claimReviewFile,
   getUploadPolicy,
   listCategories,
   listDatasetMappings,
   listReviewFiles,
   listTags,
-  reanalyzeFile,
-  syncFile,
+  rejectFile,
+  releaseReviewClaim,
 } from "../../api/client";
 import type * as ApiClientModule from "../../api/client";
+import { useAuthStore } from "../../store/auth.store";
 import { themeCssVariables } from "../../theme/tokens";
-import FileManagementPage from "./index";
-
-// ── API mocks ─────────────────────────────────────────────────────────────────
+import FileManagementPage, {
+  buildBulkApproveOnlyPayload,
+  eligibleReviewTargets,
+  hasActiveReviewClaim,
+} from "./index";
 
 vi.mock("../../api/client", async () => {
   const actual = await vi.importActual<typeof ApiClientModule>("../../api/client");
-
   return {
     ...actual,
-    listReviewFiles: vi.fn(),
+    approveFile: vi.fn(),
+    claimReviewFile: vi.fn(),
     getUploadPolicy: vi.fn(),
     listCategories: vi.fn(),
     listDatasetMappings: vi.fn(),
+    listReviewFiles: vi.fn(),
     listTags: vi.fn(),
-    approveFile: vi.fn(),
-    archiveFile: vi.fn(),
-    deleteFile: vi.fn(),
-    reanalyzeFile: vi.fn(),
-    syncFile: vi.fn(),
+    rejectFile: vi.fn(),
+    releaseReviewClaim: vi.fn(),
   };
 });
 
-// ── Ant Design mocks ──────────────────────────────────────────────────────────
-// Popconfirm: immediately calls onConfirm when wrapper is clicked (portal doesn't render in jsdom)
-// Select: renders a native <select> for reliable fireEvent.change testing
-vi.mock("antd", async () => {
-  const actual = await vi.importActual<typeof AntdModule>("antd");
-
-  function MockPopconfirm({
-    children,
-    onConfirm,
-    title,
-  }: {
-    children: ReactNode;
-    onConfirm?: () => void;
-    onCancel?: () => void;
-    title?: string;
-    description?: string;
-    okText?: string;
-    cancelText?: string;
-    okButtonProps?: Record<string, unknown>;
-  }) {
-    return (
-      <span
-        data-testid={`popconfirm-${String(title ?? "default")}`}
-        onClick={(e: React.MouseEvent) => {
-          e.stopPropagation();
-          onConfirm?.();
-        }}
-      >
-        {children}
-      </span>
-    );
-  }
-
-  function MockSelect(props: {
-    value?: string;
-    onChange?: (value: string | undefined) => void;
-    options?: { value: string; label: string }[];
-    placeholder?: string;
-    loading?: boolean;
-    allowClear?: boolean;
-    showSearch?: boolean;
-    optionFilterProp?: string;
-    className?: string;
-  }) {
-    const { value, onChange, options, placeholder, className } = props;
-    return (
-      <select
-        role="combobox"
-        className={className}
-        aria-label={placeholder ?? "select"}
-        value={value ?? ""}
-        onChange={(e) => {
-          const v = e.target.value;
-          onChange?.(v === "" ? undefined : v);
-        }}
-      >
-        <option value="">{placeholder ?? "全部"}</option>
-        {options?.map((opt) => (
-          <option key={opt.value} value={opt.value}>
-            {opt.label}
-          </option>
-        ))}
-      </select>
-    );
-  }
-
-  return { ...actual, Popconfirm: MockPopconfirm, Select: MockSelect };
-});
-
-// ── helpers ───────────────────────────────────────────────────────────────────
-
-function makeFile(overrides: Partial<KnowledgeFile> = {}): KnowledgeFile {
-  return {
-    id: "file-1",
-    original_name: "test.pdf",
-    extension: "pdf",
-    mime_type: "application/pdf",
-    size: 1024,
-    uploader_id: "user-abc123",
-    department: "技术部",
-    category_id: null,
-    dataset_mapping_id: null,
-    visibility: "company",
-    description: null,
-    tags: [],
-    status: "approved",
-    review_status: "approved",
-    ragflow_dataset_id: null,
-    ragflow_document_id: null,
-    ragflow_parse_status: null,
-    ai_analysis_enabled_at_upload: true,
-    uploaded_at: "2026-06-10T10:00:00Z",
-    last_sync_at: null,
-    created_at: "2026-06-10T10:00:00Z",
-    updated_at: "2026-06-10T10:00:00Z",
-    duplicate: false,
-    duplicate_file_id: null,
-    ...overrides,
-  };
-}
-
-function makeTag(overrides: Partial<Tag> = {}): Tag {
-  return {
-    id: "tag-1",
-    name: "技术文档",
-    description: null,
-    usage_count: 5,
-    is_system_generated: false,
-    enabled: true,
-    created_at: "2026-06-01T00:00:00Z",
-    updated_at: "2026-06-01T00:00:00Z",
-    ...overrides,
-  };
-}
-
-const emptyTagList: TagListResponse = { items: [], total: 0, page: 1, page_size: 20 };
-
-const uploadPolicyResponse: UploadPolicy = {
-  allowed_extensions: ["pdf", "docx", "xlsx", "pptx", "txt", "md", "csv"],
+const uploadPolicy: UploadPolicy = {
+  allowed_extensions: ["pdf", "docx"],
   allow_multi_file: true,
   upload_enabled: true,
   max_file_size_mb: 50,
   allow_user_delete: false,
 };
-const emptyFileList: FileListResponse = { items: [], total: 0 };
+
+function makeReviewFile(overrides: Partial<KnowledgeFile> = {}): KnowledgeFile {
+  return {
+    id: "review-file-1",
+    original_name: "待审核制度.pdf",
+    extension: "pdf",
+    mime_type: "application/pdf",
+    size: 1024,
+    uploader_id: "employee-1",
+    uploader_name: "张三",
+    department: "技术部",
+    category_id: null,
+    dataset_mapping_id: null,
+    visibility: "department",
+    description: "制度文件",
+    tags: [],
+    status: "pending_review",
+    review_status: "pending",
+    ragflow_dataset_id: null,
+    ragflow_document_id: null,
+    ragflow_parse_status: null,
+    ai_analysis_enabled_at_upload: true,
+    uploaded_at: "2026-07-15T08:00:00Z",
+    submitted_at: "2026-07-15T09:00:00Z",
+    review_due_at: "2026-07-15T10:00:00Z",
+    claimed_by: null,
+    claimed_by_name: null,
+    claimed_at: overrides.claimed_by ? new Date(Date.now() - 60_000).toISOString() : null,
+    claim_expires_at: overrides.claimed_by ? new Date(Date.now() + 60_000).toISOString() : null,
+    review_version: 1,
+    sensitive_risk_level: "medium",
+    last_sync_at: null,
+    created_at: "2026-07-15T08:00:00Z",
+    updated_at: "2026-07-15T09:00:00Z",
+    duplicate: false,
+    duplicate_file_id: null,
+    ...overrides,
+  };
+}
 
 beforeAll(() => {
   Object.defineProperty(window, "matchMedia", {
@@ -187,7 +105,6 @@ beforeAll(() => {
       dispatchEvent: vi.fn(),
     })),
   });
-
   Object.defineProperty(window, "getComputedStyle", {
     writable: true,
     value: vi.fn().mockImplementation(() => ({
@@ -196,15 +113,29 @@ beforeAll(() => {
   });
 });
 
+beforeEach(() => {
+  useAuthStore.setState({
+    accessToken: "token",
+    user: {
+      id: "admin-1",
+      name: "部门管理员",
+      email: "admin@company.com",
+      role: "dept_admin",
+      department_assigned: true,
+    },
+  });
+  vi.mocked(getUploadPolicy).mockResolvedValue(uploadPolicy);
+  vi.mocked(listCategories).mockResolvedValue({ items: [], total: 0 });
+  vi.mocked(listDatasetMappings).mockResolvedValue({ items: [], total: 0 });
+  vi.mocked(listTags).mockResolvedValue({ items: [], total: 0, page: 1, page_size: 200 });
+});
+
 afterEach(() => {
+  useAuthStore.setState({ accessToken: null, user: null });
   vi.clearAllMocks();
 });
 
-beforeEach(() => {
-  vi.mocked(getUploadPolicy).mockResolvedValue(uploadPolicyResponse);
-});
-
-function renderWithProviders(node: ReactNode) {
+function renderWorkbench(initialEntry = "/admin/files") {
   const queryClient = new QueryClient({
     defaultOptions: {
       queries: { retry: false },
@@ -216,469 +147,337 @@ function renderWithProviders(node: ReactNode) {
     <ConfigProvider>
       <AntdApp>
         <QueryClientProvider client={queryClient}>
-          <div style={themeCssVariables as CSSProperties}>{node}</div>
+          <div style={themeCssVariables as CSSProperties}>
+            <MemoryRouter initialEntries={[initialEntry]}>{<FileManagementPage />}</MemoryRouter>
+          </div>
         </QueryClientProvider>
       </AntdApp>
     </ConfigProvider>,
   );
 }
 
-// ── tests ─────────────────────────────────────────────────────────────────────
-
-describe("FileManagementPage — 同步按钮", () => {
-  it("approved 状态文件展示同步按钮且点击 popconfirm 调用 syncFile", async () => {
-    const file = makeFile({ id: "file-1", status: "approved", review_status: "approved" });
-    vi.mocked(listReviewFiles).mockResolvedValue({ items: [file], total: 1 });
-    vi.mocked(listCategories).mockResolvedValue({ items: [], total: 0 });
-    vi.mocked(listDatasetMappings).mockResolvedValue({ items: [], total: 0 });
-    vi.mocked(listTags).mockResolvedValue(emptyTagList);
-    vi.mocked(syncFile).mockResolvedValue({
-      id: "task-1",
-      file_id: "file-1",
-      task_type: "ragflow_upload",
-      status: "queued",
-      retry_count: 0,
-      max_retry_count: 3,
-      error_message: null,
-      started_at: null,
-      finished_at: null,
-      created_at: "2026-06-10T10:00:00Z",
-      updated_at: "2026-06-10T10:00:00Z",
-      logs: [],
+describe("FileManagementPage", () => {
+  it("passes queue, search and pagination state to the server", async () => {
+    vi.mocked(listReviewFiles).mockResolvedValue({
+      items: [],
+      total: 0,
+      page: 2,
+      page_size: 10,
+      total_pages: 1,
     });
 
-    renderWithProviders(<FileManagementPage />);
-
-    await screen.findByText("test.pdf");
-
-    // 打开更多操作下拉菜单
-    const moreBtn = screen.getByRole("button", { name: "更多操作" });
-    fireEvent.click(moreBtn);
-
-    const syncItem = await screen.findByText("手动同步");
-    fireEvent.click(syncItem);
+    renderWorkbench("/admin/files?q=制度&page=2&page_size=10&queue=overdue");
 
     await waitFor(() => {
-      expect(syncFile).toHaveBeenCalledWith("file-1");
+      expect(listReviewFiles).toHaveBeenCalledWith(
+        expect.objectContaining({
+          page: 2,
+          page_size: 10,
+          q: "制度",
+          queue: "overdue",
+        }),
+      );
     });
+    expect(screen.getByRole("tab", { name: /已超时/ })).toHaveAttribute("aria-selected", "true");
   });
 
-  it("failed 状态文件也展示同步菜单项", async () => {
-    const file = makeFile({ id: "file-2", status: "failed", review_status: "approved" });
-    vi.mocked(listReviewFiles).mockResolvedValue({ items: [file], total: 1 });
-    vi.mocked(listCategories).mockResolvedValue({ items: [], total: 0 });
-    vi.mocked(listDatasetMappings).mockResolvedValue({ items: [], total: 0 });
-    vi.mocked(listTags).mockResolvedValue(emptyTagList);
-
-    renderWithProviders(<FileManagementPage />);
-
-    await screen.findByText("test.pdf");
-
-    const moreBtn = screen.getByRole("button", { name: "更多操作" });
-    fireEvent.click(moreBtn);
-
-    expect(await screen.findByText("手动同步")).toBeInTheDocument();
-  });
-});
-
-describe("FileManagementPage — 删除确认流", () => {
-  it("点击更多操作中的删除菜单项调用 deleteFile", async () => {
-    const file = makeFile({ id: "file-del", status: "uploaded", review_status: "pending" });
-    vi.mocked(listReviewFiles).mockResolvedValue({ items: [file], total: 1 });
-    vi.mocked(listCategories).mockResolvedValue({ items: [], total: 0 });
-    vi.mocked(listDatasetMappings).mockResolvedValue({ items: [], total: 0 });
-    vi.mocked(listTags).mockResolvedValue(emptyTagList);
-    vi.mocked(deleteFile).mockResolvedValue(undefined);
-
-    renderWithProviders(<FileManagementPage />);
-
-    await screen.findByText("test.pdf");
-
-    const moreBtn = screen.getByRole("button", { name: "更多操作" });
-    fireEvent.click(moreBtn);
-
-    const deleteItem = await screen.findByText("删除");
-    fireEvent.click(deleteItem);
-
-    await waitFor(() => {
-      expect(deleteFile).toHaveBeenCalledWith("file-del");
+  it("keeps server q results and total even when only the uploader name matches", async () => {
+    const uploaderMatch = makeReviewFile({
+      original_name: "完全不同的文件名.pdf",
+      uploader_name: "张三",
     });
-  });
-});
-
-describe("FileManagementPage — 重新分析", () => {
-  it("analysis_failed 状态文件展示重新分析按钮且调用 reanalyzeFile", async () => {
-    const file = makeFile({
-      id: "file-ana",
-      status: "analysis_failed",
-      review_status: "pending",
-    });
-    vi.mocked(listReviewFiles).mockResolvedValue({ items: [file], total: 1 });
-    vi.mocked(listCategories).mockResolvedValue({ items: [], total: 0 });
-    vi.mocked(listDatasetMappings).mockResolvedValue({ items: [], total: 0 });
-    vi.mocked(listTags).mockResolvedValue(emptyTagList);
-    vi.mocked(reanalyzeFile).mockResolvedValue(undefined);
-
-    renderWithProviders(<FileManagementPage />);
-
-    await screen.findByText("test.pdf");
-
-    const moreBtn = screen.getByRole("button", { name: "更多操作" });
-    fireEvent.click(moreBtn);
-
-    const reanalyzeItem = await screen.findByText("重新分析");
-    fireEvent.click(reanalyzeItem);
-
-    await waitFor(() => {
-      expect(reanalyzeFile).toHaveBeenCalledWith("file-ana");
-    });
-  });
-
-  it("analyzed 状态文件也展示重新分析菜单项", async () => {
-    const file = makeFile({ id: "file-ana2", status: "analyzed", review_status: "pending" });
-    vi.mocked(listReviewFiles).mockResolvedValue({ items: [file], total: 1 });
-    vi.mocked(listCategories).mockResolvedValue({ items: [], total: 0 });
-    vi.mocked(listDatasetMappings).mockResolvedValue({ items: [], total: 0 });
-    vi.mocked(listTags).mockResolvedValue(emptyTagList);
-
-    renderWithProviders(<FileManagementPage />);
-
-    await screen.findByText("test.pdf");
-
-    const moreBtn = screen.getByRole("button", { name: "更多操作" });
-    fireEvent.click(moreBtn);
-
-    expect(await screen.findByText("重新分析")).toBeInTheDocument();
-  });
-
-  it("uploaded 状态文件不展示重新分析按钮", async () => {
-    const file = makeFile({ id: "file-up", status: "uploaded", review_status: "pending" });
-    vi.mocked(listReviewFiles).mockResolvedValue({ items: [file], total: 1 });
-    vi.mocked(listCategories).mockResolvedValue({ items: [], total: 0 });
-    vi.mocked(listDatasetMappings).mockResolvedValue({ items: [], total: 0 });
-    vi.mocked(listTags).mockResolvedValue(emptyTagList);
-
-    renderWithProviders(<FileManagementPage />);
-
-    await screen.findByText("test.pdf");
-
-    expect(screen.queryByRole("button", { name: "重新分析" })).toBeNull();
-  });
-});
-
-describe("FileManagementPage — 标签筛选", () => {
-  it("listTags 在组件挂载时被调用", async () => {
-    vi.mocked(listReviewFiles).mockResolvedValue(emptyFileList);
-    vi.mocked(listCategories).mockResolvedValue({ items: [], total: 0 });
-    vi.mocked(listDatasetMappings).mockResolvedValue({ items: [], total: 0 });
-    vi.mocked(listTags).mockResolvedValue(emptyTagList);
-
-    renderWithProviders(<FileManagementPage />);
-
-    await waitFor(() => {
-      expect(listTags).toHaveBeenCalled();
-    });
-  });
-
-  it("标签筛选 Select 展示来自 listTags 的标签选项", async () => {
-    const tag = makeTag({ id: "tag-abc", name: "合规文件" });
-    vi.mocked(listReviewFiles).mockResolvedValue(emptyFileList);
-    vi.mocked(listCategories).mockResolvedValue({ items: [], total: 0 });
-    vi.mocked(listDatasetMappings).mockResolvedValue({ items: [], total: 0 });
-    vi.mocked(listTags).mockResolvedValue({
-      items: [tag],
-      total: 1,
+    vi.mocked(listReviewFiles).mockResolvedValue({
+      items: [uploaderMatch],
+      total: 42,
       page: 1,
       page_size: 20,
+      total_pages: 3,
     });
 
-    renderWithProviders(<FileManagementPage />);
+    renderWorkbench("/admin/files?q=张三");
 
-    // 等待初始查询完成
-    await waitFor(() => {
-      expect(listReviewFiles).toHaveBeenCalledTimes(1);
+    expect(await screen.findByText("完全不同的文件名.pdf")).toBeInTheDocument();
+    expect(screen.getByText("共 42 条")).toBeInTheDocument();
+    expect(listReviewFiles).toHaveBeenCalledWith(expect.objectContaining({ q: "张三" }));
+  });
+
+  it("shows SLA state and lets an administrator claim an unclaimed review", async () => {
+    const file = makeReviewFile();
+    vi.mocked(listReviewFiles).mockResolvedValue({ items: [file], total: 1 });
+    vi.mocked(claimReviewFile).mockResolvedValue({
+      ...file,
+      claimed_by: "admin-1",
+      claimed_by_name: "部门管理员",
     });
 
-    // 展开高级筛选
-    fireEvent.click(screen.getByRole("button", { name: "更多筛选" }));
+    renderWorkbench();
 
-    // 找到标签筛选的 MockSelect（aria-label="标签：全部"）
-    const tagSelect = screen.getByRole("combobox", { name: "标签：全部" });
-    expect(tagSelect).toBeInTheDocument();
+    expect(await screen.findByText("待审核制度.pdf")).toBeInTheDocument();
+    expect(screen.getAllByText("已超时").length).toBeGreaterThan(0);
+    expect(screen.getByText("当前页已超时")).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: /领取$/ }));
 
-    // 标签选项已渲染（来自 listTags）
     await waitFor(() => {
-      const option = tagSelect.querySelector('option[value="tag-abc"]');
-      expect(option).not.toBeNull();
-      expect(option?.textContent).toBe("合规文件");
+      expect(vi.mocked(claimReviewFile).mock.calls[0]?.[0]).toBe("review-file-1");
     });
   });
 
-  it("文件类型 Select 包含固定扩展名 pdf 选项", async () => {
-    vi.mocked(listReviewFiles).mockResolvedValue(emptyFileList);
-    vi.mocked(listCategories).mockResolvedValue({ items: [], total: 0 });
-    vi.mocked(listDatasetMappings).mockResolvedValue({ items: [], total: 0 });
-    vi.mocked(listTags).mockResolvedValue(emptyTagList);
+  it("recovers from a claim conflict by showing row feedback and refreshing", async () => {
+    const file = makeReviewFile();
+    vi.mocked(listReviewFiles).mockResolvedValue({ items: [file], total: 1 });
+    vi.mocked(claimReviewFile).mockRejectedValue(
+      new ApiError("already claimed", {
+        status: 409,
+        code: "REVIEW_CLAIM_CONFLICT",
+      }),
+    );
 
-    renderWithProviders(<FileManagementPage />);
+    renderWorkbench();
+    await screen.findByText("待审核制度.pdf");
+    const initialCalls = vi.mocked(listReviewFiles).mock.calls.length;
+    fireEvent.click(screen.getByRole("button", { name: /领取$/ }));
 
+    expect(await screen.findByText("该任务刚刚被他人领取，队列已刷新")).toBeInTheDocument();
     await waitFor(() => {
-      expect(listReviewFiles).toHaveBeenCalledTimes(1);
+      expect(vi.mocked(listReviewFiles).mock.calls.length).toBeGreaterThan(initialCalls);
     });
-
-    // 展开高级筛选
-    fireEvent.click(screen.getByRole("button", { name: "更多筛选" }));
-
-    // MockSelect for 文件类型 has aria-label="文件类型：全部"
-    const typeSelect = screen.getByRole("combobox", { name: "文件类型：全部" });
-    expect(typeSelect).toBeInTheDocument();
-
-    // 包含 pdf 选项
-    const pdfOption = typeSelect.querySelector('option[value="pdf"]');
-    expect(pdfOption).not.toBeNull();
-    expect(pdfOption?.textContent).toBe(".pdf");
   });
-});
 
-describe("FileManagementPage — 归档操作", () => {
-  it("点击更多操作中的归档菜单项调用 archiveFile", async () => {
-    const file = makeFile({
-      id: "file-arc",
-      status: "approved",
-      review_status: "approved",
+  it("sends an explicit approve-only decision without requiring an optional reason", async () => {
+    const file = makeReviewFile({
+      claimed_by: "admin-1",
+      claimed_by_name: "部门管理员",
+      sensitive_risk_level: "high",
     });
     vi.mocked(listReviewFiles).mockResolvedValue({ items: [file], total: 1 });
-    vi.mocked(listCategories).mockResolvedValue({ items: [], total: 0 });
-    vi.mocked(listDatasetMappings).mockResolvedValue({ items: [], total: 0 });
-    vi.mocked(listTags).mockResolvedValue(emptyTagList);
-    vi.mocked(archiveFile).mockResolvedValue(file);
+    vi.mocked(approveFile).mockResolvedValue({ ...file, status: "approved" });
 
-    renderWithProviders(<FileManagementPage />);
-
-    await screen.findByText("test.pdf");
-
-    const moreButton = screen.getByRole("button", { name: "更多操作" });
-    fireEvent.click(moreButton);
-
-    const archiveMenuItem = await screen.findByText("归档");
-    fireEvent.click(archiveMenuItem);
+    renderWorkbench();
+    await screen.findByText("待审核制度.pdf");
+    fireEvent.click(screen.getByRole("button", { name: "审核" }));
+    fireEvent.click(screen.getByLabelText("仅批准，不进入知识库"));
+    fireEvent.click(screen.getByRole("button", { name: "确认批准" }));
 
     await waitFor(() => {
-      expect(archiveFile).toHaveBeenCalledWith("file-arc");
+      expect(approveFile).toHaveBeenCalledWith("review-file-1", {
+        sync_decision: "approve_only",
+        category_id: null,
+        dataset_mapping_id: null,
+        reason: null,
+      });
     });
   });
-});
-describe("FileManagementPage — 审核队列摘要", () => {
-  it("shows queue metrics and selected row counts", async () => {
-    const pendingFile = makeFile({
-      id: "file-pending",
-      original_name: "pending.pdf",
-      status: "pending_review",
-      review_status: "pending",
-    });
-    const failedFile = makeFile({
-      id: "file-failed",
-      original_name: "failed.pdf",
-      status: "failed",
-      review_status: "approved",
-    });
-    vi.mocked(listReviewFiles).mockResolvedValue({ items: [pendingFile, failedFile], total: 2 });
-    vi.mocked(listCategories).mockResolvedValue({ items: [], total: 0 });
-    vi.mocked(listDatasetMappings).mockResolvedValue({ items: [], total: 0 });
-    vi.mocked(listTags).mockResolvedValue(emptyTagList);
 
-    renderWithProviders(<FileManagementPage />);
-
-    await screen.findByText("pending.pdf");
-    await screen.findByText("failed.pdf");
-
-    const queue = screen.getByRole("region", { name: "审核队列摘要" });
-    expect(queue).toHaveTextContent("待审核1项");
-    expect(queue).toHaveTextContent("同步失败1项");
-    expect(queue).toHaveTextContent("已选0项");
-    expect(queue).toHaveTextContent("选中范围");
-    expect(queue).toHaveTextContent("0/2");
-
-    const rowCheckbox = screen.getAllByRole("checkbox")[1];
-    fireEvent.click(rowCheckbox);
-
-    expect(queue).toHaveTextContent("已选1项");
-    expect(queue).toHaveTextContent("可审核1项");
-    expect(queue).toHaveTextContent("1/2");
-  });
-});
-
-describe("FileManagementPage — 批量操作", () => {
-  it("批量审核只处理已选的待审核文件", async () => {
-    const pendingFile = makeFile({
-      id: "file-pending",
-      original_name: "pending.pdf",
-      status: "pending_review",
-      review_status: "pending",
+  it("clears an existing Dataset mapping when building a batch approve-only decision", () => {
+    const file = makeReviewFile({
+      claimed_by: "admin-1",
+      dataset_mapping_id: "mapping-that-must-not-leak",
       category_id: "category-1",
-      dataset_mapping_id: "mapping-1",
     });
-    const approvedFile = makeFile({
-      id: "file-approved",
-      original_name: "approved.pdf",
-      status: "approved",
-      review_status: "approved",
-    });
-    vi.mocked(listReviewFiles).mockResolvedValue({ items: [pendingFile, approvedFile], total: 2 });
-    vi.mocked(listCategories).mockResolvedValue({ items: [], total: 0 });
-    vi.mocked(listDatasetMappings).mockResolvedValue({ items: [], total: 0 });
-    vi.mocked(listTags).mockResolvedValue(emptyTagList);
-    vi.mocked(approveFile).mockResolvedValue({ ...pendingFile, status: "approved" });
 
-    renderWithProviders(<FileManagementPage />);
-
-    await screen.findByText("pending.pdf");
-    await screen.findByText("approved.pdf");
-
-    const rowCheckboxes = screen.getAllByRole("checkbox").slice(1);
-    rowCheckboxes.forEach((checkbox) => fireEvent.click(checkbox));
-
-    fireEvent.click(screen.getByTestId("popconfirm-批量审核通过"));
-
-    await waitFor(() => {
-      expect(approveFile).toHaveBeenCalledTimes(1);
-    });
-    expect(approveFile).toHaveBeenCalledWith("file-pending", {
+    expect(buildBulkApproveOnlyPayload(file)).toEqual({
+      sync_decision: "approve_only",
       category_id: "category-1",
-      dataset_mapping_id: "mapping-1",
+      dataset_mapping_id: null,
       reason: "批量审核通过",
     });
   });
 
-  it("批量同步只处理已选的可同步文件", async () => {
-    const approvedFile = makeFile({
-      id: "file-approved",
-      original_name: "approved.pdf",
+  it("allows decisions and bulk approval only for the user's unexpired claim", () => {
+    const now = Date.parse("2026-07-16T08:00:00Z");
+    const mine = makeReviewFile({
+      id: "mine",
+      claimed_by: "admin-1",
+      claimed_at: "2026-07-16T07:00:00Z",
+      claim_expires_at: "2026-07-16T09:00:00Z",
+    });
+    const expired = makeReviewFile({
+      id: "expired",
+      claimed_by: "admin-1",
+      claimed_at: "2026-07-16T06:00:00Z",
+      claim_expires_at: "2026-07-16T07:00:00Z",
+    });
+    const other = makeReviewFile({
+      id: "other",
+      claimed_by: "admin-2",
+      claimed_at: "2026-07-16T07:00:00Z",
+      claim_expires_at: "2026-07-16T09:00:00Z",
+    });
+    const unclaimed = makeReviewFile({ id: "unclaimed", claimed_by: null });
+
+    expect(hasActiveReviewClaim(mine, "admin-1", now)).toBe(true);
+    expect(hasActiveReviewClaim(expired, "admin-1", now)).toBe(false);
+    expect(hasActiveReviewClaim(other, "admin-1", now)).toBe(false);
+    expect(
+      eligibleReviewTargets(
+        [
+          { ...mine, claim_expires_at: new Date(Date.now() + 60_000).toISOString() },
+          { ...expired, claim_expires_at: new Date(Date.now() - 60_000).toISOString() },
+          { ...other, claim_expires_at: new Date(Date.now() + 60_000).toISOString() },
+          unclaimed,
+        ],
+        "admin-1",
+      ).map((file) => file.id),
+    ).toEqual(["mine"]);
+  });
+
+  it("fails closed for legacy or corrupt claims without a valid expiry", () => {
+    const legacy = makeReviewFile({
+      claimed_by: "admin-1",
+      claimed_at: new Date(Date.now() - 60_000).toISOString(),
+      claim_expires_at: null,
+    });
+    const corrupt = makeReviewFile({
+      claimed_by: "admin-1",
+      claimed_at: new Date(Date.now() - 60_000).toISOString(),
+      claim_expires_at: "not-a-date",
+    });
+
+    expect(hasActiveReviewClaim(legacy, "admin-1")).toBe(false);
+    expect(hasActiveReviewClaim(corrupt, "admin-1")).toBe(false);
+    expect(eligibleReviewTargets([legacy, corrupt], "admin-1")).toEqual([]);
+  });
+
+  it("requires a system administrator to force-release with a reason before claiming", async () => {
+    useAuthStore.setState({
+      accessToken: "token",
+      user: {
+        id: "system-admin-1",
+        name: "系统管理员",
+        email: "root@company.com",
+        role: "system_admin",
+        department_assigned: true,
+      },
+    });
+    const file = makeReviewFile({
+      claimed_by: "other-admin",
+      claimed_by_name: "其他审核人",
+      claim_expires_at: new Date(Date.now() + 60_000).toISOString(),
+    });
+    vi.mocked(listReviewFiles).mockResolvedValue({ items: [file], total: 1 });
+    vi.mocked(releaseReviewClaim).mockResolvedValue({ ...file, claimed_by: null });
+
+    renderWorkbench();
+    await screen.findByText("待审核制度.pdf");
+    expect(screen.queryByRole("button", { name: "审核" })).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "驳回" })).not.toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: /强制释放/ }));
+    fireEvent.change(screen.getByLabelText("强制释放原因"), {
+      target: { value: "原审核人已离岗，转交当前值班管理员" },
+    });
+    fireEvent.click(screen.getByRole("button", { name: "确认强制释放" }));
+
+    await waitFor(() => {
+      expect(releaseReviewClaim).toHaveBeenCalledWith(
+        "review-file-1",
+        "原审核人已离岗，转交当前值班管理员",
+      );
+    });
+    expect(claimReviewFile).not.toHaveBeenCalled();
+  });
+
+  it("shows classification drafting only to the owner of a complete active claim", async () => {
+    const file = makeReviewFile({ claimed_by: "admin-1" });
+    vi.mocked(listReviewFiles).mockResolvedValue({ items: [file], total: 1 });
+
+    renderWorkbench();
+    await screen.findByText("待审核制度.pdf");
+    fireEvent.click(screen.getByRole("button", { name: "更多操作" }));
+    fireEvent.click(await screen.findByText("编辑审核草案"));
+
+    expect(await screen.findByText("编辑审核分类草案")).toBeInTheDocument();
+    expect(screen.getByText("这里保存的是审核草案")).toBeInTheDocument();
+    expect(
+      screen.getByText(/最终 Dataset 必须在“审核通过”时随同步决定再次确认/),
+    ).toBeInTheDocument();
+    expect(screen.getByLabelText("审核草案分类")).toBeInTheDocument();
+    expect(screen.getByLabelText("审核草案 Dataset")).toBeInTheDocument();
+  });
+
+  it("hides classification, archive and delete for another reviewer's active claim", async () => {
+    const file = makeReviewFile({
+      claimed_by: "other-admin",
+      claimed_by_name: "其他审核人",
+    });
+    vi.mocked(listReviewFiles).mockResolvedValue({ items: [file], total: 1 });
+
+    renderWorkbench();
+    await screen.findByText("待审核制度.pdf");
+
+    expect(screen.queryByRole("button", { name: "更多操作" })).not.toBeInTheDocument();
+    expect(screen.queryByText("编辑审核草案")).not.toBeInTheDocument();
+    expect(screen.queryByText("归档")).not.toBeInTheDocument();
+    expect(screen.queryByText("删除")).not.toBeInTheDocument();
+  });
+
+  it("keeps backend-valid archive and delete actions for completed review states", async () => {
+    const file = makeReviewFile({
       status: "approved",
       review_status: "approved",
+      claimed_by: null,
     });
-    const failedFile = makeFile({
-      id: "file-failed",
-      original_name: "failed.pdf",
-      status: "failed",
-      review_status: "approved",
-    });
-    const pendingFile = makeFile({
-      id: "file-pending",
-      original_name: "pending.pdf",
-      status: "pending_review",
-      review_status: "pending",
-    });
-    vi.mocked(listReviewFiles).mockResolvedValue({
-      items: [approvedFile, failedFile, pendingFile],
-      total: 3,
-    });
-    vi.mocked(listCategories).mockResolvedValue({ items: [], total: 0 });
-    vi.mocked(listDatasetMappings).mockResolvedValue({ items: [], total: 0 });
-    vi.mocked(listTags).mockResolvedValue(emptyTagList);
-    vi.mocked(syncFile).mockResolvedValue({
-      id: "task-1",
-      file_id: "file-approved",
-      task_type: "ragflow_upload",
-      status: "queued",
-      retry_count: 0,
-      max_retry_count: 3,
-      error_message: null,
-      started_at: null,
-      finished_at: null,
-      created_at: "2026-06-10T10:00:00Z",
-      updated_at: "2026-06-10T10:00:00Z",
-      logs: [],
-    });
+    vi.mocked(listReviewFiles).mockResolvedValue({ items: [file], total: 1 });
 
-    renderWithProviders(<FileManagementPage />);
+    renderWorkbench();
+    await screen.findByText("待审核制度.pdf");
+    fireEvent.click(screen.getByRole("button", { name: "更多操作" }));
 
-    await screen.findByText("approved.pdf");
-    await screen.findByText("failed.pdf");
-    await screen.findByText("pending.pdf");
+    expect(await screen.findByText("归档")).toBeInTheDocument();
+    expect(screen.getByText("删除")).toBeInTheDocument();
+    expect(screen.queryByText("编辑审核草案")).not.toBeInTheDocument();
+  });
 
-    const rowCheckboxes = screen.getAllByRole("checkbox").slice(1);
-    rowCheckboxes.forEach((checkbox) => fireEvent.click(checkbox));
+  it("does not approve a sync decision without an explicit Dataset", async () => {
+    const file = makeReviewFile({ claimed_by: "admin-1" });
+    vi.mocked(listReviewFiles).mockResolvedValue({ items: [file], total: 1 });
 
-    fireEvent.click(screen.getByTestId("popconfirm-批量同步文件"));
+    renderWorkbench();
+    await screen.findByText("待审核制度.pdf");
+    fireEvent.click(screen.getByRole("button", { name: "审核" }));
+    fireEvent.click(screen.getByLabelText(/批准并同步到 RAGFlow/));
+    fireEvent.click(screen.getByRole("button", { name: "确认批准" }));
+
+    expect(await screen.findByText("批准并同步时必须选择 Dataset")).toBeInTheDocument();
+    expect(approveFile).not.toHaveBeenCalled();
+  });
+
+  it("blocks critical-risk sync and still allows an approve-only path", async () => {
+    const file = makeReviewFile({
+      claimed_by: "admin-1",
+      sensitive_risk_level: "critical",
+    });
+    vi.mocked(listReviewFiles).mockResolvedValue({ items: [file], total: 1 });
+
+    renderWorkbench();
+    await screen.findByText("待审核制度.pdf");
+    fireEvent.click(screen.getByRole("button", { name: "审核" }));
+
+    expect(screen.getByText("严重风险文档禁止同步")).toBeInTheDocument();
+    expect(screen.getByLabelText(/批准并同步到 RAGFlow/)).toBeDisabled();
+    expect(screen.getByLabelText("仅批准，不进入知识库")).not.toBeDisabled();
+  });
+
+  it("rejects with a required reason and releases a claimed task", async () => {
+    const file = makeReviewFile({ claimed_by: "admin-1" });
+    vi.mocked(listReviewFiles).mockResolvedValue({ items: [file], total: 1 });
+    vi.mocked(rejectFile).mockResolvedValue({ ...file, status: "rejected" });
+    vi.mocked(releaseReviewClaim).mockResolvedValue({ ...file, claimed_by: null });
+
+    renderWorkbench();
+    await screen.findByText("待审核制度.pdf");
+    fireEvent.click(screen.getByRole("button", { name: "驳回" }));
+    fireEvent.change(screen.getByLabelText("拒绝原因"), {
+      target: { value: "缺少有效来源" },
+    });
+    fireEvent.click(screen.getByRole("button", { name: "确认驳回" }));
 
     await waitFor(() => {
-      expect(syncFile).toHaveBeenCalledTimes(2);
+      expect(rejectFile).toHaveBeenCalledWith("review-file-1", "缺少有效来源");
     });
-    expect(syncFile).toHaveBeenCalledWith("file-approved");
-    expect(syncFile).toHaveBeenCalledWith("file-failed");
-  });
-});
 
-describe("FileManagementPage — 既有审核测试不回归", () => {
-  it("pending_review 文件可点击审核按钮", async () => {
-    const file = makeFile({
-      id: "file-pr",
-      status: "pending_review",
-      review_status: "pending",
-    });
-    vi.mocked(listReviewFiles).mockResolvedValue({ items: [file], total: 1 });
-    vi.mocked(listCategories).mockResolvedValue({ items: [], total: 0 });
-    vi.mocked(listDatasetMappings).mockResolvedValue({ items: [], total: 0 });
-    vi.mocked(listTags).mockResolvedValue(emptyTagList);
-
-    renderWithProviders(<FileManagementPage />);
-
-    await screen.findByText("test.pdf");
-
-    expect(screen.getByRole("button", { name: "审核" })).not.toBeDisabled();
-  });
-
-  it("pending_review 文件可点击驳回按钮", async () => {
-    const file = makeFile({
-      id: "file-rej",
-      status: "pending_review",
-      review_status: "pending",
-    });
-    vi.mocked(listReviewFiles).mockResolvedValue({ items: [file], total: 1 });
-    vi.mocked(listCategories).mockResolvedValue({ items: [], total: 0 });
-    vi.mocked(listDatasetMappings).mockResolvedValue({ items: [], total: 0 });
-    vi.mocked(listTags).mockResolvedValue(emptyTagList);
-
-    renderWithProviders(<FileManagementPage />);
-
-    await screen.findByText("test.pdf");
-
-    expect(screen.getByRole("button", { name: "驳回" })).not.toBeDisabled();
-  });
-
-  it("approveFile mutation 被正确调用", async () => {
-    const file = makeFile({
-      id: "file-approve",
-      status: "pending_review",
-      review_status: "pending",
-    });
-    vi.mocked(listReviewFiles).mockResolvedValue({ items: [file], total: 1 });
-    vi.mocked(listCategories).mockResolvedValue({ items: [], total: 0 });
-    vi.mocked(listDatasetMappings).mockResolvedValue({ items: [], total: 0 });
-    vi.mocked(listTags).mockResolvedValue(emptyTagList);
-    vi.mocked(approveFile).mockResolvedValue({ ...file, status: "approved" });
-
-    renderWithProviders(<FileManagementPage />);
-
-    await screen.findByText("test.pdf");
-
-    const approveBtn = screen.getByRole("button", { name: "审核" });
-    fireEvent.click(approveBtn);
-
-    // Modal 打开
-    await screen.findByText("审核通过");
-
-    // 点击 Modal footer 确认按钮
-    const footerBtn = document.querySelector(
-      ".ant-modal-footer .ant-btn-primary",
-    ) as HTMLElement | null;
-    if (footerBtn) {
-      fireEvent.click(footerBtn);
-    }
-
+    fireEvent.click(screen.getByRole("button", { name: /释放/ }));
     await waitFor(() => {
-      expect(approveFile).toHaveBeenCalledWith("file-approve", expect.any(Object));
+      expect(releaseReviewClaim).toHaveBeenCalledWith("review-file-1");
     });
   });
 });

@@ -1,15 +1,16 @@
 import {
+  Alert,
   App as AntdApp,
   Avatar,
   Button,
   Card,
-  DatePicker,
   Dropdown,
   Form,
   Input,
   Modal,
   Popconfirm,
   Progress,
+  Radio,
   Select,
   Space,
   Table,
@@ -18,9 +19,9 @@ import {
 import type { MenuProps } from "antd";
 import {
   CheckCircleOutlined,
-  CloudSyncOutlined,
+  ClockCircleOutlined,
   DeleteOutlined,
-  DownloadOutlined,
+  EyeOutlined,
   FileExcelOutlined,
   FileOutlined,
   FilePdfOutlined,
@@ -30,39 +31,41 @@ import {
   DownOutlined,
   FilterOutlined,
   InboxOutlined,
+  LockOutlined,
   UpOutlined,
   ReloadOutlined,
-  SafetyOutlined,
   StarOutlined,
-  SyncOutlined,
+  UnlockOutlined,
 } from "@ant-design/icons";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import dayjs, { type Dayjs } from "dayjs";
+import dayjs from "dayjs";
 import { useMemo, useState } from "react";
 import type { Key } from "react";
 import type { ColumnsType } from "antd/es/table";
 import type { FormInstance } from "antd/es/form";
+import { useNavigate, useSearchParams } from "react-router-dom";
 
 import {
   type DatasetMapping,
   type KnowledgeFile,
+  type ReviewDecisionPayload,
   approveFile,
   archiveFile,
+  claimReviewFile,
   deleteFile,
   getUploadPolicy,
+  isApiError,
   listCategories,
   listDatasetMappings,
   listReviewFiles,
   listTags,
-  reanalyzeFile,
   rejectFile,
-  submitFileForReview,
-  syncFile,
+  releaseReviewClaim,
   updateFileClassification,
 } from "../../api/client";
-import { KpiCard } from "../../components/KpiCard";
 import { StatusTag } from "../../components/StatusTag";
 import { PageContainer } from "../../layouts/PageContainer";
+import { Roles, useAuthStore } from "../../store/auth.store";
 import { allowedExtensionsFromPolicy } from "../../utils/uploadConfig";
 
 // ── 常量 ──────────────────────────────────────────────────────────────────────
@@ -70,6 +73,7 @@ import { allowedExtensionsFromPolicy } from "../../utils/uploadConfig";
 // ── 类型 ──────────────────────────────────────────────────────────────────────
 
 interface ReviewFormValues {
+  sync_decision?: "sync" | "approve_only";
   category_id?: string;
   dataset_mapping_id?: string;
   reason?: string;
@@ -77,10 +81,35 @@ interface ReviewFormValues {
 
 // ── 工具函数 ──────────────────────────────────────────────────────────────────
 
-const { RangePicker } = DatePicker;
-const reviewableStatuses = new Set(["uploaded", "analyzed", "sensitive_review_required"]);
-const reanalyzeStatuses = new Set(["analysis_failed", "analyzed"]);
-const syncableStatuses = new Set(["approved", "failed"]);
+const REVIEW_QUEUES = [
+  { value: "all", label: "全部待审" },
+  { value: "unclaimed", label: "待领取" },
+  { value: "mine", label: "我领取的" },
+  { value: "due_soon", label: "临近 SLA" },
+  { value: "overdue", label: "已超时" },
+] as const;
+
+const ARCHIVABLE_STATUSES = new Set<KnowledgeFile["status"]>([
+  "approved",
+  "parsed",
+  "failed",
+  "rejected",
+  "analyzed",
+  "pending_review",
+]);
+
+const DELETABLE_STATUSES = new Set<KnowledgeFile["status"]>([
+  "uploaded",
+  "pending_review",
+  "approved",
+  "rejected",
+  "failed",
+  "parsed",
+  "analysis_failed",
+  "analyzed",
+  "sensitive_review_required",
+  "disabled",
+]);
 
 function formatFileSize(size: number): string {
   if (size < 1024) {
@@ -90,6 +119,53 @@ function formatFileSize(size: number): string {
     return `${(size / 1024).toFixed(1)} KB`;
   }
   return `${(size / 1024 / 1024).toFixed(1)} MB`;
+}
+
+export function buildBulkApproveOnlyPayload(
+  file: Pick<KnowledgeFile, "category_id">,
+): ReviewDecisionPayload {
+  return {
+    sync_decision: "approve_only",
+    category_id: file.category_id ?? null,
+    dataset_mapping_id: null,
+    reason: "批量审核通过",
+  };
+}
+
+export function hasActiveReviewClaim(
+  file: Pick<KnowledgeFile, "claimed_by" | "claimed_at" | "claim_expires_at">,
+  userId: string | null | undefined,
+  now = Date.now(),
+): boolean {
+  if (!userId || file.claimed_by !== userId || !file.claimed_at || !file.claim_expires_at) {
+    return false;
+  }
+  const claimedAt = Date.parse(file.claimed_at);
+  const expiresAt = Date.parse(file.claim_expires_at);
+  return (
+    Number.isFinite(claimedAt) &&
+    Number.isFinite(expiresAt) &&
+    claimedAt <= now &&
+    expiresAt > now &&
+    expiresAt > claimedAt
+  );
+}
+
+export function eligibleReviewTargets(files: KnowledgeFile[], userId: string | null | undefined) {
+  return files.filter(
+    (file) => file.status === "pending_review" && hasActiveReviewClaim(file, userId),
+  );
+}
+
+function reviewClaimExpired(
+  file: Pick<KnowledgeFile, "claimed_by" | "claim_expires_at">,
+  now = Date.now(),
+): boolean {
+  if (!file.claimed_by || !file.claim_expires_at) {
+    return false;
+  }
+  const expiresAt = Date.parse(file.claim_expires_at);
+  return !Number.isFinite(expiresAt) || expiresAt <= now;
 }
 
 function buildMappingOptions(mappings: DatasetMapping[], categoryId?: string) {
@@ -102,20 +178,10 @@ function buildMappingOptions(mappings: DatasetMapping[], categoryId?: string) {
     }));
 }
 
-function syncStatus(file: KnowledgeFile): "not_synced" | "syncing" | "synced" | "failed" {
-  if (file.ragflow_parse_status === "failed" || file.status === "failed") {
-    return "failed";
+function riskLevel(file: KnowledgeFile): "none" | "low" | "medium" | "high" | "critical" {
+  if (file.sensitive_risk_level) {
+    return file.sensitive_risk_level;
   }
-  if (file.ragflow_document_id || file.ragflow_parse_status === "parsed") {
-    return "synced";
-  }
-  if (["queued", "syncing", "uploaded_to_ragflow", "parsing"].includes(file.status)) {
-    return "syncing";
-  }
-  return "not_synced";
-}
-
-function riskLevel(file: KnowledgeFile): "low" | "medium" | "high" {
   if (file.status === "sensitive_review_required") {
     return "high";
   }
@@ -126,7 +192,43 @@ function riskLevel(file: KnowledgeFile): "low" | "medium" | "high" {
 }
 
 function uploaderText(file: KnowledgeFile): string {
-  return file.uploader_id.slice(0, 8);
+  return file.uploader_name?.trim() || file.uploader_id.slice(0, 8);
+}
+
+function positiveInteger(value: string | null, fallback: number): number {
+  const parsed = Number(value);
+  return Number.isInteger(parsed) && parsed > 0 ? parsed : fallback;
+}
+
+function reviewSla(file: KnowledgeFile): {
+  label: string;
+  detail: string;
+  state: "normal" | "due_soon" | "overdue" | "unknown";
+} {
+  if (!file.review_due_at) {
+    return { label: "未设置", detail: "等待 SLA 数据", state: "unknown" };
+  }
+  const dueAt = dayjs(file.review_due_at);
+  const minutes = dueAt.diff(dayjs(), "minute");
+  if (minutes <= 0) {
+    return {
+      label: `已超时 ${Math.max(1, Math.ceil(Math.abs(minutes) / 60))} 小时`,
+      detail: dueAt.format("MM-DD HH:mm"),
+      state: "overdue",
+    };
+  }
+  if (minutes <= 4 * 60) {
+    return {
+      label: `剩余 ${Math.max(1, Math.ceil(minutes / 60))} 小时`,
+      detail: dueAt.format("MM-DD HH:mm"),
+      state: "due_soon",
+    };
+  }
+  return {
+    label: `剩余 ${Math.max(1, Math.ceil(minutes / 60))} 小时`,
+    detail: dueAt.format("MM-DD HH:mm"),
+    state: "normal",
+  };
 }
 
 function fileTypeMeta(fileName: string) {
@@ -149,38 +251,88 @@ function fileTypeMeta(fileName: string) {
 // ── 主页面 ────────────────────────────────────────────────────────────────────
 
 export default function FileManagementPage() {
+  const navigate = useNavigate();
+  const [searchParams, setSearchParams] = useSearchParams();
   const { message } = AntdApp.useApp();
   const queryClient = useQueryClient();
+  const user = useAuthStore((state) => state.user);
   const [approveForm] = Form.useForm<ReviewFormValues>();
   const [rejectForm] = Form.useForm<ReviewFormValues>();
   const [classificationForm] = Form.useForm<ReviewFormValues>();
   const [approvingFile, setApprovingFile] = useState<KnowledgeFile | null>(null);
   const [rejectingFile, setRejectingFile] = useState<KnowledgeFile | null>(null);
   const [classifyingFile, setClassifyingFile] = useState<KnowledgeFile | null>(null);
+  const [forceReleasingFile, setForceReleasingFile] = useState<KnowledgeFile | null>(null);
+  const [forceReleaseReason, setForceReleaseReason] = useState("");
   const [selectedRowKeys, setSelectedRowKeys] = useState<Key[]>([]);
-  const [searchText, setSearchText] = useState("");
-  const [uploaderFilter, setUploaderFilter] = useState("all");
-  const [categoryFilter, setCategoryFilter] = useState("all");
-  const [reviewFilter, setReviewFilter] = useState("all");
-  const [syncFilter, setSyncFilter] = useState("all");
+  const page = positiveInteger(searchParams.get("page"), 1);
+  const pageSize = Math.min(100, positiveInteger(searchParams.get("page_size"), 20));
+  const serverSearch = searchParams.get("q")?.trim() ?? "";
+  const queue = (searchParams.get("queue") ?? "all") as
+    | "all"
+    | "unclaimed"
+    | "mine"
+    | "due_soon"
+    | "overdue";
+  const [searchText, setSearchText] = useState(serverSearch);
+  const [claimFeedback, setClaimFeedback] = useState<{
+    fileId: string;
+    message: string;
+  } | null>(null);
   const [riskFilter, setRiskFilter] = useState("all");
-  const [uploadedRange, setUploadedRange] = useState<[Dayjs, Dayjs] | null>(null);
   const [filtersExpanded, setFiltersExpanded] = useState(false);
   const [bulkApproving, setBulkApproving] = useState(false);
-  const [bulkSyncing, setBulkSyncing] = useState(false);
   // 新增：服务端筛选参数
   const [extensionFilter, setExtensionFilter] = useState<string | undefined>(undefined);
   const [tagIdFilter, setTagIdFilter] = useState<string | undefined>(undefined);
 
+  const updateCoreQuery = (key: string, value?: string | number) => {
+    setSearchParams(
+      (previous) => {
+        const next = new URLSearchParams(previous);
+        if (value === undefined || value === "" || value === "all") {
+          next.delete(key);
+        } else {
+          next.set(key, String(value));
+        }
+        if (key !== "page") {
+          next.set("page", "1");
+        }
+        return next;
+      },
+      { replace: true },
+    );
+  };
+
   // ── 数据查询 ─────────────────────────────────────────────────────────────────
 
   const reviewFilesQuery = useQuery({
-    queryKey: ["review-files", { extension: extensionFilter, tag_id: tagIdFilter }],
-    queryFn: () =>
-      listReviewFiles({
+    queryKey: [
+      "review-files",
+      {
+        page,
+        pageSize,
+        q: serverSearch,
+        queue,
         extension: extensionFilter,
         tag_id: tagIdFilter,
+        risk: riskFilter,
+      },
+    ],
+    queryFn: () =>
+      listReviewFiles({
+        page,
+        page_size: pageSize,
+        q: serverSearch || undefined,
+        queue: queue === "all" ? undefined : queue,
+        extension: extensionFilter,
+        tag_id: tagIdFilter,
+        sensitive_risk_level:
+          riskFilter === "all"
+            ? undefined
+            : (riskFilter as "none" | "low" | "medium" | "high" | "critical"),
       }),
+    placeholderData: (previous) => previous,
   });
   const categoriesQuery = useQuery({
     queryKey: ["categories"],
@@ -215,6 +367,7 @@ export default function FileManagementPage() {
     [allowedExtensions],
   );
   const categoryIdForApprove = Form.useWatch("category_id", approveForm);
+  const syncDecisionForApprove = Form.useWatch("sync_decision", approveForm);
   const categoryIdForClassification = Form.useWatch("category_id", classificationForm);
 
   const categoryNameById = useMemo(
@@ -230,14 +383,6 @@ export default function FileManagementPage() {
     label: category.name,
     value: category.id,
   }));
-  const uploaderOptions = useMemo(
-    () =>
-      Array.from(new Set(files.map((file) => file.uploader_id))).map((uploaderId) => ({
-        label: uploaderId.slice(0, 8),
-        value: uploaderId,
-      })),
-    [files],
-  );
   const tagOptions = useMemo(
     () => [
       { label: "标签：全部", value: "all" },
@@ -248,60 +393,26 @@ export default function FileManagementPage() {
   const approveDatasetOptions = buildMappingOptions(datasets, categoryIdForApprove);
   const classificationDatasetOptions = buildMappingOptions(datasets, categoryIdForClassification);
 
-  // ── 客户端筛选（与服务端筛选叠加） ───────────────────────────────────────────
-
-  const filteredFiles = files.filter((file) => {
-    const keyword = searchText.trim().toLowerCase();
-    const categoryName = file.category_id ? (categoryNameById.get(file.category_id) ?? "") : "";
-    const datasetName = file.dataset_mapping_id
-      ? (mappingById.get(file.dataset_mapping_id)?.name ?? "")
-      : "";
-    const haystack = [
-      file.original_name,
-      file.mime_type,
-      file.department,
-      categoryName,
-      datasetName,
-      file.description,
-    ]
-      .filter(Boolean)
-      .join(" ")
-      .toLowerCase();
-    const uploadedAt = dayjs(file.uploaded_at);
-
-    return (
-      (!keyword || haystack.includes(keyword)) &&
-      (uploaderFilter === "all" || file.uploader_id === uploaderFilter) &&
-      (categoryFilter === "all" || file.category_id === categoryFilter) &&
-      (reviewFilter === "all" ||
-        file.review_status === reviewFilter ||
-        file.status === reviewFilter) &&
-      (syncFilter === "all" || syncStatus(file) === syncFilter) &&
-      (riskFilter === "all" || riskLevel(file) === riskFilter) &&
-      (!uploadedRange ||
-        (uploadedAt.isAfter(uploadedRange[0].startOf("day")) &&
-          uploadedAt.isBefore(uploadedRange[1].endOf("day"))))
-    );
-  });
-
   const selectedKeySet = useMemo(
     () => new Set(selectedRowKeys.map((key) => String(key))),
     [selectedRowKeys],
   );
-  const selectedFiles = filteredFiles.filter((file) => selectedKeySet.has(file.id));
-  const pendingReviewCount = filteredFiles.filter(
-    (file) => file.status === "pending_review",
+  const selectedFiles = files.filter((file) => selectedKeySet.has(file.id));
+  const canDecideFile = (file: KnowledgeFile) => hasActiveReviewClaim(file, user?.id);
+  const pendingReviewCount = files.filter((file) => file.status === "pending_review").length;
+  const highRiskCount = files.filter((file) =>
+    ["high", "critical"].includes(riskLevel(file)),
   ).length;
-  const highRiskCount = filteredFiles.filter((file) => riskLevel(file) === "high").length;
-  const syncFailedCount = filteredFiles.filter((file) => syncStatus(file) === "failed").length;
+  const unclaimedCount = files.filter((file) => !file.claimed_by).length;
+  const mineCount = files.filter(canDecideFile).length;
   const selectedPendingCount = selectedFiles.filter(
-    (file) => file.status === "pending_review",
-  ).length;
-  const selectedSyncableCount = selectedFiles.filter((file) =>
-    syncableStatuses.has(file.status),
+    (file) => file.status === "pending_review" && canDecideFile(file),
   ).length;
   const selectedRatio =
-    filteredFiles.length > 0 ? Math.round((selectedFiles.length / filteredFiles.length) * 100) : 0;
+    files.length > 0 ? Math.round((selectedFiles.length / files.length) * 100) : 0;
+  const nextUnclaimedFile = files.find((file) => !file.claimed_by);
+  const dueSoonCount = files.filter((file) => reviewSla(file).state === "due_soon").length;
+  const overdueCount = files.filter((file) => reviewSla(file).state === "overdue").length;
 
   // ── 刷新辅助 ─────────────────────────────────────────────────────────────────
 
@@ -314,31 +425,69 @@ export default function FileManagementPage() {
 
   // ── mutations ────────────────────────────────────────────────────────────────
 
-  const submitMutation = useMutation({
-    mutationFn: submitFileForReview,
-    onSuccess: async () => {
-      message.success("文件已进入审核");
+  const claimMutation = useMutation({
+    mutationFn: claimReviewFile,
+    onSuccess: async (file) => {
+      setClaimFeedback(null);
+      message.success(`已领取 ${file.original_name}`);
       await refreshFiles();
     },
-    onError: (error) => {
-      message.error(error.message);
+    onError: async (error: Error, fileId) => {
+      const conflict = isApiError(error) && error.status === 409;
+      setClaimFeedback({
+        fileId,
+        message: conflict ? "该任务刚刚被他人领取，队列已刷新" : error.message,
+      });
+      if (conflict) {
+        message.warning("领取冲突：该任务已被他人处理");
+        await refreshFiles();
+      } else {
+        message.error(error.message || "领取失败");
+      }
+    },
+  });
+
+  const releaseClaimMutation = useMutation({
+    mutationFn: ({ fileId, reason }: { fileId: string; reason?: string }) =>
+      reason ? releaseReviewClaim(fileId, reason) : releaseReviewClaim(fileId),
+    onSuccess: async (file) => {
+      setClaimFeedback(null);
+      setForceReleasingFile(null);
+      setForceReleaseReason("");
+      message.success(`已释放 ${file.original_name}`);
+      await refreshFiles();
+    },
+    onError: (error: Error, variables) => {
+      setClaimFeedback({ fileId: variables.fileId, message: error.message || "释放失败" });
+      message.error(error.message || "释放失败");
     },
   });
 
   const approveMutation = useMutation({
     mutationFn: ({ id, values }: { id: string; values: ReviewFormValues }) =>
       approveFile(id, {
+        sync_decision: values.sync_decision ?? "approve_only",
         category_id: values.category_id ?? null,
         dataset_mapping_id: values.dataset_mapping_id ?? null,
         reason: values.reason?.trim() || null,
       }),
-    onSuccess: async () => {
-      message.success("文件已审核通过");
+    onSuccess: async (_file, variables) => {
+      message.success(
+        variables.values.sync_decision === "sync"
+          ? "文件已批准并进入同步队列"
+          : "文件已批准，本次不进入知识库",
+      );
       setApprovingFile(null);
       approveForm.resetFields();
       await refreshFiles();
     },
-    onError: (error) => {
+    onError: async (error) => {
+      if (isApiError(error) && error.status === 409) {
+        message.warning("审核任务状态已变化，已为你刷新队列");
+        setApprovingFile(null);
+        await refreshFiles();
+        return;
+      }
       message.error(error.message);
     },
   });
@@ -351,7 +500,13 @@ export default function FileManagementPage() {
       rejectForm.resetFields();
       await refreshFiles();
     },
-    onError: (error) => {
+    onError: async (error) => {
+      if (isApiError(error) && error.status === 409) {
+        message.warning("审核任务状态已变化，已为你刷新队列");
+        setRejectingFile(null);
+        await refreshFiles();
+        return;
+      }
       message.error(error.message);
     },
   });
@@ -363,23 +518,18 @@ export default function FileManagementPage() {
         dataset_mapping_id: values.dataset_mapping_id ?? null,
       }),
     onSuccess: async () => {
-      message.success("分类与 Dataset 已更新");
+      message.success("审核分类草案已保存");
       setClassifyingFile(null);
       classificationForm.resetFields();
       await refreshFiles();
     },
-    onError: (error) => {
-      message.error(error.message);
-    },
-  });
-
-  const syncMutation = useMutation({
-    mutationFn: (id: string) => syncFile(id),
-    onSuccess: async () => {
-      message.success("手动同步任务已创建");
-      await refreshFiles();
-    },
-    onError: (error) => {
+    onError: async (error) => {
+      if (isApiError(error) && error.status === 409) {
+        message.warning("领取状态已变化，审核草案未保存，队列已刷新");
+        setClassifyingFile(null);
+        await refreshFiles();
+        return;
+      }
       message.error(error.message);
     },
   });
@@ -406,22 +556,12 @@ export default function FileManagementPage() {
     },
   });
 
-  const reanalyzeMutation = useMutation({
-    mutationFn: (id: string) => reanalyzeFile(id),
-    onSuccess: async () => {
-      message.success("重新分析已触发");
-      await refreshFiles();
-    },
-    onError: (error) => {
-      message.error(error.message);
-    },
-  });
-
   // ── Modal 开关 ────────────────────────────────────────────────────────────────
 
   const openApproveModal = (file: KnowledgeFile) => {
     setApprovingFile(file);
     approveForm.setFieldsValue({
+      sync_decision: undefined,
       category_id: file.category_id ?? undefined,
       dataset_mapping_id: file.dataset_mapping_id ?? undefined,
       reason: "",
@@ -452,18 +592,14 @@ export default function FileManagementPage() {
 
   const resetFilters = () => {
     setSearchText("");
-    setUploaderFilter("all");
-    setCategoryFilter("all");
-    setReviewFilter("all");
-    setSyncFilter("all");
     setRiskFilter("all");
-    setUploadedRange(null);
     setExtensionFilter(undefined);
     setTagIdFilter(undefined);
+    setSearchParams(new URLSearchParams(), { replace: true });
   };
 
   const handleBulkApprove = async () => {
-    const targets = selectedFiles.filter((file) => file.status === "pending_review");
+    const targets = eligibleReviewTargets(selectedFiles, user?.id);
 
     if (targets.length === 0) {
       message.warning("已选文件中没有可批量审核项");
@@ -473,13 +609,7 @@ export default function FileManagementPage() {
     setBulkApproving(true);
     try {
       const results = await Promise.allSettled(
-        targets.map((file) =>
-          approveFile(file.id, {
-            category_id: file.category_id ?? null,
-            dataset_mapping_id: file.dataset_mapping_id ?? null,
-            reason: "批量审核通过",
-          }),
-        ),
+        targets.map((file) => approveFile(file.id, buildBulkApproveOnlyPayload(file))),
       );
       const failedCount = results.filter((result) => result.status === "rejected").length;
       const successCount = targets.length - failedCount;
@@ -494,33 +624,6 @@ export default function FileManagementPage() {
       await refreshFiles();
     } finally {
       setBulkApproving(false);
-    }
-  };
-
-  const handleBulkSync = async () => {
-    const targets = selectedFiles.filter((file) => syncableStatuses.has(file.status));
-
-    if (targets.length === 0) {
-      message.warning("已选文件中没有可同步项");
-      return;
-    }
-
-    setBulkSyncing(true);
-    try {
-      const results = await Promise.allSettled(targets.map((file) => syncFile(file.id)));
-      const failedCount = results.filter((result) => result.status === "rejected").length;
-      const successCount = targets.length - failedCount;
-
-      if (failedCount > 0) {
-        message.warning(`批量同步完成，成功 ${successCount} 项，失败 ${failedCount} 项`);
-      } else {
-        message.success(`已创建 ${successCount} 个同步任务`);
-      }
-
-      setSelectedRowKeys([]);
-      await refreshFiles();
-    } finally {
-      setBulkSyncing(false);
     }
   };
 
@@ -540,9 +643,15 @@ export default function FileManagementPage() {
           <div className="file-title-cell">
             <span className={`file-title-cell__icon ${meta.className}`}>{meta.icon}</span>
             <span className="file-title-cell__content">
-              <span className="file-title-cell__name" title={value}>
+              <button
+                type="button"
+                className="file-title-cell__name file-title-cell__link"
+                title={value}
+                onClick={() => navigate(`/files/${record.id}#original`)}
+                aria-label={`查看原件与审核详情 ${value}`}
+              >
                 {value}
-              </span>
+              </button>
               <span className="file-title-cell__meta">
                 <Typography.Text type="secondary">{record.mime_type}</Typography.Text>
                 <StarOutlined className="file-title-cell__star" />
@@ -608,110 +717,179 @@ export default function FileManagementPage() {
       ),
     },
     {
-      title: "同步状态",
-      key: "sync_status",
-      width: 104,
-      render: (_, record) => <StatusTag kind="sync" value={syncStatus(record)} />,
-    },
-    {
       title: "敏感风险",
       key: "risk",
       width: 104,
       render: (_, record) => <StatusTag kind="risk" value={riskLevel(record)} />,
     },
     {
-      title: "上传时间",
-      dataIndex: "uploaded_at",
-      key: "uploaded_at",
-      width: 118,
-      render: (value: string) => dayjs(value).format("YYYY-MM-DD HH:mm"),
+      title: "SLA / 等待",
+      dataIndex: "review_due_at",
+      key: "review_due_at",
+      width: 140,
+      render: (_value: string | null, record) => {
+        const sla = reviewSla(record);
+        return (
+          <span className={`review-sla review-sla--${sla.state}`}>
+            <span>
+              <ClockCircleOutlined /> {sla.label}
+            </span>
+            <small>{sla.detail}</small>
+          </span>
+        );
+      },
+    },
+    {
+      title: "领取人",
+      dataIndex: "claimed_by",
+      key: "claimed_by",
+      width: 120,
+      render: (_value: string | null, record) =>
+        record.claimed_by ? (
+          <Space direction="vertical" size={1}>
+            <Typography.Text>
+              {record.claimed_by === user?.id ? "我" : record.claimed_by_name || "其他审核人"}
+            </Typography.Text>
+            <Typography.Text type="secondary">
+              {record.claimed_at ? dayjs(record.claimed_at).format("MM-DD HH:mm") : "已领取"}
+            </Typography.Text>
+          </Space>
+        ) : (
+          <Typography.Text type="secondary">待领取</Typography.Text>
+        ),
     },
     {
       title: "操作",
       key: "actions",
-      width: 148,
+      width: 250,
       fixed: "right" as const,
       render: (_, record) => {
-        const canSubmit = reviewableStatuses.has(record.status);
-        const canDecide = record.status === "pending_review";
-        const canSync = syncableStatuses.has(record.status);
-        const canReanalyze = reanalyzeStatuses.has(record.status);
+        const canDecide = record.status === "pending_review" && canDecideFile(record);
+        const canClaim =
+          record.status === "pending_review" && (!record.claimed_by || reviewClaimExpired(record));
+        const claimedByMe = record.claimed_by === user?.id;
+        const canForceRelease =
+          user?.role === Roles.SYSTEM_ADMIN && Boolean(record.claimed_by) && !claimedByMe;
 
-        const moreItems: MenuProps["items"] = [
-          canSync
-            ? {
-                key: "sync",
-                icon: <SyncOutlined />,
-                label: "手动同步",
-                onClick: () => syncMutation.mutate(record.id),
-              }
-            : null,
-          canReanalyze
-            ? {
-                key: "reanalyze",
-                label: "重新分析",
-                onClick: () => reanalyzeMutation.mutate(record.id),
-              }
-            : null,
-          {
+        const canArchive =
+          ARCHIVABLE_STATUSES.has(record.status) &&
+          (record.status !== "pending_review" || canDecide);
+        const canDelete =
+          DELETABLE_STATUSES.has(record.status) &&
+          (record.status !== "pending_review" || canDecide);
+        const moreItems: MenuProps["items"] = [];
+
+        if (canDecide) {
+          moreItems.push({
             key: "classify",
-            label: "修改分类",
+            label: "编辑审核草案",
             onClick: () => openClassificationModal(record),
-          },
-          {
+          });
+        }
+        if (canArchive) {
+          moreItems.push({
             key: "archive",
             icon: <InboxOutlined />,
             label: "归档",
             onClick: () => archiveMutation.mutate(record.id),
-          },
-          { type: "divider" as const },
-          {
+          });
+        }
+        if (canDelete) {
+          if (moreItems.length > 0) {
+            moreItems.push({ type: "divider" });
+          }
+          moreItems.push({
             key: "delete",
             icon: <DeleteOutlined />,
             label: "删除",
             danger: true,
             onClick: () => deleteMutation.mutate(record.id),
-          },
-        ].filter(Boolean);
+          });
+        }
 
         return (
-          <Space size={4}>
-            {canDecide ? (
-              <>
+          <Space direction="vertical" size={2}>
+            <Space size={4} wrap>
+              <Button
+                type="link"
+                size="small"
+                onClick={() => navigate(`/files/${record.id}#original`)}
+              >
+                查看原件
+              </Button>
+              {canClaim ? (
                 <Button
                   type="link"
                   size="small"
-                  className="table-link-button"
-                  onClick={() => openApproveModal(record)}
+                  icon={<LockOutlined />}
+                  loading={claimMutation.isPending && claimMutation.variables === record.id}
+                  onClick={() => claimMutation.mutate(record.id)}
                 >
-                  审核
+                  {record.claimed_by ? "重新领取" : "领取"}
                 </Button>
+              ) : null}
+              {canDecide ? (
+                <>
+                  <Button
+                    type="link"
+                    size="small"
+                    className="table-link-button"
+                    onClick={() => openApproveModal(record)}
+                  >
+                    审核
+                  </Button>
+                  <Button
+                    type="link"
+                    danger
+                    size="small"
+                    className="table-link-button"
+                    onClick={() => openRejectModal(record)}
+                  >
+                    驳回
+                  </Button>
+                </>
+              ) : null}
+              {claimedByMe ? (
+                <Button
+                  type="link"
+                  size="small"
+                  icon={<UnlockOutlined />}
+                  loading={
+                    releaseClaimMutation.isPending &&
+                    releaseClaimMutation.variables?.fileId === record.id
+                  }
+                  onClick={() => releaseClaimMutation.mutate({ fileId: record.id })}
+                >
+                  释放
+                </Button>
+              ) : null}
+              {canForceRelease ? (
                 <Button
                   type="link"
                   danger
                   size="small"
-                  className="table-link-button"
-                  onClick={() => openRejectModal(record)}
+                  icon={<UnlockOutlined />}
+                  onClick={() => {
+                    setForceReleasingFile(record);
+                    setForceReleaseReason("");
+                  }}
                 >
-                  驳回
+                  强制释放
                 </Button>
-              </>
-            ) : canSubmit ? (
-              <Button
-                type="link"
-                size="small"
-                className="table-link-button"
-                loading={submitMutation.isPending}
-                onClick={() => submitMutation.mutate(record.id)}
-              >
-                送审
-              </Button>
+              ) : null}
+              {moreItems.length > 0 ? (
+                <Dropdown menu={{ items: moreItems }} trigger={["click"]}>
+                  <Button type="text" size="small" aria-label="更多操作">
+                    ···
+                  </Button>
+                </Dropdown>
+              ) : null}
+            </Space>
+            {claimFeedback?.fileId === record.id ? (
+              <Typography.Text type="danger" className="review-row-feedback">
+                {claimFeedback.message}
+              </Typography.Text>
             ) : null}
-            <Dropdown menu={{ items: moreItems }} trigger={["click"]}>
-              <Button type="text" size="small" aria-label="更多操作">
-                ···
-              </Button>
-            </Dropdown>
           </Space>
         );
       },
@@ -722,65 +900,76 @@ export default function FileManagementPage() {
 
   return (
     <PageContainer
-      title="文件审核"
-      description="管理平台内所有文件的审核与同步状态，保障数据质量与合规安全。"
+      title="部门审核工作台"
+      description="先领取任务，再查看原件、风险与元数据并作出明确入库决定。"
+      actions={
+        <Button
+          type="primary"
+          icon={<LockOutlined />}
+          disabled={!nextUnclaimedFile}
+          loading={claimMutation.isPending && claimMutation.variables === nextUnclaimedFile?.id}
+          onClick={() => {
+            if (nextUnclaimedFile) {
+              claimMutation.mutate(nextUnclaimedFile.id);
+            } else {
+              updateCoreQuery("queue", "unclaimed");
+            }
+          }}
+        >
+          领取下一份
+        </Button>
+      }
     >
-      <div className="metric-grid">
-        <KpiCard
-          icon={<FileProtectOutlined />}
-          title="待审核"
-          value={files.filter((file) => file.status === "pending_review").length}
-          description="较昨日保持稳定"
-          tone="warning"
-        />
-        <KpiCard
-          icon={<SafetyOutlined />}
-          title="高风险文件"
-          value={files.filter((file) => riskLevel(file) === "high").length}
-          description="敏感审核队列"
-          tone="danger"
-        />
-        <KpiCard
-          icon={<CloudSyncOutlined />}
-          title="同步失败"
-          value={files.filter((file) => syncStatus(file) === "failed").length}
-          description="需人工处理"
-          tone="purple"
-        />
-      </div>
+      <nav className="review-queue-tabs" aria-label="审核队列" role="tablist">
+        {REVIEW_QUEUES.map((item) => (
+          <button
+            key={item.value}
+            type="button"
+            role="tab"
+            aria-selected={queue === item.value}
+            className={
+              queue === item.value
+                ? "review-queue-tab review-queue-tab--active"
+                : "review-queue-tab"
+            }
+            onClick={() => updateCoreQuery("queue", item.value)}
+          >
+            <span>{item.label}</span>
+            {queue === item.value ? <strong>{reviewFilesQuery.data?.total ?? 0}</strong> : null}
+          </button>
+        ))}
+      </nav>
 
       <Card className="document-panel table-card">
+        {reviewFilesQuery.isError ? (
+          <Alert
+            className="review-queue-error"
+            type="error"
+            showIcon
+            message="审核队列加载失败"
+            description={reviewFilesQuery.error.message}
+            action={
+              <Button size="small" onClick={() => void reviewFilesQuery.refetch()}>
+                重试
+              </Button>
+            }
+          />
+        ) : null}
         {/* ── 筛选栏 ── */}
         <div className="filter-toolbar filter-toolbar--management">
           <Input.Search
             className="filter-toolbar__search"
             placeholder="搜索文件名称、关键词"
             value={searchText}
-            onChange={(event) => setSearchText(event.target.value)}
+            onChange={(event) => {
+              setSearchText(event.target.value);
+              if (!event.target.value) {
+                updateCoreQuery("q");
+              }
+            }}
+            onSearch={(value) => updateCoreQuery("q", value.trim())}
+            enterButton="搜索"
             allowClear
-          />
-          <Select
-            className="filter-toolbar__control"
-            value={reviewFilter}
-            options={[
-              { label: "审核状态：全部", value: "all" },
-              { label: "待审核", value: "pending_review" },
-              { label: "已通过", value: "approved" },
-              { label: "未通过", value: "rejected" },
-            ]}
-            onChange={setReviewFilter}
-          />
-          <Select
-            className="filter-toolbar__control"
-            value={syncFilter}
-            options={[
-              { label: "同步状态：全部", value: "all" },
-              { label: "未同步", value: "not_synced" },
-              { label: "同步中", value: "syncing" },
-              { label: "已同步", value: "synced" },
-              { label: "同步失败", value: "failed" },
-            ]}
-            onChange={setSyncFilter}
           />
           <Button
             type="text"
@@ -794,24 +983,13 @@ export default function FileManagementPage() {
             <>
               <Select
                 className="filter-toolbar__control"
-                value={uploaderFilter}
-                options={[{ label: "上传人：全部", value: "all" }, ...uploaderOptions]}
-                onChange={setUploaderFilter}
-              />
-              <Select
-                className="filter-toolbar__control"
-                value={categoryFilter}
-                options={[{ label: "分类：全部", value: "all" }, ...categoryOptions]}
-                onChange={setCategoryFilter}
-              />
-              <Select
-                className="filter-toolbar__control"
                 value={riskFilter}
                 options={[
                   { label: "风险等级：全部", value: "all" },
                   { label: "低风险", value: "low" },
                   { label: "中风险", value: "medium" },
                   { label: "高风险", value: "high" },
+                  { label: "严重风险", value: "critical" },
                 ]}
                 onChange={setRiskFilter}
               />
@@ -829,12 +1007,6 @@ export default function FileManagementPage() {
                 onChange={(value) => setTagIdFilter(value === "all" ? undefined : value)}
                 loading={tagsQuery.isLoading}
                 placeholder="标签：全部"
-              />
-              <RangePicker
-                className="filter-toolbar__range"
-                placeholder={["开始日期", "结束日期"]}
-                value={uploadedRange}
-                onChange={(value) => setUploadedRange(value as [Dayjs, Dayjs] | null)}
               />
             </>
           ) : null}
@@ -857,34 +1029,34 @@ export default function FileManagementPage() {
                 />
               </span>
               <Typography.Text type="secondary">
-                基于当前筛选结果汇总待处理文件，选中后可快速判断可审核与可同步范围。
+                默认按超时、风险和最早提交排序；领取冲突会在原行反馈并自动刷新。
               </Typography.Text>
             </span>
           </div>
           <div className="review-command-strip__stats" aria-label="当前筛选摘要">
             <span className="review-command-strip__stat review-command-strip__stat--warning">
-              <Typography.Text type="secondary">待审核</Typography.Text>
-              <strong>{pendingReviewCount}项</strong>
-            </span>
-            <span className="review-command-strip__stat review-command-strip__stat--danger">
-              <Typography.Text type="secondary">高风险</Typography.Text>
-              <strong>{highRiskCount}项</strong>
-            </span>
-            <span className="review-command-strip__stat review-command-strip__stat--purple">
-              <Typography.Text type="secondary">同步失败</Typography.Text>
-              <strong>{syncFailedCount}项</strong>
+              <Typography.Text type="secondary">当前页待领取</Typography.Text>
+              <strong>{unclaimedCount}项</strong>
             </span>
             <span className="review-command-strip__stat review-command-strip__stat--info">
-              <Typography.Text type="secondary">已选</Typography.Text>
-              <strong>{selectedFiles.length}项</strong>
+              <Typography.Text type="secondary">当前页我领取</Typography.Text>
+              <strong>{mineCount}项</strong>
+            </span>
+            <span className="review-command-strip__stat review-command-strip__stat--warning">
+              <Typography.Text type="secondary">当前页临近 SLA</Typography.Text>
+              <strong>{dueSoonCount}项</strong>
+            </span>
+            <span className="review-command-strip__stat review-command-strip__stat--danger">
+              <Typography.Text type="secondary">当前页已超时</Typography.Text>
+              <strong>{overdueCount}项</strong>
             </span>
             <span className="review-command-strip__stat">
-              <Typography.Text type="secondary">可审核</Typography.Text>
+              <Typography.Text type="secondary">当前页高风险</Typography.Text>
+              <strong>{highRiskCount}项</strong>
+            </span>
+            <span className="review-command-strip__stat">
+              <Typography.Text type="secondary">选中可决定</Typography.Text>
               <strong>{selectedPendingCount}项</strong>
-            </span>
-            <span className="review-command-strip__stat">
-              <Typography.Text type="secondary">可同步</Typography.Text>
-              <strong>{selectedSyncableCount}项</strong>
             </span>
           </div>
           <div className="review-command-strip__action-panel">
@@ -892,17 +1064,14 @@ export default function FileManagementPage() {
               <span className="review-command-strip__selection-copy">
                 <Typography.Text type="secondary">选中范围</Typography.Text>
                 <strong>
-                  {selectedFiles.length}/{filteredFiles.length}
+                  {selectedFiles.length}/{files.length}
                 </strong>
               </span>
               <Progress percent={selectedRatio} size="small" showInfo={false} />
             </div>
             <Space wrap className="review-command-strip__actions">
-              <Button size="small" onClick={() => setReviewFilter("pending_review")}>
-                只看待审核
-              </Button>
-              <Button size="small" onClick={() => setSyncFilter("failed")}>
-                只看同步失败
+              <Button size="small" onClick={() => updateCoreQuery("queue", "overdue")}>
+                只看超时
               </Button>
               <Button
                 size="small"
@@ -922,8 +1091,8 @@ export default function FileManagementPage() {
           </Button>
           <Space wrap className="table-actions__right">
             <Popconfirm
-              title="批量审核通过"
-              description={`将 ${selectedPendingCount} 个待审核文件标记为通过，确认继续？`}
+              title="批量仅批准"
+              description={`将 ${selectedPendingCount} 个待审核文件标记为“仅批准不入库”，确认继续？`}
               onConfirm={() => void handleBulkApprove()}
               okText="确定"
               cancelText="取消"
@@ -934,25 +1103,9 @@ export default function FileManagementPage() {
                 disabled={selectedPendingCount === 0}
                 loading={bulkApproving}
               >
-                批量审核
+                批量仅批准
               </Button>
             </Popconfirm>
-            <Popconfirm
-              title="批量同步文件"
-              description={`为 ${selectedSyncableCount} 个可同步文件创建 RAGFlow 同步任务，确认继续？`}
-              onConfirm={() => void handleBulkSync()}
-              okText="确定"
-              cancelText="取消"
-            >
-              <Button
-                icon={<CloudSyncOutlined />}
-                disabled={selectedSyncableCount === 0}
-                loading={bulkSyncing}
-              >
-                批量同步
-              </Button>
-            </Popconfirm>
-            <Button icon={<DownloadOutlined />}>导出</Button>
             <Button
               icon={<ReloadOutlined />}
               onClick={() => void reviewFilesQuery.refetch()}
@@ -965,28 +1118,74 @@ export default function FileManagementPage() {
           className="file-management-table"
           rowKey="id"
           columns={columns}
-          dataSource={filteredFiles}
+          dataSource={files}
           loading={reviewFilesQuery.isLoading}
-          pagination={{ pageSize: 20, showSizeChanger: false }}
+          pagination={{
+            current: page,
+            pageSize,
+            total: reviewFilesQuery.data?.total ?? 0,
+            showSizeChanger: true,
+            pageSizeOptions: [10, 20, 50],
+            showTotal: (value) => `共 ${value} 条`,
+            onChange: (nextPage, nextPageSize) => {
+              setSearchParams(
+                (previous) => {
+                  const next = new URLSearchParams(previous);
+                  next.set("page", String(nextPage));
+                  next.set("page_size", String(nextPageSize));
+                  return next;
+                },
+                { replace: true },
+              );
+            },
+          }}
           locale={{ emptyText: "暂无文件" }}
           tableLayout="fixed"
           rowSelection={{
             selectedRowKeys,
             onChange: setSelectedRowKeys,
           }}
-          scroll={{ x: 1200 }}
+          scroll={{ x: 1420 }}
         />
       </Card>
 
       {/* ── 审核通过 Modal ── */}
       <Modal
+        rootClassName="review-decision-modal"
         title="审核通过"
         open={Boolean(approvingFile)}
         onCancel={() => setApprovingFile(null)}
         onOk={() => approveForm.submit()}
         confirmLoading={approveMutation.isPending}
         width={620}
+        okText="确认批准"
       >
+        {approvingFile ? (
+          <Button
+            className="review-original-link"
+            icon={<EyeOutlined />}
+            onClick={() => navigate(`/files/${approvingFile.id}#original`)}
+          >
+            先查看原件、AI 分析与处理时间线
+          </Button>
+        ) : null}
+        {approvingFile?.sensitive_risk_level === "critical" ? (
+          <Alert
+            className="review-risk-alert"
+            type="error"
+            showIcon
+            message="严重风险文档禁止同步"
+            description="可以仅批准留存，但不能选择进入 RAGFlow。"
+          />
+        ) : approvingFile?.sensitive_risk_level === "high" ? (
+          <Alert
+            className="review-risk-alert"
+            type="warning"
+            showIcon
+            message="高风险文档需要明确说明"
+            description="若选择同步，审核说明将作为风险确认写入审计。"
+          />
+        ) : null}
         <Form<ReviewFormValues>
           form={approveForm}
           layout="vertical"
@@ -997,6 +1196,26 @@ export default function FileManagementPage() {
             }
           }}
         >
+          <Form.Item
+            label="批准后的处理"
+            name="sync_decision"
+            rules={[{ required: true, message: "请选择批准后是否同步到 RAGFlow" }]}
+          >
+            <Radio.Group
+              onChange={(event) => {
+                if (event.target.value === "approve_only") {
+                  approveForm.setFieldValue("dataset_mapping_id", undefined);
+                }
+              }}
+            >
+              <Space direction="vertical">
+                <Radio value="sync" disabled={approvingFile?.sensitive_risk_level === "critical"}>
+                  批准并同步到 RAGFlow（必须选择 Dataset）
+                </Radio>
+                <Radio value="approve_only">仅批准，不进入知识库</Radio>
+              </Space>
+            </Radio.Group>
+          </Form.Item>
           <Form.Item label="分类" name="category_id">
             <Select
               allowClear
@@ -1006,9 +1225,22 @@ export default function FileManagementPage() {
               optionFilterProp="label"
             />
           </Form.Item>
-          <Form.Item label="Dataset 映射" name="dataset_mapping_id">
+          <Form.Item
+            label="Dataset 映射"
+            name="dataset_mapping_id"
+            rules={[
+              {
+                validator: async (_, value: string | undefined) => {
+                  if (syncDecisionForApprove === "sync" && !value) {
+                    throw new Error("批准并同步时必须选择 Dataset");
+                  }
+                },
+              },
+            ]}
+          >
             <Select
               allowClear
+              disabled={syncDecisionForApprove !== "sync"}
               options={approveDatasetOptions}
               loading={datasetsQuery.isLoading}
               showSearch
@@ -1016,7 +1248,23 @@ export default function FileManagementPage() {
               onChange={(value) => syncCategoryFromMapping(approveForm, value)}
             />
           </Form.Item>
-          <Form.Item label="审核说明" name="reason">
+          <Form.Item
+            label="审核说明"
+            name="reason"
+            extra="选填；高风险文档同步时必须填写风险确认说明。"
+            rules={[
+              {
+                validator: async (_, value: string | undefined) => {
+                  const requiresReason =
+                    syncDecisionForApprove === "sync" &&
+                    approvingFile?.sensitive_risk_level === "high";
+                  if (requiresReason && !value?.trim()) {
+                    throw new Error("高风险文档同步时必须填写风险确认说明");
+                  }
+                },
+              },
+            ]}
+          >
             <Input.TextArea rows={3} maxLength={500} showCount />
           </Form.Item>
         </Form>
@@ -1024,12 +1272,15 @@ export default function FileManagementPage() {
 
       {/* ── 拒绝文件 Modal ── */}
       <Modal
+        rootClassName="review-decision-modal"
         title="拒绝文件"
         open={Boolean(rejectingFile)}
         onCancel={() => setRejectingFile(null)}
         onOk={() => rejectForm.submit()}
         confirmLoading={rejectMutation.isPending}
         width={560}
+        okText="确认驳回"
+        okButtonProps={{ danger: true }}
       >
         <Form<ReviewFormValues>
           form={rejectForm}
@@ -1054,26 +1305,75 @@ export default function FileManagementPage() {
         </Form>
       </Modal>
 
-      {/* ── 调整分类 Modal ── */}
       <Modal
-        title="调整分类与 Dataset"
+        title="强制释放审核任务"
+        open={Boolean(forceReleasingFile)}
+        okText="确认强制释放"
+        okButtonProps={{ danger: true }}
+        confirmLoading={releaseClaimMutation.isPending}
+        onCancel={() => {
+          setForceReleasingFile(null);
+          setForceReleaseReason("");
+        }}
+        onOk={() => {
+          const reason = forceReleaseReason.trim();
+          if (!reason) {
+            message.warning("请输入强制释放原因");
+            return;
+          }
+          if (forceReleasingFile) {
+            releaseClaimMutation.mutate({ fileId: forceReleasingFile.id, reason });
+          }
+        }}
+      >
+        <Typography.Paragraph type="secondary">
+          此操作不会直接授予审核权限。释放后仍需由你重新领取，才能批准或驳回。
+        </Typography.Paragraph>
+        <label htmlFor="force-release-reason">强制释放原因</label>
+        <Input.TextArea
+          id="force-release-reason"
+          value={forceReleaseReason}
+          onChange={(event) => setForceReleaseReason(event.target.value)}
+          rows={4}
+          maxLength={500}
+          showCount
+        />
+      </Modal>
+
+      {/* ── 编辑审核分类草案 Modal ── */}
+      <Modal
+        title="编辑审核分类草案"
         open={Boolean(classifyingFile)}
         onCancel={() => setClassifyingFile(null)}
         onOk={() => classificationForm.submit()}
         confirmLoading={classificationMutation.isPending}
         width={620}
       >
+        <Alert
+          className="review-risk-alert"
+          type="info"
+          showIcon
+          message="这里保存的是审核草案"
+          description="此处选择不代表文件已批准或已进入知识库。最终 Dataset 必须在“审核通过”时随同步决定再次确认。"
+        />
         <Form<ReviewFormValues>
           form={classificationForm}
           layout="vertical"
           requiredMark={false}
           onFinish={(values) => {
-            if (classifyingFile) {
-              classificationMutation.mutate({ id: classifyingFile.id, values });
+            if (!classifyingFile) {
+              return;
             }
+            if (!hasActiveReviewClaim(classifyingFile, user?.id)) {
+              message.warning("领取已失效，请刷新队列并重新领取后再编辑审核草案");
+              setClassifyingFile(null);
+              void refreshFiles();
+              return;
+            }
+            classificationMutation.mutate({ id: classifyingFile.id, values });
           }}
         >
-          <Form.Item label="分类" name="category_id">
+          <Form.Item label="审核草案分类" name="category_id">
             <Select
               allowClear
               options={categoryOptions}
@@ -1082,7 +1382,7 @@ export default function FileManagementPage() {
               optionFilterProp="label"
             />
           </Form.Item>
-          <Form.Item label="Dataset 映射" name="dataset_mapping_id">
+          <Form.Item label="审核草案 Dataset" name="dataset_mapping_id">
             <Select
               allowClear
               options={classificationDatasetOptions}

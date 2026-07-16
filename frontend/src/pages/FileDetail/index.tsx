@@ -1,3 +1,4 @@
+import { useEffect, useRef, useState } from "react";
 import {
   Alert,
   Button,
@@ -16,20 +17,25 @@ import {
   ArrowLeftOutlined,
   CloudSyncOutlined,
   CloudUploadOutlined,
+  DownloadOutlined,
+  EyeOutlined,
   FileProtectOutlined,
+  ReloadOutlined,
   SafetyOutlined,
 } from "@ant-design/icons";
-import { useQuery } from "@tanstack/react-query";
+import { useMutation, useQuery } from "@tanstack/react-query";
 import dayjs from "dayjs";
 import { useNavigate, useParams } from "react-router-dom";
 
 import {
   type FileAnalysis,
   type FileAnalysisTable,
+  type DocumentContent,
   type KnowledgeFile,
   type SimilarFileReference,
   type SyncTask,
   getDocument,
+  getDocumentContent,
   listTasks,
 } from "../../api/client";
 import { KpiCard, type KpiTone } from "../../components/KpiCard";
@@ -256,6 +262,209 @@ function tablePreview(table: FileAnalysisTable): string {
   return JSON.stringify(table, null, 2);
 }
 
+export const INLINE_PREVIEW_MAX_BYTES = 20 * 1024 * 1024;
+
+const SAFE_INLINE_PREVIEW_MIME_TYPES = new Set([
+  "application/pdf",
+  "image/gif",
+  "image/jpeg",
+  "image/png",
+  "image/webp",
+  "text/csv",
+  "text/markdown",
+  "text/plain",
+]);
+
+function normalizeMimeType(value: string): string {
+  return value.split(";", 1)[0].trim().toLowerCase();
+}
+
+export function canPreviewInline(file: KnowledgeFile): boolean {
+  return (
+    SAFE_INLINE_PREVIEW_MIME_TYPES.has(normalizeMimeType(file.mime_type)) &&
+    file.size <= INLINE_PREVIEW_MAX_BYTES
+  );
+}
+
+export function validateInlinePreviewContent(content: DocumentContent): string {
+  if (/^\s*attachment\b/i.test(content.contentDisposition ?? "")) {
+    throw new Error("服务端要求以附件方式下载，已阻止内联展示");
+  }
+
+  const responseMimeType = normalizeMimeType(content.contentType);
+  const blobMimeType = normalizeMimeType(content.blob.type);
+  if (!SAFE_INLINE_PREVIEW_MIME_TYPES.has(responseMimeType)) {
+    throw new Error("服务端返回的文件类型不在安全预览白名单中");
+  }
+  if (blobMimeType && !SAFE_INLINE_PREVIEW_MIME_TYPES.has(blobMimeType)) {
+    throw new Error("文件内容类型与安全预览策略不兼容");
+  }
+  if (
+    content.blob.size > INLINE_PREVIEW_MAX_BYTES ||
+    (content.contentLength !== null && content.contentLength > INLINE_PREVIEW_MAX_BYTES)
+  ) {
+    throw new Error("原件超过 20 MB 安全预览上限，请下载后查看");
+  }
+
+  return responseMimeType;
+}
+
+function OriginalDocumentCard({ file }: { file: KnowledgeFile }) {
+  const [previewRequested, setPreviewRequested] = useState(false);
+  const [objectUrl, setObjectUrl] = useState<string | null>(null);
+  const objectUrlRef = useRef<string | null>(null);
+  const [previewMimeType, setPreviewMimeType] = useState<string | null>(null);
+  const previewMutation = useMutation({
+    mutationKey: ["documents", file.id, "content", "inline"],
+    mutationFn: async () => {
+      const content = await getDocumentContent(file.id, "inline");
+      return {
+        content,
+        mimeType: validateInlinePreviewContent(content),
+      };
+    },
+    gcTime: 0,
+    retry: false,
+    onSuccess: ({ content, mimeType }) => {
+      const nextObjectUrl = URL.createObjectURL(content.blob);
+      if (objectUrlRef.current) {
+        URL.revokeObjectURL(objectUrlRef.current);
+      }
+      objectUrlRef.current = nextObjectUrl;
+      setObjectUrl(nextObjectUrl);
+      setPreviewMimeType(mimeType);
+    },
+  });
+  const downloadMutation = useMutation({
+    mutationFn: () => getDocumentContent(file.id, "attachment"),
+    onSuccess: (content) => {
+      const downloadUrl = URL.createObjectURL(content.blob);
+      try {
+        const anchor = document.createElement("a");
+        anchor.href = downloadUrl;
+        anchor.download = file.original_name;
+        document.body.append(anchor);
+        anchor.click();
+        anchor.remove();
+      } finally {
+        window.setTimeout(() => URL.revokeObjectURL(downloadUrl), 0);
+      }
+    },
+  });
+
+  useEffect(() => {
+    return () => {
+      if (objectUrlRef.current) {
+        URL.revokeObjectURL(objectUrlRef.current);
+        objectUrlRef.current = null;
+      }
+    };
+  }, []);
+
+  const previewSupported = canPreviewInline(file);
+  const previewBlockReason =
+    file.size > INLINE_PREVIEW_MAX_BYTES
+      ? "原件超过 20 MB 安全预览上限，请下载后查看。"
+      : "请使用鉴权下载打开原件；平台不会暴露 MinIO 永久地址或对象凭据。";
+
+  return (
+    <Card
+      id="original"
+      className="document-panel original-document-card"
+      title="原件预览"
+      extra={
+        <Space>
+          {previewSupported && !previewRequested ? (
+            <Button
+              icon={<EyeOutlined />}
+              onClick={() => {
+                setPreviewRequested(true);
+                previewMutation.mutate();
+              }}
+            >
+              加载预览
+            </Button>
+          ) : null}
+          {previewSupported && objectUrl && !previewMutation.isPending ? (
+            <Button icon={<ReloadOutlined />} onClick={() => previewMutation.mutate()}>
+              重新加载预览
+            </Button>
+          ) : null}
+          <Button
+            icon={<DownloadOutlined />}
+            loading={downloadMutation.isPending}
+            onClick={() => downloadMutation.mutate()}
+          >
+            下载原件
+          </Button>
+        </Space>
+      }
+    >
+      {!previewSupported ? (
+        <Alert
+          type="info"
+          showIcon
+          message="此格式不支持浏览器安全预览"
+          description={previewBlockReason}
+        />
+      ) : null}
+      {previewSupported && !previewRequested ? (
+        <div className="original-document-placeholder">
+          <EyeOutlined />
+          <Typography.Text strong>按需加载受鉴权原件</Typography.Text>
+          <Typography.Text type="secondary">
+            管理员查看他人原件会写入审计；大文件不会在进入详情时自动下载。
+          </Typography.Text>
+        </div>
+      ) : null}
+      {previewMutation.isPending ? (
+        <div className="original-document-placeholder">
+          <Typography.Text>正在安全加载原件…</Typography.Text>
+        </div>
+      ) : null}
+      {previewMutation.isError ? (
+        <Alert
+          type="error"
+          showIcon
+          message="原件预览加载失败"
+          description={previewMutation.error.message}
+          action={
+            <Button size="small" onClick={() => previewMutation.mutate()}>
+              重试
+            </Button>
+          }
+        />
+      ) : null}
+      {objectUrl && previewMimeType ? (
+        previewMimeType.startsWith("image/") ? (
+          <img
+            className="original-document-image"
+            src={objectUrl}
+            alt={`${file.original_name} 原件预览`}
+          />
+        ) : (
+          <iframe
+            className="original-document-frame"
+            src={objectUrl}
+            title={`${file.original_name} 原件预览`}
+            sandbox=""
+            referrerPolicy="no-referrer"
+          />
+        )
+      ) : null}
+      {downloadMutation.isError ? (
+        <Alert
+          className="original-document-download-error"
+          type="error"
+          showIcon
+          message="原件下载失败"
+          description={downloadMutation.error.message}
+        />
+      ) : null}
+    </Card>
+  );
+}
+
 interface AnalysisCardProps {
   analysis: FileAnalysis;
   file: KnowledgeFile;
@@ -454,7 +663,10 @@ export default function FileDetailPage() {
       title={file?.original_name ?? "文件详情"}
       description="文件基础信息、AI 分析结果与审核同步状态。"
       breadcrumb={[
-        { label: "文件审核", path: "/files" },
+        {
+          label: isAdmin ? "审核工作台" : "我的知识工作台",
+          path: isAdmin ? "/files" : "/my-files",
+        },
         { label: file?.original_name ?? "加载中" },
       ]}
       actions={
@@ -495,6 +707,7 @@ export default function FileDetailPage() {
       ) : null}
       <div className="document-workspace document-workspace--detail">
         <div className="document-workspace__main">
+          {file ? <OriginalDocumentCard file={file} /> : null}
           <Card className="document-panel" loading={fileQuery.isLoading}>
             {file ? (
               <Descriptions column={1} size="middle" styles={{ label: { width: 140 } }}>

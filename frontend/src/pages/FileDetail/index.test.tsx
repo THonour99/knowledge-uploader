@@ -9,12 +9,13 @@ import {
   type KnowledgeFile,
   type SyncTaskListResponse,
   getDocument,
+  getDocumentContent,
   listTasks,
 } from "../../api/client";
 import type * as ApiClientModule from "../../api/client";
 import { useAuthStore } from "../../store/auth.store";
 import { themeCssVariables } from "../../theme/tokens";
-import FileDetailPage from "./index";
+import FileDetailPage, { canPreviewInline, validateInlinePreviewContent } from "./index";
 
 vi.mock("../../api/client", async () => {
   const actual = await vi.importActual<typeof ApiClientModule>("../../api/client");
@@ -22,6 +23,7 @@ vi.mock("../../api/client", async () => {
   return {
     ...actual,
     getDocument: vi.fn(),
+    getDocumentContent: vi.fn(),
     listTasks: vi.fn(),
   };
 });
@@ -119,6 +121,14 @@ beforeAll(() => {
       getPropertyValue: () => "",
     })),
   });
+  Object.defineProperty(URL, "createObjectURL", {
+    writable: true,
+    value: vi.fn(),
+  });
+  Object.defineProperty(URL, "revokeObjectURL", {
+    writable: true,
+    value: vi.fn(),
+  });
 });
 
 function renderFileDetail(node: ReactNode = <FileDetailPage />) {
@@ -164,6 +174,98 @@ afterEach(() => {
 });
 
 describe("FileDetailPage", () => {
+  it("rejects SVG and HTML from inline preview metadata and response headers", () => {
+    expect(canPreviewInline({ ...baseFile, mime_type: "image/svg+xml" })).toBe(false);
+    expect(canPreviewInline({ ...baseFile, mime_type: "text/html" })).toBe(false);
+
+    expect(() =>
+      validateInlinePreviewContent({
+        blob: new Blob(["<svg><script>alert(1)</script></svg>"], {
+          type: "image/svg+xml",
+        }),
+        contentType: "image/svg+xml",
+        contentDisposition: "inline",
+        contentLength: 38,
+        etag: null,
+      }),
+    ).toThrow("不在安全预览白名单");
+    expect(() =>
+      validateInlinePreviewContent({
+        blob: new Blob(["<html></html>"], { type: "text/html" }),
+        contentType: "text/html; charset=utf-8",
+        contentDisposition: "attachment; filename=document.html",
+        contentLength: 13,
+        etag: null,
+      }),
+    ).toThrow("附件方式下载");
+    expect(canPreviewInline({ ...baseFile, size: 20 * 1024 * 1024 + 1 })).toBe(false);
+    expect(() =>
+      validateInlinePreviewContent({
+        blob: new Blob(["safe"], { type: "application/pdf" }),
+        contentType: "application/pdf",
+        contentDisposition: "inline",
+        contentLength: 20 * 1024 * 1024 + 1,
+        etag: null,
+      }),
+    ).toThrow("超过 20 MB");
+  });
+
+  it("sandboxes an allowlisted preview and revokes its object URL on unmount", async () => {
+    vi.mocked(getDocument).mockResolvedValue(baseFile);
+    vi.mocked(getDocumentContent).mockResolvedValue({
+      blob: new Blob(["%PDF"], { type: "application/pdf" }),
+      contentType: "application/pdf",
+      contentDisposition: "inline",
+      contentLength: 4,
+      etag: '"preview-etag"',
+    });
+    vi.mocked(URL.createObjectURL).mockReturnValue("blob:preview-file-1");
+
+    const view = renderFileDetail();
+    fireEvent.click(await screen.findByRole("button", { name: /加载预览/ }));
+
+    const frame = await screen.findByTitle("员工手册.pdf 原件预览");
+    expect(frame).toHaveAttribute("src", "blob:preview-file-1");
+    expect(frame).toHaveAttribute("sandbox", "");
+    expect(frame).toHaveAttribute("referrerpolicy", "no-referrer");
+    view.unmount();
+
+    expect(URL.revokeObjectURL).toHaveBeenCalledWith("blob:preview-file-1");
+  });
+
+  it("revokes the previous object URL when a successful preview is reloaded", async () => {
+    vi.mocked(getDocument).mockResolvedValue(baseFile);
+    vi.mocked(getDocumentContent).mockResolvedValue({
+      blob: new Blob(["%PDF"], { type: "application/pdf" }),
+      contentType: "application/pdf",
+      contentDisposition: "inline",
+      contentLength: 4,
+      etag: '"preview-etag"',
+    });
+    vi.mocked(URL.createObjectURL)
+      .mockReturnValueOnce("blob:preview-old")
+      .mockReturnValueOnce("blob:preview-latest");
+
+    const view = renderFileDetail();
+    fireEvent.click(await screen.findByRole("button", { name: /加载预览/ }));
+    expect(await screen.findByTitle("员工手册.pdf 原件预览")).toHaveAttribute(
+      "src",
+      "blob:preview-old",
+    );
+    fireEvent.click(screen.getByRole("button", { name: /重新加载预览/ }));
+
+    await waitFor(() => {
+      expect(screen.getByTitle("员工手册.pdf 原件预览")).toHaveAttribute(
+        "src",
+        "blob:preview-latest",
+      );
+      expect(URL.revokeObjectURL).toHaveBeenCalledWith("blob:preview-old");
+    });
+    expect(URL.revokeObjectURL).not.toHaveBeenCalledWith("blob:preview-latest");
+    view.unmount();
+    expect(URL.revokeObjectURL).toHaveBeenCalledWith("blob:preview-latest");
+  });
+
   it("renders analysis card with summary, risk tag and extracted text preview", async () => {
     vi.mocked(getDocument).mockResolvedValue(baseFile);
 
