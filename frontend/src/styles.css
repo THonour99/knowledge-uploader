@@ -1136,10 +1136,20 @@ a {
 
 .review-mobile-card__header {
   display: grid;
-  grid-template-columns: 24px minmax(0, 1fr) auto;
+  grid-template-columns: 44px minmax(0, 1fr) auto;
   gap: 8px;
   align-items: center;
   min-width: 0;
+}
+
+.review-mobile-card__select.ant-checkbox-wrapper {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 44px;
+  height: 44px;
+  margin: 0;
+  touch-action: manipulation;
 }
 
 .review-mobile-card__title {
@@ -1598,10 +1608,16 @@ a {
 }
 
 .file-title-cell__meta {
-  display: flex;
-  align-items: center;
-  gap: 6px;
+  display: grid;
+  gap: 2px;
   color: var(--ku-text-secondary);
+}
+
+.file-title-cell__meta .ant-typography {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .uploader-cell {

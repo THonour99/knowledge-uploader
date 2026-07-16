@@ -20,14 +20,11 @@ import {
   submitFileForReview,
 } from "../../api/client";
 import type * as ApiClientModule from "../../api/client";
-import {
-  type EmployeeDashboard,
-  getEmployeeDashboard,
-} from "../../api/dashboard";
+import { type EmployeeDashboard, getEmployeeDashboard } from "../../api/dashboard";
 import type * as DashboardApiModule from "../../api/dashboard";
 import { useAuthStore } from "../../store/auth.store";
 import { themeCssVariables } from "../../theme/tokens";
-import MyFilesPage, { downloadBlob } from "./index";
+import MyFilesPage from "./index";
 
 // ── API mocks ────────────────────────────────────────────────────────────────
 vi.mock("../../api/client", async () => {
@@ -300,10 +297,11 @@ function employeeDashboard(
   };
 }
 
-function dashboardDocument(file: typeof mockFile2) {
+function dashboardDocument(file: typeof mockFile2 & { title?: string | null }) {
   return {
     id: file.id,
     original_name: file.original_name,
+    title: file.title,
     extension: file.extension,
     status: file.status,
     review_status: file.review_status,
@@ -396,34 +394,6 @@ beforeEach(() => {
 
 // ── Tests ────────────────────────────────────────────────────────────────────
 describe("MyFilesPage", () => {
-  it("attaches downloads to the document and revokes the object URL asynchronously", () => {
-    vi.useFakeTimers();
-    const clickSpy = vi.spyOn(HTMLAnchorElement.prototype, "click").mockImplementation(() => {});
-    const appendSpy = vi.spyOn(document.body, "appendChild");
-    vi.mocked(URL.createObjectURL).mockReturnValue("blob:employee-download");
-
-    try {
-      downloadBlob(new Blob(["document"]), "员工手册.pdf");
-
-      const anchor = appendSpy.mock.calls
-        .map(([node]) => node)
-        .find((node): node is HTMLAnchorElement => node instanceof HTMLAnchorElement);
-      expect(anchor).toBeDefined();
-      expect(anchor).toHaveAttribute("href", "blob:employee-download");
-      expect(anchor).toHaveAttribute("download", "员工手册.pdf");
-      expect(clickSpy).toHaveBeenCalledTimes(1);
-      expect(anchor?.isConnected).toBe(false);
-      expect(URL.revokeObjectURL).not.toHaveBeenCalled();
-
-      vi.runOnlyPendingTimers();
-      expect(URL.revokeObjectURL).toHaveBeenCalledWith("blob:employee-download");
-    } finally {
-      vi.useRealTimers();
-      clickSpy.mockRestore();
-      appendSpy.mockRestore();
-    }
-  });
-
   it("blocks upload and submit with a department-assignment recovery action", async () => {
     useAuthStore.setState({
       accessToken: "token",
@@ -448,14 +418,18 @@ describe("MyFilesPage", () => {
     expect(screen.getAllByRole("button", { name: /提交审核 草稿文件/ })[0]).toBeDisabled();
   });
 
-  it("renders file list with file names", async () => {
-    vi.mocked(listDocuments).mockResolvedValue(mockFilesResponse);
+  it("uses the document title as primary text while retaining the original filename", async () => {
+    const titledFile = { ...mockFile1, title: "年度产品规划" };
+    vi.mocked(listDocuments).mockResolvedValue({ items: [titledFile], total: 1 });
     vi.mocked(listTags).mockResolvedValue(mockTagsResponse);
 
     renderWithProviders(<MyFilesPage />);
 
-    expect((await screen.findAllByText("产品规划.pdf")).length).toBeGreaterThan(0);
-    expect((await screen.findAllByText("技术架构.docx")).length).toBeGreaterThan(0);
+    expect((await screen.findAllByText("年度产品规划")).length).toBeGreaterThan(0);
+    expect(screen.getAllByText("原始文件：产品规划.pdf").length).toBeGreaterThan(0);
+    expect(screen.getAllByRole("button", { name: "下载原件 年度产品规划" }).length).toBeGreaterThan(
+      0,
+    );
   });
 
   it("loads one dashboard aggregation while keeping one paginated file request", async () => {
@@ -467,9 +441,7 @@ describe("MyFilesPage", () => {
     await screen.findAllByText("产品规划.pdf");
     await waitFor(() => expect(getEmployeeDashboard).toHaveBeenCalledTimes(1));
     expect(listDocuments).toHaveBeenCalledTimes(1);
-    expect(listDocuments).toHaveBeenCalledWith(
-      expect.objectContaining({ page: 1, page_size: 20 }),
-    );
+    expect(listDocuments).toHaveBeenCalledWith(expect.objectContaining({ page: 1, page_size: 20 }));
   });
 
   it("shows a retryable error instead of a false empty state when actionable summaries fail", async () => {
@@ -504,12 +476,10 @@ describe("MyFilesPage", () => {
     renderWithProviders(<MyFilesPage />);
 
     expect((await screen.findAllByText("分析失败文档.pdf")).length).toBeGreaterThan(0);
-    expect(
-      screen.getAllByText("尝试提交；若策略限制请联系管理员重试分析").length,
-    ).toBeGreaterThan(0);
-    fireEvent.click(
-      screen.getAllByRole("button", { name: "提交审核 分析失败文档.pdf" })[0],
+    expect(screen.getAllByText("尝试提交；若策略限制请联系管理员重试分析").length).toBeGreaterThan(
+      0,
     );
+    fireEvent.click(screen.getAllByRole("button", { name: "提交审核 分析失败文档.pdf" })[0]);
 
     await waitFor(() => {
       expect(submitFileForReview).toHaveBeenCalledWith("file-analysis-failed", undefined);
@@ -562,9 +532,7 @@ describe("MyFilesPage", () => {
     expect(within(rail).queryByRole("button", { name: /草稿/ })).not.toBeInTheDocument();
     expect(within(rail).queryByRole("button", { name: /入库处理中/ })).not.toBeInTheDocument();
     expect(screen.getByLabelText("草稿（聚合状态）")).toHaveTextContent("聚合项请用下方筛选");
-    expect(screen.getByLabelText("入库处理中（聚合状态）")).toHaveTextContent(
-      "聚合项请用下方筛选",
-    );
+    expect(screen.getByLabelText("入库处理中（聚合状态）")).toHaveTextContent("聚合项请用下方筛选");
     expect(listDocuments).toHaveBeenCalledTimes(1);
   });
 
@@ -583,9 +551,7 @@ describe("MyFilesPage", () => {
 
     renderWithProviders(<MyFilesPage />);
     expect((await screen.findAllByText("分析失败文档.pdf")).length).toBeGreaterThan(0);
-    fireEvent.click(
-      screen.getAllByRole("button", { name: "提交审核 分析失败文档.pdf" })[0],
-    );
+    fireEvent.click(screen.getAllByRole("button", { name: "提交审核 分析失败文档.pdf" })[0]);
 
     expect(await screen.findByText(/分析失败文档.pdf.*暂不能提交/)).toBeInTheDocument();
     expect(screen.getByText(/请联系部门管理员重新发起分析或检查 AI 配置/)).toBeInTheDocument();
@@ -633,9 +599,7 @@ describe("MyFilesPage", () => {
 
     renderWithProviders(<MyFilesPage />);
     expect((await screen.findAllByText("涉敏驳回材料.pdf")).length).toBeGreaterThan(0);
-    fireEvent.click(
-      screen.getAllByRole("button", { name: "提交审核 涉敏驳回材料.pdf" })[0],
-    );
+    fireEvent.click(screen.getAllByRole("button", { name: "提交审核 涉敏驳回材料.pdf" })[0]);
 
     expect(submitFileForReview).not.toHaveBeenCalled();
     expect(await screen.findByText("确认提交敏感风险文档")).toBeInTheDocument();

@@ -28,6 +28,7 @@ import FileManagementPage, {
   eligibleReviewTargets,
   hasActiveReviewClaim,
   hasValidReviewClaim,
+  reviewSla,
 } from "./index";
 
 vi.mock("../../api/client", async () => {
@@ -219,6 +220,29 @@ describe("FileManagementPage", () => {
     );
   });
 
+  it("supports ArrowLeft/Right/Home/End keyboard navigation for queue tabs", async () => {
+    vi.mocked(listReviewFiles).mockResolvedValue({ items: [], total: 0 });
+    renderWorkbench();
+
+    const allTab = screen.getByRole("tab", { name: /全部待审/ });
+    fireEvent.keyDown(allTab, { key: "ArrowRight" });
+    await waitFor(() => {
+      expect(screen.getByRole("tab", { name: /待领取/ })).toHaveAttribute("aria-selected", "true");
+    });
+    expect(screen.getByRole("tab", { name: /待领取/ })).toHaveFocus();
+
+    fireEvent.keyDown(screen.getByRole("tab", { name: /待领取/ }), { key: "End" });
+    await waitFor(() => {
+      expect(screen.getByRole("tab", { name: /已超时/ })).toHaveAttribute("aria-selected", "true");
+    });
+    fireEvent.keyDown(screen.getByRole("tab", { name: /已超时/ }), { key: "Home" });
+    await waitFor(() => expect(allTab).toHaveAttribute("aria-selected", "true"));
+    fireEvent.keyDown(allTab, { key: "ArrowLeft" });
+    await waitFor(() =>
+      expect(screen.getByRole("tab", { name: /已超时/ })).toHaveAttribute("aria-selected", "true"),
+    );
+  });
+
   it("normalizes invalid URL filters before querying the review queue", async () => {
     vi.mocked(listReviewFiles).mockResolvedValue({ items: [], total: 0 });
 
@@ -284,6 +308,21 @@ describe("FileManagementPage", () => {
     expect(listReviewFiles).toHaveBeenCalledWith(expect.objectContaining({ q: "张三" }));
   });
 
+  it("shows the product title first and keeps the original filename as provenance", async () => {
+    const file = makeReviewFile({ title: "员工制度（2026 版）" });
+    vi.mocked(listReviewFiles).mockResolvedValue({ items: [file], total: 1 });
+
+    renderWorkbench();
+
+    expect(await screen.findByText("员工制度（2026 版）")).toBeInTheDocument();
+    expect(screen.getByText("原始文件：待审核制度.pdf")).toBeInTheDocument();
+    expect(
+      screen.getByRole("button", {
+        name: "查看原件与审核详情 员工制度（2026 版）",
+      }),
+    ).toBeInTheDocument();
+  });
+
   it("renders missing risk as not assessed without inventing a low or rejected risk", async () => {
     const file = makeReviewFile({
       sensitive_risk_level: null,
@@ -320,8 +359,22 @@ describe("FileManagementPage", () => {
     });
   });
 
+  it("does not mark a review due in 30 seconds as overdue", () => {
+    const now = Date.parse("2026-07-16T08:00:00Z");
+    const file = makeReviewFile({ review_due_at: new Date(now + 30_000).toISOString() });
+
+    expect(reviewSla(file, now)).toMatchObject({
+      state: "due_soon",
+      label: "剩余 1 分钟",
+    });
+    expect(reviewSla(file, now + 30_001)).toMatchObject({
+      state: "overdue",
+      label: "已超时 1 分钟",
+    });
+  });
+
   it("recovers from a claim conflict by showing row feedback and refreshing", async () => {
-    const file = makeReviewFile();
+    const file = makeReviewFile({ review_status: "rejected" });
     vi.mocked(listReviewFiles).mockResolvedValue({ items: [file], total: 1 });
     vi.mocked(claimReviewFile).mockRejectedValue(
       new ApiError("already claimed", {
@@ -404,7 +457,7 @@ describe("FileManagementPage", () => {
       removeEventListener: vi.fn(),
       dispatchEvent: vi.fn(),
     }));
-    const file = makeReviewFile();
+    const file = makeReviewFile({ review_status: "rejected" });
     vi.mocked(listReviewFiles).mockResolvedValue({ items: [file], total: 1 });
 
     renderWorkbench();
@@ -414,6 +467,12 @@ describe("FileManagementPage", () => {
     expect(within(mobileQueue).getByText("待审核制度.pdf")).toBeInTheDocument();
     expect(within(mobileQueue).getByRole("button", { name: "查看原件" })).toBeInTheDocument();
     expect(within(mobileQueue).getByRole("button", { name: /领取$/ })).toBeInTheDocument();
+    expect(within(mobileQueue).getByLabelText("审核状态：未通过")).toBeInTheDocument();
+    expect(
+      within(mobileQueue)
+        .getByRole("checkbox", { name: "选择 待审核制度.pdf" })
+        .closest(".review-mobile-card__select"),
+    ).not.toBeNull();
     expect(screen.queryByRole("table")).not.toBeInTheDocument();
   });
 

@@ -33,6 +33,8 @@ export interface EmployeeActionCounts {
 export interface DashboardRecentDocument {
   id: string;
   original_name: string;
+  /** Product-facing editable title; optional only for cached/rolling-deploy responses. */
+  title?: string | null;
   extension: string;
   status: string;
   review_status: string;

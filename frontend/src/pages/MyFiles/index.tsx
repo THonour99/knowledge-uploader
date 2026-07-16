@@ -31,7 +31,6 @@ import {
   getUserFacingErrorMessage,
   isApiError,
   deleteFile,
-  getDocumentContent,
   getUploadPolicy,
   listDocuments,
   listTags,
@@ -46,6 +45,8 @@ import { DepartmentAssignmentAlert } from "../../components/DepartmentAssignment
 import { StatusTag } from "../../components/StatusTag";
 import { PageContainer } from "../../layouts/PageContainer";
 import { hasAssignedDepartment, useAuthStore } from "../../store/auth.store";
+import { downloadDocument } from "../../utils/documentDownload";
+import { documentDisplayTitle, originalFileNameLabel } from "../../utils/documentTitle";
 import { allowUserDeleteFromPolicy, allowedExtensionsFromPolicy } from "../../utils/uploadConfig";
 
 const STATUS_RAIL: Array<{
@@ -194,23 +195,6 @@ function formatFileSize(size: number): string {
   return `${(size / 1024 / 1024).toFixed(1)} MB`;
 }
 
-export function downloadBlob(blob: Blob, fileName: string): void {
-  const objectUrl = URL.createObjectURL(blob);
-  try {
-    const anchor = document.createElement("a");
-    anchor.href = objectUrl;
-    anchor.download = fileName;
-    document.body.appendChild(anchor);
-    try {
-      anchor.click();
-    } finally {
-      anchor.remove();
-    }
-  } finally {
-    window.setTimeout(() => URL.revokeObjectURL(objectUrl), 0);
-  }
-}
-
 function nextStep(file: Pick<KnowledgeFile, "status">): string {
   const labels: Record<string, string> = {
     uploaded: "补充信息后提交审核",
@@ -349,7 +333,10 @@ export default function MyFilesPage() {
     },
     onError: (error: unknown, variables) => {
       if (isApiError(error) && error.code === ANALYSIS_FAILED_SUBMISSION_DISABLED_CODE) {
-        setSubmitRecovery({ fileId: variables.file.id, fileName: variables.file.original_name });
+        setSubmitRecovery({
+          fileId: variables.file.id,
+          fileName: documentDisplayTitle(variables.file),
+        });
         message.warning("当前策略禁止跳过失败的 AI 分析");
         return;
       }
@@ -362,10 +349,12 @@ export default function MyFilesPage() {
     },
   });
   const downloadMutation = useMutation({
-    mutationFn: async (file: KnowledgeFile) => {
-      const content = await getDocumentContent(file.id, "attachment");
-      downloadBlob(content.blob, file.original_name);
-    },
+    mutationFn: (file: KnowledgeFile) =>
+      downloadDocument({
+        id: file.id,
+        fileName: file.original_name,
+        sizeBytes: file.size,
+      }),
     onError: (error: Error) => message.error(error.message || "原件下载失败"),
   });
 
@@ -373,9 +362,10 @@ export default function MyFilesPage() {
   const statusCounts = employeeWorkbench?.status_counts;
   const actionCount = employeeWorkbench?.action_counts.total ?? 0;
   const continueFiles: DashboardRecentDocument[] =
-    employeeWorkbench?.recent_documents.filter((file) =>
-      ["submit_review", "revise_rejected", "confirm_sensitive"].includes(file.next_action) ||
-      file.status === "analysis_failed",
+    employeeWorkbench?.recent_documents.filter(
+      (file) =>
+        ["submit_review", "revise_rejected", "confirm_sensitive"].includes(file.next_action) ||
+        file.status === "analysis_failed",
     ) ?? [];
 
   const allowedExtensions = allowedExtensionsFromPolicy(uploadPolicyQuery.data);
@@ -397,64 +387,69 @@ export default function MyFilesPage() {
     submitMutation.mutate({ file });
   };
 
-  const fileActions = (file: KnowledgeFile) => (
-    <Space size={4} wrap>
-      <Button
-        type="text"
-        icon={<EyeOutlined />}
-        onClick={() => navigate(`/files/${file.id}#original`)}
-        aria-label={`预览原件 ${file.original_name}`}
-      >
-        预览
-      </Button>
-      <Button
-        type="text"
-        icon={<DownloadOutlined />}
-        loading={downloadMutation.isPending && downloadMutation.variables?.id === file.id}
-        onClick={() => downloadMutation.mutate(file)}
-        aria-label={`下载原件 ${file.original_name}`}
-      >
-        下载
-      </Button>
-      {isActionable(file) ? (
+  const fileActions = (file: KnowledgeFile) => {
+    const displayTitle = documentDisplayTitle(file);
+
+    return (
+      <Space size={4} wrap>
         <Button
           type="text"
-          icon={<SendOutlined />}
-          loading={submitMutation.isPending && submitMutation.variables?.file.id === file.id}
-          disabled={departmentBlocked}
-          onClick={() => requestReviewSubmission(file)}
-          aria-label={`提交审核 ${file.original_name}`}
+          icon={<EyeOutlined />}
+          onClick={() => navigate(`/files/${file.id}#original`)}
+          aria-label={`预览原件 ${displayTitle}`}
         >
-          提交
+          预览
         </Button>
-      ) : null}
-      {allowUserDelete && USER_DELETABLE_STATUSES.has(file.status) ? (
-        <Popconfirm
-          title="删除文件"
-          description="仅允许删除策略放行且非运行态的文件。确认继续？"
-          okText="删除"
-          cancelText="取消"
-          onConfirm={() => deleteMutation.mutate(file.id)}
+        <Button
+          type="text"
+          icon={<DownloadOutlined />}
+          loading={downloadMutation.isPending && downloadMutation.variables?.id === file.id}
+          onClick={() => downloadMutation.mutate(file)}
+          aria-label={`下载原件 ${displayTitle}`}
         >
+          下载
+        </Button>
+        {isActionable(file) ? (
           <Button
             type="text"
-            danger
-            icon={<DeleteOutlined />}
-            aria-label={`删除 ${file.original_name}`}
-          />
-        </Popconfirm>
-      ) : null}
-    </Space>
-  );
+            icon={<SendOutlined />}
+            loading={submitMutation.isPending && submitMutation.variables?.file.id === file.id}
+            disabled={departmentBlocked}
+            onClick={() => requestReviewSubmission(file)}
+            aria-label={`提交审核 ${displayTitle}`}
+          >
+            提交
+          </Button>
+        ) : null}
+        {allowUserDelete && USER_DELETABLE_STATUSES.has(file.status) ? (
+          <Popconfirm
+            title="删除文件"
+            description="仅允许删除策略放行且非运行态的文件。确认继续？"
+            okText="删除"
+            cancelText="取消"
+            onConfirm={() => deleteMutation.mutate(file.id)}
+          >
+            <Button
+              type="text"
+              danger
+              icon={<DeleteOutlined />}
+              aria-label={`删除 ${displayTitle}`}
+            />
+          </Popconfirm>
+        ) : null}
+      </Space>
+    );
+  };
 
   const columns: ColumnsType<KnowledgeFile> = [
     {
       title: "文件",
       dataIndex: "original_name",
       key: "original_name",
-      render: (value: string, file) => (
+      render: (_value: string, file) => (
         <Space direction="vertical" size={2}>
-          <Link to={`/files/${file.id}`}>{value}</Link>
+          <Link to={`/files/${file.id}`}>{documentDisplayTitle(file)}</Link>
+          <Typography.Text type="secondary">{originalFileNameLabel(file)}</Typography.Text>
           <Typography.Text type="secondary">
             {formatFileSize(file.size)} · {file.extension.toUpperCase()}
           </Typography.Text>
@@ -618,7 +613,8 @@ export default function MyFilesPage() {
               <article className="continue-list__item" key={file.id}>
                 <StatusTag kind="file" value={file.status} />
                 <span className="continue-list__copy">
-                  <Link to={`/files/${file.id}`}>{file.original_name}</Link>
+                  <Link to={`/files/${file.id}`}>{documentDisplayTitle(file)}</Link>
+                  <Typography.Text type="secondary">{originalFileNameLabel(file)}</Typography.Text>
                   <Typography.Text type="secondary">{nextStep(file)}</Typography.Text>
                 </span>
                 <Button type="link" onClick={() => navigate(`/files/${file.id}`)}>
@@ -674,10 +670,7 @@ export default function MyFilesPage() {
             placeholder="文档状态"
             value={status}
             onChange={(value) => setQueryValue("status", value)}
-            options={[
-              { label: "全部状态", value: "all" },
-              ...STATUS_FILTERS,
-            ]}
+            options={[{ label: "全部状态", value: "all" }, ...STATUS_FILTERS]}
           />
           <Select
             className="filter-toolbar__control"
@@ -749,9 +742,10 @@ export default function MyFilesPage() {
           {files.map((file) => (
             <article className="mobile-file-row" key={file.id}>
               <div className="mobile-file-row__heading">
-                <Link to={`/files/${file.id}`}>{file.original_name}</Link>
+                <Link to={`/files/${file.id}`}>{documentDisplayTitle(file)}</Link>
                 <StatusTag kind="file" value={file.status} />
               </div>
+              <Typography.Text type="secondary">{originalFileNameLabel(file)}</Typography.Text>
               <Typography.Text type="secondary">{nextStep(file)}</Typography.Text>
               <Typography.Text type="secondary">
                 {formatFileSize(file.size)} · {dayjs(file.updated_at).format("MM-DD HH:mm")}
@@ -808,7 +802,9 @@ export default function MyFilesPage() {
           description="提交表示你已了解该风险并同意交由部门管理员复核；这不会自动批准文档，也不会自动同步到 RAGFlow。"
         />
         <Typography.Paragraph className="review-risk-alert" type="secondary">
-          待提交文件：{sensitiveSubmittingFile?.original_name}
+          待提交文件：
+          {sensitiveSubmittingFile ? documentDisplayTitle(sensitiveSubmittingFile) : "-"}
+          {sensitiveSubmittingFile ? `（${originalFileNameLabel(sensitiveSubmittingFile)}）` : null}
         </Typography.Paragraph>
       </Modal>
     </PageContainer>

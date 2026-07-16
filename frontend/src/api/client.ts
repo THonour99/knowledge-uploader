@@ -1,6 +1,7 @@
 import axios, { type AxiosError } from "axios";
 
 import { type CurrentUser, useAuthStore } from "../store/auth.store";
+import { cancelResponseBody, readBoundedResponseBlob } from "../utils/boundedResponse";
 
 export interface ApiEnvelope<T> {
   success: boolean;
@@ -183,6 +184,8 @@ export type SimilarFileReference =
 export interface KnowledgeFile {
   id: string;
   original_name: string;
+  /** Product-facing editable title; optional only for cached/rolling-deploy responses. */
+  title?: string | null;
   extension: string;
   mime_type: string;
   size: number;
@@ -722,7 +725,7 @@ export interface DocumentListQuery {
 }
 
 export async function getUploadPolicy(): Promise<UploadPolicy> {
-  const response = await apiClient.get<ApiEnvelope<UploadPolicy> | UploadPolicy>("/upload-policy");
+  const response = await apiClient.get<ApiEnvelope<UploadPolicy> | UploadPolicy>("/files/policy");
 
   return unwrapResponse(response.data);
 }
@@ -773,6 +776,8 @@ export async function getDocument(id: string): Promise<KnowledgeFile> {
   return unwrapResponse(response.data);
 }
 
+export const DEFAULT_INLINE_CONTENT_MAX_BYTES = 20 * 1024 * 1024;
+
 export interface DocumentContent {
   blob: Blob;
   contentType: string;
@@ -781,32 +786,70 @@ export interface DocumentContent {
   etag: string | null;
 }
 
+export interface DocumentContentRequestOptions {
+  maxBytes?: number;
+  fetchImpl?: typeof fetch;
+}
+
+function documentContentSizeError(maxBytes: number): Error {
+  return new Error(
+    `原件超过 ${Math.floor(maxBytes / (1024 * 1024))} MiB 安全预览上限，请流式下载后查看`,
+  );
+}
+
 export async function getDocumentContent(
   id: string,
   disposition: "inline" | "attachment" = "inline",
+  options: DocumentContentRequestOptions = {},
 ): Promise<DocumentContent> {
-  const response = await apiClient.get<Blob>(`/files/${id}/content`, {
-    params: { disposition },
-    responseType: "blob",
-    timeout: 60_000,
+  const maxBytes = options.maxBytes ?? DEFAULT_INLINE_CONTENT_MAX_BYTES;
+  if (!Number.isSafeInteger(maxBytes) || maxBytes <= 0) {
+    throw new Error("原件预览缓冲上限配置无效");
+  }
+  const token = useAuthStore.getState().accessToken;
+  if (!token) {
+    throw new ApiError("登录状态已失效，请重新登录后查看原件", { status: 401 });
+  }
+
+  const endpoint = `${getApiBaseUrl().replace(/\/$/, "")}/files/${encodeURIComponent(
+    id,
+  )}/content?disposition=${encodeURIComponent(disposition)}`;
+  const response = await (options.fetchImpl ?? fetch)(endpoint, {
+    method: "GET",
+    headers: {
+      Accept:
+        disposition === "inline"
+          ? "application/pdf,image/*,text/plain,text/csv,text/markdown"
+          : "application/octet-stream",
+      Authorization: `Bearer ${token}`,
+    },
+    credentials: "same-origin",
+  });
+
+  if (!response.ok) {
+    const error = new ApiError(`原件读取失败（HTTP ${response.status}）`, {
+      status: response.status,
+    });
+    await cancelResponseBody(response, error);
+    if (response.status === 401) {
+      useAuthStore.getState().clearSession();
+    }
+    throw error;
+  }
+
+  const contentType = response.headers.get("content-type") ?? "application/octet-stream";
+  const content = await readBoundedResponseBlob(response, {
+    maxBytes,
+    sizeError: documentContentSizeError,
+    missingBodyError: () => new Error("浏览器未提供可读取的原件预览流"),
   });
 
   return {
-    blob: response.data,
-    contentType:
-      typeof response.headers["content-type"] === "string"
-        ? response.headers["content-type"]
-        : response.data.type,
-    contentDisposition:
-      typeof response.headers["content-disposition"] === "string"
-        ? response.headers["content-disposition"]
-        : null,
-    contentLength:
-      typeof response.headers["content-length"] === "string" &&
-      Number.isFinite(Number(response.headers["content-length"]))
-        ? Number(response.headers["content-length"])
-        : null,
-    etag: typeof response.headers.etag === "string" ? response.headers.etag : null,
+    blob: content.blob,
+    contentType,
+    contentDisposition: response.headers.get("content-disposition"),
+    contentLength: content.contentLength,
+    etag: response.headers.get("etag"),
   };
 }
 

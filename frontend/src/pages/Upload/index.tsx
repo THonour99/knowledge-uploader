@@ -47,6 +47,27 @@ import {
 
 /** Maximum number of simultaneous uploads. */
 const CONCURRENCY_LIMIT = 3;
+const BYTES_PER_MEBIBYTE = 1024 * 1024;
+
+function formatFileSizeLimit(maxFileSizeMb: number): string {
+  return Number.isInteger(maxFileSizeMb)
+    ? String(maxFileSizeMb)
+    : maxFileSizeMb.toFixed(2).replace(/0+$/, "").replace(/\.$/, "");
+}
+
+export function fileSizeValidationMessage(
+  file: Pick<File, "name" | "size">,
+  maxFileSizeMb: number | null | undefined,
+): string | null {
+  if (typeof maxFileSizeMb !== "number" || !Number.isFinite(maxFileSizeMb) || maxFileSizeMb <= 0) {
+    return "上传大小策略不可用，已停止上传；请联系系统管理员检查配置";
+  }
+  const maxBytes = Math.floor(maxFileSizeMb * BYTES_PER_MEBIBYTE);
+  if (file.size <= maxBytes) {
+    return null;
+  }
+  return `${file.name} 超过单文件最大 ${formatFileSizeLimit(maxFileSizeMb)} MB，请压缩或拆分后重试`;
+}
 
 type QueueItemStatus = "pending" | "uploading" | "success" | "duplicate" | "error";
 
@@ -123,11 +144,17 @@ export default function UploadPage() {
   const uploadPolicyReady = uploadPolicyQuery.isSuccess && uploadPolicyQuery.data !== undefined;
   const allowMultiFile = allowMultiFileFromPolicy(uploadPolicyQuery.data);
   const uploadEnabled = uploadEnabledFromPolicy(uploadPolicyQuery.data);
-  const canUpload = uploadPolicyReady && uploadEnabled && !departmentBlocked;
+  const maxFileSizeMb = uploadPolicyQuery.data?.max_file_size_mb;
+  const maxFileSizeValid =
+    typeof maxFileSizeMb === "number" && Number.isFinite(maxFileSizeMb) && maxFileSizeMb > 0;
+  const canUpload = uploadPolicyReady && uploadEnabled && maxFileSizeValid && !departmentBlocked;
   const acceptValue = useMemo(() => extensionAcceptValue(allowedExtensions), [allowedExtensions]);
   const allowedExtensionText = uploadPolicyReady
     ? allowedExtensions.map((extension) => extension.toUpperCase()).join("、")
     : "正在读取上传策略";
+  const fileSizeLimitText = maxFileSizeValid
+    ? `单文件最大 ${formatFileSizeLimit(maxFileSizeMb)} MB`
+    : "大小上限配置不可用";
 
   // Guard against stale closures when updating individual queue rows.
   const queueRef = useRef(queue);
@@ -168,6 +195,17 @@ export default function UploadPage() {
     },
     [isUploading, buildQueue],
   );
+  const handleBeforeUpload = useCallback(
+    (file: RcFile) => {
+      const validationMessage = fileSizeValidationMessage(file, maxFileSizeMb);
+      if (validationMessage) {
+        message.error(validationMessage);
+        return Upload.LIST_IGNORE;
+      }
+      return false;
+    },
+    [maxFileSizeMb, message],
+  );
 
   const handleSubmit = useCallback(
     async (values: UploadFormValues) => {
@@ -195,6 +233,13 @@ export default function UploadPage() {
 
       // Re-build queue from the current form file list so UIDs match.
       const freshQueue = buildQueue(fileList);
+      const sizeError = freshQueue
+        .map((item) => fileSizeValidationMessage(item.file, maxFileSizeMb))
+        .find((error): error is string => Boolean(error));
+      if (sizeError) {
+        message.error(sizeError);
+        return;
+      }
       setQueue(freshQueue);
       setIsUploading(true);
 
@@ -257,6 +302,7 @@ export default function UploadPage() {
       updateItem,
       form,
       message,
+      maxFileSizeMb,
       uploadPolicyReady,
       uploadEnabled,
       departmentBlocked,
@@ -333,6 +379,15 @@ export default function UploadPage() {
                 description="管理员重新开启上传入口后，员工可继续选择文件并提交。"
               />
             ) : null}
+            {uploadPolicyReady && uploadEnabled && !maxFileSizeValid ? (
+              <Alert
+                type="error"
+                showIcon
+                className="upload-disabled-alert"
+                message="上传大小策略无效，上传入口已暂停"
+                description="管理员修复单文件大小上限后即可继续上传。"
+              />
+            ) : null}
             <Form.Item
               name="file"
               valuePropName="fileList"
@@ -342,7 +397,7 @@ export default function UploadPage() {
               <Upload.Dragger
                 multiple={allowMultiFile}
                 maxCount={allowMultiFile ? undefined : 1}
-                beforeUpload={() => false}
+                beforeUpload={handleBeforeUpload}
                 accept={acceptValue}
                 disabled={isUploading || !canUpload}
               >
@@ -352,8 +407,8 @@ export default function UploadPage() {
                 <p className="ant-upload-text">拖拽文件到此处，或点击选择文件</p>
                 <p className="ant-upload-hint">
                   支持 {allowedExtensionText}
-                  {allowMultiFile ? "，可同时选择多个文件" : "，当前仅允许单文件上传"}
-                  ，最多 {CONCURRENCY_LIMIT} 个并发上传。
+                  {allowMultiFile ? "，可同时选择多个文件" : "，当前仅允许单文件上传"}，
+                  {fileSizeLimitText}，最多 {CONCURRENCY_LIMIT} 个并发上传。
                 </p>
               </Upload.Dragger>
             </Form.Item>

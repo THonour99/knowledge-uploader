@@ -65,6 +65,7 @@ import { useMediaQuery } from "../../hooks/useMediaQuery";
 import { useNow } from "../../hooks/useNow";
 import { PageContainer } from "../../layouts/PageContainer";
 import { Roles, useAuthStore } from "../../store/auth.store";
+import { documentDisplayTitle, originalFileNameLabel } from "../../utils/documentTitle";
 import { allowedExtensionsFromPolicy } from "../../utils/uploadConfig";
 
 // ── 常量 ──────────────────────────────────────────────────────────────────────
@@ -194,7 +195,10 @@ function positiveInteger(value: string | null, fallback: number): number {
   return Number.isInteger(parsed) && parsed > 0 ? parsed : fallback;
 }
 
-export function reviewSla(file: KnowledgeFile, now = Date.now()): {
+export function reviewSla(
+  file: KnowledgeFile,
+  now = Date.now(),
+): {
   label: string;
   detail: string;
   state: "normal" | "due_soon" | "overdue" | "unknown";
@@ -203,23 +207,34 @@ export function reviewSla(file: KnowledgeFile, now = Date.now()): {
     return { label: "未设置", detail: "等待 SLA 数据", state: "unknown" };
   }
   const dueAt = dayjs(file.review_due_at);
-  const minutes = dueAt.diff(dayjs(now), "minute");
-  if (minutes <= 0) {
+  if (!dueAt.isValid()) {
+    return { label: "数据异常", detail: "SLA 时间不可用", state: "unknown" };
+  }
+  const remainingMs = dueAt.valueOf() - now;
+  if (remainingMs <= 0) {
+    const overdueMs = Math.abs(remainingMs);
+    const overdueLabel =
+      overdueMs < 60 * 60 * 1_000
+        ? `${Math.max(1, Math.ceil(overdueMs / 60_000))} 分钟`
+        : `${Math.ceil(overdueMs / (60 * 60 * 1_000))} 小时`;
     return {
-      label: `已超时 ${Math.max(1, Math.ceil(Math.abs(minutes) / 60))} 小时`,
+      label: `已超时 ${overdueLabel}`,
       detail: dueAt.format("MM-DD HH:mm"),
       state: "overdue",
     };
   }
-  if (minutes <= 4 * 60) {
+  const remainingMinutes = Math.max(1, Math.ceil(remainingMs / 60_000));
+  const remainingLabel =
+    remainingMinutes < 60 ? `${remainingMinutes} 分钟` : `${Math.ceil(remainingMinutes / 60)} 小时`;
+  if (remainingMs <= 4 * 60 * 60 * 1_000) {
     return {
-      label: `剩余 ${Math.max(1, Math.ceil(minutes / 60))} 小时`,
+      label: `剩余 ${remainingLabel}`,
       detail: dueAt.format("MM-DD HH:mm"),
       state: "due_soon",
     };
   }
   return {
-    label: `剩余 ${Math.max(1, Math.ceil(minutes / 60))} 小时`,
+    label: `剩余 ${remainingLabel}`,
     detail: dueAt.format("MM-DD HH:mm"),
     state: "normal",
   };
@@ -500,7 +515,7 @@ export default function FileManagementPage() {
     mutationFn: claimReviewFile,
     onSuccess: async (file) => {
       setClaimFeedback(null);
-      message.success(`已领取 ${file.original_name}`);
+      message.success(`已领取 ${documentDisplayTitle(file)}`);
       await refreshFiles();
     },
     onError: async (error: Error, fileId) => {
@@ -525,7 +540,7 @@ export default function FileManagementPage() {
       setClaimFeedback(null);
       setForceReleasingFile(null);
       setForceReleaseReason("");
-      message.success(`已释放 ${file.original_name}`);
+      message.success(`已释放 ${documentDisplayTitle(file)}`);
       await refreshFiles();
     },
     onError: (error: Error, variables) => {
@@ -675,10 +690,11 @@ export default function FileManagementPage() {
       title: "文件名称",
       dataIndex: "original_name",
       key: "original_name",
-      width: 188,
+      width: 240,
       ellipsis: true,
       render: (value: string, record) => {
         const meta = fileTypeMeta(value);
+        const displayTitle = documentDisplayTitle(record);
 
         return (
           <div className="file-title-cell">
@@ -687,13 +703,14 @@ export default function FileManagementPage() {
               <button
                 type="button"
                 className="file-title-cell__name file-title-cell__link"
-                title={value}
+                title={displayTitle}
                 onClick={() => navigate(`/files/${record.id}#original`)}
-                aria-label={`查看原件与审核详情 ${value}`}
+                aria-label={`查看原件与审核详情 ${displayTitle}`}
               >
-                {value}
+                {displayTitle}
               </button>
               <span className="file-title-cell__meta">
+                <Typography.Text type="secondary">{originalFileNameLabel(record)}</Typography.Text>
                 <Typography.Text type="secondary">{record.mime_type}</Typography.Text>
               </span>
             </span>
@@ -948,7 +965,10 @@ export default function FileManagementPage() {
     const canForceRelease = user?.role === Roles.SYSTEM_ADMIN && validClaim && !claimedByMe;
 
     return (
-      <div className="review-mobile-card__actions" aria-label={`${record.original_name} 审核操作`}>
+      <div
+        className="review-mobile-card__actions"
+        aria-label={`${documentDisplayTitle(record)} 审核操作`}
+      >
         <Button onClick={() => navigate(`/files/${record.id}#original`)}>查看原件</Button>
         {canClaim ? (
           <Button
@@ -974,8 +994,7 @@ export default function FileManagementPage() {
           <Button
             icon={<UnlockOutlined />}
             loading={
-              releaseClaimMutation.isPending &&
-              releaseClaimMutation.variables?.fileId === record.id
+              releaseClaimMutation.isPending && releaseClaimMutation.variables?.fileId === record.id
             }
             onClick={() => releaseClaimMutation.mutate({ fileId: record.id })}
           >
@@ -996,6 +1015,29 @@ export default function FileManagementPage() {
         ) : null}
       </div>
     );
+  };
+
+  const handleQueueTabKeyDown = (
+    event: React.KeyboardEvent<HTMLButtonElement>,
+    currentIndex: number,
+  ) => {
+    let nextIndex: number | null = null;
+    if (event.key === "ArrowRight") {
+      nextIndex = (currentIndex + 1) % REVIEW_QUEUES.length;
+    } else if (event.key === "ArrowLeft") {
+      nextIndex = (currentIndex - 1 + REVIEW_QUEUES.length) % REVIEW_QUEUES.length;
+    } else if (event.key === "Home") {
+      nextIndex = 0;
+    } else if (event.key === "End") {
+      nextIndex = REVIEW_QUEUES.length - 1;
+    }
+    if (nextIndex === null) {
+      return;
+    }
+    event.preventDefault();
+    const nextQueue = REVIEW_QUEUES[nextIndex].value;
+    updateCoreQuery("queue", nextQueue);
+    queueMicrotask(() => document.getElementById(`review-queue-tab-${nextQueue}`)?.focus());
   };
 
   // ── 渲染 ──────────────────────────────────────────────────────────────────────
@@ -1028,7 +1070,7 @@ export default function FileManagementPage() {
       }
     >
       <nav className="review-queue-tabs" aria-label="审核队列" role="tablist">
-        {REVIEW_QUEUES.map((item) => (
+        {REVIEW_QUEUES.map((item, index) => (
           <button
             key={item.value}
             id={`review-queue-tab-${item.value}`}
@@ -1043,6 +1085,7 @@ export default function FileManagementPage() {
                 : "review-queue-tab"
             }
             onClick={() => updateCoreQuery("queue", item.value)}
+            onKeyDown={(event) => handleQueueTabKeyDown(event, index)}
           >
             <span>{item.label}</span>
             {queue === item.value ? <strong>{reviewFilesQuery.data?.total ?? 0}</strong> : null}
@@ -1243,26 +1286,28 @@ export default function FileManagementPage() {
                 <article className="review-mobile-card" role="listitem" key={file.id}>
                   <header className="review-mobile-card__header">
                     <Checkbox
+                      className="review-mobile-card__select"
                       checked={selectedKeySet.has(file.id)}
                       onChange={(event) => toggleSelectedFile(file.id, event.target.checked)}
-                      aria-label={`选择 ${file.original_name}`}
+                      aria-label={`选择 ${documentDisplayTitle(file)}`}
                     />
                     <button
                       type="button"
                       className="review-mobile-card__title"
                       onClick={() => navigate(`/files/${file.id}#original`)}
                     >
-                      {file.original_name}
+                      {documentDisplayTitle(file)}
                     </button>
                     <StatusTag kind="risk" value={riskLevel(file)} />
                   </header>
                   <div className="review-mobile-card__meta">
+                    <span>{originalFileNameLabel(file)}</span>
                     <span>{uploaderText(file)}</span>
                     <span>{file.department ?? "未分配部门"}</span>
                     <span>{formatFileSize(file.size)}</span>
                   </div>
                   <div className="review-mobile-card__state">
-                    <StatusTag kind="review" value="pending" />
+                    <StatusTag kind="review" value={file.review_status} />
                     <span className={`review-sla review-sla--${sla.state}`}>
                       <span>
                         <ClockCircleOutlined /> {sla.label}

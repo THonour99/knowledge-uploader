@@ -24,7 +24,7 @@ import {
 import type * as ApiClientModule from "../../api/client";
 import { useAuthStore } from "../../store/auth.store";
 import { themeCssVariables } from "../../theme/tokens";
-import UploadPage from "./index";
+import UploadPage, { fileSizeValidationMessage } from "./index";
 
 // ── Mocks ─────────────────────────────────────────────────────────────────────
 
@@ -316,6 +316,38 @@ describe("UploadPage multi-file", () => {
 // ── Rendering tests ───────────────────────────────────────────────────────────
 
 describe("UploadPage rendering", () => {
+  it("validates the configured byte boundary and fails closed for an invalid limit", () => {
+    expect(fileSizeValidationMessage({ name: "edge.pdf", size: 1024 * 1024 }, 1)).toBeNull();
+    expect(fileSizeValidationMessage({ name: "too-large.pdf", size: 1024 * 1024 + 1 }, 1)).toBe(
+      "too-large.pdf 超过单文件最大 1 MB，请压缩或拆分后重试",
+    );
+    expect(fileSizeValidationMessage({ name: "unknown.pdf", size: 1 }, 0)).toContain(
+      "上传大小策略不可用",
+    );
+  });
+
+  it("shows max_file_size_mb and rejects an oversized file before it enters the queue", async () => {
+    vi.mocked(getUploadPolicy).mockResolvedValueOnce({
+      ...uploadPolicyResponse,
+      max_file_size_mb: 1,
+    });
+    const view = renderWithProviders(<UploadPage />);
+
+    expect(await screen.findByText(/单文件最大 1 MB/)).toBeInTheDocument();
+    const fileInput = view.container.querySelector<HTMLInputElement>('input[type="file"]');
+    if (!fileInput) {
+      throw new Error("上传控件未渲染文件输入框");
+    }
+    fireEvent.change(fileInput, {
+      target: { files: [makeFile("too-large.pdf", 1024 * 1024 + 1)] },
+    });
+
+    expect(
+      await screen.findByText("too-large.pdf 超过单文件最大 1 MB，请压缩或拆分后重试"),
+    ).toBeInTheDocument();
+    expect(screen.getByText(/选择文件后会显示待上传队列/)).toBeInTheDocument();
+    expect(uploadDocument).not.toHaveBeenCalled();
+  });
   it("fails closed for an old persisted session without department assignment fields", async () => {
     useAuthStore.setState({
       accessToken: "old-token",
