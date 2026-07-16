@@ -44,7 +44,8 @@
 - 新加 Python 依赖前必须检查 ARM64 wheel：`invoke check-arm64`。
 - 禁用清单：`psycopg2*`、`python-magic*`、`mysqlclient`、`pycrypto`、`m2crypto`。
 - 文件名清洗必须过滤 Windows 保留名（CON / PRN / AUX / NUL / COM* / LPT*）。
-- Dockerfile 必须 `--platform=$BUILDPLATFORM`，base image 必须官方多架构。
+- Docker base 必须官方多架构；仅纯文本源码准备 stage 可使用 `BUILDPLATFORM`，安装原生依赖
+  与运行 stage 必须使用 `TARGETPLATFORM`，禁止跨架构复制二进制依赖。
 
 ## 6. 模块边界（硬规则）
 

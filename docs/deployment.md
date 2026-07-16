@@ -33,6 +33,13 @@
 | `BACKEND_API_PORT` | `18000` | 后端宿主机端口，避免占用 8000 |
 
 容器内后端仍监听 `8000`，仅 Compose 网络内部使用。不要把宿主机后端端口改回 `8000`，以免和现有 Docker 服务冲突。
+staging/production 的 `BACKEND_API_HOST` 必须保持 loopback；Nginx 对 `/metrics` 返回 404
+只能保护统一入口，不能替代宿主端口绑定和防火墙。protected release gate 会拒绝
+`0.0.0.0` 或任意非 loopback 的后端直连地址。
+
+主 compose 默认构建 `runtime` target，不包含 pytest、mypy、ruff 等开发工具。仅本地需要在
+容器内执行开发门禁时才显式设置 `BACKEND_BUILD_TARGET=development`；staging/production
+禁止覆盖该值，protected release 必须使用解析后 target 为 `runtime` 的 compose 配置。
 
 需要直接访问依赖服务时，可启用 `docker-compose.override.yml.example`：
 
