@@ -27,9 +27,17 @@ import type { UploadFile } from "antd/es/upload/interface";
 
 import type { RcFile } from "antd/es/upload";
 
-import { type KnowledgeFile, getUploadPolicy, uploadDocument } from "../../api/client";
+import {
+  DEPARTMENT_ASSIGNMENT_REQUIRED_MESSAGE,
+  type KnowledgeFile,
+  getUploadPolicy,
+  getUserFacingErrorMessage,
+  uploadDocument,
+} from "../../api/client";
+import { DepartmentAssignmentAlert } from "../../components/DepartmentAssignmentAlert";
 import { StatusTag } from "../../components/StatusTag";
 import { PageContainer } from "../../layouts/PageContainer";
+import { useAuthStore } from "../../store/auth.store";
 import {
   allowMultiFileFromPolicy,
   allowedExtensionsFromPolicy,
@@ -97,6 +105,7 @@ async function runConcurrent<T>(
 export default function UploadPage() {
   const navigate = useNavigate();
   const { message } = AntdApp.useApp();
+  const departmentBlocked = useAuthStore((state) => state.user?.department_assigned === false);
   const [form] = Form.useForm<UploadFormValues>();
 
   // The upload queue is separate from the AntD Upload fileList so we can
@@ -113,6 +122,7 @@ export default function UploadPage() {
   );
   const allowMultiFile = allowMultiFileFromPolicy(uploadPolicyQuery.data);
   const uploadEnabled = uploadEnabledFromPolicy(uploadPolicyQuery.data);
+  const canUpload = uploadEnabled && !departmentBlocked;
   const acceptValue = useMemo(() => extensionAcceptValue(allowedExtensions), [allowedExtensions]);
   const allowedExtensionText = allowedExtensions
     .map((extension) => extension.toUpperCase())
@@ -173,6 +183,10 @@ export default function UploadPage() {
         message.warning("当前系统已关闭员工上传");
         return;
       }
+      if (departmentBlocked) {
+        message.warning(DEPARTMENT_ASSIGNMENT_REQUIRED_MESSAGE);
+        return;
+      }
 
       // Re-build queue from the current form file list so UIDs match.
       const freshQueue = buildQueue(fileList);
@@ -209,8 +223,7 @@ export default function UploadPage() {
       // Mark failed items.
       settled.forEach((outcome, i) => {
         if (outcome.status === "rejected") {
-          const errorMessage =
-            outcome.reason instanceof Error ? outcome.reason.message : "上传失败";
+          const errorMessage = getUserFacingErrorMessage(outcome.reason, "上传失败");
           updateItem(freshQueue[i].uid, { status: "error", errorMessage });
         }
       });
@@ -234,7 +247,7 @@ export default function UploadPage() {
         message.warning(`上传完成：${successCount} 成功，${failCount} 失败`);
       }
     },
-    [buildQueue, updateItem, form, message, uploadEnabled],
+    [buildQueue, updateItem, form, message, uploadEnabled, departmentBlocked],
   );
 
   const handleSaveDraft = useCallback(() => {
@@ -281,6 +294,9 @@ export default function UploadPage() {
               </Space>
             }
           >
+            {departmentBlocked ? (
+              <DepartmentAssignmentAlert className="upload-disabled-alert" />
+            ) : null}
             {!uploadEnabled ? (
               <Alert
                 type="warning"
@@ -301,7 +317,7 @@ export default function UploadPage() {
                 maxCount={allowMultiFile ? undefined : 1}
                 beforeUpload={() => false}
                 accept={acceptValue}
-                disabled={isUploading || !uploadEnabled}
+                disabled={isUploading || !canUpload}
               >
                 <p className="ant-upload-drag-icon">
                   <InboxOutlined />
@@ -452,15 +468,10 @@ export default function UploadPage() {
             </Form.Item>
           </div>
           <Space className="upload-actions">
-            <Button disabled={isUploading || !uploadEnabled} onClick={handleSaveDraft}>
+            <Button disabled={isUploading || !canUpload} onClick={handleSaveDraft}>
               保存草稿
             </Button>
-            <Button
-              type="primary"
-              htmlType="submit"
-              loading={isUploading}
-              disabled={!uploadEnabled}
-            >
+            <Button type="primary" htmlType="submit" loading={isUploading} disabled={!canUpload}>
               开始上传
             </Button>
           </Space>

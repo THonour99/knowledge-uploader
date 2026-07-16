@@ -8,6 +8,46 @@ export interface ApiEnvelope<T> {
   message: string;
   request_id?: string;
   error_code?: string;
+  details?: unknown;
+}
+
+export class ApiError extends Error {
+  readonly status: number | undefined;
+  readonly code: string | undefined;
+  readonly requestId: string | undefined;
+  readonly details: unknown;
+
+  constructor(
+    message: string,
+    options: {
+      status?: number;
+      code?: string;
+      requestId?: string;
+      details?: unknown;
+    } = {},
+  ) {
+    super(message);
+    this.name = "ApiError";
+    this.status = options.status;
+    this.code = options.code;
+    this.requestId = options.requestId;
+    this.details = options.details;
+  }
+}
+
+export function isApiError(error: unknown): error is ApiError {
+  return error instanceof ApiError;
+}
+
+export const DEPARTMENT_ASSIGNMENT_REQUIRED_CODE = "DEPARTMENT_ASSIGNMENT_REQUIRED";
+export const DEPARTMENT_ASSIGNMENT_REQUIRED_MESSAGE =
+  "账号尚未分配有效部门，请联系系统管理员分配部门后重试";
+
+export function getUserFacingErrorMessage(error: unknown, fallback: string): string {
+  if (isApiError(error) && error.code === DEPARTMENT_ASSIGNMENT_REQUIRED_CODE) {
+    return DEPARTMENT_ASSIGNMENT_REQUIRED_MESSAGE;
+  }
+  return error instanceof Error && error.message ? error.message : fallback;
 }
 
 export interface LoginRequest {
@@ -26,12 +66,22 @@ export interface RegisterRequest {
   name: string;
   email: string;
   password: string;
-  department?: string;
+  department_id?: string;
   phone?: string;
 }
 
 export interface RegisterResponse {
   accepted: boolean;
+}
+
+export interface RegistrationDepartment {
+  id: string;
+  name: string;
+  code: string;
+}
+
+export interface VerifyEmailRequest {
+  token: string;
 }
 
 export interface ForgotPasswordRequest {
@@ -59,6 +109,7 @@ export interface UserProfile {
   role: CurrentUser["role"];
   status: string;
   email_verified: boolean;
+  department_assigned?: boolean;
   department_id?: string | null;
   department_name?: string | null;
   department_code?: string | null;
@@ -137,6 +188,7 @@ export interface KnowledgeFile {
   mime_type: string;
   size: number;
   uploader_id: string;
+  uploader_name?: string | null;
   department_id?: string | null;
   department_name?: string | null;
   department_code?: string | null;
@@ -148,6 +200,14 @@ export interface KnowledgeFile {
   tags: string[];
   status: string;
   review_status: string;
+  submitted_at?: string | null;
+  review_due_at?: string | null;
+  claimed_by?: string | null;
+  claimed_by_name?: string | null;
+  claimed_at?: string | null;
+  claim_expires_at?: string | null;
+  review_version?: number;
+  sensitive_risk_level?: "none" | "low" | "medium" | "high" | "critical" | null;
   ragflow_dataset_id: string | null;
   ragflow_document_id: string | null;
   ragflow_parse_status: string | null;
@@ -171,6 +231,9 @@ export interface KnowledgeFile {
 export interface FileListResponse {
   items: KnowledgeFile[];
   total: number;
+  page?: number;
+  page_size?: number;
+  total_pages?: number;
 }
 
 export interface Category {
@@ -179,16 +242,8 @@ export interface Category {
   code: string;
   description: string | null;
   parent_id: string | null;
-  require_review: boolean;
-  default_dataset_id: string | null;
-  allow_employee_select: boolean;
   allow_ai_recommend: boolean;
-  default_visibility: KnowledgeFile["visibility"];
   keywords: string[];
-  classification_prompt: string | null;
-  ai_analysis_enabled: boolean;
-  sensitive_detection_enabled: boolean;
-  auto_sync_enabled: boolean;
   created_at: string;
   updated_at: string;
 }
@@ -203,16 +258,8 @@ export interface CategoryPayload {
   code: string;
   description?: string | null;
   parent_id?: string | null;
-  require_review: boolean;
-  default_dataset_id?: string | null;
-  allow_employee_select: boolean;
   allow_ai_recommend: boolean;
-  default_visibility: KnowledgeFile["visibility"];
   keywords: string[];
-  classification_prompt?: string | null;
-  ai_analysis_enabled: boolean;
-  sensitive_detection_enabled: boolean;
-  auto_sync_enabled: boolean;
 }
 
 export interface DatasetMapping {
@@ -501,6 +548,7 @@ export interface AiProviderTestResult {
 }
 
 export interface ReviewDecisionPayload {
+  sync_decision: "sync" | "approve_only";
   category_id?: string | null;
   dataset_mapping_id?: string | null;
   reason?: string | null;
@@ -554,8 +602,16 @@ apiClient.interceptors.response.use(
       }
     }
 
-    const message = error.response?.data?.message ?? error.message ?? "请求失败";
-    return Promise.reject(new Error(message));
+    const payload = error.response?.data;
+    const message = payload?.message ?? error.message ?? "请求失败";
+    return Promise.reject(
+      new ApiError(message, {
+        status: error.response?.status,
+        code: payload?.error_code,
+        requestId: payload?.request_id,
+        details: payload?.details,
+      }),
+    );
   },
 );
 
@@ -590,6 +646,23 @@ export async function login(payload: LoginRequest): Promise<LoginResponse> {
 export async function register(payload: RegisterRequest): Promise<RegisterResponse> {
   const response = await apiClient.post<ApiEnvelope<RegisterResponse> | RegisterResponse>(
     "/auth/register",
+    payload,
+  );
+
+  return unwrapResponse(response.data);
+}
+
+export async function listRegistrationDepartments(): Promise<RegistrationDepartment[]> {
+  const response = await apiClient.get<
+    ApiEnvelope<RegistrationDepartment[]> | RegistrationDepartment[]
+  >("/auth/registration-departments");
+
+  return unwrapResponse(response.data);
+}
+
+export async function verifyEmail(payload: VerifyEmailRequest): Promise<UserProfile> {
+  const response = await apiClient.post<ApiEnvelope<UserProfile> | UserProfile>(
+    "/auth/verify-email",
     payload,
   );
 
@@ -637,12 +710,16 @@ export async function logout(): Promise<void> {
 }
 
 export interface DocumentListQuery {
+  q?: string;
   extension?: string;
   tag_id?: string;
   page?: number;
   page_size?: number;
   status?: string;
   review_status?: string;
+  expiry_status?: string;
+  sort?: string;
+  order?: "asc" | "desc";
 }
 
 export async function getUploadPolicy(): Promise<UploadPolicy> {
@@ -695,6 +772,43 @@ export async function getDocument(id: string): Promise<KnowledgeFile> {
   const response = await apiClient.get<ApiEnvelope<KnowledgeFile> | KnowledgeFile>(`/files/${id}`);
 
   return unwrapResponse(response.data);
+}
+
+export interface DocumentContent {
+  blob: Blob;
+  contentType: string;
+  contentDisposition: string | null;
+  contentLength: number | null;
+  etag: string | null;
+}
+
+export async function getDocumentContent(
+  id: string,
+  disposition: "inline" | "attachment" = "inline",
+): Promise<DocumentContent> {
+  const response = await apiClient.get<Blob>(`/files/${id}/content`, {
+    params: { disposition },
+    responseType: "blob",
+    timeout: 60_000,
+  });
+
+  return {
+    blob: response.data,
+    contentType:
+      typeof response.headers["content-type"] === "string"
+        ? response.headers["content-type"]
+        : response.data.type,
+    contentDisposition:
+      typeof response.headers["content-disposition"] === "string"
+        ? response.headers["content-disposition"]
+        : null,
+    contentLength:
+      typeof response.headers["content-length"] === "string" &&
+      Number.isFinite(Number(response.headers["content-length"]))
+        ? Number(response.headers["content-length"])
+        : null,
+    etag: typeof response.headers.etag === "string" ? response.headers.etag : null,
+  };
 }
 
 export async function listCategories(): Promise<CategoryListResponse> {
@@ -967,17 +1081,40 @@ export async function testAiSensitiveRules(text: string): Promise<AiSensitiveRul
 }
 
 export interface ReviewFilesQuery {
+  q?: string;
   extension?: string;
   tag_id?: string;
   page?: number;
   page_size?: number;
   status?: string;
+  queue?: "unclaimed" | "mine" | "due_soon" | "overdue";
+  department_id?: string;
+  sensitive_risk_level?: string;
+  sort?: string;
+  order?: "asc" | "desc";
 }
 
 export async function listReviewFiles(params: ReviewFilesQuery = {}): Promise<FileListResponse> {
   const response = await apiClient.get<ApiEnvelope<FileListResponse> | FileListResponse>(
     "/review/files",
     { params },
+  );
+
+  return unwrapResponse(response.data);
+}
+
+export async function claimReviewFile(id: string): Promise<KnowledgeFile> {
+  const response = await apiClient.post<ApiEnvelope<KnowledgeFile> | KnowledgeFile>(
+    `/review/files/${id}/claim`,
+  );
+
+  return unwrapResponse(response.data);
+}
+
+export async function releaseReviewClaim(id: string, reason?: string): Promise<KnowledgeFile> {
+  const response = await apiClient.delete<ApiEnvelope<KnowledgeFile> | KnowledgeFile>(
+    `/review/files/${id}/claim`,
+    { data: reason?.trim() ? { reason: reason.trim() } : undefined },
   );
 
   return unwrapResponse(response.data);
@@ -1096,7 +1233,7 @@ export interface TaskListQuery {
 
 // ── System config types ──────────────────────────────────────────────────────
 
-export type ConfigGroup = "basic" | "upload" | "processing" | "security" | "ragflow";
+export type ConfigGroup = "upload" | "processing" | "security" | "review" | "ragflow";
 
 export type ConfigValueType = "string" | "int" | "bool" | "list" | "secret";
 
@@ -1105,6 +1242,7 @@ export interface ConfigItem {
   value: unknown | null;
   value_type: ConfigValueType;
   is_secret: boolean;
+  immutable?: boolean;
   masked_value: string | null;
   description: string;
   updated_at: string | null;
@@ -1216,6 +1354,13 @@ export async function markNotificationRead(notificationId: string): Promise<Noti
   const response = await apiClient.post<ApiEnvelope<NotificationItem>>(
     `/notifications/${notificationId}/read`,
   );
+
+  return unwrapResponse(response.data);
+}
+
+export async function markAllNotificationsRead(): Promise<{ updated_count: number }> {
+  const response =
+    await apiClient.post<ApiEnvelope<{ updated_count: number }>>("/notifications/read-all");
 
   return unwrapResponse(response.data);
 }
@@ -1519,14 +1664,6 @@ export async function reanalyzeFile(id: string): Promise<void> {
   );
 
   unwrapResponse(response.data);
-}
-
-export async function syncFile(id: string): Promise<SyncTask> {
-  const response = await apiClient.post<ApiEnvelope<SyncTask> | SyncTask>(
-    `/admin/files/${id}/sync`,
-  );
-
-  return unwrapResponse(response.data);
 }
 
 export type DependencyStatus = "ok" | "error";

@@ -1,7 +1,19 @@
-import { describe, expect, it } from "vitest";
+import { render, screen } from "@testing-library/react";
+import { MemoryRouter, Route, Routes, useLocation } from "react-router-dom";
+import { afterEach, describe, expect, it, vi } from "vitest";
 
-import { defaultRouteForRole, type Role, Roles } from "../store/auth.store";
-import { appNavigationRoutes, appRoutes } from "./routes";
+import { defaultRouteForRole, type Role, Roles, useAuthStore } from "../store/auth.store";
+import { appNavigationRoutes, appRoutes, RoleDashboardEntry } from "./routes";
+
+vi.mock("../pages/MyFiles", () => ({
+  default: () => <span>员工文档工作台</span>,
+}));
+vi.mock("../pages/FileManagement", () => ({
+  default: () => <span>部门审核工作台</span>,
+}));
+vi.mock("../pages/Dashboard", () => ({
+  default: () => <span>系统运营工作台</span>,
+}));
 
 function navigationLabelsForRole(role: Role): string[] {
   return appNavigationRoutes
@@ -11,8 +23,19 @@ function navigationLabelsForRole(role: Role): string[] {
 }
 
 describe("route role matrix", () => {
-  it("sends dept admins to file management by default", () => {
-    expect(defaultRouteForRole[Roles.DEPT_ADMIN]).toBe("/files");
+  afterEach(() => {
+    useAuthStore.setState({ accessToken: null, user: null });
+  });
+
+  it("uses dashboard as the stable login entry for all roles", () => {
+    expect(defaultRouteForRole[Roles.EMPLOYEE]).toBe("/dashboard");
+    expect(defaultRouteForRole[Roles.DEPT_ADMIN]).toBe("/dashboard");
+    expect(defaultRouteForRole[Roles.SYSTEM_ADMIN]).toBe("/dashboard");
+    expect(appRoutes.find((route) => route.path === "/dashboard")?.roles).toEqual([
+      Roles.EMPLOYEE,
+      Roles.DEPT_ADMIN,
+      Roles.SYSTEM_ADMIN,
+    ]);
   });
 
   it("limits dept admin navigation to scoped file and task surfaces", () => {
@@ -23,7 +46,6 @@ describe("route role matrix", () => {
     );
 
     for (const hiddenLabel of [
-      "运营总览",
       "Dataset 配置",
       "AI 配置",
       "统计报表",
@@ -38,5 +60,44 @@ describe("route role matrix", () => {
     }
 
     expect(appRoutes.find((route) => route.path === "/profile")?.roles).toBeUndefined();
+  });
+
+  it.each([
+    [Roles.EMPLOYEE, "员工文档工作台"],
+    [Roles.DEPT_ADMIN, "部门审核工作台"],
+    [Roles.SYSTEM_ADMIN, "系统运营工作台"],
+  ] as const)("keeps %s on dashboard and renders its role workbench", async (role, heading) => {
+    useAuthStore.setState({
+      accessToken: "token",
+      user: { id: "user-1", name: "用户", email: "user@company.com", role },
+    });
+
+    function LocationProbe() {
+      return <span data-testid="location">{useLocation().pathname}</span>;
+    }
+
+    render(
+      <MemoryRouter initialEntries={["/dashboard"]}>
+        <Routes>
+          <Route
+            path="/dashboard"
+            element={
+              <>
+                <RoleDashboardEntry />
+                <LocationProbe />
+              </>
+            }
+          />
+        </Routes>
+      </MemoryRouter>,
+    );
+
+    expect(screen.getByTestId("location")).toHaveTextContent("/dashboard");
+    expect(await screen.findByText(heading)).toBeInTheDocument();
+    for (const otherHeading of ["员工文档工作台", "部门审核工作台", "系统运营工作台"]) {
+      if (otherHeading !== heading) {
+        expect(screen.queryByText(otherHeading)).not.toBeInTheDocument();
+      }
+    }
   });
 });

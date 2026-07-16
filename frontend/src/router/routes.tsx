@@ -23,7 +23,7 @@ import {
   TeamOutlined,
 } from "@ant-design/icons";
 
-import { type Role, Roles } from "../store/auth.store";
+import { type Role, Roles, useAuthStore } from "../store/auth.store";
 
 const AiConfigPage = lazy(() => import("../pages/AiConfig"));
 const AuditLogsPage = lazy(() => import("../pages/AuditLogs"));
@@ -45,6 +45,7 @@ const TagsPage = lazy(() => import("../pages/Tags"));
 const TaskLogsPage = lazy(() => import("../pages/TaskLogs"));
 const UploadPage = lazy(() => import("../pages/Upload"));
 const UsersPage = lazy(() => import("../pages/Users"));
+const VerifyEmailPage = lazy(() => import("../pages/VerifyEmail"));
 
 function routeElement(Page: LazyExoticComponent<ComponentType>) {
   return (
@@ -58,6 +59,19 @@ function routeElement(Page: LazyExoticComponent<ComponentType>) {
       <Page />
     </Suspense>
   );
+}
+
+export function RoleDashboardEntry() {
+  const role = useAuthStore((state) => state.user?.role);
+
+  if (role === Roles.EMPLOYEE) {
+    return routeElement(MyFilesPage);
+  }
+  if (role === Roles.DEPT_ADMIN) {
+    return routeElement(FileManagementPage);
+  }
+
+  return routeElement(DashboardPage);
 }
 
 export interface RouteNavigation {
@@ -77,15 +91,16 @@ export const publicRoutes: AppRoute[] = [
   { path: "/login", element: routeElement(LoginPage), roles: [] },
   { path: "/register", element: routeElement(RegisterPage), roles: [] },
   { path: "/forgot-password", element: routeElement(ForgotPasswordPage), roles: [] },
+  { path: "/verify-email", element: routeElement(VerifyEmailPage), roles: [] },
   { path: "/reset-password/:token", element: routeElement(ResetPasswordPage), roles: [] },
 ];
 
 export const appRoutes: AppRoute[] = [
   {
     path: "/dashboard",
-    element: routeElement(DashboardPage),
-    roles: [Roles.SYSTEM_ADMIN],
-    nav: { label: "运营总览", icon: <DashboardOutlined />, group: "工作台" },
+    element: <RoleDashboardEntry />,
+    roles: [Roles.EMPLOYEE, Roles.DEPT_ADMIN, Roles.SYSTEM_ADMIN],
+    nav: { label: "工作台首页", icon: <DashboardOutlined />, group: "工作台" },
   },
   {
     path: "/upload",

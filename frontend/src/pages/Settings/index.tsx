@@ -48,26 +48,15 @@ import "./styles.css";
 // ── Label map ────────────────────────────────────────────────────────────────
 
 const labelMap: Record<string, string> = {
-  // basic
-  "basic.system_name": "系统名称",
-  "basic.system_logo_url": "系统 Logo URL",
-  "basic.default_language": "默认语言",
-  "basic.default_timezone": "默认时区",
-  "basic.notification_channels": "通知渠道",
-  "basic.admin_contact_email": "管理员联系邮箱",
   // upload
+  "upload.enabled": "允许员工上传",
   "upload.allowed_extensions": "允许的扩展名",
   "upload.max_file_size_mb": "单文件最大大小（MB）",
   "upload.user_quota_mb": "用户配额（MB）",
   "upload.allow_multi_file": "允许批量上传",
   "upload.allow_user_delete": "允许用户删除",
-  "upload.enable_duplicate_check": "启用重复检测",
   // processing
-  "processing.auto_parse_on_upload": "上传后自动解析",
-  "processing.auto_sync_after_parse": "解析后自动同步",
-  "processing.sync_after_ai_analysis": "AI 分析后同步",
   "processing.task_max_retries": "任务最大重试次数",
-  "processing.task_timeout_seconds": "任务超时时间（秒）",
   "processing.parse_max_pages": "解析最大页数",
   "processing.parse_max_chars": "解析最大字符数",
   // security
@@ -75,24 +64,23 @@ const labelMap: Record<string, string> = {
   "security.password_min_length": "密码最小长度",
   "security.login_max_failed_attempts": "登录失败锁定阈值",
   "security.login_lock_minutes": "锁定时长（分钟）",
-  "security.require_review_before_sync": "同步前需审核",
   "security.block_critical_sensitive_sync": "阻断严重敏感内容同步",
+  // review
+  "review.claim_timeout_minutes": "审核领取有效期（分钟）",
+  "review.sla_hours": "审核 SLA（小时）",
   // ragflow
   "ragflow.base_url": "RAGFlow 服务地址",
   "ragflow.api_key": "RAGFlow API Key",
-  "ragflow.default_dataset_id": "默认数据集 ID",
-  "ragflow.auto_sync_enabled": "自动同步",
   "ragflow.sync_max_retries": "同步最大重试次数",
   "ragflow.sync_timeout_seconds": "同步超时时间（秒）",
   "ragflow.allow_high_risk_sync": "允许高风险文档同步",
   "ragflow.delete_remote_on_file_delete": "删除文件时删除远端",
   "ragflow.keep_remote_on_archive": "归档时保留远端",
 };
-
-const hiddenCurrentFlowConfigKeys = new Set(["security.require_email_verification"]);
+const IMMUTABLE_SECURITY_CONFIG_KEY = "security.block_critical_sensitive_sync";
 
 function visibleConfigItems(items: ConfigItem[]): ConfigItem[] {
-  return items.filter((item) => !hiddenCurrentFlowConfigKeys.has(item.key));
+  return items;
 }
 
 function getLabel(item: ConfigItem): string {
@@ -142,23 +130,14 @@ interface ServiceRow {
 }
 
 const configOverviewGroups: ConfigGroup[] = [
-  "basic",
   "upload",
   "processing",
   "security",
+  "review",
   "ragflow",
 ];
 
 const settingsSummaryItems: SettingsSummaryItem[] = [
-  {
-    key: "basic",
-    title: "基础参数",
-    meta: "6 项配置",
-    description: "平台名称、语言、时区和通知渠道",
-    icon: <SettingOutlined />,
-    tone: "primary",
-    status: { kind: "dataset", value: "enabled" },
-  },
   {
     key: "upload",
     title: "上传策略",
@@ -176,6 +155,15 @@ const settingsSummaryItems: SettingsSummaryItem[] = [
     icon: <ExperimentOutlined />,
     tone: "warning",
     status: { kind: "health", value: "ok" },
+  },
+  {
+    key: "review",
+    title: "审核时效",
+    meta: "领取与 SLA",
+    description: "审核领取有效期和部门审核时限",
+    icon: <BellOutlined />,
+    tone: "warning",
+    status: { kind: "dataset", value: "enabled" },
   },
   {
     key: "security",
@@ -349,7 +337,7 @@ function SettingsCommandStrip({
             配置中心
           </Typography.Text>
           <Typography.Text type="secondary">
-            汇总平台基础参数、上传策略、安全审计和 RAGFlow 连接状态，点击卡片快速切换配置域。
+            汇总上传、处理、审核、安全和 RAGFlow 配置，点击卡片快速切换配置域。
           </Typography.Text>
         </span>
       </div>
@@ -393,6 +381,14 @@ function ConfigField({ item }: { item: ConfigItem }) {
     return (
       <Form.Item label={label} name={item.key} help="留空表示不修改">
         <Input.Password placeholder={placeholder} autoComplete="new-password" />
+      </Form.Item>
+    );
+  }
+
+  if (item.immutable || item.key === IMMUTABLE_SECURITY_CONFIG_KEY) {
+    return (
+      <Form.Item label={label} help="安全不变量：严重敏感文档始终阻断同步，不能关闭。">
+        <Switch checked disabled aria-label={label} />
       </Form.Item>
     );
   }
@@ -458,6 +454,9 @@ function buildInitialValues(items: ConfigItem[]): FormValues {
 function buildPayload(formValues: FormValues, items: ConfigItem[]): Record<string, unknown> {
   const payload: Record<string, unknown> = {};
   for (const item of items) {
+    if (item.immutable || item.key === IMMUTABLE_SECURITY_CONFIG_KEY) {
+      continue;
+    }
     const val = formValues[item.key];
 
     if (item.is_secret || item.value_type === "secret") {
@@ -842,7 +841,7 @@ function ServiceSettingsPanel() {
 
 export default function SettingsPage() {
   const queryClient = useQueryClient();
-  const [activeTab, setActiveTab] = useState<SettingsTabKey>("basic");
+  const [activeTab, setActiveTab] = useState<SettingsTabKey>("upload");
   const overviewQueries = useQueries({
     queries: configOverviewGroups.map((group) => ({
       queryKey: ["configs", group] as const,
@@ -929,7 +928,7 @@ export default function SettingsPage() {
   return (
     <PageContainer
       title="系统设置"
-      description="管理平台基础参数、安全策略、服务连接配置，所有变更写入审计日志。"
+      description="管理上传、审核、安全和服务连接配置，所有变更写入审计日志。"
       actions={
         <Space className="settings-page-actions" wrap>
           <Button icon={<ReloadOutlined />} onClick={handleReload}>
@@ -959,11 +958,6 @@ export default function SettingsPage() {
         onChange={(key) => setActiveTab(key as SettingsTabKey)}
         items={[
           {
-            key: "basic",
-            label: "基础",
-            children: <ConfigPanel group="basic" cardTitle="基础配置" />,
-          },
-          {
             key: "upload",
             label: "上传",
             children: <ConfigPanel group="upload" cardTitle="上传配置" />,
@@ -972,6 +966,11 @@ export default function SettingsPage() {
             key: "processing",
             label: "处理",
             children: <ConfigPanel group="processing" cardTitle="处理配置" />,
+          },
+          {
+            key: "review",
+            label: "审核",
+            children: <ConfigPanel group="review" cardTitle="审核时效" dangerConfirm />,
           },
           {
             key: "security",

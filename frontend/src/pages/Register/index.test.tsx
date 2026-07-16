@@ -3,9 +3,9 @@ import { App as AntdApp, ConfigProvider } from "antd";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { MemoryRouter, Route, Routes } from "react-router-dom";
-import { afterEach, beforeAll, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 
-import { register } from "../../api/client";
+import { listRegistrationDepartments, register } from "../../api/client";
 import type * as ApiClientModule from "../../api/client";
 import { themeCssVariables } from "../../theme/tokens";
 import RegisterPage from "./index";
@@ -15,6 +15,7 @@ vi.mock("../../api/client", async () => {
 
   return {
     ...actual,
+    listRegistrationDepartments: vi.fn(),
     register: vi.fn(),
   };
 });
@@ -44,6 +45,12 @@ beforeAll(() => {
 
 afterEach(() => {
   vi.clearAllMocks();
+});
+
+beforeEach(() => {
+  vi.mocked(listRegistrationDepartments).mockResolvedValue([
+    { id: "dept-tech", name: "技术部", code: "tech" },
+  ]);
 });
 
 function renderRegisterPage() {
@@ -76,6 +83,12 @@ function fillInput(label: string, value: string) {
   fireEvent.change(screen.getByLabelText(label), { target: { value } });
 }
 
+async function selectDepartment() {
+  const select = await screen.findByRole("combobox");
+  fireEvent.mouseDown(select);
+  fireEvent.click(await screen.findByText("技术部（tech）"));
+}
+
 describe("RegisterPage", () => {
   it("submits the form with correct payload and redirects to login on success", async () => {
     vi.mocked(register).mockResolvedValue({ accepted: true });
@@ -83,7 +96,7 @@ describe("RegisterPage", () => {
     renderRegisterPage();
 
     fillInput("姓名", "张三");
-    fillInput("部门", "技术部");
+    await selectDepartment();
     fillInput("公司邮箱", "zhangsan@company.com");
     fillInput("手机号", "13800138000");
     fillInput("密码", "Secret123!");
@@ -95,12 +108,12 @@ describe("RegisterPage", () => {
         name: "张三",
         email: "zhangsan@company.com",
         password: "Secret123!",
-        department: "技术部",
+        department_id: "dept-tech",
         phone: "13800138000",
       });
     });
 
-    expect(await screen.findByText(/查收验证邮件/)).toBeInTheDocument();
+    expect(await screen.findByText(/完成邮箱验证/)).toBeInTheDocument();
     expect(await screen.findByText("login-page-marker")).toBeInTheDocument();
   });
 
@@ -110,6 +123,7 @@ describe("RegisterPage", () => {
     renderRegisterPage();
 
     fillInput("姓名", "张三");
+    await selectDepartment();
     fillInput("公司邮箱", "zhangsan@other.com");
     fillInput("密码", "Secret123!");
     fillInput("确认密码", "Secret123!");
@@ -123,6 +137,7 @@ describe("RegisterPage", () => {
     renderRegisterPage();
 
     fillInput("姓名", "张三");
+    await selectDepartment();
     fillInput("公司邮箱", "zhangsan@company.com");
     fillInput("密码", "Secret123!");
     fillInput("确认密码", "Mismatch456!");

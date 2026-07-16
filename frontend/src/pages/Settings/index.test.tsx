@@ -28,33 +28,19 @@ vi.mock("../../api/client", async () => {
 
 // ── Mock data ─────────────────────────────────────────────────────────────────
 
-const mockBasicGroup: ConfigGroupResponse = {
-  group: "basic",
-  items: [
-    {
-      key: "basic.system_name",
-      value: "知识库平台",
-      value_type: "string",
-      is_secret: false,
-      masked_value: null,
-      description: "系统名称",
-      updated_at: "2026-06-10T00:00:00Z",
-    },
-    {
-      key: "basic.default_language",
-      value: "zh-CN",
-      value_type: "string",
-      is_secret: false,
-      masked_value: null,
-      description: "默认语言",
-      updated_at: "2026-06-10T00:00:00Z",
-    },
-  ],
-};
-
 const mockUploadGroup: ConfigGroupResponse = {
   group: "upload",
   items: [
+    {
+      key: "upload.enabled",
+      value: true,
+      value_type: "bool",
+      is_secret: false,
+      immutable: true,
+      masked_value: null,
+      description: "是否允许员工发起新的文件上传",
+      updated_at: "2026-06-10T00:00:00Z",
+    },
     {
       key: "upload.max_file_size_mb",
       value: 200,
@@ -89,15 +75,6 @@ const mockProcessingGroup: ConfigGroupResponse = {
   group: "processing",
   items: [
     {
-      key: "processing.auto_parse_on_upload",
-      value: true,
-      value_type: "bool",
-      is_secret: false,
-      masked_value: null,
-      description: "上传后自动解析",
-      updated_at: "2026-06-10T00:00:00Z",
-    },
-    {
       key: "processing.task_max_retries",
       value: 3,
       value_type: "int",
@@ -122,12 +99,36 @@ const mockSecurityGroup: ConfigGroupResponse = {
       updated_at: "2026-06-10T00:00:00Z",
     },
     {
-      key: "security.require_email_verification",
+      key: "security.block_critical_sensitive_sync",
       value: true,
       value_type: "bool",
       is_secret: false,
       masked_value: null,
-      description: "兼容开关",
+      description: "严重敏感文档禁止同步",
+      updated_at: "2026-06-10T00:00:00Z",
+    },
+  ],
+};
+
+const mockReviewGroup: ConfigGroupResponse = {
+  group: "review",
+  items: [
+    {
+      key: "review.claim_timeout_minutes",
+      value: 30,
+      value_type: "int",
+      is_secret: false,
+      masked_value: null,
+      description: "审核领取有效分钟数",
+      updated_at: "2026-06-10T00:00:00Z",
+    },
+    {
+      key: "review.sla_hours",
+      value: 24,
+      value_type: "int",
+      is_secret: false,
+      masked_value: null,
+      description: "审核 SLA 小时数",
       updated_at: "2026-06-10T00:00:00Z",
     },
   ],
@@ -154,6 +155,15 @@ const mockRagflowGroup: ConfigGroupResponse = {
       description: "RAGFlow API Key",
       updated_at: "2026-06-10T00:00:00Z",
     },
+    {
+      key: "ragflow.allow_high_risk_sync",
+      value: false,
+      value_type: "bool",
+      is_secret: false,
+      masked_value: null,
+      description: "允许高风险文档同步",
+      updated_at: "2026-06-10T00:00:00Z",
+    },
   ],
 };
 
@@ -162,14 +172,14 @@ const mockRagflowGroup: ConfigGroupResponse = {
 function setupMocks() {
   vi.mocked(getConfigs).mockImplementation((group) => {
     const map: Record<string, ConfigGroupResponse> = {
-      basic: mockBasicGroup,
       upload: mockUploadGroup,
       processing: mockProcessingGroup,
       security: mockSecurityGroup,
+      review: mockReviewGroup,
       ragflow: mockRagflowGroup,
     };
 
-    return Promise.resolve(map[group] ?? mockBasicGroup);
+    return Promise.resolve(map[group] ?? mockUploadGroup);
   });
 }
 
@@ -226,9 +236,9 @@ describe("SettingsPage", () => {
     setupMocks();
     renderWithProviders(<SettingsPage />);
 
-    expect(await screen.findByRole("tab", { name: "基础" })).toBeInTheDocument();
-    expect(screen.getByRole("tab", { name: "上传" })).toBeInTheDocument();
+    expect(await screen.findByRole("tab", { name: "上传" })).toBeInTheDocument();
     expect(screen.getByRole("tab", { name: "处理" })).toBeInTheDocument();
+    expect(screen.getByRole("tab", { name: "审核" })).toBeInTheDocument();
     expect(screen.getByRole("tab", { name: "安全" })).toBeInTheDocument();
     expect(screen.getByRole("tab", { name: "RAGFlow" })).toBeInTheDocument();
   });
@@ -239,8 +249,8 @@ describe("SettingsPage", () => {
 
     const summary = await screen.findByRole("region", { name: "配置运行摘要" });
     expect(summary).toHaveTextContent("配置中心");
-    expect(summary).toHaveTextContent("基础参数");
     expect(summary).toHaveTextContent("上传策略");
+    expect(summary).toHaveTextContent("审核时效");
     expect(summary).toHaveTextContent("RAGFlow 同步");
     expect(summary).toHaveTextContent("服务状态");
 
@@ -260,28 +270,29 @@ describe("SettingsPage", () => {
     expect(screen.getByText("无待处理项")).toBeInTheDocument();
 
     const summary = screen.getByRole("region", { name: "配置运行摘要" });
+    expect(summary).toHaveTextContent("4 项配置");
     expect(summary).toHaveTextContent("2 项配置");
-    expect(summary).toHaveTextContent("3 项配置");
   });
-  it("loads and fills basic tab with fetched data", async () => {
+  it("defaults to upload and exposes the upload enable gate", async () => {
     setupMocks();
     renderWithProviders(<SettingsPage />);
 
-    // basic tab is active by default; wait for data to populate
-    expect(await screen.findByDisplayValue("知识库平台")).toBeInTheDocument();
+    expect(await screen.findByRole("tab", { name: "上传", selected: true })).toBeInTheDocument();
+    expect(await screen.findByText("允许员工上传")).toBeInTheDocument();
+    expect(await screen.findByDisplayValue("200")).toBeInTheDocument();
   });
 
   it("renders configuration panel summary metrics", async () => {
     setupMocks();
     renderWithProviders(<SettingsPage />);
 
-    await screen.findByDisplayValue("知识库平台");
+    await screen.findByDisplayValue("200");
 
-    const basicSummary = screen.getByRole("region", { name: "配置面板摘要" });
-    expect(basicSummary).toHaveTextContent("配置摘要");
-    expect(basicSummary).toHaveTextContent("配置项");
-    expect(basicSummary).toHaveTextContent("2 项");
-    expect(basicSummary).toHaveTextContent("最近更新");
+    const uploadSummary = screen.getByRole("region", { name: "配置面板摘要" });
+    expect(uploadSummary).toHaveTextContent("配置摘要");
+    expect(uploadSummary).toHaveTextContent("配置项");
+    expect(uploadSummary).toHaveTextContent("4 项");
+    expect(uploadSummary).toHaveTextContent("最近更新");
 
     fireEvent.click(screen.getByRole("tab", { name: "RAGFlow" }));
     await screen.findByDisplayValue("http://192.168.4.46:8092");
@@ -327,16 +338,18 @@ describe("SettingsPage", () => {
     });
   });
 
-  it("hides dormant email verification config from the current security flow", async () => {
+  it("loads and saves the review claim timeout and SLA contract", async () => {
     setupMocks();
-    vi.mocked(updateConfigs).mockResolvedValue(mockSecurityGroup);
+    vi.mocked(updateConfigs).mockResolvedValue(mockReviewGroup);
 
     renderWithProviders(<SettingsPage />);
 
-    fireEvent.click(await screen.findByRole("tab", { name: "安全" }));
+    fireEvent.click(await screen.findByRole("tab", { name: "审核" }));
 
-    expect(await screen.findByText("登录失败锁定阈值")).toBeInTheDocument();
-    expect(screen.queryByText("兼容开关")).not.toBeInTheDocument();
+    expect(await screen.findByText("审核领取有效期（分钟）")).toBeInTheDocument();
+    expect(screen.getByText("审核 SLA（小时）")).toBeInTheDocument();
+    expect(screen.getByDisplayValue("30")).toBeInTheDocument();
+    expect(screen.getByDisplayValue("24")).toBeInTheDocument();
 
     const saveBtn = await screen.findByRole("button", { name: /保存/ });
     fireEvent.click(saveBtn);
@@ -349,8 +362,52 @@ describe("SettingsPage", () => {
 
     await waitFor(() => {
       expect(updateConfigs).toHaveBeenCalled();
+      expect(updateConfigs).toHaveBeenCalledWith(
+        "review",
+        expect.objectContaining({
+          "review.claim_timeout_minutes": 30,
+          "review.sla_hours": 24,
+        }),
+      );
+    });
+  });
+
+  it("keeps the high-risk RAGFlow sync decision configurable", async () => {
+    setupMocks();
+    renderWithProviders(<SettingsPage />);
+
+    fireEvent.click(await screen.findByRole("tab", { name: "RAGFlow" }));
+
+    expect(await screen.findByText("允许高风险文档同步")).toBeInTheDocument();
+  });
+
+  it("locks the critical-risk invariant and excludes it from update payloads", async () => {
+    setupMocks();
+    vi.mocked(updateConfigs).mockResolvedValue(mockSecurityGroup);
+    renderWithProviders(<SettingsPage />);
+
+    fireEvent.click(await screen.findByRole("tab", { name: "安全" }));
+
+    const invariantSwitch = await screen.findByRole("switch", {
+      name: "阻断严重敏感内容同步",
+    });
+    expect(invariantSwitch).toBeChecked();
+    expect(invariantSwitch).toBeDisabled();
+    expect(screen.getAllByText(/安全不变量.*不能关闭/).length).toBeGreaterThan(0);
+
+    fireEvent.click(screen.getByRole("button", { name: /保存/ }));
+    await waitFor(() => {
+      expect(document.querySelector(".ant-modal-confirm-btns .ant-btn-primary")).not.toBeNull();
+    });
+    fireEvent.click(
+      document.querySelector(".ant-modal-confirm-btns .ant-btn-primary") as HTMLElement,
+    );
+
+    await waitFor(() => {
+      expect(updateConfigs).toHaveBeenCalled();
       const [, items] = vi.mocked(updateConfigs).mock.calls[0];
-      expect(items).not.toHaveProperty("security.require_email_verification");
+      expect(items).not.toHaveProperty("security.block_critical_sensitive_sync");
+      expect(items).toHaveProperty("security.login_max_failed_attempts", 5);
     });
   });
 

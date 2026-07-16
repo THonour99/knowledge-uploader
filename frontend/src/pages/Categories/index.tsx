@@ -5,7 +5,6 @@ import {
   Form,
   Input,
   Modal,
-  Select,
   Space,
   Switch,
   Table,
@@ -13,10 +12,10 @@ import {
 } from "antd";
 import {
   AppstoreOutlined,
-  CheckCircleOutlined,
-  CloudSyncOutlined,
+  BulbOutlined,
   PlusOutlined,
   ReloadOutlined,
+  TagsOutlined,
 } from "@ant-design/icons";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useState } from "react";
@@ -25,10 +24,8 @@ import type { ColumnsType } from "antd/es/table";
 import {
   type Category,
   type CategoryPayload,
-  type DatasetMapping,
   createCategory,
   listCategories,
-  listDatasetMappings,
   updateCategory,
 } from "../../api/client";
 import { KpiCard } from "../../components/KpiCard";
@@ -40,32 +37,16 @@ interface CategoryFormValues {
   name: string;
   code: string;
   description?: string;
-  default_dataset_id?: string;
-  default_visibility: Category["default_visibility"];
   keywords?: string;
-  classification_prompt?: string;
-  require_review: boolean;
-  allow_employee_select: boolean;
   allow_ai_recommend: boolean;
-  ai_analysis_enabled: boolean;
-  sensitive_detection_enabled: boolean;
-  auto_sync_enabled: boolean;
 }
 
 const defaultFormValues: CategoryFormValues = {
   name: "",
   code: "",
   description: "",
-  default_dataset_id: "",
-  default_visibility: "private",
   keywords: "",
-  classification_prompt: "",
-  require_review: true,
-  allow_employee_select: true,
   allow_ai_recommend: true,
-  ai_analysis_enabled: true,
-  sensitive_detection_enabled: true,
-  auto_sync_enabled: false,
 };
 
 function parseKeywords(value?: string): string[] {
@@ -81,16 +62,8 @@ function toCreatePayload(values: CategoryFormValues): CategoryPayload {
     code: values.code.trim().toLowerCase(),
     description: values.description?.trim() || null,
     parent_id: null,
-    require_review: values.require_review,
-    default_dataset_id: values.default_dataset_id?.trim() || null,
-    allow_employee_select: values.allow_employee_select,
     allow_ai_recommend: values.allow_ai_recommend,
-    default_visibility: "private",
     keywords: parseKeywords(values.keywords),
-    classification_prompt: values.classification_prompt?.trim() || null,
-    ai_analysis_enabled: values.ai_analysis_enabled,
-    sensitive_detection_enabled: values.sensitive_detection_enabled,
-    auto_sync_enabled: values.auto_sync_enabled,
   };
 }
 
@@ -99,16 +72,8 @@ function toUpdatePayload(values: CategoryFormValues): Partial<CategoryPayload> {
     name: values.name.trim(),
     description: values.description?.trim() || null,
     parent_id: null,
-    require_review: values.require_review,
-    default_dataset_id: values.default_dataset_id?.trim() || null,
-    allow_employee_select: values.allow_employee_select,
     allow_ai_recommend: values.allow_ai_recommend,
-    default_visibility: "private",
     keywords: parseKeywords(values.keywords),
-    classification_prompt: values.classification_prompt?.trim() || null,
-    ai_analysis_enabled: values.ai_analysis_enabled,
-    sensitive_detection_enabled: values.sensitive_detection_enabled,
-    auto_sync_enabled: values.auto_sync_enabled,
   };
 }
 
@@ -117,19 +82,10 @@ function toFormValues(category: Category): CategoryFormValues {
     name: category.name,
     code: category.code,
     description: category.description ?? "",
-    default_dataset_id: category.default_dataset_id ?? "",
-    default_visibility: "private",
     keywords: category.keywords.join(", "),
-    classification_prompt: category.classification_prompt ?? "",
-    require_review: category.require_review,
-    allow_employee_select: category.allow_employee_select,
     allow_ai_recommend: category.allow_ai_recommend,
-    ai_analysis_enabled: category.ai_analysis_enabled,
-    sensitive_detection_enabled: category.sensitive_detection_enabled,
-    auto_sync_enabled: category.auto_sync_enabled,
   };
 }
-
 
 export default function CategoriesPage() {
   const { message } = AntdApp.useApp();
@@ -143,20 +99,9 @@ export default function CategoriesPage() {
     queryFn: listCategories,
   });
 
-  const datasetsQuery = useQuery({
-    queryKey: ["dataset-mappings"],
-    queryFn: listDatasetMappings,
-  });
-
   const categories = categoriesQuery.data?.items ?? [];
-  const datasetMappings = datasetsQuery.data?.items ?? [];
-
-  const datasetOptions = datasetMappings.map((dm: DatasetMapping) => ({
-    label: dm.name,
-    value: dm.id,
-  }));
-  const boundCategoryCount = categories.filter((category) => category.default_dataset_id).length;
-  const autoSyncCount = categories.filter((category) => category.auto_sync_enabled).length;
+  const aiRecommendCount = categories.filter((category) => category.allow_ai_recommend).length;
+  const keywordCoverageCount = categories.filter((category) => category.keywords.length > 0).length;
 
   const refreshCategories = async () => {
     await queryClient.invalidateQueries({ queryKey: ["categories"] });
@@ -180,18 +125,8 @@ export default function CategoriesPage() {
   });
 
   const toggleMutation = useMutation({
-    mutationFn: ({
-      id,
-      field,
-      value,
-    }: {
-      id: string;
-      field: keyof Pick<
-        CategoryPayload,
-        "ai_analysis_enabled" | "sensitive_detection_enabled" | "auto_sync_enabled"
-      >;
-      value: boolean;
-    }) => updateCategory(id, { [field]: value }),
+    mutationFn: ({ id, value }: { id: string; value: boolean }) =>
+      updateCategory(id, { allow_ai_recommend: value }),
     onSuccess: async () => {
       await refreshCategories();
     },
@@ -260,92 +195,28 @@ export default function CategoriesPage() {
         ),
     },
     {
-      title: "启用状态",
-      dataIndex: "allow_employee_select",
-      key: "allow_employee_select",
-      width: 100,
-      render: (_: unknown, record) => (
-        <StatusTag
-          kind="dataset"
-          value={record.allow_employee_select ? "enabled" : "disabled"}
-          variant="dot"
-        />
+      title: "关键词",
+      dataIndex: "keywords",
+      key: "keywords",
+      width: 200,
+      render: (value: string[]) => (
+        <Typography.Text type="secondary" ellipsis title={value.join("、")}>
+          {value.length > 0 ? value.join("、") : "—"}
+        </Typography.Text>
       ),
     },
     {
-      title: "关联知识库",
-      key: "dataset_mapping",
-      width: 160,
-      render: (_: unknown, record) => {
-        const mapping = datasetMappings.find(
-          (dm: DatasetMapping) => dm.id === record.default_dataset_id,
-        );
-        return mapping ? (
-          <Typography.Text className="single-line-text" title={mapping.name}>
-            {mapping.name}
-          </Typography.Text>
-        ) : (
-          <StatusTag kind="dataset" value="unbound" />
-        );
-      },
-    },
-    {
-      title: "AI 分析",
-      dataIndex: "ai_analysis_enabled",
-      key: "ai_analysis_enabled",
-      width: 90,
+      title: "AI 可推荐",
+      dataIndex: "allow_ai_recommend",
+      key: "allow_ai_recommend",
+      width: 110,
       render: (value: boolean, record) => (
         <Switch
+          aria-label={`${record.name} AI 可推荐`}
           checked={value}
           size="small"
           loading={toggleMutation.isPending}
-          onChange={(checked) =>
-            toggleMutation.mutate({
-              id: record.id,
-              field: "ai_analysis_enabled",
-              value: checked,
-            })
-          }
-        />
-      ),
-    },
-    {
-      title: "敏感检测",
-      dataIndex: "sensitive_detection_enabled",
-      key: "sensitive_detection_enabled",
-      width: 90,
-      render: (value: boolean, record) => (
-        <Switch
-          checked={value}
-          size="small"
-          loading={toggleMutation.isPending}
-          onChange={(checked) =>
-            toggleMutation.mutate({
-              id: record.id,
-              field: "sensitive_detection_enabled",
-              value: checked,
-            })
-          }
-        />
-      ),
-    },
-    {
-      title: "自动同步",
-      dataIndex: "auto_sync_enabled",
-      key: "auto_sync_enabled",
-      width: 90,
-      render: (value: boolean, record) => (
-        <Switch
-          checked={value}
-          size="small"
-          loading={toggleMutation.isPending}
-          onChange={(checked) =>
-            toggleMutation.mutate({
-              id: record.id,
-              field: "auto_sync_enabled",
-              value: checked,
-            })
-          }
+          onChange={(checked) => toggleMutation.mutate({ id: record.id, value: checked })}
         />
       ),
     },
@@ -365,7 +236,7 @@ export default function CategoriesPage() {
   return (
     <PageContainer
       title="分类管理"
-      description="管理文档分类，配置 AI 分析、敏感检测和自动同步行为。"
+      description="管理分类结构、说明与检索关键词；所有文档必须审核，禁止自动同步。"
     >
       <div className="metric-grid">
         <KpiCard
@@ -376,17 +247,17 @@ export default function CategoriesPage() {
           tone="primary"
         />
         <KpiCard
-          icon={<CheckCircleOutlined />}
-          title="已绑定 Dataset"
-          value={boundCategoryCount}
-          description="配置默认知识库"
+          icon={<BulbOutlined />}
+          title="AI 可推荐"
+          value={aiRecommendCount}
+          description="可参与分类推荐"
           tone="success"
         />
         <KpiCard
-          icon={<CloudSyncOutlined />}
-          title="自动同步分类"
-          value={autoSyncCount}
-          description="审核后自动入库"
+          icon={<TagsOutlined />}
+          title="关键词已配置"
+          value={keywordCoverageCount}
+          description="支持检索与推荐"
           tone="purple"
         />
       </div>
@@ -398,14 +269,10 @@ export default function CategoriesPage() {
               分类策略列表
             </Typography.Title>
             <Typography.Text className="table-section-header__meta">
-              当前维护 {categories.length} 个分类，{boundCategoryCount} 个已绑定 Dataset
+              当前维护 {categories.length} 个分类，{keywordCoverageCount} 个已配置关键词
             </Typography.Text>
           </span>
-          <StatusTag
-            kind="health"
-            value={categoriesQuery.isError || datasetsQuery.isError ? "error" : "ok"}
-            variant="dot"
-          />
+          <StatusTag kind="health" value={categoriesQuery.isError ? "error" : "ok"} variant="dot" />
         </div>
 
         <div className="config-card-actions">
@@ -429,7 +296,7 @@ export default function CategoriesPage() {
           loading={categoriesQuery.isLoading}
           pagination={{ pageSize: 20, showSizeChanger: false }}
           locale={{ emptyText: "暂无分类" }}
-          scroll={{ x: 1150 }}
+          scroll={{ x: 780 }}
         />
       </Card>
 
@@ -460,12 +327,11 @@ export default function CategoriesPage() {
               {editingCategory ? editingCategory.code : "待配置编码"}
             </Typography.Text>
           </span>
-          <StatusTag
-            kind="dataset"
-            value={editingCategory?.default_dataset_id ? "enabled" : "pending"}
-            variant="dot"
-          />
+          <StatusTag kind="dataset" value="required" variant="dot" />
         </section>
+        <Typography.Paragraph type="secondary" className="category-policy-note">
+          所有文档必须审核，禁止自动同步；Dataset 仅在审批时明确选择。
+        </Typography.Paragraph>
 
         <Form<CategoryFormValues>
           form={form}
@@ -495,53 +361,17 @@ export default function CategoriesPage() {
             <Input.TextArea rows={2} maxLength={500} showCount />
           </Form.Item>
 
-          <div className="form-grid form-grid--two">
-            <Form.Item label="关联知识库" name="default_dataset_id">
-              <Select
-                options={datasetOptions}
-                loading={datasetsQuery.isLoading}
-                allowClear
-                showSearch
-                optionFilterProp="label"
-                placeholder="请选择关联知识库"
-              />
-            </Form.Item>
-          </div>
-
           <Form.Item label="关键词" name="keywords">
             <Input.TextArea rows={2} placeholder="用逗号或换行分隔" maxLength={500} />
           </Form.Item>
 
-          <Form.Item label="分类 Prompt" name="classification_prompt">
-            <Input.TextArea rows={3} maxLength={2000} showCount />
-          </Form.Item>
-
           <div className="category-switch-panel">
             <div className="category-switch-panel__header">
-              <Typography.Text strong>策略开关</Typography.Text>
+              <Typography.Text strong>推荐策略</Typography.Text>
               <StatusTag kind="dataset" value="enabled" variant="dot" />
             </div>
             <div className="switch-grid category-switch-panel__grid">
-              <Form.Item label="需要审核" name="require_review" valuePropName="checked">
-                <Switch />
-              </Form.Item>
-              <Form.Item label="员工可选" name="allow_employee_select" valuePropName="checked">
-                <Switch />
-              </Form.Item>
               <Form.Item label="AI 可推荐" name="allow_ai_recommend" valuePropName="checked">
-                <Switch />
-              </Form.Item>
-              <Form.Item label="AI 分析" name="ai_analysis_enabled" valuePropName="checked">
-                <Switch />
-              </Form.Item>
-              <Form.Item
-                label="敏感检测"
-                name="sensitive_detection_enabled"
-                valuePropName="checked"
-              >
-                <Switch />
-              </Form.Item>
-              <Form.Item label="自动同步" name="auto_sync_enabled" valuePropName="checked">
                 <Switch />
               </Form.Item>
             </div>

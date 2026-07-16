@@ -7,10 +7,8 @@ import { afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 import {
   type Category,
   type CategoryListResponse,
-  type DatasetMappingListResponse,
   createCategory,
   listCategories,
-  listDatasetMappings,
   updateCategory,
 } from "../../api/client";
 import type * as ApiClientModule from "../../api/client";
@@ -25,7 +23,6 @@ vi.mock("../../api/client", async () => {
     listCategories: vi.fn(),
     createCategory: vi.fn(),
     updateCategory: vi.fn(),
-    listDatasetMappings: vi.fn(),
   };
 });
 
@@ -35,16 +32,8 @@ const mockCategory1: Category = {
   code: "tech-docs",
   description: "技术相关文档",
   parent_id: null,
-  require_review: true,
-  default_dataset_id: "ds-1",
-  allow_employee_select: true,
   allow_ai_recommend: true,
-  default_visibility: "company",
   keywords: ["技术", "文档"],
-  classification_prompt: null,
-  ai_analysis_enabled: true,
-  sensitive_detection_enabled: true,
-  auto_sync_enabled: false,
   created_at: "2026-06-01T00:00:00Z",
   updated_at: "2026-06-01T00:00:00Z",
 };
@@ -55,16 +44,8 @@ const mockCategory2: Category = {
   code: "hr-files",
   description: null,
   parent_id: null,
-  require_review: false,
-  default_dataset_id: null,
-  allow_employee_select: false,
   allow_ai_recommend: false,
-  default_visibility: "private",
   keywords: [],
-  classification_prompt: null,
-  ai_analysis_enabled: false,
-  sensitive_detection_enabled: false,
-  auto_sync_enabled: true,
   created_at: "2026-06-02T00:00:00Z",
   updated_at: "2026-06-02T00:00:00Z",
 };
@@ -72,22 +53,6 @@ const mockCategory2: Category = {
 const mockCategoriesResponse: CategoryListResponse = {
   items: [mockCategory1, mockCategory2],
   total: 2,
-};
-
-const mockDatasetMappingsResponse: DatasetMappingListResponse = {
-  items: [
-    {
-      id: "dm-1",
-      name: "技术知识库映射",
-      category_id: "cat-1",
-      ragflow_dataset_id: "ds-1",
-      ragflow_dataset_name: "技术知识库",
-      enabled: true,
-      created_at: "2026-06-01T00:00:00Z",
-      updated_at: "2026-06-01T00:00:00Z",
-    },
-  ],
-  total: 1,
 };
 
 beforeAll(() => {
@@ -139,7 +104,6 @@ afterEach(() => {
 describe("CategoriesPage", () => {
   it("renders category list with all required columns", async () => {
     vi.mocked(listCategories).mockResolvedValue(mockCategoriesResponse);
-    vi.mocked(listDatasetMappings).mockResolvedValue(mockDatasetMappingsResponse);
 
     renderWithProviders(<CategoriesPage />);
 
@@ -151,7 +115,7 @@ describe("CategoriesPage", () => {
     expect(screen.getByText("人事档案")).toBeInTheDocument();
 
     expect(screen.getByText("分类策略列表")).toBeInTheDocument();
-    expect(screen.getByText("当前维护 2 个分类，1 个已绑定 Dataset")).toBeInTheDocument();
+    expect(screen.getByText("当前维护 2 个分类，1 个已配置关键词")).toBeInTheDocument();
 
     // Category codes (appear in both name cell and code cell, use getAllBy)
     expect(screen.getAllByText("tech-docs").length).toBeGreaterThan(0);
@@ -161,12 +125,12 @@ describe("CategoriesPage", () => {
     expect(screen.getAllByText("分类名称").length).toBeGreaterThan(0);
     expect(screen.getAllByText("分类编码").length).toBeGreaterThan(0);
     expect(screen.getAllByText("描述").length).toBeGreaterThan(0);
-    expect(screen.getAllByText("关联知识库").length).toBeGreaterThan(0);
+    expect(screen.getAllByText("关键词").length).toBeGreaterThan(0);
+    expect(screen.getAllByText("AI 可推荐").length).toBeGreaterThan(0);
   });
 
   it("submits createCategory with correct parameters when adding a new category", async () => {
     vi.mocked(listCategories).mockResolvedValue(mockCategoriesResponse);
-    vi.mocked(listDatasetMappings).mockResolvedValue(mockDatasetMappingsResponse);
     vi.mocked(createCategory).mockResolvedValue({
       ...mockCategory1,
       id: "cat-new",
@@ -191,11 +155,11 @@ describe("CategoriesPage", () => {
     const formSummary = await screen.findByRole("region", { name: "分类配置摘要" });
     expect(formSummary).toHaveTextContent("新建分类策略");
     expect(formSummary).toHaveTextContent("待配置编码");
-    expect(screen.getByText("策略开关")).toBeInTheDocument();
+    expect(screen.getByText("推荐策略")).toBeInTheDocument();
 
     // Get all visible non-disabled textboxes; they now include modal form inputs
     const textboxes = screen.getAllByRole("textbox").filter((el) => !el.hasAttribute("disabled"));
-    // The modal form has: name, code, description, keywords, classification_prompt + textarea inputs
+    // The modal form has name, code, description and keywords inputs.
     // First input is name
     fireEvent.change(textboxes[0], { target: { value: "新分类" } });
     // Second input is code
@@ -218,19 +182,19 @@ describe("CategoriesPage", () => {
     }
 
     await waitFor(() => {
-      expect(createCategory).toHaveBeenCalledWith(
-        expect.objectContaining({
-          name: "新分类",
-          code: "new-cat",
-          default_visibility: "private",
-        }),
-      );
+      expect(createCategory).toHaveBeenCalledWith({
+        name: "新分类",
+        code: "new-cat",
+        description: null,
+        parent_id: null,
+        allow_ai_recommend: true,
+        keywords: [],
+      });
     });
   });
 
-  it("does not render default visibility controls in the category modal", async () => {
+  it("renders the fixed review policy and no removed category controls", async () => {
     vi.mocked(listCategories).mockResolvedValue(mockCategoriesResponse);
-    vi.mocked(listDatasetMappings).mockResolvedValue(mockDatasetMappingsResponse);
 
     renderWithProviders(<CategoriesPage />);
 
@@ -238,12 +202,21 @@ describe("CategoriesPage", () => {
     fireEvent.click(screen.getByRole("button", { name: /新增分类/ }));
 
     await screen.findAllByText("新增分类");
+    expect(
+      screen.getByText("所有文档必须审核，禁止自动同步；Dataset 仅在审批时明确选择。"),
+    ).toBeInTheDocument();
     expect(screen.queryByText("默认可见范围")).not.toBeInTheDocument();
+    expect(screen.queryByText("关联知识库")).not.toBeInTheDocument();
+    expect(screen.queryByText("分类 Prompt")).not.toBeInTheDocument();
+    expect(screen.queryByText("需要审核")).not.toBeInTheDocument();
+    expect(screen.queryByText("员工可选")).not.toBeInTheDocument();
+    expect(screen.queryByText("AI 分析")).not.toBeInTheDocument();
+    expect(screen.queryByText("敏感检测")).not.toBeInTheDocument();
+    expect(screen.queryByText("自动同步")).not.toBeInTheDocument();
   });
 
   it("submits updateCategory with correct parameters when editing a category", async () => {
     vi.mocked(listCategories).mockResolvedValue(mockCategoriesResponse);
-    vi.mocked(listDatasetMappings).mockResolvedValue(mockDatasetMappingsResponse);
     vi.mocked(updateCategory).mockResolvedValue({
       ...mockCategory1,
       name: "技术文档（已修改）",
@@ -289,33 +262,21 @@ describe("CategoriesPage", () => {
     });
   });
 
-  it("calls updateCategory with enabled=false when disabling a category via Switch", async () => {
+  it("updates only the AI recommendation flag from the table switch", async () => {
     vi.mocked(listCategories).mockResolvedValue(mockCategoriesResponse);
-    vi.mocked(listDatasetMappings).mockResolvedValue(mockDatasetMappingsResponse);
     vi.mocked(updateCategory).mockResolvedValue({
       ...mockCategory1,
-      allow_employee_select: false,
+      allow_ai_recommend: false,
     });
 
     renderWithProviders(<CategoriesPage />);
 
     await screen.findByText("技术文档");
 
-    // Find the AI analysis switches (ai_analysis_enabled column)
-    // mockCategory1 has ai_analysis_enabled: true, so its switch is checked
-    const switches = screen.getAllByRole("switch");
-    // The first interactive switch (not disabled) for cat-1 ai_analysis_enabled
-    // We click the first enabled-state switch for cat-1
-    const firstSwitch = switches[0];
-    fireEvent.click(firstSwitch);
+    fireEvent.click(screen.getByRole("switch", { name: "技术文档 AI 可推荐" }));
 
     await waitFor(() => {
-      expect(updateCategory).toHaveBeenCalledWith(
-        expect.any(String),
-        expect.objectContaining({
-          ai_analysis_enabled: expect.any(Boolean),
-        }),
-      );
+      expect(updateCategory).toHaveBeenCalledWith("cat-1", { allow_ai_recommend: false });
     });
   });
 });

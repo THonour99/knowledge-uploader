@@ -39,16 +39,8 @@ const categories: CategoryListResponse = {
       code: "policy",
       description: null,
       parent_id: null,
-      require_review: true,
-      default_dataset_id: null,
-      allow_employee_select: true,
       allow_ai_recommend: true,
-      default_visibility: "company",
       keywords: [],
-      classification_prompt: null,
-      ai_analysis_enabled: true,
-      sensitive_detection_enabled: true,
-      auto_sync_enabled: false,
       created_at: "2026-06-01T00:00:00Z",
       updated_at: "2026-06-01T00:00:00Z",
     },
@@ -58,16 +50,8 @@ const categories: CategoryListResponse = {
       code: "product",
       description: null,
       parent_id: null,
-      require_review: false,
-      default_dataset_id: null,
-      allow_employee_select: false,
       allow_ai_recommend: true,
-      default_visibility: "company",
       keywords: [],
-      classification_prompt: null,
-      ai_analysis_enabled: true,
-      sensitive_detection_enabled: true,
-      auto_sync_enabled: true,
       created_at: "2026-06-01T00:00:00Z",
       updated_at: "2026-06-01T00:00:00Z",
     },
@@ -138,7 +122,7 @@ afterEach(() => {
 });
 
 describe("DatasetConfigPage", () => {
-  it("does not render default visibility in the table or category modal", async () => {
+  it("shows explicit approval mapping policy and no removed category controls", async () => {
     vi.mocked(listCategories).mockResolvedValue(categories);
     vi.mocked(listDatasetMappings).mockResolvedValue(mappings);
 
@@ -147,7 +131,9 @@ describe("DatasetConfigPage", () => {
     expect(await screen.findByText("制度文档")).toBeInTheDocument();
     const mappingWorkbench = screen.getByRole("region", { name: "Dataset 映射工作台" });
     expect(mappingWorkbench).toHaveTextContent("Dataset 映射工作台");
-    expect(mappingWorkbench).toHaveTextContent("当前筛选 2 类，需审核 1 类");
+    expect(mappingWorkbench).toHaveTextContent(
+      "当前筛选 2 类；同步目标在审核时从启用映射中明确选择",
+    );
     expect(mappingWorkbench).toHaveTextContent("已启用1类");
     expect(mappingWorkbench).toHaveTextContent("待绑定1类");
     expect(mappingWorkbench).toHaveTextContent("已禁用0类");
@@ -156,7 +142,9 @@ describe("DatasetConfigPage", () => {
 
     fireEvent.click(screen.getByRole("button", { name: /只看待绑定/ }));
 
-    expect(mappingWorkbench).toHaveTextContent("当前筛选 1 类，需审核 0 类");
+    expect(mappingWorkbench).toHaveTextContent(
+      "当前筛选 1 类；同步目标在审核时从启用映射中明确选择",
+    );
     expect(mappingWorkbench).toHaveTextContent("已启用0类");
     expect(mappingWorkbench).toHaveTextContent("待绑定1类");
 
@@ -165,8 +153,19 @@ describe("DatasetConfigPage", () => {
     const categorySummary = screen.getByRole("region", { name: "分类配置摘要" });
     expect(categorySummary).toHaveTextContent("新分类策略");
     expect(categorySummary).toHaveTextContent("新增分类");
+    expect(categorySummary).toHaveTextContent(
+      "所有文档必须审核，禁止自动同步；Dataset 在审批时明确选择",
+    );
 
     expect(screen.queryByText("默认可见范围")).not.toBeInTheDocument();
+    expect(screen.queryByText("默认 Dataset ID")).not.toBeInTheDocument();
+    expect(screen.queryByText("分类 Prompt")).not.toBeInTheDocument();
+    expect(screen.queryByText("需要审核")).not.toBeInTheDocument();
+    expect(screen.queryByText("员工可选")).not.toBeInTheDocument();
+    expect(screen.queryByText("AI 分析")).not.toBeInTheDocument();
+    expect(screen.queryByText("敏感检测")).not.toBeInTheDocument();
+    expect(screen.queryByText("自动同步")).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: /批量操作/ })).not.toBeInTheDocument();
   });
 
   it("renders Dataset mapping modal summary", async () => {

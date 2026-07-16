@@ -14,6 +14,11 @@ export interface CurrentUser {
   name: string;
   email: string;
   role: Role;
+  email_verified?: boolean;
+  department_assigned?: boolean;
+  department_id?: string | null;
+  department_name?: string | null;
+  department_code?: string | null;
 }
 
 interface AuthState {
@@ -40,7 +45,7 @@ export const useAuthStore = create<AuthState>()(
 );
 
 export const defaultRouteForRole: Record<Role, string> = {
-  employee: "/my-files",
-  dept_admin: "/files",
+  employee: "/dashboard",
+  dept_admin: "/dashboard",
   system_admin: "/dashboard",
 };

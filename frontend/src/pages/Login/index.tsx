@@ -1,9 +1,10 @@
-import { App as AntdApp, Button, Checkbox, Form, Input, Typography } from "antd";
+import { useState } from "react";
+import { Alert, App as AntdApp, Button, Checkbox, Form, Input, Typography } from "antd";
 import type { CheckboxChangeEvent } from "antd/es/checkbox";
 import { useMutation } from "@tanstack/react-query";
-import { Link, useNavigate } from "react-router-dom";
+import { Link, useLocation, useNavigate } from "react-router-dom";
 
-import { login } from "../../api/client";
+import { isApiError, login, resendVerification } from "../../api/client";
 import { defaultRouteForRole, useAuthStore } from "../../store/auth.store";
 import { AuthLayout } from "../AuthLayout";
 
@@ -15,9 +16,28 @@ interface LoginFormValues {
 
 export default function LoginPage() {
   const navigate = useNavigate();
+  const location = useLocation();
   const { message } = AntdApp.useApp();
   const setSession = useAuthStore((state) => state.setSession);
   const [form] = Form.useForm<LoginFormValues>();
+  const [unverifiedEmail, setUnverifiedEmail] = useState<string | null>(null);
+  const registeredEmail =
+    typeof location.state === "object" &&
+    location.state !== null &&
+    "registeredEmail" in location.state &&
+    typeof location.state.registeredEmail === "string"
+      ? location.state.registeredEmail
+      : undefined;
+
+  const resendMutation = useMutation({
+    mutationFn: (email: string) => resendVerification({ email }),
+    onSuccess: () => {
+      message.success("如账号存在且仍待验证，验证邮件已重新发送");
+    },
+    onError: (error: Error) => {
+      message.error(error.message || "验证邮件发送失败");
+    },
+  });
 
   const mutation = useMutation({
     mutationFn: (values: LoginFormValues) =>
@@ -27,11 +47,17 @@ export default function LoginPage() {
         remember_me: Boolean(values.remember),
       }),
     onSuccess: (session) => {
+      setUnverifiedEmail(null);
       setSession(session.access_token, session.user);
       navigate(defaultRouteForRole[session.user.role], { replace: true });
     },
-    onError: (error) => {
-      message.error(error.message);
+    onError: (error, values) => {
+      if (isApiError(error) && error.code === "EMAIL_NOT_VERIFIED") {
+        setUnverifiedEmail(values.email);
+        return;
+      }
+      setUnverifiedEmail(null);
+      message.error(error instanceof Error ? error.message : "登录失败");
     },
   });
 
@@ -53,7 +79,7 @@ export default function LoginPage() {
         form={form}
         className="auth-form"
         layout="vertical"
-        initialValues={{ remember: true }}
+        initialValues={{ remember: true, email: registeredEmail }}
         onFinish={(values) => mutation.mutate(values)}
         requiredMark={false}
       >
@@ -71,6 +97,24 @@ export default function LoginPage() {
         <Form.Item label="密码" name="password" rules={[{ required: true, message: "请输入密码" }]}>
           <Input.Password placeholder="请输入密码" autoComplete="current-password" size="large" />
         </Form.Item>
+
+        {unverifiedEmail ? (
+          <Alert
+            type="warning"
+            showIcon
+            message="邮箱尚未验证"
+            description="完成邮箱验证后才能登录。验证邮件失效或未收到时，可以重新发送。"
+            action={
+              <Button
+                size="small"
+                onClick={() => resendMutation.mutate(unverifiedEmail)}
+                loading={resendMutation.isPending}
+              >
+                重新发送
+              </Button>
+            }
+          />
+        ) : null}
 
         <div className="auth-form-row">
           <Form.Item name="remember" valuePropName="checked" noStyle>

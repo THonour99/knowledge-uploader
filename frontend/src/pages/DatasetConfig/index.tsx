@@ -2,7 +2,6 @@ import {
   App as AntdApp,
   Button,
   Card,
-  Dropdown,
   Form,
   Input,
   Modal,
@@ -19,7 +18,6 @@ import {
   CheckCircleOutlined,
   CloudSyncOutlined,
   DatabaseOutlined,
-  DownOutlined,
   ExclamationCircleOutlined,
   FolderAddOutlined,
   LinkOutlined,
@@ -52,16 +50,8 @@ interface CategoryFormValues {
   name: string;
   code: string;
   description?: string;
-  default_dataset_id?: string;
-  default_visibility: Category["default_visibility"];
   keywords?: string;
-  classification_prompt?: string;
-  require_review: boolean;
-  allow_employee_select: boolean;
   allow_ai_recommend: boolean;
-  ai_analysis_enabled: boolean;
-  sensitive_detection_enabled: boolean;
-  auto_sync_enabled: boolean;
 }
 
 interface DatasetFormValues {
@@ -83,16 +73,8 @@ const defaultCategoryValues: CategoryFormValues = {
   name: "",
   code: "",
   description: "",
-  default_dataset_id: "",
-  default_visibility: "private",
   keywords: "",
-  classification_prompt: "",
-  require_review: true,
-  allow_employee_select: true,
   allow_ai_recommend: true,
-  ai_analysis_enabled: true,
-  sensitive_detection_enabled: true,
-  auto_sync_enabled: false,
 };
 
 const defaultDatasetValues: DatasetFormValues = {
@@ -123,16 +105,8 @@ function toCategoryCreatePayload(values: CategoryFormValues): CategoryPayload {
     code: values.code.trim().toLowerCase(),
     description: values.description?.trim() || null,
     parent_id: null,
-    require_review: values.require_review,
-    default_dataset_id: values.default_dataset_id?.trim() || null,
-    allow_employee_select: values.allow_employee_select,
     allow_ai_recommend: values.allow_ai_recommend,
-    default_visibility: "private",
     keywords: parseKeywords(values.keywords),
-    classification_prompt: values.classification_prompt?.trim() || null,
-    ai_analysis_enabled: values.ai_analysis_enabled,
-    sensitive_detection_enabled: values.sensitive_detection_enabled,
-    auto_sync_enabled: values.auto_sync_enabled,
   };
 }
 
@@ -141,16 +115,8 @@ function toCategoryUpdatePayload(values: CategoryFormValues): Partial<CategoryPa
     name: values.name.trim(),
     description: values.description?.trim() || null,
     parent_id: null,
-    require_review: values.require_review,
-    default_dataset_id: values.default_dataset_id?.trim() || null,
-    allow_employee_select: values.allow_employee_select,
     allow_ai_recommend: values.allow_ai_recommend,
-    default_visibility: "private",
     keywords: parseKeywords(values.keywords),
-    classification_prompt: values.classification_prompt?.trim() || null,
-    ai_analysis_enabled: values.ai_analysis_enabled,
-    sensitive_detection_enabled: values.sensitive_detection_enabled,
-    auto_sync_enabled: values.auto_sync_enabled,
   };
 }
 
@@ -159,16 +125,8 @@ function toCategoryFormValues(category: Category): CategoryFormValues {
     name: category.name,
     code: category.code,
     description: category.description ?? "",
-    default_dataset_id: category.default_dataset_id ?? "",
-    default_visibility: "private",
     keywords: category.keywords.join(", "),
-    classification_prompt: category.classification_prompt ?? "",
-    require_review: category.require_review,
-    allow_employee_select: category.allow_employee_select,
     allow_ai_recommend: category.allow_ai_recommend,
-    ai_analysis_enabled: category.ai_analysis_enabled,
-    sensitive_detection_enabled: category.sensitive_detection_enabled,
-    auto_sync_enabled: category.auto_sync_enabled,
   };
 }
 
@@ -237,7 +195,6 @@ function connectionStatus(
   };
 }
 
-
 export default function DatasetConfigPage() {
   const { message } = AntdApp.useApp();
   const queryClient = useQueryClient();
@@ -249,8 +206,6 @@ export default function DatasetConfigPage() {
   const [editingDataset, setEditingDataset] = useState<DatasetMapping | null>(null);
   const [searchText, setSearchText] = useState("");
   const [statusFilter, setStatusFilter] = useState("all");
-  const [reviewFilter, setReviewFilter] = useState("all");
-  const [employeeSelectFilter, setEmployeeSelectFilter] = useState("all");
 
   const categoriesQuery = useQuery({
     queryKey: ["categories"],
@@ -298,16 +253,8 @@ export default function DatasetConfigPage() {
       .toLowerCase();
     const matchesKeyword = !keyword || haystack.includes(keyword);
     const matchesStatus = statusFilter === "all" || row.status === statusFilter;
-    const matchesReview =
-      reviewFilter === "all" ||
-      (reviewFilter === "required" && row.category.require_review) ||
-      (reviewFilter === "skipped" && !row.category.require_review);
-    const matchesEmployeeSelect =
-      employeeSelectFilter === "all" ||
-      (employeeSelectFilter === "allowed" && row.category.allow_employee_select) ||
-      (employeeSelectFilter === "blocked" && !row.category.allow_employee_select);
 
-    return matchesKeyword && matchesStatus && matchesReview && matchesEmployeeSelect;
+    return matchesKeyword && matchesStatus;
   });
   const boundCategoryCount = rows.filter((row) => Boolean(row.mapping)).length;
   const pendingRowCount = rows.filter((row) => row.status === "pending").length;
@@ -316,9 +263,6 @@ export default function DatasetConfigPage() {
   const visibleEnabledCount = filteredRows.filter((row) => row.status === "enabled").length;
   const visiblePendingCount = filteredRows.filter((row) => row.status === "pending").length;
   const visibleDisabledCount = filteredRows.filter((row) => row.status === "disabled").length;
-  const visibleReviewRequiredCount = filteredRows.filter(
-    (row) => row.category.require_review,
-  ).length;
 
   const refreshConfig = async () => {
     await Promise.all([
@@ -424,8 +368,6 @@ export default function DatasetConfigPage() {
   const resetFilters = () => {
     setSearchText("");
     setStatusFilter("all");
-    setReviewFilter("all");
-    setEmployeeSelectFilter("all");
   };
 
   const columns: ColumnsType<DatasetConfigRow> = [
@@ -480,22 +422,6 @@ export default function DatasetConfigPage() {
         ) : (
           <StatusTag kind="dataset" value="unbound" />
         ),
-    },
-    {
-      title: "是否需审核",
-      dataIndex: ["category", "require_review"],
-      key: "require_review",
-      width: 110,
-      render: (value: boolean) => (
-        <StatusTag kind="dataset" value={value ? "required" : "skipped"} />
-      ),
-    },
-    {
-      title: "是否允许员工选择",
-      dataIndex: ["category", "allow_employee_select"],
-      key: "allow_employee_select",
-      width: 140,
-      render: (value: boolean) => <Switch checked={value} size="small" disabled />,
     },
     {
       title: "状态",
@@ -565,7 +491,7 @@ export default function DatasetConfigPage() {
   return (
     <PageContainer
       title="Dataset 配置"
-      description="配置知识库分类与 RAGFlow Dataset 的映射关系，控制审核、AI 分析和自动同步行为。"
+      description="维护分类与 RAGFlow Dataset 映射；所有文档必须审核，禁止自动同步。"
     >
       <div className="metric-grid">
         <KpiCard
@@ -647,7 +573,7 @@ export default function DatasetConfigPage() {
                 />
               </span>
               <Typography.Text type="secondary">
-                当前筛选 {filteredRows.length} 类，需审核 {visibleReviewRequiredCount} 类。
+                当前筛选 {filteredRows.length} 类；同步目标在审核时从启用映射中明确选择。
               </Typography.Text>
             </span>
           </div>
@@ -680,9 +606,6 @@ export default function DatasetConfigPage() {
               <Button size="small" onClick={() => setStatusFilter("enabled")}>
                 只看已启用
               </Button>
-              <Button size="small" onClick={() => setReviewFilter("required")}>
-                只看需审核
-              </Button>
             </Space>
           </div>
         </section>
@@ -692,18 +615,6 @@ export default function DatasetConfigPage() {
             <Button icon={<FolderAddOutlined />} onClick={openCreateCategory}>
               新增分类
             </Button>
-            <Dropdown
-              menu={{
-                items: [
-                  { key: "enable", label: "批量启用", disabled: true },
-                  { key: "disable", label: "批量禁用", disabled: true },
-                ],
-              }}
-            >
-              <Button>
-                批量操作 <DownOutlined />
-              </Button>
-            </Dropdown>
             <Button type="primary" icon={<DatabaseOutlined />} onClick={() => openCreateDataset()}>
               新增映射
             </Button>
@@ -724,26 +635,6 @@ export default function DatasetConfigPage() {
             options={statusOptions}
             onChange={setStatusFilter}
           />
-          <Select
-            className="filter-toolbar__control"
-            value={reviewFilter}
-            options={[
-              { label: "是否需审核：全部", value: "all" },
-              { label: "需要审核", value: "required" },
-              { label: "无需审核", value: "skipped" },
-            ]}
-            onChange={setReviewFilter}
-          />
-          <Select
-            className="filter-toolbar__control"
-            value={employeeSelectFilter}
-            options={[
-              { label: "员工选择：全部", value: "all" },
-              { label: "允许选择", value: "allowed" },
-              { label: "禁止选择", value: "blocked" },
-            ]}
-            onChange={setEmployeeSelectFilter}
-          />
           <Button onClick={resetFilters}>重置</Button>
           <Button
             icon={<ReloadOutlined />}
@@ -760,7 +651,7 @@ export default function DatasetConfigPage() {
           loading={categoriesQuery.isLoading || datasetsQuery.isLoading}
           pagination={{ pageSize: 20, showSizeChanger: false }}
           locale={{ emptyText: "暂无分类映射" }}
-          scroll={{ x: 1120 }}
+          scroll={{ x: 820 }}
         />
       </Card>
 
@@ -779,7 +670,7 @@ export default function DatasetConfigPage() {
           <span className="config-modal-summary__copy">
             <Typography.Text strong>{editingCategory?.name ?? "新分类策略"}</Typography.Text>
             <Typography.Text type="secondary">
-              审核、AI 分析、员工入口和同步策略将随分类生效。
+              所有文档必须审核，禁止自动同步；Dataset 在审批时明确选择。
             </Typography.Text>
           </span>
           <span className="config-modal-summary__metric">
@@ -815,37 +706,12 @@ export default function DatasetConfigPage() {
             <Input.TextArea rows={2} maxLength={500} showCount />
           </Form.Item>
 
-          <div className="form-grid form-grid--two">
-            <Form.Item label="默认 Dataset ID" name="default_dataset_id">
-              <Input maxLength={128} />
-            </Form.Item>
-          </div>
-
           <Form.Item label="关键词" name="keywords">
             <Input.TextArea rows={2} placeholder="用逗号或换行分隔" maxLength={500} />
           </Form.Item>
 
-          <Form.Item label="分类 Prompt" name="classification_prompt">
-            <Input.TextArea rows={3} maxLength={2000} showCount />
-          </Form.Item>
-
           <div className="switch-grid">
-            <Form.Item label="需要审核" name="require_review" valuePropName="checked">
-              <Switch />
-            </Form.Item>
-            <Form.Item label="员工可选" name="allow_employee_select" valuePropName="checked">
-              <Switch />
-            </Form.Item>
             <Form.Item label="AI 可推荐" name="allow_ai_recommend" valuePropName="checked">
-              <Switch />
-            </Form.Item>
-            <Form.Item label="AI 分析" name="ai_analysis_enabled" valuePropName="checked">
-              <Switch />
-            </Form.Item>
-            <Form.Item label="敏感检测" name="sensitive_detection_enabled" valuePropName="checked">
-              <Switch />
-            </Form.Item>
-            <Form.Item label="自动同步" name="auto_sync_enabled" valuePropName="checked">
               <Switch />
             </Form.Item>
           </div>
