@@ -50,26 +50,88 @@ import { allowUserDeleteFromPolicy, allowedExtensionsFromPolicy } from "../../ut
 
 const STATUS_RAIL: Array<{
   key: keyof EmployeeStatusCounts;
+  filterStatus: string;
   label: string;
   hint: string;
   danger: boolean;
 }> = [
-  { key: "draft", label: "草稿", hint: "上传或分析完成，等待提交", danger: false },
-  { key: "ai_processing", label: "AI 处理中", hint: "提取与分析进行中", danger: false },
-  { key: "analysis_failed", label: "分析失败", hint: "提交受系统策略控制", danger: true },
+  {
+    key: "draft",
+    filterStatus: "uploaded",
+    label: "草稿",
+    hint: "上传或分析完成，等待提交",
+    danger: false,
+  },
+  {
+    key: "ai_processing",
+    filterStatus: "analyzing",
+    label: "AI 处理中",
+    hint: "提取与分析进行中",
+    danger: false,
+  },
+  {
+    key: "analysis_failed",
+    filterStatus: "analysis_failed",
+    label: "分析失败",
+    hint: "提交受系统策略控制",
+    danger: true,
+  },
   {
     key: "sensitive_review",
+    filterStatus: "sensitive_review_required",
     label: "风险待确认",
     hint: "确认风险后提交",
     danger: true,
   },
-  { key: "pending_review", label: "待审核", hint: "管理员处理中", danger: false },
-  { key: "approved", label: "已批准·未入库", hint: "审核决定不入库", danger: false },
-  { key: "sync_processing", label: "入库处理中", hint: "排队、上传或解析", danger: false },
-  { key: "parsed", label: "已入库", hint: "可供下游检索", danger: false },
-  { key: "sync_failed", label: "入库失败", hint: "联系管理员处理", danger: true },
-  { key: "rejected", label: "已驳回", hint: "修改后重新提交", danger: true },
-  { key: "archived", label: "已归档", hint: "不再参与当前流程", danger: false },
+  {
+    key: "pending_review",
+    filterStatus: "pending_review",
+    label: "待审核",
+    hint: "管理员处理中",
+    danger: false,
+  },
+  {
+    key: "approved",
+    filterStatus: "approved",
+    label: "已批准·未入库",
+    hint: "审核决定不入库",
+    danger: false,
+  },
+  {
+    key: "sync_processing",
+    filterStatus: "queued",
+    label: "入库处理中",
+    hint: "排队、上传或解析",
+    danger: false,
+  },
+  {
+    key: "parsed",
+    filterStatus: "parsed",
+    label: "已入库",
+    hint: "可供下游检索",
+    danger: false,
+  },
+  {
+    key: "sync_failed",
+    filterStatus: "failed",
+    label: "入库失败",
+    hint: "联系管理员处理",
+    danger: true,
+  },
+  {
+    key: "rejected",
+    filterStatus: "rejected",
+    label: "已驳回",
+    hint: "修改后重新提交",
+    danger: true,
+  },
+  {
+    key: "archived",
+    filterStatus: "disabled",
+    label: "已归档",
+    hint: "不再参与当前流程",
+    danger: false,
+  },
 ];
 
 const STATUS_FILTERS = [
@@ -316,7 +378,8 @@ export default function MyFilesPage() {
   const actionCount = employeeWorkbench?.action_counts.total ?? 0;
   const continueFiles: DashboardRecentDocument[] =
     employeeWorkbench?.recent_documents.filter((file) =>
-      ["submit_review", "revise_rejected", "confirm_sensitive"].includes(file.next_action),
+      ["submit_review", "revise_rejected", "confirm_sensitive"].includes(file.next_action) ||
+      file.status === "analysis_failed",
     ) ?? [];
 
   const allowedExtensions = allowedExtensionsFromPolicy(uploadPolicyQuery.data);
@@ -483,14 +546,18 @@ export default function MyFilesPage() {
       <section className="status-rail" aria-label="文档状态轨道">
         {STATUS_RAIL.map((item, index) => {
           return (
-            <article
+            <button
               className={[
                 "status-rail__item",
                 item.danger ? "status-rail__item--danger" : "",
+                status === item.filterStatus ? "status-rail__item--active" : "",
               ]
                 .filter(Boolean)
                 .join(" ")}
               key={item.key}
+              type="button"
+              aria-pressed={status === item.filterStatus}
+              onClick={() => setQueryValue("status", item.filterStatus)}
             >
               <span className="status-rail__step">{index + 1}</span>
               <span className="status-rail__copy">
@@ -504,7 +571,7 @@ export default function MyFilesPage() {
                     ? "—"
                     : (statusCounts?.[item.key] ?? 0)}
               </span>
-            </article>
+            </button>
           );
         })}
       </section>

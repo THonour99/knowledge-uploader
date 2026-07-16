@@ -516,6 +516,41 @@ describe("MyFilesPage", () => {
     });
   });
 
+  it("keeps an analysis failure in recent actions even when the backend action is view_detail", async () => {
+    vi.mocked(listDocuments).mockResolvedValue({ items: [], total: 0 });
+    vi.mocked(listTags).mockResolvedValue(mockTagsResponse);
+    vi.mocked(getEmployeeDashboard).mockResolvedValue(
+      employeeDashboard([
+        { ...dashboardDocument(mockAnalysisFailedFile), next_action: "view_detail" },
+      ]),
+    );
+
+    renderWithProviders(<MyFilesPage />);
+
+    expect((await screen.findAllByText("分析失败文档.pdf")).length).toBeGreaterThan(0);
+    expect(screen.getByRole("button", { name: "查看并处理" })).toBeInTheDocument();
+    expect(screen.queryByText(/最近五条动态未包含/)).not.toBeInTheDocument();
+  });
+
+  it("uses the aggregated rail as a filter without refetching the dashboard", async () => {
+    vi.mocked(listDocuments).mockResolvedValue({ items: [], total: 0 });
+    vi.mocked(listTags).mockResolvedValue(mockTagsResponse);
+
+    renderWithProviders(<MyFilesPage />);
+    const railButton = await screen.findByRole("button", { name: /分析失败/ });
+    await waitFor(() => expect(getEmployeeDashboard).toHaveBeenCalledTimes(1));
+    vi.mocked(listDocuments).mockClear();
+    fireEvent.click(railButton);
+
+    await waitFor(() =>
+      expect(listDocuments).toHaveBeenCalledWith(
+        expect.objectContaining({ status: "analysis_failed" }),
+      ),
+    );
+    expect(getEmployeeDashboard).toHaveBeenCalledTimes(1);
+    expect(railButton).toHaveAttribute("aria-pressed", "true");
+  });
+
   it("shows a recoverable explanation when policy blocks analysis-failed submission", async () => {
     vi.mocked(listDocuments).mockResolvedValue({ items: [mockAnalysisFailedFile], total: 1 });
     vi.mocked(getEmployeeDashboard).mockResolvedValue(

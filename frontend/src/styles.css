@@ -746,10 +746,27 @@ a {
   color: var(--ku-text-primary);
   font: inherit;
   text-align: left;
+  cursor: pointer;
 }
 
 .status-rail__item:last-child {
   border-right: 0;
+}
+
+.status-rail__item:hover,
+.status-rail__item:focus-visible {
+  background: var(--ku-bg-subtle);
+}
+
+.status-rail__item:focus-visible {
+  z-index: 1;
+  outline: 2px solid var(--ku-color-primary);
+  outline-offset: -2px;
+}
+
+.status-rail__item--active {
+  background: var(--ku-color-primary-light);
+  box-shadow: inset 0 -3px 0 var(--ku-color-primary);
 }
 
 .status-rail__item--danger .status-rail__step,
