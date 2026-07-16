@@ -88,7 +88,8 @@ RAGFLOW_ALLOWED_DATASET_IDS=<新建测试 Dataset id>
 
 重启后只在 `/datasets` 创建这个测试 Dataset 的映射。不要删除或修改 RAGFlow 服务器上的既有知识库。
 
-`DEFAULT_DATASET_ID` 当前不会自动作为同步目标，实际同步目标来自 `/datasets` 中启用的 Dataset 映射。
+`DEFAULT_DATASET_ID` 已删除。每次同步都必须使用审核决定中明确选择、且已在 `/datasets`
+启用并进入 `RAGFLOW_ALLOWED_DATASET_IDS` allowlist 的 Dataset 映射；不存在隐式默认目标。
 
 ## 首个系统管理员怎么创建？
 

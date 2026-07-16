@@ -88,7 +88,8 @@ RAGFLOW_ALLOWED_DATASET_IDS=<新建测试 Dataset id>
 - `/datasets` 只能创建 allowlist 内的新测试或明确目标 Dataset 映射。
 - 不删除、不覆盖、不迁移 RAGFlow 服务器上的既有知识库。
 
-`DEFAULT_DATASET_ID` 目前只保留在 `.env.example` 和 compose 环境中用于后续扩展，当前同步目标以 `/datasets` 创建的 Dataset 映射为准。
+`DEFAULT_DATASET_ID` 已删除。同步目标必须由审核决定并明确选择 `/datasets` 中启用且在
+`RAGFLOW_ALLOWED_DATASET_IDS` allowlist 内的 Dataset 映射；系统不会回退到默认 Dataset。
 
 ## 首个系统管理员
 
