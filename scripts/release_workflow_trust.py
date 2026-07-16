@@ -12,6 +12,7 @@ import hashlib
 import json
 import os
 import re
+import stat
 import sys
 import urllib.error
 import urllib.parse
@@ -38,6 +39,8 @@ RELEASE_TAG_PATTERN: Final = re.compile(r"v[0-9]+\.[0-9]+\.[0-9]+(?:[-+][A-Za-z0
 MAX_CLOCK_SKEW: Final = timedelta(minutes=5)
 MAX_RUN_AGE: Final = timedelta(hours=8)
 SUMMARY_TTL: Final = timedelta(hours=2)
+MAX_SUMMARY_BYTES: Final = 4 * 1024 * 1024
+MAX_CHECKSUM_BYTES: Final = 4096
 
 
 class TrustError(RuntimeError):
@@ -54,6 +57,13 @@ class EvidenceRunRequest:
     run_id: int
     run_attempt: int
     workflow_path: str
+
+
+@dataclass(frozen=True)
+class StableJsonSnapshot:
+    payload: bytes
+    sha256: str
+    parsed: Mapping[str, object]
 
 
 class GitHubClient:
@@ -726,22 +736,83 @@ def _write_github_outputs(path: Path, summary: Mapping[str, object]) -> None:
         stream.write(content)
 
 
-def _load_summary(path: Path) -> Mapping[str, object]:
-    if path.stat().st_size > 4 * 1024 * 1024:
-        raise TrustError("workflow trust summary is too large")
+def _read_stable_regular_file(
+    path: Path,
+    *,
+    context: str,
+    maximum: int,
+) -> bytes:
+    descriptor = -1
     try:
-        parsed: object = json.loads(path.read_text(encoding="utf-8"))
-    except (OSError, UnicodeError, json.JSONDecodeError) as error:
+        before = path.lstat()
+        if not stat.S_ISREG(before.st_mode):
+            raise TrustError(f"{context} is not a regular file")
+        flags = os.O_RDONLY | getattr(os, "O_BINARY", 0)
+        flags |= getattr(os, "O_CLOEXEC", 0) | getattr(os, "O_NOFOLLOW", 0)
+        descriptor = os.open(path, flags)
+        opened = os.fstat(descriptor)
+        if (
+            not stat.S_ISREG(opened.st_mode)
+            or (before.st_dev, before.st_ino) != (opened.st_dev, opened.st_ino)
+            or opened.st_size > maximum
+        ):
+            raise TrustError(f"{context} changed before it could be read")
+        with os.fdopen(descriptor, "rb", closefd=True) as stream:
+            descriptor = -1
+            payload = stream.read(maximum + 1)
+            after = os.fstat(stream.fileno())
+        current = path.lstat()
+    except OSError as error:
+        raise TrustError(f"cannot read {context}") from error
+    finally:
+        if descriptor >= 0:
+            os.close(descriptor)
+    if (
+        len(payload) > maximum
+        or len(payload) != opened.st_size
+        or (opened.st_dev, opened.st_ino, opened.st_size, opened.st_mtime_ns)
+        != (after.st_dev, after.st_ino, after.st_size, after.st_mtime_ns)
+        or (current.st_dev, current.st_ino) != (opened.st_dev, opened.st_ino)
+        or not stat.S_ISREG(current.st_mode)
+    ):
+        raise TrustError(f"{context} changed while it was read")
+    return payload
+
+
+def _snapshot_summary(path: Path) -> StableJsonSnapshot:
+    payload = _read_stable_regular_file(
+        path,
+        context="workflow trust summary",
+        maximum=MAX_SUMMARY_BYTES,
+    )
+    try:
+        parsed: object = json.loads(payload.decode("utf-8"))
+    except (UnicodeError, json.JSONDecodeError) as error:
         raise TrustError("cannot read workflow trust summary") from error
+    return StableJsonSnapshot(
+        payload=payload,
+        sha256=hashlib.sha256(payload).hexdigest(),
+        parsed=_mapping(parsed, "workflow trust summary"),
+    )
+
+
+def _load_summary(path: Path) -> Mapping[str, object]:
+    snapshot = _snapshot_summary(path)
     checksum_path = path.with_suffix(path.suffix + ".sha256")
-    expected_line = checksum_path.read_text(encoding="utf-8")
+    try:
+        expected_line = _read_stable_regular_file(
+            checksum_path,
+            context="workflow trust checksum",
+            maximum=MAX_CHECKSUM_BYTES,
+        ).decode("utf-8")
+    except UnicodeError as error:
+        raise TrustError("workflow trust checksum file is malformed") from error
     match = re.fullmatch(rf"([0-9a-f]{{64}})  {re.escape(path.name)}\n", expected_line)
     if match is None:
         raise TrustError("workflow trust checksum file is malformed")
-    actual = hashlib.sha256(path.read_bytes()).hexdigest()
-    if actual != match.group(1):
+    if snapshot.sha256 != match.group(1):
         raise TrustError("workflow trust summary checksum mismatch")
-    return _mapping(parsed, "workflow trust summary")
+    return snapshot.parsed
 
 
 def _parse_evidence_request(value: str) -> EvidenceRunRequest:

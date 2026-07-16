@@ -459,3 +459,51 @@ def test_summary_extra_fields_expiry_and_duplicate_run_ids_are_rejected() -> Non
     )
     with pytest.raises(module.TrustError, match="run ID mismatch"):
         _build_dgx(module, responses)
+
+
+def test_summary_checksum_and_parser_use_the_same_captured_bytes(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    module = _load_module()
+    summary = _build_dgx(module, _responses(module))
+    summary_path = tmp_path / "release-workflow-trust.json"
+    module._write_summary(summary_path, summary)
+    original_payload = summary_path.read_bytes()
+    forged_path = tmp_path / "forged-summary.json"
+    forged_path.write_text('{"attacker_override":true}\n', encoding="utf-8", newline="\n")
+    original_reader = module._read_stable_regular_file
+    exchanged = False
+
+    def exchange_after_summary_snapshot(
+        path: Path,
+        *,
+        context: str,
+        maximum: int,
+    ) -> bytes:
+        nonlocal exchanged
+        payload = original_reader(path, context=context, maximum=maximum)
+        if path == summary_path and not exchanged:
+            forged_path.replace(summary_path)
+            exchanged = True
+        return payload
+
+    monkeypatch.setattr(module, "_read_stable_regular_file", exchange_after_summary_snapshot)
+
+    assert module._load_summary(summary_path) == summary
+    assert original_payload != summary_path.read_bytes()
+    assert summary_path.read_text(encoding="utf-8") == '{"attacker_override":true}\n'
+
+
+def test_summary_reader_rejects_symlink(tmp_path: Path) -> None:
+    module = _load_module()
+    target = tmp_path / "release-workflow-trust.json"
+    module._write_summary(target, _build_dgx(module, _responses(module)))
+    link = tmp_path / "linked-summary.json"
+    try:
+        link.symlink_to(target.name)
+    except OSError:
+        pytest.skip("symlink creation is unavailable on this runner")
+
+    with pytest.raises(module.TrustError, match="not a regular file"):
+        module._load_summary(link)

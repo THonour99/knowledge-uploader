@@ -8,6 +8,7 @@ import json
 import os
 import platform
 import re
+import stat
 import subprocess
 import sys
 import uuid
@@ -60,6 +61,7 @@ REQUIRED_WORKER_QUEUES = frozenset(
         "notification_queue",
     }
 )
+MAX_EVIDENCE_BYTES = 64 * 1024 * 1024
 
 
 @dataclass(frozen=True)
@@ -114,6 +116,27 @@ def verify(
     if _normalize_architecture(docker_architecture) != "arm64":
         raise RuntimeError(f"native ARM64 Docker daemon required, got {docker_architecture}")
 
+    compose_e2e_payload = _read_stable_regular_file(
+        compose_e2e_evidence,
+        context="Compose E2E evidence",
+    )
+    compose_e2e = _load_compose_e2e_evidence(
+        compose_e2e_evidence,
+        git_sha=git_sha,
+        environment=environment,
+        architecture=host_machine,
+        payload=compose_e2e_payload,
+    )
+    backend_image_id = _resolve_image_id(backend_image)
+    frontend_image_id = _resolve_image_id(frontend_image)
+    if (
+        compose_e2e.get("backend_image") != backend_image
+        or compose_e2e.get("frontend_image") != frontend_image
+        or compose_e2e.get("backend_image_id") != backend_image_id
+        or compose_e2e.get("frontend_image_id") != frontend_image_id
+    ):
+        raise RuntimeError("Compose E2E evidence is not bound to the verified image content")
+
     gpu_row = run(
         [
             "nvidia-smi",
@@ -128,10 +151,10 @@ def verify(
         raise RuntimeError(f"DGX Spark GB10 GPU required, got {gpu_name}")
 
     backend_arch = run(
-        ["docker", "image", "inspect", "--format", "{{.Architecture}}", backend_image]
+        ["docker", "image", "inspect", "--format", "{{.Architecture}}", backend_image_id]
     ).lower()
     frontend_arch = run(
-        ["docker", "image", "inspect", "--format", "{{.Architecture}}", frontend_image]
+        ["docker", "image", "inspect", "--format", "{{.Architecture}}", frontend_image_id]
     ).lower()
     if (
         _normalize_architecture(backend_arch) != "arm64"
@@ -139,8 +162,8 @@ def verify(
     ):
         raise RuntimeError("both release images must be native ARM64 images")
 
-    backend_revision = _image_revision(backend_image)
-    frontend_revision = _image_revision(frontend_image)
+    backend_revision = _image_revision(backend_image_id)
+    frontend_revision = _image_revision(frontend_image_id)
     if backend_revision != git_sha or frontend_revision != git_sha:
         raise RuntimeError("both release image revision labels must match the exact git SHA")
 
@@ -149,7 +172,7 @@ def verify(
             "docker",
             "run",
             "--rm",
-            backend_image,
+            backend_image_id,
             "python",
             "-c",
             (
@@ -158,23 +181,7 @@ def verify(
             ),
         ]
     )
-    run(["docker", "run", "--rm", frontend_image, "nginx", "-t"])
-
-    compose_e2e = _load_compose_e2e_evidence(
-        compose_e2e_evidence,
-        git_sha=git_sha,
-        environment=environment,
-        architecture=host_machine,
-    )
-    backend_image_id = run(["docker", "image", "inspect", "--format", "{{.Id}}", backend_image])
-    frontend_image_id = run(["docker", "image", "inspect", "--format", "{{.Id}}", frontend_image])
-    if (
-        compose_e2e.get("backend_image") != backend_image
-        or compose_e2e.get("frontend_image") != frontend_image
-        or compose_e2e.get("backend_image_id") != backend_image_id
-        or compose_e2e.get("frontend_image_id") != frontend_image_id
-    ):
-        raise RuntimeError("Compose E2E evidence is not bound to the verified image content")
+    run(["docker", "run", "--rm", frontend_image_id, "nginx", "-t"])
 
     return DgxSparkEvidence(
         status="passed",
@@ -195,8 +202,46 @@ def verify(
         frontend_image=frontend_image,
         frontend_image_id=frontend_image_id,
         frontend_image_revision=frontend_revision,
-        compose_e2e_evidence_sha256=_sha256_file(compose_e2e_evidence),
+        compose_e2e_evidence_sha256=hashlib.sha256(compose_e2e_payload).hexdigest(),
     )
+
+
+def _read_stable_regular_file(path: Path, *, context: str) -> bytes:
+    descriptor = -1
+    try:
+        before = path.lstat()
+        if not stat.S_ISREG(before.st_mode):
+            raise RuntimeError(f"{context} is not a regular file")
+        flags = os.O_RDONLY | getattr(os, "O_BINARY", 0)
+        flags |= getattr(os, "O_CLOEXEC", 0) | getattr(os, "O_NOFOLLOW", 0)
+        descriptor = os.open(path, flags)
+        opened = os.fstat(descriptor)
+        if (
+            not stat.S_ISREG(opened.st_mode)
+            or (before.st_dev, before.st_ino) != (opened.st_dev, opened.st_ino)
+            or opened.st_size > MAX_EVIDENCE_BYTES
+        ):
+            raise RuntimeError(f"{context} changed before it could be read")
+        with os.fdopen(descriptor, "rb", closefd=True) as stream:
+            descriptor = -1
+            payload = stream.read(MAX_EVIDENCE_BYTES + 1)
+            after = os.fstat(stream.fileno())
+        current = path.lstat()
+    except OSError as error:
+        raise RuntimeError(f"cannot read {context}") from error
+    finally:
+        if descriptor >= 0:
+            os.close(descriptor)
+    if (
+        len(payload) > MAX_EVIDENCE_BYTES
+        or len(payload) != opened.st_size
+        or (opened.st_dev, opened.st_ino, opened.st_size, opened.st_mtime_ns)
+        != (after.st_dev, after.st_ino, after.st_size, after.st_mtime_ns)
+        or (current.st_dev, current.st_ino) != (opened.st_dev, opened.st_ino)
+        or not stat.S_ISREG(current.st_mode)
+    ):
+        raise RuntimeError(f"{context} changed while it was read")
+    return payload
 
 
 def _load_compose_e2e_evidence(
@@ -205,8 +250,12 @@ def _load_compose_e2e_evidence(
     git_sha: str,
     environment: str,
     architecture: str,
+    payload: bytes | None = None,
 ) -> dict[str, object]:
-    raw = json.loads(path.read_text(encoding="utf-8"))
+    content = payload
+    if content is None:
+        content = _read_stable_regular_file(path, context="Compose E2E evidence")
+    raw = json.loads(content.decode("utf-8"))
     if not isinstance(raw, dict):
         raise RuntimeError("Compose E2E evidence must be a JSON object")
     expected = {
@@ -310,14 +359,6 @@ def _load_compose_e2e_evidence(
     return raw
 
 
-def _sha256_file(path: Path) -> str:
-    digest = hashlib.sha256()
-    with path.open("rb") as stream:
-        for chunk in iter(lambda: stream.read(1024 * 1024), b""):
-            digest.update(chunk)
-    return digest.hexdigest()
-
-
 def _image_revision(image: str) -> str:
     return run(
         [
@@ -329,6 +370,15 @@ def _image_revision(image: str) -> str:
             image,
         ]
     ).strip()
+
+
+def _resolve_image_id(image: str) -> str:
+    image_id = run(["docker", "image", "inspect", "--format", "{{.Id}}", image]).lower()
+    if not image_id.startswith("sha256:") or SHA256_PATTERN.fullmatch(
+        image_id.removeprefix("sha256:")
+    ) is None:
+        raise RuntimeError(f"Docker returned an invalid immutable image ID for {image}")
+    return image_id
 
 
 def _normalize_architecture(value: str) -> str:

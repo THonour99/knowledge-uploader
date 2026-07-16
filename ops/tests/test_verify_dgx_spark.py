@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import importlib.util
 import json
 import sys
@@ -122,6 +123,8 @@ def test_verifier_rejects_images_built_from_another_revision(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     verifier = _load_verifier()
+    evidence_path = tmp_path / "infrastructure-e2e.json"
+    _write_evidence(evidence_path, _evidence())
     monkeypatch.setattr(verifier.platform, "machine", lambda: "aarch64")
 
     def fake_run(command: list[str]) -> str:
@@ -130,6 +133,12 @@ def test_verifier_rejects_images_built_from_another_revision(
             return "aarch64"
         if command[0] == "nvidia-smi":
             return "NVIDIA GB10, 999.0"
+        if "{{.Id}}" in command:
+            return (
+                TEST_BACKEND_IMAGE_ID
+                if command[-1] == "backend:test"
+                else TEST_FRONTEND_IMAGE_ID
+            )
         if "{{.Architecture}}" in command:
             return "arm64"
         if "org.opencontainers.image.revision" in joined:
@@ -144,7 +153,7 @@ def test_verifier_rejects_images_built_from_another_revision(
             frontend_image="frontend:test",
             git_sha=TEST_GIT_SHA,
             environment="staging",
-            compose_e2e_evidence=tmp_path / "missing.json",
+            compose_e2e_evidence=evidence_path,
         )
 
 
@@ -156,9 +165,35 @@ def test_verifier_binds_device_proof_to_compose_run_and_image_content(
     evidence_path = tmp_path / "infrastructure-e2e.json"
     infrastructure = _evidence()
     _write_evidence(evidence_path, infrastructure)
+    original_payload = evidence_path.read_bytes()
+    replacement_payload = original_payload + b"\n"
     monkeypatch.setattr(verifier.platform, "machine", lambda: "aarch64")
+    original_loader = verifier._load_compose_e2e_evidence
+    commands: list[list[str]] = []
+
+    def replace_after_validation(
+        path: Path,
+        *,
+        git_sha: str,
+        environment: str,
+        architecture: str,
+        payload: bytes | None = None,
+    ) -> dict[str, object]:
+        assert payload == original_payload
+        loaded = original_loader(
+            path,
+            git_sha=git_sha,
+            environment=environment,
+            architecture=architecture,
+            payload=payload,
+        )
+        evidence_path.write_bytes(replacement_payload)
+        return loaded
+
+    monkeypatch.setattr(verifier, "_load_compose_e2e_evidence", replace_after_validation)
 
     def fake_run(command: list[str]) -> str:
+        commands.append(command)
         joined = " ".join(command)
         if command[:2] == ["docker", "info"]:
             return "aarch64"
@@ -189,6 +224,27 @@ def test_verifier_binds_device_proof_to_compose_run_and_image_content(
     assert proof.resolved_compose_sha256 == infrastructure["resolved_compose_sha256"]
     assert proof.backend_image_id == infrastructure["backend_image_id"]
     assert proof.frontend_image_id == infrastructure["frontend_image_id"]
+    assert proof.compose_e2e_evidence_sha256 == hashlib.sha256(original_payload).hexdigest()
+    assert evidence_path.read_bytes() == replacement_payload
+    tag_uses = [
+        command
+        for command in commands
+        if "backend:test" in command or "frontend:test" in command
+    ]
+    assert tag_uses == [
+        ["docker", "image", "inspect", "--format", "{{.Id}}", "backend:test"],
+        ["docker", "image", "inspect", "--format", "{{.Id}}", "frontend:test"],
+    ]
+    image_commands = [
+        command
+        for command in commands
+        if command[:3] == ["docker", "image", "inspect"]
+        or command[:2] == ["docker", "run"]
+    ]
+    assert all(
+        TEST_BACKEND_IMAGE_ID in command or TEST_FRONTEND_IMAGE_ID in command
+        for command in image_commands[2:]
+    )
 
 
 def test_compose_e2e_evidence_accepts_matching_complete_proof(tmp_path: Path) -> None:

@@ -3,6 +3,7 @@ from __future__ import annotations
 import importlib.util
 import json
 import uuid
+from datetime import UTC, datetime
 from pathlib import Path
 from types import ModuleType, SimpleNamespace
 
@@ -130,6 +131,7 @@ def test_contract_does_not_accept_expected_strings_from_comments(tmp_path: Path)
         "# alertmanager:9093\nalerting:\n  alertmanagers: []\n",
         encoding="utf-8",
     )
+    (tmp_path / "ops/observability/alerts.yml").write_text("{}\n", encoding="utf-8")
     (tmp_path / "backend/app/workers/rabbitmq_topology.py").write_text(
         "# document_queue ai_queue ragflow_queue notification_queue\n"
         "# x-dead-letter-exchange x-dead-letter-routing-key .dlq\n",
@@ -215,12 +217,18 @@ def test_resolved_compose_environment_is_structural_not_comment_text(
 
 def test_email_delivery_evidence_rejects_plaintext_or_missing_real_delivery() -> None:
     gate = _load_gate()
+    delivered_at = datetime.now(UTC).isoformat()
     evidence = {
-        "status": "passed",
         "registration_delivery": "passed",
         "password_reset_delivery": "passed",
-        "registration_message_id": "message-1",
-        "password_reset_message_id": "message-2",
+        "registration_message_id_sha256": "1" * 64,
+        "password_reset_message_id_sha256": "2" * 64,
+        "registration_smtp_receipt_sha256": "3" * 64,
+        "password_reset_smtp_receipt_sha256": "4" * 64,
+        "registration_smtp_result": "accepted",
+        "password_reset_smtp_result": "accepted",
+        "registration_delivered_at": delivered_at,
+        "password_reset_delivered_at": delivered_at,
         "persistent_message": True,
         "broker_expiry_at_or_before_token_expiry": True,
         "publisher_confirm": "passed",
@@ -244,8 +252,8 @@ def test_email_delivery_evidence_rejects_plaintext_or_missing_real_delivery() ->
     evidence["token"] = "must-never-be-evidence"
     errors = gate._email_delivery_evidence_errors(evidence)
 
-    assert any("plaintext auth token" in error for error in errors)
-    assert any("forbidden sensitive field" in error for error in errors)
+    assert any("plaintext_token_observed" in error for error in errors)
+    assert any("schema mismatch" in error for error in errors)
 
 
 def test_rabbitmq_replay_evidence_is_bound_to_queue_and_deterministic_id() -> None:
@@ -301,7 +309,68 @@ def test_protected_gate_requires_full_git_identity() -> None:
 def test_infrastructure_e2e_requires_run_compose_image_and_worker_identity() -> None:
     gate = _load_gate()
     run_id = str(uuid.uuid4())
+
+    def fault_receipt(
+        service: str,
+        outage: str,
+        observation: str,
+        anchor: str,
+        **extra: object,
+    ) -> dict[str, object]:
+        return {
+            "status": "passed",
+            "run_id": run_id,
+            "service": service,
+            "target_file_id": str(uuid.uuid4()),
+            "outage_observed": outage,
+            "failure_observation": observation,
+            "durability_anchor": anchor,
+            "queue_messages_before": 1,
+            "queue_messages_after_restore": 1,
+            "remote_upload_delta": 1,
+            "remote_document_count": 1,
+            "terminal_state": "parsed",
+            "event_loss_detected": False,
+            "duplicate_remote_document": False,
+            **extra,
+        }
+
+    fault_recovery: dict[str, dict[str, object]] = {
+        "rabbitmq": fault_receipt(
+            "rabbitmq",
+            "ready_503",
+            "persistent_message_held_while_broker_unavailable",
+            "rabbitmq_durable_queue",
+            broker_message_persisted=True,
+        ),
+        "redis": fault_receipt(
+            "redis",
+            "ready_503",
+            "celery_retry_requeued_while_cache_unavailable",
+            "celery_retry_message",
+            retry_task_id=str(uuid.uuid4()),
+            retry_task_name="ragflow.create_upload_task",
+            retry_queue="ragflow_queue",
+            retry_count_observed=1,
+            retry_status_before_restore="requeued",
+        ),
+    }
+    for dependency, service, outage in (
+        ("minio", "minio", "ready_503"),
+        ("ragflow", "mock-ragflow", "tls_endpoint_unreachable"),
+    ):
+        fault_recovery[dependency] = fault_receipt(
+            service,
+            outage,
+            "postgres_failed_sync_task_before_remote_upload",
+            "postgres_sync_task",
+            failed_task_id=str(uuid.uuid4()),
+            retry_status_before="failed",
+            retry_status_after="queued",
+        )
+
     evidence = {
+        "evidence_contract_version": 2,
         "status": "passed",
         "full_compose_e2e": "passed",
         "architecture": "aarch64",
@@ -311,6 +380,23 @@ def test_infrastructure_e2e_requires_run_compose_image_and_worker_identity() -> 
         "cleanup_status": "passed",
         "resolved_compose_sha256": "b" * 64,
         "tls_certificate_sha256": "e" * 64,
+        "tls": {
+            "status": "passed",
+            "ca_sha256": "1" * 64,
+            "certificate_bundle_sha256": "e" * 64,
+            "certificates": {
+                "minio": "2" * 64,
+                "ragflow": "3" * 64,
+                "smtp": "4" * 64,
+                "gateway": "5" * 64,
+            },
+            "verified_channels": [
+                "gateway_https",
+                "minio_https",
+                "ragflow_https",
+                "smtp_starttls",
+            ],
+        },
         "rabbitmq_probe_run_id": run_id,
         "backend_image_revision": TEST_GIT_SHA,
         "backend_image_id": "sha256:" + "c" * 64,
@@ -321,16 +407,24 @@ def test_infrastructure_e2e_requires_run_compose_image_and_worker_identity() -> 
             "alembic_head": "passed",
             "ready": "passed",
             "gateway": "passed",
+            "gateway_tls": "passed",
             "email_verification_floor": "passed",
+            "smtp_starttls": "passed",
             "workers": "passed",
             "rabbitmq_topology": "passed",
             "minio_tls": "passed",
+            "ragflow_tls": "passed",
             "upload_review_ragflow": "passed",
+            "dependency_fault_recovery": "passed",
             "dlq_protocol": "passed",
             "cleanup": "passed",
         },
         "service_container_ids": {
             service: f"{index:064x}" for index, service in enumerate(REQUIRED_SERVICES, 1)
+        },
+        "service_image_ids": {
+            service: "sha256:" + f"{index + 100:064x}"
+            for index, service in enumerate(REQUIRED_SERVICES, 1)
         },
         "worker_queue_consumers": {
             "document_queue": 1,
@@ -343,6 +437,7 @@ def test_infrastructure_e2e_requires_run_compose_image_and_worker_identity() -> 
             "email_verification_floor": "passed",
             "mock_smtp_delivery": "passed",
         },
+        "fault_recovery": fault_recovery,
     }
 
     assert gate._infrastructure_e2e_errors(evidence, git_sha=TEST_GIT_SHA) == []
@@ -357,6 +452,7 @@ def test_infrastructure_e2e_requires_run_compose_image_and_worker_identity() -> 
 
 def test_promtool_evidence_is_bound_to_exact_configs(tmp_path: Path) -> None:
     gate = _load_gate()
+    contract_payloads = gate.snapshot_contract_payloads()
     alertmanager = tmp_path / "alertmanager.yml"
     alertmanager.write_text(
         "route:\n  receiver: ops\nreceivers:\n  - name: ops\n",
@@ -393,13 +489,23 @@ def test_promtool_evidence_is_bound_to_exact_configs(tmp_path: Path) -> None:
         "alertmanager_docker_architecture": "amd64",
     }
 
-    assert gate._promtool_evidence_errors(evidence, alertmanager_config=alertmanager) == []
+    assert gate.check_contract(contract_payloads) == []
+    gate.ROOT = tmp_path / "missing-root"
+    assert (
+        gate._promtool_evidence_errors(
+            evidence,
+            alertmanager_config=alertmanager,
+            contract_payloads=contract_payloads,
+        )
+        == []
+    )
 
     bad_config = dict(evidence)
     bad_config["alertmanager_config_sha256"] = "0" * 64
     config_errors = gate._promtool_evidence_errors(
         bad_config,
         alertmanager_config=alertmanager,
+        contract_payloads=contract_payloads,
     )
     assert any("alertmanager_config_sha256" in error for error in config_errors)
 
@@ -408,6 +514,7 @@ def test_promtool_evidence_is_bound_to_exact_configs(tmp_path: Path) -> None:
     reference_errors = gate._promtool_evidence_errors(
         mutable_validator,
         alertmanager_config=alertmanager,
+        contract_payloads=contract_payloads,
     )
     assert any("approved manifest-list digest" in error for error in reference_errors)
 
@@ -418,6 +525,7 @@ def test_promtool_evidence_is_bound_to_exact_configs(tmp_path: Path) -> None:
     digest_errors = gate._promtool_evidence_errors(
         wrong_digest,
         alertmanager_config=alertmanager,
+        contract_payloads=contract_payloads,
     )
     assert any("approved digest" in error for error in digest_errors)
 
@@ -426,6 +534,7 @@ def test_promtool_evidence_is_bound_to_exact_configs(tmp_path: Path) -> None:
     architecture_errors = gate._promtool_evidence_errors(
         wrong_architecture,
         alertmanager_config=alertmanager,
+        contract_payloads=contract_payloads,
     )
     assert any("Docker daemon" in error for error in architecture_errors)
 
@@ -447,6 +556,57 @@ def test_alertmanager_evidence_config_rejects_inline_delivery_secret(tmp_path: P
     assert "webhook_configs.0.url" in errors[0]
 
 
+@pytest.mark.parametrize(
+    ("header_name", "field_name"),
+    (
+        ("Authorization", "values"),
+        ("Proxy-Authorization", "values"),
+        ("X-API-Key", "values"),
+        ("X-Auth-Token", "values"),
+        ("X-Correlation-ID", "secrets"),
+    ),
+)
+def test_alertmanager_evidence_rejects_inline_http_header_secrets(
+    tmp_path: Path,
+    header_name: str,
+    field_name: str,
+) -> None:
+    gate = _load_gate()
+    config = tmp_path / "alertmanager.yml"
+    config.write_text(
+        (
+            "route:\n  receiver: ops\nreceivers:\n  - name: ops\n"
+            "    webhook_configs:\n      - url_file: /run/secrets/webhook\n"
+            "        http_config:\n          http_headers:\n"
+            f"            {header_name}:\n              {field_name}: [opaque-marker]\n"
+        ),
+        encoding="utf-8",
+    )
+
+    errors = gate._alertmanager_inline_secret_errors(config)
+
+    assert len(errors) == 1
+    assert f"{header_name}.{field_name}" in errors[0]
+    assert "opaque-marker" not in errors[0]
+
+
+def test_alertmanager_evidence_allows_http_header_files(tmp_path: Path) -> None:
+    gate = _load_gate()
+    config = tmp_path / "alertmanager.yml"
+    config.write_text(
+        (
+            "route:\n  receiver: ops\nreceivers:\n  - name: ops\n"
+            "    webhook_configs:\n      - url_file: /run/secrets/webhook\n"
+            "        http_config:\n          http_headers:\n"
+            "            Authorization:\n"
+            "              files: [/run/secrets/authorization-header]\n"
+        ),
+        encoding="utf-8",
+    )
+
+    assert gate._alertmanager_inline_secret_errors(config) == []
+
+
 def test_rabbitmq_exhaustion_requires_real_worker_final_reject() -> None:
     gate = _load_gate()
     exhausted = {
@@ -465,3 +625,98 @@ def test_rabbitmq_exhaustion_requires_real_worker_final_reject() -> None:
     exhausted["attempts"] = 2
     errors = gate._rabbitmq_exhaustion_errors(exhausted)
     assert any("worker's final rejected attempt" in error for error in errors)
+
+
+def test_external_projection_rejects_unknown_checksum_and_run_mix() -> None:
+    gate = _load_gate()
+    now = datetime.now(UTC)
+    source_run_id = str(uuid.uuid4())
+    receipt = {
+        "alert_name": "KnowledgeUploaderProtectedReleaseProbe",
+        "alert_fingerprint": "1" * 64,
+        "receiver_name": "protected-webhook",
+        "receiver_type": "webhook",
+        "webhook_delivery_id_sha256": "2" * 64,
+        "webhook_receipt_sha256": "3" * 64,
+        "webhook_status_code": 202,
+        "firing_at": now.isoformat(),
+        "delivered_at": now.isoformat(),
+        "resolved_at": now.isoformat(),
+    }
+    source_evidence = {
+        "schema": gate.SOURCE_SCHEMAS["alertmanager-notification.json"],
+        "generated_at": now.isoformat(),
+        "git_sha": TEST_GIT_SHA,
+        "environment": "staging",
+        "source_run_id": source_run_id,
+        "source_run_attempt": 1,
+        "source_tool": gate.SOURCE_TOOLS["alertmanager-notification.json"],
+        "status": "passed",
+        "receipt": receipt,
+    }
+    projection = {
+        "schema": gate.OUTPUT_SCHEMAS["alertmanager-notification.json"],
+        "generated_at": now.isoformat(),
+        "git_sha": TEST_GIT_SHA,
+        "environment": "staging",
+        "collector_run_id": 505,
+        "collector_run_attempt": 1,
+        "status": "passed",
+        "source": {
+            "schema": source_evidence["schema"],
+            "generated_at": source_evidence["generated_at"],
+            "run_id": source_run_id,
+            "run_attempt": 1,
+            "tool": source_evidence["source_tool"],
+            "file_sha256": "4" * 64,
+            "canonical_sha256": gate._canonical_sha256(source_evidence),
+        },
+        "receipt": receipt,
+    }
+
+    assert gate._validate_external_projection(
+        projection,
+        filename="alertmanager-notification.json",
+        git_sha=TEST_GIT_SHA,
+        environment="staging",
+        collector_run_id=505,
+        collector_run_attempt=1,
+        now=now,
+    ) == (source_run_id, 1, receipt)
+
+    unknown = json.loads(json.dumps(projection))
+    unknown["unexpected"] = True
+    with pytest.raises(RuntimeError, match="schema mismatch"):
+        gate._validate_external_projection(
+            unknown,
+            filename="alertmanager-notification.json",
+            git_sha=TEST_GIT_SHA,
+            environment="staging",
+            collector_run_id=505,
+            collector_run_attempt=1,
+            now=now,
+        )
+
+    forged = json.loads(json.dumps(projection))
+    forged["source"]["canonical_sha256"] = "0" * 64
+    with pytest.raises(RuntimeError, match="canonical checksum mismatch"):
+        gate._validate_external_projection(
+            forged,
+            filename="alertmanager-notification.json",
+            git_sha=TEST_GIT_SHA,
+            environment="staging",
+            collector_run_id=505,
+            collector_run_attempt=1,
+            now=now,
+        )
+
+    with pytest.raises(RuntimeError, match="collector identity mismatch"):
+        gate._validate_external_projection(
+            projection,
+            filename="alertmanager-notification.json",
+            git_sha=TEST_GIT_SHA,
+            environment="staging",
+            collector_run_id=506,
+            collector_run_attempt=1,
+            now=now,
+        )
