@@ -20,6 +20,11 @@ import {
   submitFileForReview,
 } from "../../api/client";
 import type * as ApiClientModule from "../../api/client";
+import {
+  type EmployeeDashboard,
+  getEmployeeDashboard,
+} from "../../api/dashboard";
+import type * as DashboardApiModule from "../../api/dashboard";
 import { useAuthStore } from "../../store/auth.store";
 import { themeCssVariables } from "../../theme/tokens";
 import MyFilesPage, { downloadBlob } from "./index";
@@ -36,6 +41,11 @@ vi.mock("../../api/client", async () => {
     deleteFile: vi.fn(),
     submitFileForReview: vi.fn(),
   };
+});
+
+vi.mock("../../api/dashboard", async () => {
+  const actual = await vi.importActual<typeof DashboardApiModule>("../../api/dashboard");
+  return { ...actual, getEmployeeDashboard: vi.fn() };
 });
 
 // ── react-router-dom mock ────────────────────────────────────────────────────
@@ -248,6 +258,65 @@ const uploadPolicyResponse: UploadPolicy = {
   allow_user_delete: true,
 };
 
+function employeeDashboard(
+  recentDocuments: EmployeeDashboard["employee"] extends infer Workbench
+    ? Workbench extends { recent_documents: infer Documents }
+      ? Documents
+      : never
+    : never = [],
+): EmployeeDashboard {
+  return {
+    role: "employee",
+    generated_at: "2026-06-10T00:00:00Z",
+    access: { scope: "self", ready: true, department_ids: ["dept-tech"] },
+    employee: {
+      status_counts: {
+        total: recentDocuments.length,
+        draft: 0,
+        ai_processing: 0,
+        analysis_failed: 0,
+        sensitive_review: 0,
+        pending_review: 0,
+        approved: 0,
+        rejected: 0,
+        sync_processing: 0,
+        parsed: 0,
+        sync_failed: 0,
+        archived: 0,
+      },
+      action_counts: {
+        total: recentDocuments.length,
+        submit_draft: 0,
+        revise_rejected: 0,
+        confirm_sensitive: 0,
+        analysis_failed: 0,
+      },
+      recent_documents: recentDocuments,
+      recent_notifications: [],
+      unread_notification_count: 0,
+    },
+    admin: null,
+    system: null,
+  };
+}
+
+function dashboardDocument(file: typeof mockFile2) {
+  return {
+    id: file.id,
+    original_name: file.original_name,
+    extension: file.extension,
+    status: file.status,
+    review_status: file.review_status,
+    updated_at: file.updated_at,
+    next_action:
+      file.status === "rejected"
+        ? ("revise_rejected" as const)
+        : file.status === "sensitive_review_required"
+          ? ("confirm_sensitive" as const)
+          : ("submit_review" as const),
+  };
+}
+
 // ── Setup ────────────────────────────────────────────────────────────────────
 beforeAll(() => {
   Object.defineProperty(window, "matchMedia", {
@@ -322,6 +391,7 @@ beforeEach(() => {
   });
   vi.mocked(getUploadPolicy).mockResolvedValue(uploadPolicyResponse);
   vi.mocked(submitFileForReview).mockResolvedValue(mockFile2);
+  vi.mocked(getEmployeeDashboard).mockResolvedValue(employeeDashboard());
 });
 
 // ── Tests ────────────────────────────────────────────────────────────────────
@@ -388,20 +458,23 @@ describe("MyFilesPage", () => {
     expect((await screen.findAllByText("技术架构.docx")).length).toBeGreaterThan(0);
   });
 
+  it("loads one dashboard aggregation while keeping one paginated file request", async () => {
+    vi.mocked(listDocuments).mockResolvedValue(mockFilesResponse);
+    vi.mocked(listTags).mockResolvedValue(mockTagsResponse);
+
+    renderWithProviders(<MyFilesPage />);
+
+    await screen.findAllByText("产品规划.pdf");
+    await waitFor(() => expect(getEmployeeDashboard).toHaveBeenCalledTimes(1));
+    expect(listDocuments).toHaveBeenCalledTimes(1);
+    expect(listDocuments).toHaveBeenCalledWith(
+      expect.objectContaining({ page: 1, page_size: 20 }),
+    );
+  });
+
   it("shows a retryable error instead of a false empty state when actionable summaries fail", async () => {
-    const actionableStatuses = new Set([
-      "rejected",
-      "analysis_failed",
-      "sensitive_review_required",
-      "uploaded",
-      "analyzed",
-    ]);
-    vi.mocked(listDocuments).mockImplementation(async (params = {}) => {
-      if (params.page_size === 4 && params.status && actionableStatuses.has(params.status)) {
-        throw new Error("summary unavailable");
-      }
-      return { items: [], total: 0 };
-    });
+    vi.mocked(listDocuments).mockResolvedValue({ items: [], total: 0 });
+    vi.mocked(getEmployeeDashboard).mockRejectedValue(new Error("dashboard unavailable"));
     vi.mocked(listTags).mockResolvedValue(mockTagsResponse);
 
     renderWithProviders(<MyFilesPage />);
@@ -409,21 +482,19 @@ describe("MyFilesPage", () => {
     expect(await screen.findByText("待办汇总加载失败")).toBeInTheDocument();
     expect(screen.queryByText("当前没有需要继续处理的文档")).not.toBeInTheDocument();
     expect(screen.getByText(/当前无法确认全部待处理文档/)).toBeInTheDocument();
-    const callsBeforeRetry = vi.mocked(listDocuments).mock.calls.length;
+    const callsBeforeRetry = vi.mocked(getEmployeeDashboard).mock.calls.length;
     fireEvent.click(screen.getByRole("button", { name: "重试待办汇总" }));
 
     await waitFor(() => {
-      expect(vi.mocked(listDocuments).mock.calls.length).toBeGreaterThan(callsBeforeRetry);
+      expect(vi.mocked(getEmployeeDashboard).mock.calls.length).toBeGreaterThan(callsBeforeRetry);
     });
   });
 
   it("puts analysis failures in continue processing and allows submission", async () => {
-    vi.mocked(listDocuments).mockImplementation(async (params = {}) => {
-      if (params.status === "analysis_failed" && params.page_size === 4) {
-        return { items: [mockAnalysisFailedFile], total: 1 };
-      }
-      return { items: [], total: 0 };
-    });
+    vi.mocked(listDocuments).mockResolvedValue({ items: [mockAnalysisFailedFile], total: 1 });
+    vi.mocked(getEmployeeDashboard).mockResolvedValue(
+      employeeDashboard([dashboardDocument(mockAnalysisFailedFile)]),
+    );
     vi.mocked(listTags).mockResolvedValue(mockTagsResponse);
     vi.mocked(submitFileForReview).mockResolvedValue({
       ...mockAnalysisFailedFile,
@@ -432,9 +503,13 @@ describe("MyFilesPage", () => {
 
     renderWithProviders(<MyFilesPage />);
 
-    expect(await screen.findByText("分析失败文档.pdf")).toBeInTheDocument();
-    expect(screen.getByText("尝试提交；若策略限制请联系管理员重试分析")).toBeInTheDocument();
-    fireEvent.click(screen.getByRole("button", { name: "提交审核" }));
+    expect((await screen.findAllByText("分析失败文档.pdf")).length).toBeGreaterThan(0);
+    expect(
+      screen.getAllByText("尝试提交；若策略限制请联系管理员重试分析").length,
+    ).toBeGreaterThan(0);
+    fireEvent.click(
+      screen.getAllByRole("button", { name: "提交审核 分析失败文档.pdf" })[0],
+    );
 
     await waitFor(() => {
       expect(submitFileForReview).toHaveBeenCalledWith("file-analysis-failed", undefined);
@@ -442,12 +517,10 @@ describe("MyFilesPage", () => {
   });
 
   it("shows a recoverable explanation when policy blocks analysis-failed submission", async () => {
-    vi.mocked(listDocuments).mockImplementation(async (params = {}) => {
-      if (params.status === "analysis_failed" && params.page_size === 4) {
-        return { items: [mockAnalysisFailedFile], total: 1 };
-      }
-      return { items: [], total: 0 };
-    });
+    vi.mocked(listDocuments).mockResolvedValue({ items: [mockAnalysisFailedFile], total: 1 });
+    vi.mocked(getEmployeeDashboard).mockResolvedValue(
+      employeeDashboard([dashboardDocument(mockAnalysisFailedFile)]),
+    );
     vi.mocked(listTags).mockResolvedValue(mockTagsResponse);
     vi.mocked(submitFileForReview).mockRejectedValue(
       new ApiError("submission disabled", {
@@ -457,8 +530,10 @@ describe("MyFilesPage", () => {
     );
 
     renderWithProviders(<MyFilesPage />);
-    expect(await screen.findByText("分析失败文档.pdf")).toBeInTheDocument();
-    fireEvent.click(screen.getByRole("button", { name: "提交审核" }));
+    expect((await screen.findAllByText("分析失败文档.pdf")).length).toBeGreaterThan(0);
+    fireEvent.click(
+      screen.getAllByRole("button", { name: "提交审核 分析失败文档.pdf" })[0],
+    );
 
     expect(await screen.findByText(/分析失败文档.pdf.*暂不能提交/)).toBeInTheDocument();
     expect(screen.getByText(/请联系部门管理员重新发起分析或检查 AI 配置/)).toBeInTheDocument();
@@ -466,12 +541,10 @@ describe("MyFilesPage", () => {
   });
 
   it("requires explicit acknowledgement before submitting a sensitive document", async () => {
-    vi.mocked(listDocuments).mockImplementation(async (params = {}) => {
-      if (params.status === "sensitive_review_required" && params.page_size === 4) {
-        return { items: [mockSensitiveFile], total: 1 };
-      }
-      return { items: [], total: 0 };
-    });
+    vi.mocked(listDocuments).mockResolvedValue({ items: [mockSensitiveFile], total: 1 });
+    vi.mocked(getEmployeeDashboard).mockResolvedValue(
+      employeeDashboard([dashboardDocument(mockSensitiveFile)]),
+    );
     vi.mocked(listTags).mockResolvedValue(mockTagsResponse);
     vi.mocked(submitFileForReview).mockResolvedValue({
       ...mockSensitiveFile,
@@ -479,8 +552,8 @@ describe("MyFilesPage", () => {
     });
 
     renderWithProviders(<MyFilesPage />);
-    expect(await screen.findByText("涉敏客户资料.pdf")).toBeInTheDocument();
-    fireEvent.click(screen.getByRole("button", { name: "提交审核" }));
+    expect((await screen.findAllByText("涉敏客户资料.pdf")).length).toBeGreaterThan(0);
+    fireEvent.click(screen.getAllByRole("button", { name: "提交审核 涉敏客户资料.pdf" })[0]);
 
     expect(submitFileForReview).not.toHaveBeenCalled();
     expect(await screen.findByText("确认提交敏感风险文档")).toBeInTheDocument();
@@ -496,12 +569,10 @@ describe("MyFilesPage", () => {
   });
 
   it("keeps sensitive acknowledgement on rejected documents before resubmission", async () => {
-    vi.mocked(listDocuments).mockImplementation(async (params = {}) => {
-      if (params.status === "rejected" && params.page_size === 4) {
-        return { items: [mockSensitiveRejectedFile], total: 1 };
-      }
-      return { items: [], total: 0 };
-    });
+    vi.mocked(listDocuments).mockResolvedValue({ items: [mockSensitiveRejectedFile], total: 1 });
+    vi.mocked(getEmployeeDashboard).mockResolvedValue(
+      employeeDashboard([dashboardDocument(mockSensitiveRejectedFile)]),
+    );
     vi.mocked(listTags).mockResolvedValue(mockTagsResponse);
     vi.mocked(submitFileForReview).mockResolvedValue({
       ...mockSensitiveRejectedFile,
@@ -509,8 +580,10 @@ describe("MyFilesPage", () => {
     });
 
     renderWithProviders(<MyFilesPage />);
-    expect(await screen.findByText("涉敏驳回材料.pdf")).toBeInTheDocument();
-    fireEvent.click(screen.getByRole("button", { name: "修改并重提" }));
+    expect((await screen.findAllByText("涉敏驳回材料.pdf")).length).toBeGreaterThan(0);
+    fireEvent.click(
+      screen.getAllByRole("button", { name: "提交审核 涉敏驳回材料.pdf" })[0],
+    );
 
     expect(submitFileForReview).not.toHaveBeenCalled();
     expect(await screen.findByText("确认提交敏感风险文档")).toBeInTheDocument();
@@ -537,9 +610,10 @@ describe("MyFilesPage", () => {
 
     renderWithProviders(<MyFilesPage />);
 
-    const statusButton = await screen.findByRole("button", { name: new RegExp(label) });
+    await screen.findAllByText(label);
+    const statusSelect = screen.getByRole("combobox", { name: "文档状态" });
     vi.mocked(listDocuments).mockClear();
-    fireEvent.click(statusButton);
+    fireEvent.change(statusSelect, { target: { value: expectedStatus } });
 
     await waitFor(() => {
       expect(listDocuments).toHaveBeenCalledWith(

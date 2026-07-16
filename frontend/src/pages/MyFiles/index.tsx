@@ -21,7 +21,7 @@ import {
   SearchOutlined,
   SendOutlined,
 } from "@ant-design/icons";
-import { useMutation, useQueries, useQuery, useQueryClient } from "@tanstack/react-query";
+import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import dayjs from "dayjs";
 import { Link, useNavigate, useSearchParams } from "react-router-dom";
 import type { ColumnsType } from "antd/es/table";
@@ -37,60 +37,55 @@ import {
   listTags,
   submitFileForReview,
 } from "../../api/client";
+import {
+  type DashboardRecentDocument,
+  type EmployeeStatusCounts,
+  getEmployeeDashboard,
+} from "../../api/dashboard";
 import { DepartmentAssignmentAlert } from "../../components/DepartmentAssignmentAlert";
 import { StatusTag } from "../../components/StatusTag";
 import { PageContainer } from "../../layouts/PageContainer";
 import { hasAssignedDepartment, useAuthStore } from "../../store/auth.store";
 import { allowUserDeleteFromPolicy, allowedExtensionsFromPolicy } from "../../utils/uploadConfig";
 
-const SUMMARY_STATUSES = [
-  "uploaded",
-  "analyzed",
-  "analysis_failed",
-  "sensitive_review_required",
-  "pending_review",
-  "approved",
-  "queued",
-  "syncing",
-  "uploaded_to_ragflow",
-  "parsing",
-  "parsed",
-  "failed",
-  "rejected",
-] as const;
-
-const ACTIONABLE_SUMMARY_STATUSES = [
-  "rejected",
-  "analysis_failed",
-  "sensitive_review_required",
-  "uploaded",
-  "analyzed",
-] as const;
-
-const STATUS_RAIL = [
-  { status: "uploaded", label: "草稿", hint: "补充信息并提交", danger: false },
-  { status: "analyzed", label: "分析完成", hint: "等待你提交", danger: false },
-  { status: "analysis_failed", label: "分析失败", hint: "提交受系统策略控制", danger: true },
+const STATUS_RAIL: Array<{
+  key: keyof EmployeeStatusCounts;
+  label: string;
+  hint: string;
+  danger: boolean;
+}> = [
+  { key: "draft", label: "草稿", hint: "上传或分析完成，等待提交", danger: false },
+  { key: "ai_processing", label: "AI 处理中", hint: "提取与分析进行中", danger: false },
+  { key: "analysis_failed", label: "分析失败", hint: "提交受系统策略控制", danger: true },
   {
-    status: "sensitive_review_required",
+    key: "sensitive_review",
     label: "风险待确认",
     hint: "确认风险后提交",
     danger: true,
   },
-  { status: "pending_review", label: "待审核", hint: "管理员处理中", danger: false },
-  { status: "approved", label: "已批准·未入库", hint: "审核决定不入库", danger: false },
-  { status: "queued", label: "入库排队", hint: "等待同步任务执行", danger: false },
-  { status: "syncing", label: "RAGFlow 上传中", hint: "正在上传原件", danger: false },
-  {
-    status: "uploaded_to_ragflow",
-    label: "等待解析",
-    hint: "原件已上传 RAGFlow",
-    danger: false,
-  },
-  { status: "parsing", label: "解析中", hint: "RAGFlow 正在解析", danger: false },
-  { status: "parsed", label: "已入库", hint: "可供下游检索", danger: false },
-  { status: "failed", label: "入库失败", hint: "联系管理员处理", danger: true },
-  { status: "rejected", label: "已驳回", hint: "查看原因并重提", danger: true },
+  { key: "pending_review", label: "待审核", hint: "管理员处理中", danger: false },
+  { key: "approved", label: "已批准·未入库", hint: "审核决定不入库", danger: false },
+  { key: "sync_processing", label: "入库处理中", hint: "排队、上传或解析", danger: false },
+  { key: "parsed", label: "已入库", hint: "可供下游检索", danger: false },
+  { key: "sync_failed", label: "入库失败", hint: "联系管理员处理", danger: true },
+  { key: "rejected", label: "已驳回", hint: "修改后重新提交", danger: true },
+  { key: "archived", label: "已归档", hint: "不再参与当前流程", danger: false },
+];
+
+const STATUS_FILTERS = [
+  { value: "uploaded", label: "草稿" },
+  { value: "analyzed", label: "分析完成" },
+  { value: "analysis_failed", label: "分析失败" },
+  { value: "sensitive_review_required", label: "风险待确认" },
+  { value: "pending_review", label: "待审核" },
+  { value: "approved", label: "已批准·未入库" },
+  { value: "queued", label: "入库排队" },
+  { value: "syncing", label: "RAGFlow 上传中" },
+  { value: "uploaded_to_ragflow", label: "等待解析" },
+  { value: "parsing", label: "解析中" },
+  { value: "parsed", label: "已入库" },
+  { value: "failed", label: "入库失败" },
+  { value: "rejected", label: "已驳回" },
 ] as const;
 
 const SUBMITTABLE_STATUSES = new Set([
@@ -158,7 +153,7 @@ export function downloadBlob(blob: Blob, fileName: string): void {
   }
 }
 
-function nextStep(file: KnowledgeFile): string {
+function nextStep(file: Pick<KnowledgeFile, "status">): string {
   const labels: Record<string, string> = {
     uploaded: "补充信息后提交审核",
     analyzed: "确认分析结果并提交",
@@ -253,21 +248,6 @@ export default function MyFilesPage() {
     placeholderData: (previous) => previous,
   });
 
-  const summaryQueries = useQueries({
-    queries: SUMMARY_STATUSES.map((summaryStatus) => ({
-      queryKey: ["documents", "mine", "summary", summaryStatus],
-      queryFn: () =>
-        listDocuments({
-          page: 1,
-          page_size: 4,
-          status: summaryStatus,
-          sort: "updated_at",
-          order: "desc",
-        }),
-      staleTime: 30_000,
-    })),
-  });
-
   const tagsQuery = useQuery({
     queryKey: ["tags", "list", "enabled"],
     queryFn: () => listTags({ enabled: true, page_size: 100 }),
@@ -276,8 +256,17 @@ export default function MyFilesPage() {
     queryKey: ["upload-policy"],
     queryFn: getUploadPolicy,
   });
+  const dashboardQuery = useQuery({
+    queryKey: ["dashboard", "employee"],
+    queryFn: () => getEmployeeDashboard(),
+    staleTime: 30_000,
+  });
 
-  const refreshFiles = () => queryClient.invalidateQueries({ queryKey: ["documents", "mine"] });
+  const refreshFiles = () =>
+    Promise.all([
+      queryClient.invalidateQueries({ queryKey: ["documents", "mine"] }),
+      queryClient.invalidateQueries({ queryKey: ["dashboard", "employee"] }),
+    ]);
   const deleteMutation = useMutation({
     mutationFn: deleteFile,
     onSuccess: async () => {
@@ -322,30 +311,13 @@ export default function MyFilesPage() {
     onError: (error: Error) => message.error(error.message || "原件下载失败"),
   });
 
-  const summaryByStatus = new Map(
-    SUMMARY_STATUSES.map((summaryStatus, index) => [summaryStatus, summaryQueries[index]]),
-  );
-  const actionableSummaryQueries = ACTIONABLE_SUMMARY_STATUSES.map((summaryStatus) =>
-    summaryByStatus.get(summaryStatus),
-  ).filter((query): query is NonNullable<typeof query> => Boolean(query));
-  const actionableSummaryErrorCount = actionableSummaryQueries.filter(
-    (query) => query.isError,
-  ).length;
-  const actionableSummaryAllFailed =
-    actionableSummaryQueries.length > 0 &&
-    actionableSummaryErrorCount === actionableSummaryQueries.length;
-  const actionableSummaryPending = actionableSummaryQueries.some((query) => query.isPending);
-  const continueFiles = Array.from(
-    new Map(
-      ACTIONABLE_SUMMARY_STATUSES.flatMap((summaryStatus) =>
-        (summaryByStatus.get(summaryStatus)?.data?.items ?? []).map(
-          (file) => [file.id, file] as const,
-        ),
-      ),
-    ).values(),
-  )
-    .sort((left, right) => dayjs(right.updated_at).valueOf() - dayjs(left.updated_at).valueOf())
-    .slice(0, 5);
+  const employeeWorkbench = dashboardQuery.data?.employee ?? null;
+  const statusCounts = employeeWorkbench?.status_counts;
+  const actionCount = employeeWorkbench?.action_counts.total ?? 0;
+  const continueFiles: DashboardRecentDocument[] =
+    employeeWorkbench?.recent_documents.filter((file) =>
+      ["submit_review", "revise_rejected", "confirm_sensitive"].includes(file.next_action),
+    ) ?? [];
 
   const allowedExtensions = allowedExtensionsFromPolicy(uploadPolicyQuery.data);
   const tagOptions = (tagsQuery.data?.items ?? []).map((tag) => ({
@@ -510,30 +482,29 @@ export default function MyFilesPage() {
 
       <section className="status-rail" aria-label="文档状态轨道">
         {STATUS_RAIL.map((item, index) => {
-          const query = summaryByStatus.get(item.status);
           return (
-            <button
+            <article
               className={[
                 "status-rail__item",
                 item.danger ? "status-rail__item--danger" : "",
-                status === item.status ? "status-rail__item--active" : "",
               ]
                 .filter(Boolean)
                 .join(" ")}
-              type="button"
-              key={item.status}
-              aria-pressed={status === item.status}
-              onClick={() => setQueryValue("status", item.status)}
+              key={item.key}
             >
               <span className="status-rail__step">{index + 1}</span>
               <span className="status-rail__copy">
                 <strong>{item.label}</strong>
                 <small>{item.hint}</small>
               </span>
-              <span className="status-rail__count">
-                {query?.isPending ? "…" : query?.isError ? "—" : (query?.data?.total ?? 0)}
+              <span className="status-rail__count" aria-live="polite">
+                {dashboardQuery.isPending
+                  ? "…"
+                  : dashboardQuery.isError
+                    ? "—"
+                    : (statusCounts?.[item.key] ?? 0)}
               </span>
-            </button>
+            </article>
           );
         })}
       </section>
@@ -547,24 +518,15 @@ export default function MyFilesPage() {
             <Typography.Text type="secondary">只列出你现在可以采取行动的文档</Typography.Text>
           </div>
         </div>
-        {actionableSummaryErrorCount > 0 ? (
+        {dashboardQuery.isError ? (
           <Alert
             className="workbench-gate-alert"
-            type={actionableSummaryAllFailed ? "error" : "warning"}
+            type="error"
             showIcon
-            message={actionableSummaryAllFailed ? "待办汇总加载失败" : "待办汇总加载不完整"}
+            message="待办汇总加载失败"
             description="当前无法确认全部待处理文档，请重试后再判断是否存在待办。"
             action={
-              <Button
-                size="small"
-                onClick={() =>
-                  void Promise.all(
-                    actionableSummaryQueries
-                      .filter((query) => query.isError)
-                      .map((query) => query.refetch()),
-                  )
-                }
-              >
+              <Button size="small" onClick={() => void dashboardQuery.refetch()}>
                 重试待办汇总
               </Button>
             }
@@ -579,23 +541,23 @@ export default function MyFilesPage() {
                   <Link to={`/files/${file.id}`}>{file.original_name}</Link>
                   <Typography.Text type="secondary">{nextStep(file)}</Typography.Text>
                 </span>
-                <Button
-                  type="link"
-                  onClick={() => requestReviewSubmission(file)}
-                  disabled={departmentBlocked}
-                  loading={
-                    submitMutation.isPending && submitMutation.variables?.file.id === file.id
-                  }
-                >
-                  {file.status === "rejected" ? "修改并重提" : "提交审核"}
+                <Button type="link" onClick={() => navigate(`/files/${file.id}`)}>
+                  {file.status === "rejected" ? "修改并重提" : "查看并处理"}
                 </Button>
               </article>
             ))}
           </div>
-        ) : actionableSummaryErrorCount > 0 ? null : actionableSummaryPending ? (
+        ) : dashboardQuery.isError ? null : dashboardQuery.isPending ? (
           <Typography.Text type="secondary" role="status">
             正在加载待办汇总…
           </Typography.Text>
+        ) : actionCount > 0 ? (
+          <Alert
+            type="info"
+            showIcon
+            message={`还有 ${actionCount} 个待处理文档`}
+            description="最近五条动态未包含这些文档，请在下方按状态筛选后继续处理。"
+          />
         ) : (
           <Empty image={Empty.PRESENTED_IMAGE_SIMPLE} description="当前没有需要继续处理的文档" />
         )}
@@ -634,7 +596,7 @@ export default function MyFilesPage() {
             onChange={(value) => setQueryValue("status", value)}
             options={[
               { label: "全部状态", value: "all" },
-              ...STATUS_RAIL.map((item) => ({ label: item.label, value: item.status })),
+              ...STATUS_FILTERS,
             ]}
           />
           <Select
