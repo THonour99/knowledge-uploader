@@ -45,6 +45,8 @@ tiktoken==0.7.0
 # Logging / rate limiting
 structlog==24.1.0
 slowapi==0.1.9
+prometheus-client==0.25.0
+PyYAML==6.0.2
 
 # Utilities
 python-dateutil==2.9.0.post0
