@@ -37,7 +37,7 @@ import {
 import { DepartmentAssignmentAlert } from "../../components/DepartmentAssignmentAlert";
 import { StatusTag } from "../../components/StatusTag";
 import { PageContainer } from "../../layouts/PageContainer";
-import { useAuthStore } from "../../store/auth.store";
+import { hasAssignedDepartment, useAuthStore } from "../../store/auth.store";
 import {
   allowMultiFileFromPolicy,
   allowedExtensionsFromPolicy,
@@ -105,7 +105,7 @@ async function runConcurrent<T>(
 export default function UploadPage() {
   const navigate = useNavigate();
   const { message } = AntdApp.useApp();
-  const departmentBlocked = useAuthStore((state) => state.user?.department_assigned === false);
+  const departmentBlocked = useAuthStore((state) => !hasAssignedDepartment(state.user));
   const [form] = Form.useForm<UploadFormValues>();
 
   // The upload queue is separate from the AntD Upload fileList so we can

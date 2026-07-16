@@ -22,6 +22,7 @@ import {
   uploadDocument,
 } from "../../api/client";
 import type * as ApiClientModule from "../../api/client";
+import { useAuthStore } from "../../store/auth.store";
 import { themeCssVariables } from "../../theme/tokens";
 import UploadPage from "./index";
 
@@ -114,9 +115,23 @@ beforeAll(() => {
 
 afterEach(() => {
   vi.clearAllMocks();
+  useAuthStore.setState({ accessToken: null, user: null });
 });
 
 beforeEach(() => {
+  useAuthStore.setState({
+    accessToken: "token",
+    user: {
+      id: "employee-1",
+      name: "张三",
+      email: "zhangsan@company.com",
+      role: "employee",
+      department_assigned: true,
+      department_id: "dept-tech",
+      department_name: "技术部",
+      department_code: "tech",
+    },
+  });
   vi.mocked(getUploadPolicy).mockResolvedValue(uploadPolicyResponse);
 });
 
@@ -301,6 +316,24 @@ describe("UploadPage multi-file", () => {
 // ── Rendering tests ───────────────────────────────────────────────────────────
 
 describe("UploadPage rendering", () => {
+  it("fails closed for an old persisted session without department assignment fields", async () => {
+    useAuthStore.setState({
+      accessToken: "old-token",
+      user: {
+        id: "employee-1",
+        name: "张三",
+        email: "zhangsan@company.com",
+        role: "employee",
+      },
+    });
+
+    renderWithProviders(<UploadPage />);
+
+    expect(await screen.findByText("尚未分配有效部门")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: /开始上传/ })).toBeDisabled();
+    expect(screen.getByRole("button", { name: /保存草稿/ })).toBeDisabled();
+  });
+
   it("renders the page title and dragger", () => {
     renderWithProviders(<UploadPage />);
 

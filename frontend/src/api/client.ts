@@ -1119,9 +1119,17 @@ export async function releaseReviewClaim(id: string, reason?: string): Promise<K
   return unwrapResponse(response.data);
 }
 
-export async function submitFileForReview(id: string): Promise<KnowledgeFile> {
+export interface SubmitReviewRequest {
+  acknowledge_sensitive_risk?: boolean;
+}
+
+export async function submitFileForReview(
+  id: string,
+  payload?: SubmitReviewRequest,
+): Promise<KnowledgeFile> {
   const response = await apiClient.post<ApiEnvelope<KnowledgeFile> | KnowledgeFile>(
     `/files/${id}/submit-review`,
+    payload,
   );
 
   return unwrapResponse(response.data);

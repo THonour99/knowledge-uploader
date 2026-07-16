@@ -684,19 +684,24 @@ a {
   font-size: 20px;
 }
 
-.metric-card__icon--success {  color: var(--ku-text-secondary);
+.metric-card__icon--success {
+  color: var(--ku-text-secondary);
 }
 
-.metric-card__icon--warning {  color: var(--ku-text-secondary);
+.metric-card__icon--warning {
+  color: var(--ku-text-secondary);
 }
 
-.metric-card__icon--danger {  color: var(--ku-text-secondary);
+.metric-card__icon--danger {
+  color: var(--ku-text-secondary);
 }
 
-.metric-card__icon--purple {  color: var(--ku-text-secondary);
+.metric-card__icon--purple {
+  color: var(--ku-text-secondary);
 }
 
-.metric-card__icon--info {  color: var(--ku-text-secondary);
+.metric-card__icon--info {
+  color: var(--ku-text-secondary);
 }
 
 .metric-card__value.ant-typography {
@@ -719,8 +724,7 @@ a {
 }
 
 .status-rail {
-  display: grid;
-  grid-template-columns: repeat(6, minmax(150px, 1fr));
+  display: flex;
   margin-bottom: 24px;
   overflow-x: auto;
   border-block: 1px solid var(--ku-border);
@@ -730,6 +734,7 @@ a {
 .status-rail__item {
   display: grid;
   position: relative;
+  flex: 1 0 160px;
   min-width: 150px;
   grid-template-columns: 28px minmax(0, 1fr) auto;
   gap: 10px;
@@ -2051,7 +2056,7 @@ a {
     grid-template-columns: minmax(0, 1fr);
   }
 
-.document-workspace__side {
+  .document-workspace__side {
     position: static;
   }
 
@@ -2066,7 +2071,7 @@ a {
     max-width: none;
   }
 
-.review-command-strip {
+  .review-command-strip {
     grid-template-columns: minmax(0, 1fr);
   }
 
@@ -2100,7 +2105,7 @@ a {
     flex-direction: column;
   }
 
-.dataset-health-card__result {
+  .dataset-health-card__result {
     min-width: 0;
     max-width: none;
   }
@@ -2109,7 +2114,7 @@ a {
     grid-template-columns: 38px minmax(0, 1fr);
   }
 
-.config-modal-summary__metric {
+  .config-modal-summary__metric {
     grid-column: 1 / -1;
     justify-items: start;
   }
@@ -2146,7 +2151,7 @@ a {
     padding: 20px 16px;
   }
 
-.dataset-command-strip {
+  .dataset-command-strip {
     padding: 14px;
   }
 
@@ -2154,7 +2159,7 @@ a {
     grid-template-columns: minmax(0, 1fr);
   }
 
-.upload-queue-row {
+  .upload-queue-row {
     grid-template-columns: 40px minmax(0, 1fr);
   }
 
@@ -2179,7 +2184,6 @@ a {
   .my-files-kpi-grid {
     grid-template-columns: minmax(0, 1fr);
   }
-
 }
 
 /* CPA-style light SaaS chrome shared by dense admin pages. */
@@ -2285,7 +2289,6 @@ a {
   }
 
   .status-rail {
-    grid-template-columns: repeat(6, 156px);
     margin-inline: -16px;
     padding-inline: 16px;
     scroll-snap-type: x proximity;
