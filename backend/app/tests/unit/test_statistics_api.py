@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import os
 from collections.abc import AsyncGenerator
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from importlib import import_module
 from uuid import UUID
 
@@ -141,6 +141,7 @@ async def _create_file(
 
     file = File(
         original_name=f"{hash_value[:8]}.txt",
+        title=f"{hash_value[:8]}.txt",
         stored_name=f"{hash_value[:8]}.txt",
         extension="txt",
         mime_type="text/plain",
@@ -157,6 +158,10 @@ async def _create_file(
         tags=[],
         status=status_value,
         review_status=review_status,
+        submitted_at=uploaded_at if status_value == "pending_review" else None,
+        review_due_at=(
+            uploaded_at + timedelta(hours=24) if status_value == "pending_review" else None
+        ),
         ragflow_document_id=ragflow_document_id,
         ai_analysis_enabled_at_upload=False,
         uploaded_at=uploaded_at,

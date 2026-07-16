@@ -4,6 +4,7 @@ import importlib.util
 import os
 import uuid
 from collections.abc import AsyncGenerator
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from types import ModuleType
 from uuid import UUID
@@ -116,14 +117,17 @@ async def _create_file(
     uploader_id: UUID,
     tags: list[str] | None = None,
     extension: str = "pdf",
+    status: str = "uploaded",
 ) -> UUID:
     from app.core.database import AsyncSessionFactory
     from app.modules.document.models import File
 
     unique = uuid.uuid4().hex
     mime_type = "application/pdf" if extension == "pdf" else "text/plain"
+    submitted_at = datetime.now(UTC) if status == "pending_review" else None
     file = File(
         original_name=f"doc-{unique}.{extension}",
+        title=f"doc-{unique}.{extension}",
         stored_name=f"file-{unique}.{extension}",
         extension=extension,
         mime_type=mime_type,
@@ -137,8 +141,12 @@ async def _create_file(
         visibility="private",
         description="tag target",
         tags=tags or [],
-        status="uploaded",
+        status=status,
         review_status="pending",
+        submitted_at=submitted_at,
+        review_due_at=(
+            submitted_at + timedelta(hours=24) if submitted_at is not None else None
+        ),
         ai_analysis_enabled_at_upload=False,
     )
     async with AsyncSessionFactory() as session:
@@ -329,6 +337,25 @@ async def test_tag_list_supports_search_enabled_filter_and_pagination(
     assert len(paged_data["items"]) == 1
 
 
+async def test_tag_search_treats_percent_and_underscore_as_literals(
+    tag_client: AsyncClient,
+) -> None:
+    token = await _system_admin_token(tag_client, email="tag-literal-admin@company.com")
+    await _create_tag(name="预算 100%_最终版")
+    await _create_tag(name="预算 100AX最终版")
+
+    response = await tag_client.get(
+        "/api/tags",
+        headers=_auth(token),
+        params={"search": "%_"},
+    )
+
+    assert response.status_code == 200
+    data = response.json()["data"]
+    assert data["total"] == 1
+    assert [item["name"] for item in data["items"]] == ["预算 100%_最终版"]
+
+
 async def test_usage_count_reflects_file_tag_associations(tag_client: AsyncClient) -> None:
     token = await _system_admin_token(tag_client, email="tag-usage-admin@company.com")
     uploader_id = await _create_user(email="tag-usage-user@company.com", password="password123")
@@ -441,9 +468,18 @@ async def test_my_files_filters_by_extension_and_tag_id(tag_client: AsyncClient)
     uploader_id = await _create_user(email="filter-owner@company.com", password="password123")
     token = await _login(tag_client, email="filter-owner@company.com", password="password123")
     tag_id = await _create_tag(name="筛选标签")
-    matching_file_id = await _create_file(uploader_id=uploader_id, extension="pdf")
-    other_extension_id = await _create_file(uploader_id=uploader_id, extension="txt")
-    other_tag_id = await _create_file(uploader_id=uploader_id, extension="pdf")
+    matching_file_id = await _create_file(
+        uploader_id=uploader_id,
+        extension="pdf",
+    )
+    other_extension_id = await _create_file(
+        uploader_id=uploader_id,
+        extension="txt",
+    )
+    other_tag_id = await _create_file(
+        uploader_id=uploader_id,
+        extension="pdf",
+    )
     await _link_file_tag(matching_file_id, tag_id)
 
     response = await tag_client.get(
@@ -474,9 +510,21 @@ async def test_review_files_filters_by_extension_and_tag_id(tag_client: AsyncCli
         password="password123",
     )
     tag_id = await _create_tag(name="管理筛选标签")
-    matching_file_id = await _create_file(uploader_id=uploader_id, extension="pdf")
-    other_extension_id = await _create_file(uploader_id=uploader_id, extension="txt")
-    other_tag_id = await _create_file(uploader_id=uploader_id, extension="pdf")
+    matching_file_id = await _create_file(
+        uploader_id=uploader_id,
+        extension="pdf",
+        status="pending_review",
+    )
+    other_extension_id = await _create_file(
+        uploader_id=uploader_id,
+        extension="txt",
+        status="pending_review",
+    )
+    other_tag_id = await _create_file(
+        uploader_id=uploader_id,
+        extension="pdf",
+        status="pending_review",
+    )
     await _link_file_tag(matching_file_id, tag_id)
 
     response = await tag_client.get(

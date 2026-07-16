@@ -139,6 +139,7 @@ async def _create_file(
     file = File(
         id=file_id,
         original_name=original_name,
+        title=original_name,
         stored_name=f"{file_id}.pdf",
         extension="pdf",
         mime_type="application/pdf",
