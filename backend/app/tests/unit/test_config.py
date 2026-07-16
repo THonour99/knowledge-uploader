@@ -5,7 +5,7 @@ from typing import Any
 import pytest
 from pydantic import ValidationError
 
-from app.core.config import Settings
+from app.core.config import Settings, approved_ragflow_base_url
 
 VALID_FERNET_KEY = "RZ1Sw_27VrN9c5Cfsq01qiwViwT6y7jDCuXYn7tgGJY="
 PRODUCTION_FERNET_KEY = "x6TF85ulMkiMF3GSpxCRgYn5v_t7q8D2r5LJw8ZvcVY="
@@ -57,6 +57,15 @@ def test_production_rejects_invalid_encryption_key() -> None:
 def test_production_rejects_default_development_encryption_key() -> None:
     with pytest.raises(ValidationError, match="ENCRYPTION_KEY"):
         Settings(**_production_settings(encryption_key=VALID_FERNET_KEY))
+
+
+@pytest.mark.parametrize("timeout_seconds", [59, 86401])
+def test_ragflow_parse_poll_timeout_is_bounded(timeout_seconds: int) -> None:
+    with pytest.raises(ValidationError, match="ragflow_parse_poll_timeout_seconds"):
+        Settings(
+            jwt_secret="test-jwt-secret-with-more-than-32-bytes",
+            ragflow_parse_poll_timeout_seconds=timeout_seconds,
+        )
 
 
 def test_production_rejects_default_infrastructure_passwords() -> None:
@@ -128,3 +137,36 @@ def test_protected_environment_accepts_explicit_forwarded_ips() -> None:
     )
 
     assert settings.uvicorn_forwarded_allow_ips == "127.0.0.1,10.0.0.5"
+
+
+@pytest.mark.parametrize(
+    "base_url",
+    (
+        "http://user:password@ragflow:9380",
+        "http://ragflow:9380?token=secret",
+        "http://ragflow:9380/#fragment",
+        "http://169.254.169.254/latest/meta-data",
+        "http://metadata.google.internal/computeMetadata/v1",
+    ),
+)
+def test_ragflow_environment_endpoint_rejects_credential_and_metadata_urls(
+    base_url: str,
+) -> None:
+    with pytest.raises(ValidationError, match="RAGFlow base URL"):
+        Settings(ragflow_base_url=base_url)
+
+
+def test_ragflow_runtime_endpoint_requires_exact_environment_approval() -> None:
+    settings = Settings(
+        ragflow_base_url="http://ragflow:9380/root",
+        ragflow_allowed_base_urls="https://ragflow.internal:9443/api",
+    )
+
+    assert (
+        approved_ragflow_base_url("https://ragflow.internal:9443/api/", settings)
+        == "https://ragflow.internal:9443/api"
+    )
+    with pytest.raises(ValueError, match="not approved"):
+        approved_ragflow_base_url("http://ragflow:9380/root.evil", settings)
+    with pytest.raises(ValueError, match="not approved"):
+        approved_ragflow_base_url("https://ragflow.internal:9443/api-extra", settings)

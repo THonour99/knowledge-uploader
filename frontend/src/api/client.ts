@@ -1283,7 +1283,7 @@ export interface TaskListQuery {
 
 // ── System config types ──────────────────────────────────────────────────────
 
-export type ConfigGroup = "upload" | "processing" | "security" | "review" | "ragflow";
+export type ConfigGroup = "upload" | "processing" | "security" | "review" | "ragflow" | "outbox";
 
 export type ConfigValueType = "string" | "int" | "bool" | "list" | "secret";
 

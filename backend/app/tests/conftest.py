@@ -75,10 +75,10 @@ def clear_runtime_config_cache() -> Generator[None, None, None]:
     from app.core import runtime_config
     from app.core.config import get_settings
 
-    runtime_config.invalidate()
+    runtime_config.invalidate(forget_last_known_good=True)
     get_settings.cache_clear()
     yield
-    runtime_config.invalidate()
+    runtime_config.invalidate(forget_last_known_good=True)
     get_settings.cache_clear()
 
 

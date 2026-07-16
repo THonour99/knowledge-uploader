@@ -75,12 +75,27 @@ const mockProcessingGroup: ConfigGroupResponse = {
   group: "processing",
   items: [
     {
-      key: "processing.task_max_retries",
+      key: "processing.parse_max_pages",
+      value: 200,
+      value_type: "int",
+      is_secret: false,
+      masked_value: null,
+      description: "解析最大页数",
+      updated_at: "2026-06-10T00:00:00Z",
+    },
+  ],
+};
+
+const mockOutboxGroup: ConfigGroupResponse = {
+  group: "outbox",
+  items: [
+    {
+      key: "outbox.publish_max_retries",
       value: 3,
       value_type: "int",
       is_secret: false,
       masked_value: null,
-      description: "任务最大重试次数",
+      description: "Outbox 事件发布最大重试次数",
       updated_at: "2026-06-10T00:00:00Z",
     },
   ],
@@ -177,6 +192,7 @@ function setupMocks() {
       security: mockSecurityGroup,
       review: mockReviewGroup,
       ragflow: mockRagflowGroup,
+      outbox: mockOutboxGroup,
     };
 
     return Promise.resolve(map[group] ?? mockUploadGroup);
@@ -264,7 +280,7 @@ describe("SettingsPage", () => {
     setupMocks();
     renderWithProviders(<SettingsPage />);
 
-    expect(await screen.findByText("5/5")).toBeInTheDocument();
+    expect(await screen.findByText("6/6")).toBeInTheDocument();
     expect(screen.getByText("配置已同步")).toBeInTheDocument();
     expect(screen.getAllByText("1 项").length).toBeGreaterThan(0);
     expect(screen.getByText("无待处理项")).toBeInTheDocument();

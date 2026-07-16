@@ -13,6 +13,7 @@ class DomainEvent(BaseModel):
 
 
 class EventEnvelope(Protocol):
+    event_id: int
     event_type: str
     payload: dict[str, object]
 

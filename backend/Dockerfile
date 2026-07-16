@@ -1,4 +1,5 @@
 ARG PYTHON_IMAGE=python:3.11-slim-bookworm
+ARG VCS_REF=unknown
 
 FROM --platform=$BUILDPLATFORM ${PYTHON_IMAGE} AS requirements-source
 
@@ -33,6 +34,9 @@ RUN python -m pip install --prefix=/install --no-cache-dir -r /requirements-dev.
 FROM --platform=$TARGETPLATFORM ${PYTHON_IMAGE} AS runtime
 
 ARG TARGETPLATFORM
+ARG VCS_REF
+
+LABEL org.opencontainers.image.revision=$VCS_REF
 
 ENV PYTHONDONTWRITEBYTECODE=1
 ENV PYTHONUNBUFFERED=1

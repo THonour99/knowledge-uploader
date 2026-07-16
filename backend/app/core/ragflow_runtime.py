@@ -2,8 +2,12 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
-from app.core.config import Settings, get_settings
+import structlog
+
+from app.core.config import Settings, approved_ragflow_base_url, get_settings
 from app.core.runtime_config import get_config
+
+logger = structlog.get_logger(__name__)
 
 
 @dataclass(frozen=True)
@@ -42,7 +46,7 @@ async def resolve_ragflow_runtime_settings(
     api_key_value = await get_config("ragflow.api_key")
     timeout_value = await get_config("ragflow.sync_timeout_seconds")
 
-    base_url = (
+    requested_base_url = (
         str(base_url_value).strip()
         if base_url_value is not None
         else resolved_settings.ragflow_base_url
@@ -57,6 +61,17 @@ async def resolve_ragflow_runtime_settings(
         if isinstance(timeout_value, int | float)
         else resolved_settings.ragflow_request_timeout
     )
+    try:
+        base_url = approved_ragflow_base_url(requested_base_url, resolved_settings)
+    except ValueError:
+        logger.error(
+            "ragflow_runtime_endpoint_not_approved",
+            error_type="EndpointNotApproved",
+        )
+        base_url = ""
+        api_key = ""
+    if not base_url:
+        api_key = ""
     return RagflowRuntimeSettings(
         base_url=base_url,
         api_key=api_key,

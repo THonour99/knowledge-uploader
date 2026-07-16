@@ -33,10 +33,11 @@ async def record_audit_log(
     user_agent: str,
     metadata_json: dict[str, object] | None = None,
     reason: str | None = None,
-) -> None:
+) -> uuid.UUID:
+    log_id = uuid.uuid4()
     await session.execute(
         insert(AUDIT_LOGS).values(
-            id=uuid.uuid4(),
+            id=log_id,
             actor_id=actor_id,
             action=action,
             target_type=target_type,
@@ -47,6 +48,7 @@ async def record_audit_log(
             reason=reason,
         )
     )
+    return log_id
 
 
 async def record_admin_audit_log(
@@ -60,8 +62,8 @@ async def record_admin_audit_log(
     user_agent: str,
     metadata_json: dict[str, object] | None = None,
     reason: str | None = None,
-) -> None:
-    await record_audit_log(
+) -> uuid.UUID:
+    return await record_audit_log(
         session,
         actor_id=actor_id,
         action=action,

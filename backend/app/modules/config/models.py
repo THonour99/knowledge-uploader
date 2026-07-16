@@ -15,7 +15,7 @@ class SystemConfig(Base):
     __tablename__ = "system_configs"
     __table_args__ = (
         CheckConstraint(
-            "\"group\" IN ('upload', 'processing', 'security', 'basic', 'ragflow')",
+            "\"group\" IN ('upload', 'processing', 'security', 'review', 'ragflow', 'outbox')",
             name="ck_system_configs_group",
         ),
         CheckConstraint(

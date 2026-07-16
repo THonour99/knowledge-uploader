@@ -8,7 +8,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core import runtime_config
 from app.core.audit import record_admin_audit_log
-from app.core.config import get_settings
+from app.core.config import approved_ragflow_base_url, get_settings
 from app.core.outbox import OutboxRepository
 from app.core.ragflow_runtime import normalized_dataset_ids
 from app.core.security import decrypt_secret, encrypt_secret
@@ -79,22 +79,30 @@ class ConfigService:
             definition = DEFINITIONS_BY_KEY.get(key)
             if definition is None or definition.group != group:
                 raise exceptions.unknown_config_key(key)
+            if definition.immutable:
+                raise exceptions.immutable_config_key(key)
             validated[key] = self._validate_value(definition, items[key])
         self._validate_ragflow_api_key_policy(validated)
 
-        existing = await self._repository.get_by_keys(list(validated))
+        rows = {row.key: row for row in await self._repository.list_by_group(group)}
         changes: dict[str, object] = {}
+        committed_runtime_values: dict[str, object | None] = {}
         for key, value in validated.items():
             definition = DEFINITIONS_BY_KEY[key]
             stored: object | None
             if definition.value_type == "secret":
                 stored = self._encrypt_secret_value(str(value))
+                committed_runtime_values[key] = runtime_config.resolve_committed_value(
+                    key,
+                    value if stored is not None else None,
+                )
             else:
                 stored = value
-                row = existing.get(key)
+                committed_runtime_values[key] = runtime_config.resolve_committed_value(key, value)
+                row = rows.get(key)
                 old_value = row.value if row is not None else definition.default
                 changes[key] = {"old": old_value, "new": value}
-            await self._repository.upsert_value(
+            rows[key] = await self._repository.upsert_value(
                 key=definition.key,
                 group=definition.group,
                 value_type=definition.value_type,
@@ -121,13 +129,24 @@ class ConfigService:
             aggregate_id=group,
             payload={"group": group, "keys": updated_keys},
         )
+        await self._session.flush()
+        for key in updated_keys:
+            await self._session.refresh(rows[key], attribute_names=["updated_at"])
+        response = self._group_response_from_rows(group, rows)
         await self._session.commit()
         for key in updated_keys:
-            runtime_config.invalidate(key)
-        return await self._group_response(group)
+            runtime_config.record_trusted_value(key, committed_runtime_values[key])
+        return response
 
     async def _group_response(self, group: str) -> ConfigGroupResponse:
         rows = {row.key: row for row in await self._repository.list_by_group(group)}
+        return self._group_response_from_rows(group, rows)
+
+    def _group_response_from_rows(
+        self,
+        group: str,
+        rows: dict[str, SystemConfig],
+    ) -> ConfigGroupResponse:
         items = [
             self._item_response(definition, rows.get(definition.key))
             for definition in definitions_for_group(group)
@@ -148,15 +167,22 @@ class ConfigService:
                 is_secret=True,
                 masked_value=self._masked_secret(row),
                 description=definition.description,
+                immutable=definition.immutable,
                 updated_at=updated_at,
             )
+        stored_value = row.value if row is not None else definition.default
+        effective_value = runtime_config.resolve_committed_value(
+            definition.key,
+            stored_value,
+        )
         return ConfigItemResponse(
             key=definition.key,
-            value=row.value if row is not None else definition.default,
+            value=effective_value,
             value_type=definition.value_type,
             is_secret=False,
             masked_value=None,
             description=definition.description,
+            immutable=definition.immutable,
             updated_at=updated_at,
         )
 
@@ -188,11 +214,25 @@ class ConfigService:
         if value_type == "bool":
             if not isinstance(value, bool):
                 raise exceptions.invalid_config_value(definition.key)
+            if definition.key == "security.block_critical_sensitive_sync" and value is not True:
+                raise exceptions.invalid_config_value(definition.key)
+            if (
+                definition.key == "security.require_email_verification"
+                and get_settings().require_email_verification
+                and value is not True
+            ):
+                raise exceptions.invalid_config_value(definition.key)
             return value
         if value_type in {"string", "secret"}:
             if not isinstance(value, str):
                 raise exceptions.invalid_config_value(definition.key)
-            return value.strip()
+            cleaned = value.strip()
+            if definition.key == "ragflow.base_url":
+                try:
+                    return approved_ragflow_base_url(cleaned, get_settings())
+                except ValueError:
+                    raise exceptions.invalid_config_value(definition.key) from None
+            return cleaned
         if not isinstance(value, list) or not all(isinstance(item, str) for item in value):
             raise exceptions.invalid_config_value(definition.key)
         return [item.strip() for item in value if item.strip()]

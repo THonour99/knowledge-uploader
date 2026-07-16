@@ -1,8 +1,9 @@
 from __future__ import annotations
 
+import ipaddress
 from functools import lru_cache
 from typing import Self
-from urllib.parse import urlparse
+from urllib.parse import urlparse, urlsplit
 
 from cryptography.fernet import Fernet
 from pydantic import Field, model_validator
@@ -22,6 +23,7 @@ PLACEHOLDER_SECRETS = {
 }
 PLACEHOLDER_IDENTIFIERS = {"", "knowledge", "minioadmin"}
 LOCAL_APP_BASE_HOSTS = {"localhost", "127.0.0.1", "::1"}
+MAX_IN_MEMORY_UPLOAD_BYTES = 200 * 1024 * 1024
 
 
 class Settings(BaseSettings):
@@ -48,7 +50,11 @@ class Settings(BaseSettings):
     minio_secret_key: str = "knowledge_password"
     minio_bucket: str = "knowledge-files"
     minio_secure: bool = False
-    upload_max_file_size_bytes: int = 50 * 1024 * 1024
+    upload_max_file_size_bytes: int = Field(
+        default=50 * 1024 * 1024,
+        ge=1,
+        le=MAX_IN_MEMORY_UPLOAD_BYTES,
+    )
     upload_rate_limit_per_minute: int = 10
     upload_allowed_extensions: str = "pdf,docx,xlsx,pptx,txt,md,csv"
     upload_allowed_mime_types: str = (
@@ -100,14 +106,19 @@ class Settings(BaseSettings):
     enable_similarity_detection: bool = False
 
     ragflow_base_url: str = "http://ragflow:9380"
+    ragflow_allowed_base_urls: str = ""
     ragflow_api_key: str = ""
     ragflow_allowed_dataset_ids: str = ""
     ragflow_request_timeout: float = 300.0
     ragflow_max_retry_count: int = 3
+    ragflow_parse_poll_timeout_seconds: int = Field(default=3600, ge=60, le=86400)
     uvicorn_forwarded_allow_ips: str = "127.0.0.1"
 
     @model_validator(mode="after")
     def validate_protected_environment_secrets(self) -> Self:
+        approved_ragflow_base_url(self.ragflow_base_url, self)
+        for approved_url in _normalized_csv_values(self.ragflow_allowed_base_urls):
+            _ragflow_endpoint_identity(approved_url)
         if self.ragflow_api_key.strip() and not _normalized_csv_values(
             self.ragflow_allowed_dataset_ids
         ):
@@ -149,6 +160,59 @@ def get_settings() -> Settings:
 
 def _normalized_csv_values(raw_value: str) -> set[str]:
     return {item.strip() for item in raw_value.split(",") if item.strip()}
+
+
+def _ragflow_endpoint_identity(raw_value: str) -> tuple[str, str, int, str]:
+    value = raw_value.strip()
+    parsed = urlsplit(value)
+    if (
+        not value
+        or parsed.scheme.lower() not in {"http", "https"}
+        or not parsed.netloc
+        or parsed.username is not None
+        or parsed.password is not None
+        or parsed.query
+        or parsed.fragment
+    ):
+        raise ValueError("RAGFlow base URL must be an absolute HTTP(S) endpoint")
+    hostname = parsed.hostname
+    if hostname is None:
+        raise ValueError("RAGFlow base URL must include a hostname")
+    try:
+        normalized_hostname = hostname.rstrip(".").encode("idna").decode("ascii").lower()
+        port = parsed.port or (443 if parsed.scheme.lower() == "https" else 80)
+    except (UnicodeError, ValueError) as error:
+        raise ValueError("RAGFlow base URL contains an invalid hostname or port") from error
+    if normalized_hostname in {"metadata.google.internal", "metadata.google.internal."}:
+        raise ValueError("RAGFlow base URL must not target an instance metadata endpoint")
+    try:
+        address = ipaddress.ip_address(normalized_hostname)
+    except ValueError:
+        address = None
+    if address is not None and (address.is_link_local or address.is_unspecified):
+        raise ValueError("RAGFlow base URL must not target a link-local endpoint")
+    path = parsed.path.rstrip("/")
+    if any(segment in {".", ".."} for segment in path.split("/")):
+        raise ValueError("RAGFlow base URL path must not contain dot segments")
+    return parsed.scheme.lower(), normalized_hostname, port, path
+
+
+def approved_ragflow_base_url(raw_value: str, settings: Settings) -> str:
+    """Return an env-approved endpoint, comparing parsed identities rather than prefixes."""
+    cleaned = raw_value.strip().rstrip("/")
+    if not cleaned:
+        return ""
+    candidate = _ragflow_endpoint_identity(cleaned)
+    approved_values = {
+        settings.ragflow_base_url.strip(),
+        *_normalized_csv_values(settings.ragflow_allowed_base_urls),
+    }
+    approved_identities = {
+        _ragflow_endpoint_identity(value) for value in approved_values if value.strip()
+    }
+    if candidate not in approved_identities:
+        raise ValueError("RAGFlow base URL is not approved by the deployment environment")
+    return cleaned
 
 
 def _requires_protected_secret_validation(app_env: str, app_base_url: str) -> bool:

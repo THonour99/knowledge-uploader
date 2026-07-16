@@ -4,6 +4,7 @@ import json
 import os
 import uuid
 from collections.abc import AsyncGenerator
+from datetime import UTC, datetime
 from typing import cast
 from uuid import UUID
 
@@ -16,45 +17,35 @@ pytestmark = pytest.mark.asyncio
 
 EXPECTED_GROUP_KEYS: dict[str, set[str]] = {
     "upload": {
+        "upload.enabled",
         "upload.allowed_extensions",
         "upload.max_file_size_mb",
         "upload.user_quota_mb",
         "upload.allow_multi_file",
         "upload.allow_user_delete",
-        "upload.enable_duplicate_check",
     },
     "processing": {
-        "processing.auto_parse_on_upload",
-        "processing.auto_sync_after_parse",
-        "processing.sync_after_ai_analysis",
-        "processing.task_max_retries",
-        "processing.task_timeout_seconds",
         "processing.parse_max_pages",
         "processing.parse_max_chars",
     },
+    "outbox": {"outbox.publish_max_retries"},
     "security": {
         "security.allowed_email_domains",
         "security.password_min_length",
         "security.login_max_failed_attempts",
         "security.login_lock_minutes",
         "security.require_email_verification",
-        "security.require_review_before_sync",
         "security.block_critical_sensitive_sync",
     },
-    "basic": {
-        "basic.system_name",
-        "basic.system_logo_url",
-        "basic.default_language",
-        "basic.default_timezone",
-        "basic.notification_channels",
-        "basic.admin_contact_email",
+    "review": {
+        "review.claim_timeout_minutes",
+        "review.sla_hours",
     },
     "ragflow": {
         "ragflow.base_url",
         "ragflow.api_key",
-        "ragflow.default_dataset_id",
-        "ragflow.auto_sync_enabled",
         "ragflow.sync_max_retries",
+        "ragflow.parse_poll_timeout_seconds",
         "ragflow.sync_timeout_seconds",
         "ragflow.allow_high_risk_sync",
         "ragflow.delete_remote_on_file_delete",
@@ -203,17 +194,112 @@ async def test_system_admin_reads_all_config_groups_with_seed_items(
         "csv",
     ]
     assert upload_items["upload.allow_user_delete"]["value"] is False
+    assert upload_items["upload.enabled"]["value"] is True
 
     security_items = _items_by_key(await _get_group(config_client, token, "security"))
     assert security_items["security.allowed_email_domains"]["value"] == ["company.com"]
     assert security_items["security.login_max_failed_attempts"]["value"] == 5
     assert security_items["security.require_email_verification"]["value"] is False
+    assert security_items["security.block_critical_sensitive_sync"]["immutable"] is True
+
+    review_items = _items_by_key(await _get_group(config_client, token, "review"))
+    assert review_items["review.claim_timeout_minutes"]["value"] == 30
+    assert review_items["review.sla_hours"]["value"] == 24
+    assert "已有领取不追溯缩短" in cast(
+        str,
+        review_items["review.claim_timeout_minutes"]["description"],
+    )
+    assert "已有截止时间不追溯缩短" in cast(
+        str,
+        review_items["review.sla_hours"]["description"],
+    )
 
     ragflow_items = _items_by_key(await _get_group(config_client, token, "ragflow"))
     api_key_item = ragflow_items["ragflow.api_key"]
     assert api_key_item["is_secret"] is True
     assert api_key_item["value"] is None
     assert api_key_item["masked_value"] is None
+
+
+async def test_review_config_enforces_snapshot_contract_bounds(
+    config_client: AsyncClient,
+) -> None:
+    await _create_user(
+        email="config-review-admin@company.com",
+        password="password123",
+        role="system_admin",
+    )
+    token = await _login(
+        config_client,
+        email="config-review-admin@company.com",
+        password="password123",
+    )
+
+    response = await config_client.put(
+        "/api/admin/configs/review",
+        headers={"Authorization": f"Bearer {token}"},
+        json={
+            "items": {
+                "review.claim_timeout_minutes": 5,
+                "review.sla_hours": 720,
+            }
+        },
+    )
+
+    assert response.status_code == 200
+    items = _items_by_key(response.json()["data"])
+    assert items["review.claim_timeout_minutes"]["value"] == 5
+    assert items["review.sla_hours"]["value"] == 720
+
+    for key, invalid_value in (
+        ("review.claim_timeout_minutes", 4),
+        ("review.claim_timeout_minutes", 1441),
+        ("review.sla_hours", 0),
+        ("review.sla_hours", 721),
+    ):
+        invalid_response = await config_client.put(
+            "/api/admin/configs/review",
+            headers={"Authorization": f"Bearer {token}"},
+            json={"items": {key: invalid_value}},
+        )
+        assert invalid_response.status_code == 400
+        assert invalid_response.json()["error_code"] == "VALIDATION_ERROR"
+
+
+async def test_update_response_does_not_query_database_after_commit(
+    config_client: AsyncClient,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from app.modules.config.schemas import ConfigGroupResponse
+    from app.modules.config.service import ConfigService  # noqa: TID251 - config service contract
+
+    await _create_user(
+        email="config-commit-boundary-admin@company.com",
+        password="password123",
+        role="system_admin",
+    )
+    token = await _login(
+        config_client,
+        email="config-commit-boundary-admin@company.com",
+        password="password123",
+    )
+
+    async def fail_post_commit_query(
+        _service: ConfigService,
+        _group: str,
+    ) -> ConfigGroupResponse:
+        raise AssertionError("update_group queried its response after commit")
+
+    monkeypatch.setattr(ConfigService, "_group_response", fail_post_commit_query)
+
+    response = await config_client.put(
+        "/api/admin/configs/upload",
+        headers={"Authorization": f"Bearer {token}"},
+        json={"items": {"upload.max_file_size_mb": 73}},
+    )
+
+    assert response.status_code == 200
+    assert _items_by_key(response.json()["data"])["upload.max_file_size_mb"]["value"] == 73
 
 
 async def test_dept_admin_and_employee_cannot_read_configs(
@@ -398,7 +484,9 @@ async def test_secret_config_masked_in_response_and_encrypted_in_db(
     from app.modules.config.models import SystemConfig
 
     plaintext = "sk-config-secret-abcd"
+    fallback_secret = "sk-env-fallback-abcd"
     monkeypatch.setenv("RAGFLOW_ALLOWED_DATASET_IDS", "config-dataset")
+    monkeypatch.setenv("RAGFLOW_API_KEY", fallback_secret)
     get_settings.cache_clear()
     await _create_user(
         email="config-secret-admin@company.com",
@@ -421,6 +509,15 @@ async def test_secret_config_masked_in_response_and_encrypted_in_db(
     updated_item = _items_by_key(response.json()["data"])["ragflow.api_key"]
     assert updated_item["value"] is None
     assert updated_item["masked_value"] == "sk-****abcd"
+
+    endpoint_response = await config_client.put(
+        "/api/admin/configs/ragflow",
+        headers={"Authorization": f"Bearer {token}"},
+        json={"items": {"ragflow.base_url": "https://attacker.invalid/capture"}},
+    )
+    assert endpoint_response.status_code == 400
+    assert endpoint_response.json()["error_code"] == "VALIDATION_ERROR"
+    assert plaintext not in json.dumps(endpoint_response.json())
 
     reread_item = _items_by_key(await _get_group(config_client, token, "ragflow"))[
         "ragflow.api_key"
@@ -459,6 +556,10 @@ async def test_secret_config_masked_in_response_and_encrypted_in_db(
     cleared_item = _items_by_key(clear_response.json()["data"])["ragflow.api_key"]
     assert cleared_item["value"] is None
     assert cleared_item["masked_value"] is None
+
+    from app.core import runtime_config
+
+    assert await runtime_config.get_config("ragflow.api_key") == fallback_secret
 
     async with AsyncSessionFactory() as session:
         cleared_result = await session.execute(
@@ -534,3 +635,275 @@ async def test_update_rejects_invalid_values_and_unknown_keys(
 
     items = _items_by_key(await _get_group(config_client, token, "upload"))
     assert items["upload.max_file_size_mb"]["value"] == 50
+
+
+async def test_critical_sync_block_is_exposed_as_immutable(
+    config_client: AsyncClient,
+) -> None:
+    await _create_user(
+        email="config-invariant-admin@company.com",
+        password="password123",
+        role="system_admin",
+    )
+    token = await _login(
+        config_client,
+        email="config-invariant-admin@company.com",
+        password="password123",
+    )
+
+    for value in (True, False):
+        response = await config_client.put(
+            "/api/admin/configs/security",
+            headers={"Authorization": f"Bearer {token}"},
+            json={"items": {"security.block_critical_sensitive_sync": value}},
+        )
+        assert response.status_code == 400
+        assert response.json()["message"] == (
+            "config key is immutable: security.block_critical_sensitive_sync"
+        )
+
+
+async def test_email_verification_environment_floor_is_effective_and_cannot_be_relaxed(
+    config_client: AsyncClient,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from app.core import runtime_config
+    from app.core.config import Settings
+    from app.core.database import AsyncSessionFactory
+    from app.modules.audit.models import AuditLog
+    from app.modules.config import service as config_service  # noqa: TID251 - same module
+    from app.modules.config.models import SystemConfig
+
+    await _create_user(
+        email="config-email-floor-admin@company.com",
+        password="password123",
+        role="system_admin",
+    )
+    token = await _login(
+        config_client,
+        email="config-email-floor-admin@company.com",
+        password="password123",
+    )
+    async with AsyncSessionFactory() as session:
+        session.add(
+            SystemConfig(
+                key="security.require_email_verification",
+                group="security",
+                value=False,
+                value_type="bool",
+                is_secret=False,
+                description="Require verified email",
+            )
+        )
+        await session.commit()
+
+    protected_settings = Settings(
+        allowed_email_domains="company.com",
+        jwt_secret="test-jwt-secret-with-more-than-32-bytes",
+        cache_redis_url=os.environ["CACHE_REDIS_URL"],
+        require_email_verification=True,
+    )
+    monkeypatch.setattr(config_service, "get_settings", lambda: protected_settings)
+    monkeypatch.setattr(runtime_config, "get_settings", lambda: protected_settings)
+    runtime_config.invalidate(forget_last_known_good=True)
+
+    effective_items = _items_by_key(await _get_group(config_client, token, "security"))
+    assert effective_items["security.require_email_verification"]["value"] is True
+
+    response = await config_client.put(
+        "/api/admin/configs/security",
+        headers={"Authorization": f"Bearer {token}"},
+        json={"items": {"security.require_email_verification": False}},
+    )
+
+    assert response.status_code == 400
+    assert response.json()["error_code"] == "VALIDATION_ERROR"
+    assert "security.require_email_verification" in response.json()["message"]
+    async with AsyncSessionFactory() as session:
+        stored = await session.scalar(
+            select(SystemConfig.value).where(
+                SystemConfig.key == "security.require_email_verification"
+            )
+        )
+        update_audits = list(
+            (
+                await session.execute(
+                    select(AuditLog).where(AuditLog.action == "config.update")
+                )
+            ).scalars()
+        )
+    assert stored is False
+    assert update_audits == []
+
+
+async def test_system_admin_lists_and_idempotently_replays_dead_letter(
+    config_client: AsyncClient,
+) -> None:
+    from app.core.database import AsyncSessionFactory
+    from app.core.outbox import EventOutbox, OutboxDeadLetter, OutboxRepository
+    from app.modules.audit.models import AuditLog
+
+    actor_id = await _create_user(
+        email="dlq-system-admin@company.com",
+        password="password123",
+        role="system_admin",
+    )
+    token = await _login(
+        config_client,
+        email="dlq-system-admin@company.com",
+        password="password123",
+    )
+    async with AsyncSessionFactory() as session:
+        event = EventOutbox(
+            event_type="document.file.uploaded",
+            aggregate_type="file",
+            aggregate_id="file-dlq-1",
+            payload={
+                "file_id": "file-dlq-1",
+                "secret": "must-not-leak-through-dlq-api",
+            },
+            publish_attempts=4,
+            last_error="RuntimeError",
+        )
+        session.add(event)
+        await session.flush()
+        dead_letter = OutboxDeadLetter(
+            event_id=event.id,
+            first_failed_at=datetime.now(UTC),
+            last_failed_at=datetime.now(UTC),
+            attempts=4,
+            error_type="RuntimeError",
+            correlation_id=f"outbox:{event.id}",
+            trace_id="trace-dlq-api",
+            payload_summary={
+                "field_names": [
+                    "file_id",
+                    "secret",
+                    {"api_key": "must-not-leak-summary-value"},
+                    "x" * 65,
+                ],
+                "field_count": "must-not-leak-count-value",
+                "encoded_bytes": -80,
+                "hmac_sha256": "must-not-leak-hmac-value",
+                "payload": "must-not-leak-dirty-payload",
+                "api_key": "must-not-leak-api-key",
+            },
+        )
+        session.add(dead_letter)
+        await session.commit()
+        dead_letter_id = dead_letter.id
+        event_id = event.id
+
+    list_response = await config_client.get(
+        "/api/admin/outbox/dead-letters",
+        params={"status": "pending"},
+        headers={"Authorization": f"Bearer {token}"},
+    )
+
+    assert list_response.status_code == 200
+    list_payload = list_response.json()["data"]
+    assert list_payload["total"] == 1
+    assert list_payload["items"][0]["id"] == str(dead_letter_id)
+    assert list_payload["items"][0]["event_id"] == event_id
+    assert list_payload["items"][0]["status"] == "pending"
+    assert list_payload["items"][0]["correlation_id"] == f"outbox:{event_id}"
+    assert list_payload["items"][0]["payload_summary"]["field_names"] == [
+        "file_id",
+        "secret",
+    ]
+    assert list_payload["items"][0]["payload_summary"] == {
+        "field_names": ["file_id", "secret"],
+        "field_count": 0,
+        "encoded_bytes": 0,
+        "hmac_sha256": "0" * 64,
+    }
+    serialized_list = json.dumps(list_payload, ensure_ascii=False)
+    assert "must-not-leak-through-dlq-api" not in serialized_list
+    assert "must-not-leak-summary-value" not in serialized_list
+    assert "must-not-leak-count-value" not in serialized_list
+    assert "must-not-leak-hmac-value" not in serialized_list
+    assert "must-not-leak-dirty-payload" not in serialized_list
+    assert "must-not-leak-api-key" not in serialized_list
+
+    detail_response = await config_client.get(
+        f"/api/admin/outbox/dead-letters/{dead_letter_id}",
+        headers={"Authorization": f"Bearer {token}"},
+    )
+    assert detail_response.status_code == 200
+    assert detail_response.json()["data"]["status"] == "pending"
+
+    first_replay = await config_client.post(
+        f"/api/admin/outbox/dead-letters/{dead_letter_id}/replay",
+        headers={"Authorization": f"Bearer {token}"},
+        json={"reason": "确认消息代理恢复后重放"},
+    )
+    second_replay = await config_client.post(
+        f"/api/admin/outbox/dead-letters/{dead_letter_id}/replay",
+        headers={"Authorization": f"Bearer {token}"},
+        json={"reason": "重复请求用于验证幂等"},
+    )
+
+    assert first_replay.status_code == 200
+    assert first_replay.json()["data"]["replay_queued"] is True
+    assert first_replay.json()["data"]["item"]["status"] == "requeued"
+    assert second_replay.status_code == 200
+    assert second_replay.json()["data"]["replay_queued"] is False
+
+    async with AsyncSessionFactory() as session:
+        replayed_event = await session.get(EventOutbox, event_id)
+        assert replayed_event is not None
+        await OutboxRepository(session).mark_published(replayed_event)
+        await session.commit()
+
+    resolved_response = await config_client.get(
+        "/api/admin/outbox/dead-letters",
+        params={"status": "resolved"},
+        headers={"Authorization": f"Bearer {token}"},
+    )
+    assert resolved_response.status_code == 200
+    assert resolved_response.json()["data"]["items"][0]["status"] == "resolved"
+
+    async with AsyncSessionFactory() as session:
+        stored_event = await session.get(EventOutbox, event_id)
+        stored_dead_letter = await session.get(OutboxDeadLetter, dead_letter_id)
+        audit_result = await session.execute(
+            select(AuditLog).where(AuditLog.action.like("outbox.dead_letter.%"))
+        )
+        audit_logs = list(audit_result.scalars())
+
+    assert stored_event is not None
+    assert stored_event.publish_attempts == 0
+    assert stored_event.last_error is None
+    assert stored_event.published_at is not None
+    assert stored_dead_letter is not None
+    assert stored_dead_letter.replay_count == 1
+    assert stored_dead_letter.last_replayed_by == actor_id
+    assert stored_dead_letter.last_replay_reason == "确认消息代理恢复后重放"
+    assert [log.action for log in audit_logs].count("outbox.dead_letter.replay") == 2
+    assert "must-not-leak-through-dlq-api" not in json.dumps(
+        [log.metadata_json for log in audit_logs],
+        ensure_ascii=False,
+    )
+
+
+async def test_dead_letter_endpoints_require_system_admin(
+    config_client: AsyncClient,
+) -> None:
+    await _create_user(
+        email="dlq-employee@company.com",
+        password="password123",
+        role="employee",
+    )
+    token = await _login(
+        config_client,
+        email="dlq-employee@company.com",
+        password="password123",
+    )
+
+    response = await config_client.get(
+        "/api/admin/outbox/dead-letters",
+        headers={"Authorization": f"Bearer {token}"},
+    )
+
+    assert response.status_code == 403
+    assert response.json()["error_code"] == "PERMISSION_DENIED"

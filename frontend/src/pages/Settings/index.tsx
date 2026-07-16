@@ -56,9 +56,10 @@ const labelMap: Record<string, string> = {
   "upload.allow_multi_file": "允许批量上传",
   "upload.allow_user_delete": "允许用户删除",
   // processing
-  "processing.task_max_retries": "任务最大重试次数",
   "processing.parse_max_pages": "解析最大页数",
   "processing.parse_max_chars": "解析最大字符数",
+  // outbox
+  "outbox.publish_max_retries": "事件发布最大重试次数",
   // security
   "security.allowed_email_domains": "允许的邮箱域名",
   "security.password_min_length": "密码最小长度",
@@ -73,6 +74,7 @@ const labelMap: Record<string, string> = {
   "ragflow.api_key": "RAGFlow API Key",
   "ragflow.sync_max_retries": "同步最大重试次数",
   "ragflow.sync_timeout_seconds": "同步超时时间（秒）",
+  "ragflow.parse_poll_timeout_seconds": "解析轮询总时限（秒）",
   "ragflow.allow_high_risk_sync": "允许高风险文档同步",
   "ragflow.delete_remote_on_file_delete": "删除文件时删除远端",
   "ragflow.keep_remote_on_archive": "归档时保留远端",
@@ -135,6 +137,7 @@ const configOverviewGroups: ConfigGroup[] = [
   "security",
   "review",
   "ragflow",
+  "outbox",
 ];
 
 const settingsSummaryItems: SettingsSummaryItem[] = [
@@ -182,6 +185,15 @@ const settingsSummaryItems: SettingsSummaryItem[] = [
     icon: <ApiOutlined />,
     tone: "primary",
     status: { kind: "dataset", value: "pending" },
+  },
+  {
+    key: "outbox",
+    title: "事件投递",
+    meta: "可靠发布",
+    description: "Outbox 发布重试与死信处置",
+    icon: <ReloadOutlined />,
+    tone: "warning",
+    status: { kind: "health", value: "ok" },
   },
   {
     key: "services",
@@ -993,6 +1005,11 @@ export default function SettingsPage() {
             key: "ragflow",
             label: "RAGFlow",
             children: <RagflowPanel />,
+          },
+          {
+            key: "outbox",
+            label: "事件投递",
+            children: <ConfigPanel group="outbox" cardTitle="Outbox 发布配置" dangerConfirm />,
           },
           {
             key: "services",

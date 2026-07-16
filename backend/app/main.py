@@ -13,12 +13,13 @@ from redis.asyncio import from_url
 from sqlalchemy import text
 from starlette import status
 from starlette.requests import Request
-from starlette.responses import JSONResponse
+from starlette.responses import JSONResponse, Response
 
 from app.core.config import get_settings
 from app.core.database import engine
 from app.core.exceptions import ErrorCode
 from app.core.logging import configure_logging
+from app.core.metrics import http_metrics_middleware, metrics_response
 from app.core.middlewares import request_id_middleware
 from app.core.responses import error_response
 from app.modules.ai.api import router as ai_router
@@ -40,6 +41,7 @@ from app.modules.user.api import router as user_router
 configure_logging()
 app = FastAPI(title="Knowledge Uploader", version="0.1.0")
 app.middleware("http")(request_id_middleware)
+app.middleware("http")(http_metrics_middleware)
 app.include_router(ai_router)
 app.include_router(audit_router)
 app.include_router(auth_router)
@@ -103,6 +105,11 @@ async def validation_exception_handler(
 @app.get("/api/system/health", tags=["system"])
 async def health_check() -> dict[str, str]:
     return {"status": "ok"}
+
+
+@app.get("/metrics", include_in_schema=False)
+async def prometheus_metrics() -> Response:
+    return metrics_response()
 
 
 @app.get("/api/system/ready", tags=["system"])
