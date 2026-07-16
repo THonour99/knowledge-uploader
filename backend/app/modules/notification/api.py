@@ -12,7 +12,7 @@ from app.core.permissions import CurrentUserDep
 from app.core.responses import success_response
 
 from .repository import NotificationRepository  # noqa: TID251 - same-module repository dependency
-from .schemas import NotificationItem
+from .schemas import NotificationItem, NotificationReadAllResponse
 from .service import NotificationPage, NotificationService  # noqa: TID251 - same-module service
 
 router = APIRouter(prefix="/api/notifications", tags=["notification"])
@@ -39,6 +39,17 @@ async def list_notifications(
         user_id=current_user.id,
         page=NotificationPage(page=page, page_size=page_size, unread_only=unread_only),
     )
+    return success_response(response.model_dump(mode="json"), request)
+
+
+@router.post("/read-all")
+async def mark_all_notifications_read(
+    request: Request,
+    current_user: CurrentUserDep,
+    session: SessionDep,
+) -> dict[str, object]:
+    updated_count = await _service(session).mark_all_read(user_id=current_user.id)
+    response = NotificationReadAllResponse(updated_count=updated_count)
     return success_response(response.model_dump(mode="json"), request)
 
 

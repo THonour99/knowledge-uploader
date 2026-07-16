@@ -136,6 +136,57 @@ async def test_in_app_notification_can_be_listed_and_marked_read() -> None:
         assert unread_page.unread_count == 0
 
 
+async def test_mark_all_read_is_user_scoped_and_idempotent() -> None:
+    from app.core.database import AsyncSessionFactory
+    from app.modules.notification.repository import NotificationRepository  # noqa: TID251
+    from app.modules.notification.service import (  # noqa: TID251
+        NotificationPage,
+        NotificationService,
+    )
+
+    user_id = await _create_user("read-all@company.com")
+    other_user_id = await _create_user("read-all-other@company.com")
+
+    async with AsyncSessionFactory() as session:
+        service = NotificationService(
+            session=session,
+            repository=NotificationRepository(session),
+        )
+        await service.create_in_app(
+            user_id=user_id,
+            type="review_approved",
+            title="第一条",
+            body="第一条通知",
+        )
+        await service.create_in_app(
+            user_id=user_id,
+            type="review_rejected",
+            title="第二条",
+            body="第二条通知",
+        )
+        await service.create_in_app(
+            user_id=other_user_id,
+            type="review_approved",
+            title="其他用户",
+            body="不能被当前用户标记",
+        )
+
+        assert await service.mark_all_read(user_id=user_id) == 2
+        assert await service.mark_all_read(user_id=user_id) == 0
+
+        current_page = await service.list_user_notifications(
+            user_id=user_id,
+            page=NotificationPage(page=1, page_size=20),
+        )
+        other_page = await service.list_user_notifications(
+            user_id=other_user_id,
+            page=NotificationPage(page=1, page_size=20),
+        )
+
+        assert current_page.unread_count == 0
+        assert other_page.unread_count == 1
+
+
 async def test_review_handler_creates_in_app_and_email_notification(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

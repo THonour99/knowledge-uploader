@@ -134,3 +134,8 @@ class NotificationService:
             await self._session.commit()
             await self._session.refresh(notification)
         return notification
+
+    async def mark_all_read(self, *, user_id: uuid.UUID) -> int:
+        updated_count = await self._repository.mark_all_read(user_id=user_id)
+        await self._session.commit()
+        return updated_count

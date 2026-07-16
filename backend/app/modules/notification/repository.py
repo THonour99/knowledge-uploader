@@ -3,7 +3,7 @@ from __future__ import annotations
 import uuid
 from datetime import UTC, datetime
 
-from sqlalchemy import Select, func, select
+from sqlalchemy import Select, func, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from .models import Notification
@@ -99,6 +99,20 @@ class NotificationRepository:
             notification.read_at = datetime.now(UTC)
             await self._session.flush()
         return notification
+
+    async def mark_all_read(self, *, user_id: uuid.UUID) -> int:
+        result = await self._session.execute(
+            update(Notification)
+            .where(
+                Notification.user_id == user_id,
+                Notification.read_at.is_(None),
+            )
+            .values(read_at=datetime.now(UTC))
+            .returning(Notification.id)
+        )
+        updated_ids = result.scalars().all()
+        await self._session.flush()
+        return len(updated_ids)
 
     def _base_user_query(
         self,

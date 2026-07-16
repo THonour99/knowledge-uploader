@@ -41,3 +41,7 @@ class NotificationListResponse(BaseModel):
     unread_count: int
     page: int
     page_size: int
+
+
+class NotificationReadAllResponse(BaseModel):
+    updated_count: int
