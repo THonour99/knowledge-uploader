@@ -25,6 +25,7 @@ from app.modules.ai.api import router as ai_router
 from app.modules.audit.api import router as audit_router
 from app.modules.auth.api import router as auth_router
 from app.modules.config.api import router as config_router
+from app.modules.dashboard.api import router as dashboard_router
 from app.modules.department.api import managed_router as department_managed_router
 from app.modules.department.api import router as department_router
 from app.modules.document.api import admin_router as document_admin_router
@@ -43,6 +44,7 @@ app.include_router(ai_router)
 app.include_router(audit_router)
 app.include_router(auth_router)
 app.include_router(config_router)
+app.include_router(dashboard_router)
 app.include_router(department_router)
 app.include_router(department_managed_router)
 app.include_router(document_admin_router)
