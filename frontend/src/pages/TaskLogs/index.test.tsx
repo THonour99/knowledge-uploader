@@ -4,6 +4,7 @@ import { App as AntdApp, ConfigProvider } from "antd";
 import type * as AntdModule from "antd";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { MemoryRouter, useLocation } from "react-router-dom";
 import { afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 
 import {
@@ -152,6 +153,8 @@ const mockListResponse: SyncTaskListResponse = {
   total: 3,
 };
 
+const LINKED_TASK_ID = "11111111-1111-4111-8111-111111111111";
+
 beforeAll(() => {
   Object.defineProperty(window, "matchMedia", {
     writable: true,
@@ -175,7 +178,12 @@ beforeAll(() => {
   });
 });
 
-function renderWithProviders(node: ReactNode) {
+function LocationProbe() {
+  const location = useLocation();
+  return <span data-testid="task-log-location">{`${location.pathname}${location.search}`}</span>;
+}
+
+function renderWithProviders(node: ReactNode, initialEntry = "/task-logs") {
   const queryClient = new QueryClient({
     defaultOptions: {
       queries: { retry: false },
@@ -184,13 +192,18 @@ function renderWithProviders(node: ReactNode) {
   });
 
   return render(
-    <ConfigProvider>
-      <AntdApp>
-        <QueryClientProvider client={queryClient}>
-          <div style={themeCssVariables as CSSProperties}>{node}</div>
-        </QueryClientProvider>
-      </AntdApp>
-    </ConfigProvider>,
+    <MemoryRouter initialEntries={[initialEntry]}>
+      <ConfigProvider>
+        <AntdApp>
+          <QueryClientProvider client={queryClient}>
+            <div style={themeCssVariables as CSSProperties}>
+              <LocationProbe />
+              {node}
+            </div>
+          </QueryClientProvider>
+        </AntdApp>
+      </ConfigProvider>
+    </MemoryRouter>,
   );
 }
 
@@ -199,6 +212,40 @@ afterEach(() => {
 });
 
 describe("TaskLogsPage", () => {
+  it("opens a UUID task deep link and removes it when the drawer closes", async () => {
+    const linkedTask = makeMockTask({ id: LINKED_TASK_ID });
+    vi.mocked(listTasks).mockResolvedValue(mockListResponse);
+    vi.mocked(getTask).mockResolvedValue(linkedTask);
+
+    renderWithProviders(<TaskLogsPage />, `/task-logs?task_id=${LINKED_TASK_ID}`);
+
+    await waitFor(() => expect(getTask).toHaveBeenCalledWith(LINKED_TASK_ID));
+    expect(await screen.findByRole("region", { name: "任务执行摘要" })).toHaveTextContent(
+      LINKED_TASK_ID,
+    );
+    const closeButton = document.querySelector(".ant-drawer-close") as HTMLButtonElement;
+    expect(closeButton).toBeTruthy();
+    fireEvent.click(closeButton);
+
+    await waitFor(() => {
+      expect(screen.getByTestId("task-log-location")).toHaveTextContent("/task-logs");
+      expect(screen.getByTestId("task-log-location")).not.toHaveTextContent("task_id=");
+    });
+  });
+
+  it("rejects and normalizes a malformed task deep link", async () => {
+    vi.mocked(listTasks).mockResolvedValue(mockListResponse);
+
+    renderWithProviders(<TaskLogsPage />, "/task-logs?task_id=..%2F..%2Fsettings");
+
+    await screen.findByRole("heading", { name: "任务日志" });
+    await waitFor(() => {
+      expect(screen.getByTestId("task-log-location")).toHaveTextContent("/task-logs");
+      expect(screen.getByTestId("task-log-location")).not.toHaveTextContent("task_id=");
+    });
+    expect(getTask).not.toHaveBeenCalled();
+  });
+
   it("renders task list with type, file_id, status tag, retry count and time columns", async () => {
     vi.mocked(listTasks).mockResolvedValue(mockListResponse);
 

@@ -43,11 +43,17 @@ function formatHealthDescription(value: SidebarHealthValue): string {
   return "等待健康检查";
 }
 
-export function Sidebar() {
+interface SidebarProps {
+  mobile?: boolean;
+  onNavigate?: () => void;
+}
+
+export function Sidebar({ mobile = false, onNavigate }: SidebarProps) {
   const navigate = useNavigate();
   const location = useLocation();
   const role = useAuthStore((state) => state.user?.role);
-  const collapsed = useUiStore((state) => state.sidebarCollapsed);
+  const storedCollapsed = useUiStore((state) => state.sidebarCollapsed);
+  const collapsed = mobile ? false : storedCollapsed;
   const toggleSidebar = useUiStore((state) => state.toggleSidebar);
   const healthQuery = useQuery({
     queryKey: ["system", "health", "sidebar"],
@@ -106,7 +112,10 @@ export function Sidebar() {
         mode="inline"
         selectedKeys={[getSelectedKey(location.pathname)]}
         items={menuItems}
-        onClick={({ key }) => navigate(key)}
+        onClick={({ key }) => {
+          navigate(key);
+          onNavigate?.();
+        }}
       />
       <div className="sidebar-footer">
         <div className="sidebar-health" aria-label="平台运行状态">
@@ -123,14 +132,16 @@ export function Sidebar() {
             </span>
           )}
         </div>
-        <Button
-          type="text"
-          icon={collapsed ? <DoubleRightOutlined /> : <DoubleLeftOutlined />}
-          onClick={toggleSidebar}
-          aria-label={collapsed ? "展开菜单" : "收起菜单"}
-        >
-          {collapsed ? null : "收起菜单"}
-        </Button>
+        {mobile ? null : (
+          <Button
+            type="text"
+            icon={collapsed ? <DoubleRightOutlined /> : <DoubleLeftOutlined />}
+            onClick={toggleSidebar}
+            aria-label={collapsed ? "展开菜单" : "收起菜单"}
+          >
+            {collapsed ? null : "收起菜单"}
+          </Button>
+        )}
       </div>
     </div>
   );

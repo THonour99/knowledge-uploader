@@ -21,10 +21,22 @@ export interface CurrentUser {
   department_code?: string | null;
 }
 
+export const UNASSIGNED_DEPARTMENT_ID = "00000000-0000-0000-0000-000000000001";
+
+export function hasAssignedDepartment(user: CurrentUser | null | undefined): boolean {
+  return Boolean(
+    user?.department_assigned === true &&
+    user.department_id &&
+    user.department_id !== UNASSIGNED_DEPARTMENT_ID &&
+    user.department_code?.toLowerCase() !== "unassigned",
+  );
+}
+
 interface AuthState {
   accessToken: string | null;
   user: CurrentUser | null;
   setSession: (accessToken: string, user: CurrentUser) => void;
+  setUser: (user: CurrentUser) => void;
   clearSession: () => void;
 }
 
@@ -34,6 +46,7 @@ export const useAuthStore = create<AuthState>()(
       accessToken: null,
       user: null,
       setSession: (accessToken, user) => set({ accessToken, user }),
+      setUser: (user) => set({ user }),
       clearSession: () => set({ accessToken: null, user: null }),
     }),
     {

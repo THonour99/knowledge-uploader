@@ -1,4 +1,5 @@
-import { Alert, Button } from "antd";
+import { Alert, Button, Space } from "antd";
+import { useIsFetching, useQueryClient } from "@tanstack/react-query";
 
 import { useAuthStore } from "../store/auth.store";
 
@@ -7,6 +8,8 @@ interface DepartmentAssignmentAlertProps {
 }
 
 export function DepartmentAssignmentAlert({ className }: DepartmentAssignmentAlertProps) {
+  const queryClient = useQueryClient();
+  const profileFetching = useIsFetching({ queryKey: ["auth", "me"] }) > 0;
   const user = useAuthStore((state) => state.user);
   const subject = encodeURIComponent("知识库账号部门分配申请");
   const body = encodeURIComponent(
@@ -21,9 +24,18 @@ export function DepartmentAssignmentAlert({ className }: DepartmentAssignmentAle
       message="尚未分配有效部门"
       description="部门决定审核范围和知识库归属。完成分配前不能上传或提交文档。"
       action={
-        <Button type="link" href={`mailto:?subject=${subject}&body=${body}`}>
-          联系管理员分配部门
-        </Button>
+        <Space wrap>
+          <Button
+            size="small"
+            loading={profileFetching}
+            onClick={() => void queryClient.invalidateQueries({ queryKey: ["auth", "me"] })}
+          >
+            刷新账号状态
+          </Button>
+          <Button type="link" href={`mailto:?subject=${subject}&body=${body}`}>
+            联系管理员分配部门
+          </Button>
+        </Space>
       }
     />
   );

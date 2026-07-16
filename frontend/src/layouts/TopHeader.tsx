@@ -4,12 +4,13 @@ import {
   DownOutlined,
   LeftOutlined,
   LogoutOutlined,
+  MenuOutlined,
   ProfileOutlined,
   UserOutlined,
 } from "@ant-design/icons";
 import { App as AntdApp, Avatar, Badge, Button, Dropdown, Input, Space, Typography } from "antd";
 import type { MenuProps } from "antd";
-import { useQuery } from "@tanstack/react-query";
+import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import dayjs from "dayjs";
 import { useLocation, useNavigate } from "react-router-dom";
 
@@ -19,10 +20,14 @@ import {
   getSystemReadiness,
   listNotifications,
   logout,
+  markAllNotificationsRead,
+  markNotificationRead,
+  type NotificationItem,
 } from "../api/client";
 import { StatusTag } from "../components/StatusTag";
 import { appNavigationRoutes, utilityNavigation } from "../router/routes";
-import { useAuthStore } from "../store/auth.store";
+import { Roles, useAuthStore } from "../store/auth.store";
+import { useUiStore } from "../store/ui.store";
 
 type HealthStatusValue = "ok" | "error" | "unknown";
 
@@ -77,6 +82,52 @@ function formatNotificationTime(value: string): string {
   return createdAt.format("MM-DD HH:mm");
 }
 
+const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+
+function isUuid(value: unknown): value is string {
+  return typeof value === "string" && UUID_PATTERN.test(value);
+}
+
+interface NotificationDeepLinkOptions {
+  canAccessTaskLogs?: boolean;
+}
+
+export function notificationDeepLink(
+  notification: NotificationItem,
+  options: NotificationDeepLinkOptions = {},
+): string | null {
+  const { metadata } = notification;
+  const fileFallback = isUuid(metadata.file_id) ? `/files/${metadata.file_id}` : null;
+  const hasResourceContract = "resource_type" in metadata || "resource_id" in metadata;
+
+  if (hasResourceContract) {
+    if (!isUuid(metadata.resource_id)) {
+      return null;
+    }
+    if (metadata.resource_type === "file") {
+      return `/files/${metadata.resource_id}`;
+    }
+    if (metadata.resource_type === "sync_task") {
+      if (options.canAccessTaskLogs === false) {
+        return fileFallback;
+      }
+      return `/task-logs?task_id=${metadata.resource_id}`;
+    }
+    return null;
+  }
+
+  if (isUuid(metadata.file_id)) {
+    return `/files/${metadata.file_id}`;
+  }
+  if (isUuid(metadata.sync_task_id)) {
+    if (options.canAccessTaskLogs === false) {
+      return fileFallback;
+    }
+    return `/task-logs?task_id=${metadata.sync_task_id}`;
+  }
+  return null;
+}
+
 function resolveApiHealth(
   status: string | undefined,
   isError: boolean,
@@ -104,9 +155,11 @@ function resolveDependencyHealth(status: string | undefined, isError: boolean): 
 export function TopHeader() {
   const navigate = useNavigate();
   const location = useLocation();
+  const queryClient = useQueryClient();
   const { message } = AntdApp.useApp();
   const user = useAuthStore((state) => state.user);
   const clearSession = useAuthStore((state) => state.clearSession);
+  const setMobileNavigationOpen = useUiStore((state) => state.setMobileNavigationOpen);
   const headerTitle = getHeaderTitle(location.pathname);
   const [now, setNow] = useState(() => dayjs());
 
@@ -138,6 +191,25 @@ export function TopHeader() {
   });
   const notifications = notificationsQuery.data?.items ?? [];
   const unreadCount = notificationsQuery.data?.unread_count ?? 0;
+  const refreshNotifications = () => queryClient.invalidateQueries({ queryKey: ["notifications"] });
+  const readMutation = useMutation({
+    mutationFn: markNotificationRead,
+    onSuccess: refreshNotifications,
+  });
+  const readAllMutation = useMutation({
+    mutationFn: markAllNotificationsRead,
+    onSuccess: async (result) => {
+      await refreshNotifications();
+      message.success(
+        result.updated_count > 0
+          ? `已将 ${result.updated_count} 条通知标为已读`
+          : "没有新的未读通知",
+      );
+    },
+    onError: (error: Error) => {
+      message.error(error.message || "全部已读操作失败");
+    },
+  });
   const apiBaseUrl = getApiBaseUrl();
   const searchableRoutes = useMemo(
     () =>
@@ -178,7 +250,25 @@ export function TopHeader() {
     },
   ];
 
-  const notificationMenuItems: MenuProps["items"] = useMemo(() => {
+  const handleNotificationClick = async (notification: NotificationItem) => {
+    try {
+      if (!notification.read_at) {
+        await readMutation.mutateAsync(notification.id);
+      }
+      const target = notificationDeepLink(notification, {
+        canAccessTaskLogs: user?.role !== Roles.EMPLOYEE,
+      });
+      if (target) {
+        navigate(target);
+      } else {
+        message.info("该通知没有可访问的详情");
+      }
+    } catch (error) {
+      message.error(error instanceof Error ? error.message : "通知状态更新失败");
+    }
+  };
+
+  const notificationMenuItems: MenuProps["items"] = (() => {
     if (notifications.length === 0) {
       return [
         {
@@ -189,8 +279,9 @@ export function TopHeader() {
       ];
     }
 
-    return notifications.map((notification) => ({
+    const items: MenuProps["items"] = notifications.map((notification) => ({
       key: notification.id,
+      onClick: () => void handleNotificationClick(notification),
       label: (
         <div
           className={[
@@ -212,7 +303,21 @@ export function TopHeader() {
         </div>
       ),
     }));
-  }, [notifications]);
+
+    if (unreadCount > 0) {
+      items.unshift(
+        {
+          key: "mark-all-read",
+          label: readAllMutation.isPending ? "正在标记全部已读…" : "全部标为已读",
+          disabled: readAllMutation.isPending,
+          onClick: () => readAllMutation.mutate(),
+        },
+        { type: "divider" },
+      );
+    }
+
+    return items;
+  })();
 
   const handleLogout = () => {
     void logout()
@@ -265,6 +370,13 @@ export function TopHeader() {
   return (
     <header className="top-header">
       <div className="top-header__context">
+        <Button
+          type="text"
+          className="top-header__menu-button"
+          icon={<MenuOutlined />}
+          onClick={() => setMobileNavigationOpen(true)}
+          aria-label="打开导航菜单"
+        />
         <Button
           type="text"
           icon={<LeftOutlined />}

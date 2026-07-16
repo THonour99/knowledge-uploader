@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useCallback, useEffect, useState } from "react";
 import {
   ClockCircleOutlined,
   CloseCircleOutlined,
@@ -23,6 +23,7 @@ import {
 } from "antd";
 import type { ColumnsType } from "antd/es/table";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import { useSearchParams } from "react-router-dom";
 
 import {
   cancelTask,
@@ -55,6 +56,8 @@ const TASK_STATUS_OPTIONS = [
   { value: "failed", label: "已失败" },
   { value: "canceled", label: "已取消" },
 ];
+
+const TASK_ID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
 /**
  * Maps a SyncTask status string to a StatusTag sync kind value.
@@ -113,7 +116,6 @@ function logIcon(status: string) {
       return <ClockCircleOutlined style={{ color: colors.textDisabled }} />;
   }
 }
-
 
 interface TaskDetailDrawerProps {
   taskId: string | null;
@@ -259,10 +261,38 @@ function TaskDetailDrawer({ taskId, open, onClose }: TaskDetailDrawerProps) {
 export default function TaskLogsPage() {
   const { message } = AntdApp.useApp();
   const queryClient = useQueryClient();
+  const [searchParams, setSearchParams] = useSearchParams();
 
   const [filters, setFilters] = useState<TaskListQuery>({});
   const [drawerTaskId, setDrawerTaskId] = useState<string | null>(null);
   const [drawerOpen, setDrawerOpen] = useState(false);
+  const linkedTaskId = searchParams.get("task_id")?.trim() ?? "";
+
+  const clearTaskParam = useCallback(() => {
+    setSearchParams(
+      (previous) => {
+        const next = new URLSearchParams(previous);
+        next.delete("task_id");
+        return next;
+      },
+      { replace: true },
+    );
+  }, [setSearchParams]);
+
+  useEffect(() => {
+    if (!linkedTaskId) {
+      return;
+    }
+    if (!TASK_ID_PATTERN.test(linkedTaskId)) {
+      setDrawerOpen(false);
+      setDrawerTaskId(null);
+      clearTaskParam();
+      message.warning("任务链接无效，已忽略");
+      return;
+    }
+    setDrawerTaskId(linkedTaskId);
+    setDrawerOpen(true);
+  }, [clearTaskParam, linkedTaskId, message]);
 
   const tasksQuery = useQuery({
     queryKey: ["tasks", filters],
@@ -298,10 +328,22 @@ export default function TaskLogsPage() {
   function openDetail(taskId: string) {
     setDrawerTaskId(taskId);
     setDrawerOpen(true);
+    if (TASK_ID_PATTERN.test(taskId)) {
+      setSearchParams(
+        (previous) => {
+          const next = new URLSearchParams(previous);
+          next.set("task_id", taskId);
+          return next;
+        },
+        { replace: true },
+      );
+    }
   }
 
   function closeDrawer() {
     setDrawerOpen(false);
+    setDrawerTaskId(null);
+    clearTaskParam();
   }
 
   const columns: ColumnsType<SyncTask> = [
