@@ -572,6 +572,51 @@ async def test_pending_unverified_user_cannot_login(
         assert user.email_verified is False
 
 
+@pytest.mark.parametrize(
+    ("user_status", "email_verified"),
+    [
+        ("pending_email_verification", False),
+        ("active", False),
+    ],
+)
+async def test_unverified_user_existing_jwt_is_rejected(
+    client: AsyncClient,
+    user_status: str,
+    email_verified: bool,
+) -> None:
+    from app.core.database import AsyncSessionFactory
+    from app.core.security import create_jwt, password_fingerprint
+    from app.modules.user.models import User
+
+    jwt_secret = "test-jwt-secret-with-more-than-32-bytes"
+    user_id = await _create_user(
+        email=f"unverified-token-{user_status}@company.com",
+        password="password123",
+        status=user_status,
+        email_verified=email_verified,
+    )
+    async with AsyncSessionFactory() as session:
+        user = await session.get(User, user_id)
+        assert user is not None
+        token = create_jwt(
+            {
+                "sub": str(user.id),
+                "sv": user.session_version,
+                "pwd": password_fingerprint(user.password_hash, jwt_secret),
+            },
+            jwt_secret,
+            60,
+        )
+
+    response = await client.get(
+        "/api/auth/me",
+        headers={"Authorization": f"Bearer {token}"},
+    )
+
+    assert response.status_code == 403
+    assert response.json()["error_code"] == "EMAIL_NOT_VERIFIED"
+
+
 async def test_password_reset_does_not_verify_or_activate_pending_user(
     client: AsyncClient,
 ) -> None:

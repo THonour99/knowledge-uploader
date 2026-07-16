@@ -82,6 +82,12 @@ async def get_current_user(
             "user is temporarily locked",
             status.HTTP_403_FORBIDDEN,
         )
+    if user.status == "pending_email_verification" or not user.email_verified:
+        raise http_error(
+            ErrorCode.EMAIL_NOT_VERIFIED,
+            "email is not verified",
+            status.HTTP_403_FORBIDDEN,
+        )
     if payload.get("pwd") != password_fingerprint(user.password_hash, settings.jwt_secret):
         raise http_error(
             ErrorCode.AUTHENTICATION_FAILED,
