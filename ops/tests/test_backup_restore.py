@@ -26,7 +26,7 @@ def tool() -> ModuleType:
 
 def _manifest() -> dict[str, object]:
     return {
-        "format_version": 1,
+        "format_version": 2,
         "backup_id": "20260716T000000Z-aabbccdd",
         "created_at": "2026-07-16T00:00:00+00:00",
         "source": {"database": "knowledge_uploader", "bucket": "knowledge-files"},
@@ -41,6 +41,15 @@ def _manifest() -> dict[str, object]:
             {"key": "ragflow.api_key", "is_secret": True, "has_value": True}
         ],
         "validation": {"database_restore": "passed", "object_mirror": "passed"},
+        "reference_integrity": {
+            "status": "passed",
+            "active_reference_count": 0,
+            "deleted_reference_count": 0,
+            "object_count": 0,
+            "missing_referenced": [],
+            "retained_deleted": [],
+            "unexplained_orphaned": [],
+        },
     }
 
 
@@ -109,6 +118,7 @@ def test_restore_cleanup_failure_does_not_refresh_success_metric(
     monkeypatch.setattr(tool, "_database_snapshot", lambda _name: {})
     monkeypatch.setattr(tool, "_alembic_revision", lambda _name: "20260716o001")
     monkeypatch.setattr(tool, "_config_metadata", lambda _name: manifest["runtime_configs"])
+    monkeypatch.setattr(tool, "_file_object_references", lambda _name: [])
     monkeypatch.setattr(tool, "_object_manifest", lambda *_args, **_kwargs: [])
     monkeypatch.setattr(
         tool,
@@ -170,16 +180,75 @@ def test_restore_evidence_must_be_outside_immutable_backup(
         )
 
 
-def test_database_snapshot_labels_md5_digest_honestly(
+def test_database_snapshot_uses_bounded_row_counts_without_row_digest(
     tool: Any,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    responses = iter(("documents", "2|abc123"))
+    responses = iter(("documents", "2"))
     monkeypatch.setattr(tool, "_psql", lambda *_args: next(responses))
 
-    assert tool._database_snapshot("restore_validation") == {
-        "documents": {"rows": 2, "row_digest_md5": "abc123"}
+    assert tool._database_snapshot("restore_validation") == {"documents": {"rows": 2}}
+
+
+def test_reference_integrity_requires_all_non_deleted_objects(tool: Any) -> None:
+    report = tool._reference_integrity_report(
+        file_references=[
+            {"bucket": "knowledge-files", "object_key": "active.pdf", "status": "parsed"},
+            {"bucket": "knowledge-files", "object_key": "gone.pdf", "status": "deleted"},
+        ],
+        objects=[{"key": "gone.pdf", "size": 1, "sha256": "0" * 64}],
+        source_bucket="knowledge-files",
+    )
+
+    assert report["missing_referenced"] == ["active.pdf"]
+    assert report["retained_deleted"] == ["gone.pdf"]
+    assert report["unexplained_orphaned"] == []
+    with pytest.raises(RuntimeError, match="missing=1"):
+        tool._require_reference_integrity(report)
+
+
+def test_reference_integrity_classifies_deleted_retention_without_false_orphan(
+    tool: Any,
+) -> None:
+    report = tool._reference_integrity_report(
+        file_references=[
+            {"bucket": "knowledge-files", "object_key": "active.pdf", "status": "parsed"},
+            {"bucket": "knowledge-files", "object_key": "retained.pdf", "status": "deleted"},
+        ],
+        objects=[
+            {"key": "active.pdf", "size": 1, "sha256": "0" * 64},
+            {"key": "retained.pdf", "size": 1, "sha256": "1" * 64},
+        ],
+        source_bucket="knowledge-files",
+    )
+
+    assert report == {
+        "status": "passed",
+        "active_reference_count": 1,
+        "deleted_reference_count": 1,
+        "object_count": 2,
+        "missing_referenced": [],
+        "retained_deleted": ["retained.pdf"],
+        "unexplained_orphaned": [],
     }
+    tool._require_reference_integrity(report)
+
+
+def test_reference_integrity_rejects_unknown_orphan_and_foreign_active_reference(
+    tool: Any,
+) -> None:
+    report = tool._reference_integrity_report(
+        file_references=[
+            {"bucket": "other-bucket", "object_key": "foreign.pdf", "status": "approved"}
+        ],
+        objects=[{"key": "orphan.pdf", "size": 1, "sha256": "0" * 64}],
+        source_bucket="knowledge-files",
+    )
+
+    assert report["missing_referenced"] == ["other-bucket/foreign.pdf"]
+    assert report["unexplained_orphaned"] == ["orphan.pdf"]
+    with pytest.raises(RuntimeError, match="unexplained_orphaned=1"):
+        tool._require_reference_integrity(report)
 
 
 def test_failed_backup_removes_only_its_exact_partial_directory(

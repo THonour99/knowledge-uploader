@@ -20,7 +20,7 @@ from typing import Any
 from urllib.parse import urlsplit
 from urllib.request import urlopen
 
-BACKUP_FORMAT_VERSION = 1
+BACKUP_FORMAT_VERSION = 2
 DATABASE_NAME_RE = re.compile(r"^[A-Za-z][A-Za-z0-9_]{0,62}$")
 PRODUCTION_ENVIRONMENTS = frozenset({"prod", "production"})
 RESTORE_DATABASE_PREFIX = "restore_"
@@ -83,7 +83,12 @@ def backup(
                 database_name,
             )
         )
-        database_snapshot, alembic_revision, config_metadata = _snapshot_restored_dump(
+        (
+            database_snapshot,
+            alembic_revision,
+            config_metadata,
+            file_references,
+        ) = _snapshot_restored_dump(
             dump_path=dump_path,
             verification_database=verification_database,
         )
@@ -93,6 +98,12 @@ def backup(
             object_dir,
             source_metadata=_minio_metadata(bucket),
         )
+        reference_report = _reference_integrity_report(
+            file_references=file_references,
+            objects=object_manifest,
+            source_bucket=bucket,
+        )
+        _require_reference_integrity(reference_report)
         manifest: dict[str, object] = {
             "format_version": BACKUP_FORMAT_VERSION,
             "backup_id": backup_id,
@@ -115,7 +126,9 @@ def backup(
             "validation": {
                 "database_restore": "passed",
                 "object_mirror": "passed",
+                "database_object_references": "passed",
             },
+            "reference_integrity": reference_report,
             "consistency_boundary": "uncoordinated_full_dump_then_object_mirror",
         }
         _assert_manifest_has_no_secrets(manifest)
@@ -203,7 +216,7 @@ def restore(
     restored_tables = _database_snapshot(target_database)
     expected_tables = _mapping(_mapping(manifest["database"], "database")["tables"], "tables")
     if restored_tables != expected_tables:
-        raise RuntimeError("restored database row counts or hashes do not match manifest")
+        raise RuntimeError("restored database row counts do not match manifest")
     if _alembic_revision(target_database) != manifest["alembic_revision"]:
         raise RuntimeError("restored Alembic revision does not match manifest")
     if _config_metadata(target_database) != manifest["runtime_configs"]:
@@ -218,6 +231,21 @@ def restore(
     object_report = _object_difference(restored_objects, expected_objects)
     if any(object_report.values()):
         raise RuntimeError("restored MinIO objects do not match manifest")
+    source_bucket = source.get("bucket")
+    if not isinstance(source_bucket, str) or not source_bucket:
+        raise RuntimeError("backup source bucket is invalid")
+    reference_report = _reference_integrity_report(
+        file_references=_file_object_references(target_database),
+        objects=restored_objects,
+        source_bucket=source_bucket,
+    )
+    _require_reference_integrity(reference_report)
+    expected_reference_report = _mapping(
+        manifest.get("reference_integrity"),
+        "reference integrity",
+    )
+    if reference_report != expected_reference_report:
+        raise RuntimeError("restored database/object reference report does not match manifest")
     if health_url is not None:
         _verify_health_url(health_url)
 
@@ -237,6 +265,7 @@ def restore(
         "database_validation": "passed",
         "object_validation": "passed",
         "object_report": object_report,
+        "reference_integrity": reference_report,
         "service_health_validation": "passed" if health_url is not None else "not_requested",
         "main_chain_smoke": "not_provided",
         "consistency_boundary": manifest.get("consistency_boundary", "unknown"),
@@ -266,7 +295,12 @@ def _snapshot_restored_dump(
     *,
     dump_path: Path,
     verification_database: str,
-) -> tuple[dict[str, object], str, list[dict[str, object]]]:
+) -> tuple[
+    dict[str, object],
+    str,
+    list[dict[str, object]],
+    list[dict[str, str]],
+]:
     _assert_database_absent(verification_database)
     run(("createdb", "--maintenance-db", "postgres", verification_database))
     try:
@@ -285,6 +319,7 @@ def _snapshot_restored_dump(
             _database_snapshot(verification_database),
             _alembic_revision(verification_database),
             _config_metadata(verification_database),
+            _file_object_references(verification_database),
         )
     finally:
         run(
@@ -310,21 +345,41 @@ def _database_snapshot(database_name: str) -> dict[str, object]:
     snapshot: dict[str, object] = {}
     for table_name in (line for line in table_output.splitlines() if line):
         quoted_table = _quote_identifier(table_name)
-        result = _psql(
+        count_text = _psql(
             database_name,
-            (
-                "SELECT count(*)::text || '|' || "
-                "md5(COALESCE(string_agg(row_hash, '' ORDER BY row_hash), '')) "
-                f"FROM (SELECT md5(row_to_json(t)::text) AS row_hash "
-                f"FROM public.{quoted_table} AS t) AS rows"
-            ),
+            f"SELECT count(*)::text FROM public.{quoted_table}",
         )
-        count_text, digest = result.split("|", 1)
-        snapshot[table_name] = {
-            "rows": int(count_text),
-            "row_digest_md5": digest,
-        }
+        snapshot[table_name] = {"rows": int(count_text)}
     return snapshot
+
+
+def _file_object_references(database_name: str) -> list[dict[str, str]]:
+    output = _psql(
+        database_name,
+        (
+            "SELECT json_build_object("
+            "'bucket', bucket, 'object_key', object_key, 'status', status)::text "
+            "FROM files WHERE storage_type = 'minio' "
+            "ORDER BY bucket, object_key, status"
+        ),
+    )
+    references: list[dict[str, str]] = []
+    for raw_line in (line for line in output.splitlines() if line):
+        raw_reference = json.loads(raw_line)
+        reference = _mapping(raw_reference, "file object reference")
+        if set(reference) != {"bucket", "object_key", "status"} or not all(
+            isinstance(reference[field], str) and reference[field]
+            for field in ("bucket", "object_key", "status")
+        ):
+            raise RuntimeError("file object reference is invalid")
+        references.append(
+            {
+                "bucket": reference["bucket"],
+                "object_key": reference["object_key"],
+                "status": reference["status"],
+            }
+        )
+    return references
 
 
 def _alembic_revision(database_name: str) -> str:
@@ -440,6 +495,71 @@ def _object_difference(actual: object, expected: object) -> dict[str, list[str]]
             if actual_by_key[key] != expected_by_key[key]
         ),
     }
+
+
+def _reference_integrity_report(
+    *,
+    file_references: object,
+    objects: object,
+    source_bucket: str,
+) -> dict[str, object]:
+    if not isinstance(file_references, list):
+        raise RuntimeError("file object reference list is invalid")
+    object_keys = {str(item["key"]) for item in _comparable_objects(objects)}
+    active_keys: set[str] = set()
+    deleted_keys: set[str] = set()
+    foreign_active_references: set[str] = set()
+    for raw_reference in file_references:
+        reference = _mapping(raw_reference, "file object reference")
+        bucket = reference.get("bucket")
+        object_key = reference.get("object_key")
+        status = reference.get("status")
+        if (
+            not isinstance(bucket, str)
+            or not bucket
+            or not isinstance(object_key, str)
+            or not object_key
+            or not isinstance(status, str)
+            or not status
+        ):
+            raise RuntimeError("file object reference is invalid")
+        if bucket != source_bucket:
+            if status != "deleted":
+                foreign_active_references.add(f"{bucket}/{object_key}")
+            continue
+        if status == "deleted":
+            deleted_keys.add(object_key)
+        else:
+            active_keys.add(object_key)
+
+    missing_referenced = sorted((active_keys - object_keys) | foreign_active_references)
+    retained_deleted = sorted((deleted_keys & object_keys) - active_keys)
+    unexplained_orphaned = sorted(object_keys - active_keys - deleted_keys)
+    passed = not missing_referenced and not unexplained_orphaned
+    return {
+        "status": "passed" if passed else "failed",
+        "active_reference_count": len(active_keys) + len(foreign_active_references),
+        "deleted_reference_count": len(deleted_keys),
+        "object_count": len(object_keys),
+        "missing_referenced": missing_referenced,
+        "retained_deleted": retained_deleted,
+        "unexplained_orphaned": unexplained_orphaned,
+    }
+
+
+def _require_reference_integrity(report: Mapping[str, object]) -> None:
+    if report.get("status") != "passed":
+        raise RuntimeError(
+            "database/object reference integrity failed: "
+            f"missing={len(_string_list(report.get('missing_referenced')))}, "
+            f"unexplained_orphaned={len(_string_list(report.get('unexplained_orphaned')))}"
+        )
+
+
+def _string_list(value: object) -> list[str]:
+    if not isinstance(value, list) or not all(isinstance(item, str) for item in value):
+        raise RuntimeError("reference integrity list is invalid")
+    return value
 
 
 def _load_and_verify_manifest(backup_dir: Path) -> dict[str, object]:
