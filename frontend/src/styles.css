@@ -1048,7 +1048,7 @@ a {
   flex: 0 0 auto;
   align-items: center;
   gap: 8px;
-  min-height: 42px;
+  min-height: 44px;
   padding: 0 14px;
   border: 0;
   border-bottom: 2px solid transparent;
@@ -1115,6 +1115,89 @@ a {
   max-width: 220px;
   font-size: 12px;
   white-space: normal;
+}
+
+.review-mobile-list {
+  display: grid;
+  gap: 12px;
+  min-width: 0;
+}
+
+.review-mobile-card {
+  display: grid;
+  gap: 12px;
+  min-width: 0;
+  padding: 12px;
+  border: 1px solid var(--ku-border);
+  border-radius: var(--ku-radius-card);
+  background: var(--ku-bg-card);
+  box-shadow: var(--ku-shadow-xs);
+}
+
+.review-mobile-card__header {
+  display: grid;
+  grid-template-columns: 24px minmax(0, 1fr) auto;
+  gap: 8px;
+  align-items: center;
+  min-width: 0;
+}
+
+.review-mobile-card__title {
+  min-width: 0;
+  min-height: 44px;
+  overflow: hidden;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  color: var(--ku-color-primary);
+  font: inherit;
+  font-weight: 700;
+  text-align: left;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  cursor: pointer;
+}
+
+.review-mobile-card__title:focus-visible {
+  outline: 2px solid var(--ku-color-primary);
+  outline-offset: 2px;
+}
+
+.review-mobile-card__meta {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px 12px;
+  color: var(--ku-text-secondary);
+  font-size: 12px;
+}
+
+.review-mobile-card__state {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 8px;
+  align-items: start;
+  padding: 10px;
+  border-radius: var(--ku-radius-control);
+  background: var(--ku-bg-subtle);
+}
+
+.review-mobile-card__actions {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 8px;
+}
+
+.review-mobile-card__actions .ant-btn {
+  min-width: 0;
+  min-height: 44px;
+  padding-inline: 8px;
+}
+
+.review-mobile-pagination {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: center;
+  padding-top: 4px;
 }
 
 .file-title-cell__link {
@@ -2186,6 +2269,14 @@ a {
 
   .my-files-kpi-grid {
     grid-template-columns: minmax(0, 1fr);
+  }
+
+  .review-mobile-card__state {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .review-mobile-card__state > :last-child {
+    grid-column: 1 / -1;
   }
 }
 
