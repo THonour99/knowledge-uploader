@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import os
 from collections.abc import AsyncGenerator, Awaitable, Callable
 from datetime import UTC, datetime, timedelta
@@ -544,6 +545,131 @@ async def test_verify_email_activates_pending_user(client: AsyncClient) -> None:
     assert login.status_code == 200
 
 
+async def test_verify_email_invalidates_all_sibling_verification_tokens(
+    client: AsyncClient,
+) -> None:
+    user_id = await _create_user(
+        email="verify-family@company.com",
+        password="password123",
+        status="pending_email_verification",
+        email_verified=False,
+    )
+    await _create_verification_token(user_id, "verify-family-first")
+    await _create_verification_token(user_id, "verify-family-second")
+
+    verified = await client.post(
+        "/api/auth/verify-email",
+        json={"token": "verify-family-first"},
+    )
+    sibling = await client.post(
+        "/api/auth/verify-email",
+        json={"token": "verify-family-second"},
+    )
+
+    assert verified.status_code == 200
+    assert sibling.status_code == 400
+    assert sibling.json()["error_code"] == "INVALID_TOKEN"
+
+
+async def test_concurrent_verification_token_consumption_succeeds_exactly_once(
+    client: AsyncClient,
+) -> None:
+    user_id = await _create_user(
+        email="consume-verification@company.com",
+        password="password123",
+        status="pending_email_verification",
+        email_verified=False,
+    )
+    await _create_verification_token(user_id, "consume-verification-once")
+
+    first, second = await asyncio.gather(
+        client.post(
+            "/api/auth/verify-email",
+            json={"token": "consume-verification-once"},
+        ),
+        client.post(
+            "/api/auth/verify-email",
+            json={"token": "consume-verification-once"},
+        ),
+    )
+
+    assert sorted((first.status_code, second.status_code)) == [200, 400]
+    failed = first if first.status_code == 400 else second
+    assert failed.json()["error_code"] == "INVALID_TOKEN"
+
+
+async def test_verification_token_expiring_at_request_boundary_is_rejected(
+    client: AsyncClient,
+) -> None:
+    from app.core.database import AsyncSessionFactory
+    from app.modules.auth.models import EmailVerificationToken
+
+    user_id = await _create_user(
+        email="expired-verification-boundary@company.com",
+        password="password123",
+        status="pending_email_verification",
+        email_verified=False,
+    )
+    async with AsyncSessionFactory() as session:
+        session.add(
+            EmailVerificationToken(
+                user_id=user_id,
+                token_hash=sha256(b"expired-verification-boundary").hexdigest(),
+                expires_at=datetime.now(UTC),
+            )
+        )
+        await session.commit()
+
+    response = await client.post(
+        "/api/auth/verify-email",
+        json={"token": "expired-verification-boundary"},
+    )
+
+    assert response.status_code == 400
+    assert response.json()["error_code"] == "INVALID_TOKEN"
+
+
+async def test_new_verification_token_immediately_invalidates_previous_token(
+    verification_client: AsyncClient,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    await _create_user(
+        email="replace-verification@company.com",
+        password="password123",
+        status="pending_email_verification",
+        email_verified=False,
+    )
+    raw_tokens = iter(("replace-verification-old", "replace-verification-new"))
+    monkeypatch.setattr(
+        "app.modules.auth.service.secrets.token_urlsafe",
+        lambda _size: next(raw_tokens),
+    )
+    monkeypatch.setattr("app.modules.auth.service.enqueue_email", lambda **_kwargs: None)
+
+    first = await verification_client.post(
+        "/api/auth/resend-verification",
+        json={"email": "replace-verification@company.com"},
+    )
+    second = await verification_client.post(
+        "/api/auth/resend-verification",
+        json={"email": "replace-verification@company.com"},
+    )
+    old = await verification_client.post(
+        "/api/auth/verify-email",
+        json={"token": "replace-verification-old"},
+    )
+    new = await verification_client.post(
+        "/api/auth/verify-email",
+        json={"token": "replace-verification-new"},
+    )
+
+    assert first.status_code == 200
+    assert second.status_code == 200
+    assert old.status_code == 400
+    assert old.json()["error_code"] == "INVALID_TOKEN"
+    assert new.status_code == 200
+
+
 async def test_pending_unverified_user_cannot_login(
     client: AsyncClient,
 ) -> None:
@@ -667,6 +793,126 @@ async def test_reset_password_allows_login_with_new_password(client: AsyncClient
     assert new_login.status_code == 200
 
 
+async def test_reset_password_invalidates_all_sibling_reset_tokens(
+    client: AsyncClient,
+) -> None:
+    user_id = await _create_user(
+        email="reset-family@company.com",
+        password="oldpassword123",
+    )
+    await _create_password_reset_token(user_id, "reset-family-first")
+    await _create_password_reset_token(user_id, "reset-family-second")
+
+    reset = await client.post(
+        "/api/auth/reset-password",
+        json={"token": "reset-family-first", "new_password": "newpassword123"},
+    )
+    sibling = await client.post(
+        "/api/auth/reset-password",
+        json={"token": "reset-family-second", "new_password": "otherpassword123"},
+    )
+
+    assert reset.status_code == 200
+    assert sibling.status_code == 400
+    assert sibling.json()["error_code"] == "INVALID_TOKEN"
+
+
+async def test_new_reset_token_immediately_invalidates_previous_token(
+    client: AsyncClient,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    await _create_user(
+        email="replace-reset@company.com",
+        password="oldpassword123",
+    )
+    raw_tokens = iter(("replace-reset-old", "replace-reset-new"))
+    monkeypatch.setattr(
+        "app.modules.auth.service.secrets.token_urlsafe",
+        lambda _size: next(raw_tokens),
+    )
+    monkeypatch.setattr("app.modules.auth.service.enqueue_email", lambda **_kwargs: None)
+
+    first = await client.post(
+        "/api/auth/forgot-password",
+        json={"email": "replace-reset@company.com"},
+    )
+    second = await client.post(
+        "/api/auth/forgot-password",
+        json={"email": "replace-reset@company.com"},
+    )
+    old = await client.post(
+        "/api/auth/reset-password",
+        json={"token": "replace-reset-old", "new_password": "wrongpassword123"},
+    )
+    new = await client.post(
+        "/api/auth/reset-password",
+        json={"token": "replace-reset-new", "new_password": "newpassword123"},
+    )
+
+    assert first.status_code == 200
+    assert second.status_code == 200
+    assert old.status_code == 400
+    assert old.json()["error_code"] == "INVALID_TOKEN"
+    assert new.status_code == 200
+
+
+async def test_concurrent_reset_token_consumption_succeeds_exactly_once(
+    client: AsyncClient,
+) -> None:
+    user_id = await _create_user(
+        email="consume-reset@company.com",
+        password="oldpassword123",
+    )
+    await _create_password_reset_token(user_id, "consume-reset-once")
+
+    first, second = await asyncio.gather(
+        client.post(
+            "/api/auth/reset-password",
+            json={"token": "consume-reset-once", "new_password": "firstpassword123"},
+        ),
+        client.post(
+            "/api/auth/reset-password",
+            json={"token": "consume-reset-once", "new_password": "secondpassword123"},
+        ),
+    )
+
+    assert sorted((first.status_code, second.status_code)) == [200, 400]
+    failed = first if first.status_code == 400 else second
+    assert failed.json()["error_code"] == "INVALID_TOKEN"
+
+
+async def test_reset_token_expiring_at_request_boundary_is_rejected(
+    client: AsyncClient,
+) -> None:
+    from app.core.database import AsyncSessionFactory
+    from app.modules.auth.models import PasswordResetToken
+
+    user_id = await _create_user(
+        email="expired-reset-boundary@company.com",
+        password="oldpassword123",
+    )
+    async with AsyncSessionFactory() as session:
+        session.add(
+            PasswordResetToken(
+                user_id=user_id,
+                token_hash=sha256(b"expired-reset-boundary").hexdigest(),
+                expires_at=datetime.now(UTC),
+            )
+        )
+        await session.commit()
+
+    response = await client.post(
+        "/api/auth/reset-password",
+        json={
+            "token": "expired-reset-boundary",
+            "new_password": "newpassword123",
+        },
+    )
+
+    assert response.status_code == 400
+    assert response.json()["error_code"] == "INVALID_TOKEN"
+
+
 async def test_forgot_password_writes_reset_outbox_without_replayable_token(
     client: AsyncClient,
 ) -> None:
@@ -701,6 +947,264 @@ async def test_forgot_password_writes_reset_outbox_without_replayable_token(
     assert response.text.find(token.token_hash) == -1
 
 
+async def test_forgot_password_publish_failure_stays_generic_and_records_metric(
+    client: AsyncClient,
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    from sqlalchemy import select
+
+    from app.core.database import AsyncSessionFactory
+    from app.core.outbox import EventOutbox
+    from app.modules.auth.models import PasswordResetToken
+
+    raw_token = "failed-publish-reset-token"
+    recorded_results: list[str] = []
+
+    async def fake_record_email_delivery_result(*, redis_url: str, result: str) -> None:
+        assert redis_url
+        recorded_results.append(result)
+
+    await _create_user(email="failed-publish@company.com", password="password123")
+    monkeypatch.setattr("app.modules.auth.service.secrets.token_urlsafe", lambda _size: raw_token)
+    monkeypatch.setattr(
+        "app.modules.auth.service.enqueue_email",
+        lambda **_kwargs: (_ for _ in ()).throw(RuntimeError("broker password leaked?")),
+    )
+    monkeypatch.setattr(
+        "app.modules.auth.service.record_email_delivery_result",
+        fake_record_email_delivery_result,
+    )
+
+    response = await client.post(
+        "/api/auth/forgot-password",
+        json={"email": "failed-publish@company.com"},
+    )
+
+    assert response.status_code == 200
+    assert response.json()["success"] is True
+    assert response.json()["data"] == {}
+    assert recorded_results == ["publish_failure"]
+    assert raw_token not in response.text
+    assert "broker password leaked?" not in response.text
+    async with AsyncSessionFactory() as session:
+        stored_hash = (
+            await session.execute(select(PasswordResetToken.token_hash))
+        ).scalar_one()
+        payload = (await session.execute(select(EventOutbox.payload))).scalar_one()
+    assert stored_hash == sha256(raw_token.encode("utf-8")).hexdigest()
+    assert raw_token not in str(payload)
+    assert raw_token not in caplog.text
+    assert "failed-publish@company.com" not in caplog.text
+
+
+async def test_forgot_password_response_hides_account_state_during_publisher_outage(
+    client: AsyncClient,
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    recorded_results: list[str] = []
+
+    async def fake_record_email_delivery_result(*, redis_url: str, result: str) -> None:
+        assert redis_url
+        recorded_results.append(result)
+
+    await _create_user(email="recoverable@company.com", password="password123")
+    await _create_user(
+        email="disabled-recovery@company.com",
+        password="password123",
+        status="disabled",
+    )
+    monkeypatch.setattr(
+        "app.modules.auth.service.enqueue_email",
+        lambda **_kwargs: (_ for _ in ()).throw(RuntimeError("sensitive broker detail")),
+    )
+    monkeypatch.setattr(
+        "app.modules.auth.service.record_email_delivery_result",
+        fake_record_email_delivery_result,
+    )
+
+    responses = [
+        await client.post("/api/auth/forgot-password", json={"email": email})
+        for email in (
+            "recoverable@company.com",
+            "disabled-recovery@company.com",
+            "missing-recovery@company.com",
+        )
+    ]
+    signatures = [
+        (
+            response.status_code,
+            response.json()["success"],
+            response.json()["data"],
+            response.json()["message"],
+        )
+        for response in responses
+    ]
+
+    assert signatures == [signatures[0]] * 3
+    assert signatures[0] == (200, True, {}, "ok")
+    assert recorded_results == ["publish_failure"]
+    assert "recoverable@company.com" not in caplog.text
+    assert "disabled-recovery@company.com" not in caplog.text
+    assert "sensitive broker detail" not in caplog.text
+
+
+async def test_publish_failure_metric_outage_is_best_effort_and_private(
+    client: AsyncClient,
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    async def failing_metric_recorder(*, redis_url: str, result: str) -> None:
+        assert redis_url
+        assert result == "publish_failure"
+        raise RuntimeError("redis credential detail")
+
+    await _create_user(email="metric-outage@company.com", password="password123")
+    monkeypatch.setattr(
+        "app.modules.auth.service.enqueue_email",
+        lambda **_kwargs: (_ for _ in ()).throw(RuntimeError("broker credential detail")),
+    )
+    monkeypatch.setattr(
+        "app.modules.auth.service.record_email_delivery_result",
+        failing_metric_recorder,
+    )
+
+    response = await client.post(
+        "/api/auth/forgot-password",
+        json={"email": "metric-outage@company.com"},
+    )
+
+    assert response.status_code == 200
+    assert response.json()["data"] == {}
+    assert "metric-outage@company.com" not in response.text
+    assert "metric-outage@company.com" not in caplog.text
+    assert "broker credential detail" not in caplog.text
+    assert "redis credential detail" not in caplog.text
+
+
+async def test_resend_verification_response_hides_account_state_during_publisher_outage(
+    verification_client: AsyncClient,
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    recorded_results: list[str] = []
+
+    async def fake_record_email_delivery_result(*, redis_url: str, result: str) -> None:
+        assert redis_url
+        recorded_results.append(result)
+
+    await _create_user(
+        email="pending-resend@company.com",
+        password="password123",
+        status="pending_email_verification",
+        email_verified=False,
+    )
+    await _create_user(email="verified-resend@company.com", password="password123")
+    await _create_user(
+        email="disabled-resend@company.com",
+        password="password123",
+        status="disabled",
+    )
+    monkeypatch.setattr(
+        "app.modules.auth.service.enqueue_email",
+        lambda **_kwargs: (_ for _ in ()).throw(RuntimeError("sensitive broker detail")),
+    )
+    monkeypatch.setattr(
+        "app.modules.auth.service.record_email_delivery_result",
+        fake_record_email_delivery_result,
+    )
+
+    responses = [
+        await verification_client.post(
+            "/api/auth/resend-verification",
+            json={"email": email},
+        )
+        for email in (
+            "pending-resend@company.com",
+            "verified-resend@company.com",
+            "disabled-resend@company.com",
+            "missing-resend@company.com",
+        )
+    ]
+    signatures = [
+        (
+            response.status_code,
+            response.json()["success"],
+            response.json()["data"],
+            response.json()["message"],
+        )
+        for response in responses
+    ]
+
+    assert signatures == [signatures[0]] * 4
+    assert signatures[0] == (200, True, {}, "ok")
+    assert recorded_results == ["publish_failure"]
+    assert "pending-resend@company.com" not in caplog.text
+    assert "sensitive broker detail" not in caplog.text
+
+
+async def test_register_response_hides_account_state_during_publisher_outage(
+    verification_client: AsyncClient,
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    recorded_results: list[str] = []
+
+    async def fake_record_email_delivery_result(*, redis_url: str, result: str) -> None:
+        assert redis_url
+        recorded_results.append(result)
+
+    await _create_user(email="existing-register@company.com", password="password123")
+    await _create_user(
+        email="pending-register@company.com",
+        password="password123",
+        status="pending_email_verification",
+        email_verified=False,
+    )
+    monkeypatch.setattr(
+        "app.modules.auth.service.enqueue_email",
+        lambda **_kwargs: (_ for _ in ()).throw(RuntimeError("sensitive broker detail")),
+    )
+    monkeypatch.setattr(
+        "app.modules.auth.service.record_email_delivery_result",
+        fake_record_email_delivery_result,
+    )
+
+    responses = [
+        await verification_client.post(
+            "/api/auth/register",
+            json={
+                "name": "Indistinguishable User",
+                "email": email,
+                "password": "password123",
+            },
+        )
+        for email in (
+            "existing-register@company.com",
+            "pending-register@company.com",
+            "new-register@company.com",
+        )
+    ]
+    signatures = [
+        (
+            response.status_code,
+            response.json()["success"],
+            response.json()["data"],
+            response.json()["message"],
+        )
+        for response in responses
+    ]
+
+    assert signatures == [signatures[0]] * 3
+    assert signatures[0] == (201, True, {"accepted": True}, "ok")
+    assert recorded_results == ["publish_failure", "publish_failure"]
+    assert "existing-register@company.com" not in caplog.text
+    assert "pending-register@company.com" not in caplog.text
+    assert "new-register@company.com" not in caplog.text
+    assert "sensitive broker detail" not in caplog.text
+
+
 async def test_register_verification_token_not_stored_in_db_outbox_or_logs(
     verification_client: AsyncClient,
     monkeypatch: pytest.MonkeyPatch,
@@ -716,8 +1220,15 @@ async def test_register_verification_token_not_stored_in_db_outbox_or_logs(
     raw_token = "raw-verification-token"
     sent: list[dict[str, str]] = []
 
-    def fake_enqueue_email(*, recipient: str, subject: str, body: str) -> None:
+    def fake_enqueue_email(
+        *,
+        recipient: str,
+        subject: str,
+        body: str,
+        expires_at: datetime,
+    ) -> None:
         sent.append({"recipient": recipient, "subject": subject, "body": body})
+        assert expires_at.tzinfo is not None
 
     monkeypatch.setattr("app.modules.auth.service.secrets.token_urlsafe", lambda _size: raw_token)
     monkeypatch.setattr("app.modules.auth.service.enqueue_email", fake_enqueue_email)
@@ -751,6 +1262,178 @@ async def test_register_verification_token_not_stored_in_db_outbox_or_logs(
     assert raw_token not in caplog.text
 
 
+async def test_register_publish_failure_is_accepted_and_retry_issues_fresh_token(
+    verification_client: AsyncClient,
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    from sqlalchemy import select
+
+    from app.core.database import AsyncSessionFactory
+    from app.core.outbox import EventOutbox
+    from app.modules.auth.models import EmailVerificationToken
+
+    raw_tokens = iter(("first-raw-verification-token", "second-raw-verification-token"))
+    attempts: list[str] = []
+    recorded_results: list[str] = []
+
+    async def fake_record_email_delivery_result(*, redis_url: str, result: str) -> None:
+        assert redis_url
+        recorded_results.append(result)
+
+    def flaky_enqueue_email(
+        *,
+        recipient: str,
+        subject: str,
+        body: str,
+        expires_at: datetime,
+    ) -> None:
+        assert expires_at > datetime.now(UTC)
+        attempts.append(body)
+        if len(attempts) == 1:
+            raise RuntimeError("publisher confirm failed")
+
+    monkeypatch.setattr(
+        "app.modules.auth.service.secrets.token_urlsafe",
+        lambda _size: next(raw_tokens),
+    )
+    monkeypatch.setattr("app.modules.auth.service.enqueue_email", flaky_enqueue_email)
+    monkeypatch.setattr(
+        "app.modules.auth.service.record_email_delivery_result",
+        fake_record_email_delivery_result,
+    )
+    request = {
+        "name": "Publish Retry User",
+        "email": "publish-retry@company.com",
+        "password": "password123",
+    }
+
+    failed = await verification_client.post("/api/auth/register", json=request)
+    retried = await verification_client.post("/api/auth/register", json=request)
+
+    assert failed.status_code == 201
+    assert failed.json()["data"] == {"accepted": True}
+    assert "publisher confirm failed" not in failed.text
+    assert retried.status_code == 201
+    assert retried.json()["data"] == failed.json()["data"]
+    assert len(attempts) == 2
+    assert recorded_results == ["publish_failure"]
+    assert "first-raw-verification-token" in attempts[0]
+    assert "second-raw-verification-token" in attempts[1]
+
+    async with AsyncSessionFactory() as session:
+        token_hashes = (
+            await session.execute(select(EmailVerificationToken.token_hash))
+        ).scalars().all()
+        payloads = (await session.execute(select(EventOutbox.payload))).scalars().all()
+
+    assert set(token_hashes) == {
+        sha256(value.encode("utf-8")).hexdigest()
+        for value in ("first-raw-verification-token", "second-raw-verification-token")
+    }
+    serialized_payloads = str(payloads)
+    assert "first-raw-verification-token" not in serialized_payloads
+    assert "second-raw-verification-token" not in serialized_payloads
+    assert "first-raw-verification-token" not in caplog.text
+    assert "second-raw-verification-token" not in caplog.text
+
+
+async def test_concurrent_verification_token_issuance_leaves_one_active_token() -> None:
+    from sqlalchemy import select
+
+    from app.core.database import AsyncSessionFactory
+    from app.modules.auth.models import EmailVerificationToken
+    from app.modules.auth.repository import (  # noqa: TID251 - repository concurrency contract
+        AuthRepository,
+    )
+
+    user_id = await _create_user(
+        email="concurrent-verification@company.com",
+        password="password123",
+        status="pending_email_verification",
+        email_verified=False,
+    )
+    ready = 0
+    ready_lock = asyncio.Lock()
+    both_ready = asyncio.Event()
+
+    async def issue(raw_token: str) -> None:
+        nonlocal ready
+        async with AsyncSessionFactory() as session:
+            async with ready_lock:
+                ready += 1
+                if ready == 2:
+                    both_ready.set()
+            await both_ready.wait()
+            issued_at = datetime.now(UTC)
+            await AuthRepository(session).replace_email_verification_token(
+                user_id=user_id,
+                token_hash=sha256(raw_token.encode("utf-8")).hexdigest(),
+                issued_at=issued_at,
+                expires_at=issued_at + timedelta(hours=1),
+            )
+            await session.commit()
+
+    await asyncio.gather(issue("concurrent-verification-1"), issue("concurrent-verification-2"))
+
+    async with AsyncSessionFactory() as session:
+        tokens = (
+            await session.execute(
+                select(EmailVerificationToken).where(
+                    EmailVerificationToken.user_id == user_id
+                )
+            )
+        ).scalars().all()
+    assert len(tokens) == 2
+    assert sum(token.used_at is None for token in tokens) == 1
+
+
+async def test_concurrent_password_reset_issuance_leaves_one_active_token() -> None:
+    from sqlalchemy import select
+
+    from app.core.database import AsyncSessionFactory
+    from app.modules.auth.models import PasswordResetToken
+    from app.modules.auth.repository import (  # noqa: TID251 - repository concurrency contract
+        AuthRepository,
+    )
+
+    user_id = await _create_user(
+        email="concurrent-reset@company.com",
+        password="password123",
+    )
+    ready = 0
+    ready_lock = asyncio.Lock()
+    both_ready = asyncio.Event()
+
+    async def issue(raw_token: str) -> None:
+        nonlocal ready
+        async with AsyncSessionFactory() as session:
+            async with ready_lock:
+                ready += 1
+                if ready == 2:
+                    both_ready.set()
+            await both_ready.wait()
+            issued_at = datetime.now(UTC)
+            await AuthRepository(session).replace_password_reset_token(
+                user_id=user_id,
+                token_hash=sha256(raw_token.encode("utf-8")).hexdigest(),
+                issued_at=issued_at,
+                expires_at=issued_at + timedelta(minutes=30),
+            )
+            await session.commit()
+
+    await asyncio.gather(issue("concurrent-reset-1"), issue("concurrent-reset-2"))
+
+    async with AsyncSessionFactory() as session:
+        tokens = (
+            await session.execute(
+                select(PasswordResetToken).where(PasswordResetToken.user_id == user_id)
+            )
+        ).scalars().all()
+    assert len(tokens) == 2
+    assert sum(token.used_at is None for token in tokens) == 1
+
+
 async def test_forgot_password_token_not_stored_in_db_outbox_or_logs(
     client: AsyncClient,
     monkeypatch: pytest.MonkeyPatch,
@@ -766,8 +1449,15 @@ async def test_forgot_password_token_not_stored_in_db_outbox_or_logs(
     raw_token = "raw-reset-token"
     sent: list[dict[str, str]] = []
 
-    def fake_enqueue_email(*, recipient: str, subject: str, body: str) -> None:
+    def fake_enqueue_email(
+        *,
+        recipient: str,
+        subject: str,
+        body: str,
+        expires_at: datetime,
+    ) -> None:
         sent.append({"recipient": recipient, "subject": subject, "body": body})
+        assert expires_at.tzinfo is not None
 
     await _create_user(email="reset-token-check@company.com", password="password123")
     monkeypatch.setattr("app.modules.auth.service.secrets.token_urlsafe", lambda _size: raw_token)
