@@ -180,3 +180,44 @@ def test_database_snapshot_labels_md5_digest_honestly(
     assert tool._database_snapshot("restore_validation") == {
         "documents": {"rows": 2, "row_digest_md5": "abc123"}
     }
+
+
+def test_failed_backup_removes_only_its_exact_partial_directory(
+    tool: Any,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    for name in ("PGHOST", "PGPORT", "PGUSER", "PGPASSWORD", "MC_HOST_source"):
+        monkeypatch.setenv(name, "test-value")
+    monkeypatch.setattr(tool, "_backup_id", lambda: "20260716T010101Z-aabbccdd")
+    monkeypatch.setattr(
+        tool,
+        "run",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(RuntimeError("dump failed")),
+    )
+    unrelated = tmp_path / ".partial-unrelated"
+    unrelated.mkdir()
+
+    with pytest.raises(RuntimeError, match="dump failed"):
+        tool.backup(
+            output_dir=tmp_path,
+            database_name="knowledge_uploader",
+            bucket="knowledge-files",
+            metrics_file=tmp_path / "backup.prom",
+        )
+
+    assert unrelated.is_dir()
+    assert not (tmp_path / ".partial-20260716T010101Z-aabbccdd").exists()
+
+
+def test_logical_restore_metric_never_claims_full_dr_drill(tool: Any, tmp_path: Path) -> None:
+    metrics_file = tmp_path / "restore.prom"
+    tool._write_attempt_metric(
+        metrics_file,
+        "knowledge_uploader_logical_restore_validation",
+        success=True,
+    )
+    metrics = (tmp_path / "restore-attempt.prom").read_text(encoding="utf-8")
+
+    assert "logical_restore_validation_last_attempt_success 1" in metrics
+    assert "restore_drill" not in metrics

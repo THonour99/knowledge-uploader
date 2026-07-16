@@ -65,65 +65,75 @@ def backup(
     partial_dir = output_root / f".partial-{backup_id}"
     final_dir = output_root / backup_id
     partial_dir.mkdir()
-    dump_path = partial_dir / "database.dump"
-    object_dir = partial_dir / "minio"
-    verification_database = _verification_database_name(backup_id)
+    completed = False
+    try:
+        dump_path = partial_dir / "database.dump"
+        object_dir = partial_dir / "minio"
+        verification_database = _verification_database_name(backup_id)
 
-    run(
-        (
-            "pg_dump",
-            "--format=custom",
-            "--no-owner",
-            "--no-acl",
-            "--file",
-            str(dump_path),
-            "--dbname",
-            database_name,
+        run(
+            (
+                "pg_dump",
+                "--format=custom",
+                "--no-owner",
+                "--no-acl",
+                "--file",
+                str(dump_path),
+                "--dbname",
+                database_name,
+            )
         )
-    )
-    database_snapshot, alembic_revision, config_metadata = _snapshot_restored_dump(
-        dump_path=dump_path,
-        verification_database=verification_database,
-    )
-    object_dir.mkdir()
-    run(("mc", "mirror", "--overwrite", f"{MC_ALIAS}/{bucket}", str(object_dir)))
-    object_manifest = _object_manifest(
-        object_dir,
-        source_metadata=_minio_metadata(bucket),
-    )
-    manifest: dict[str, object] = {
-        "format_version": BACKUP_FORMAT_VERSION,
-        "backup_id": backup_id,
-        "created_at": datetime.now(UTC).isoformat(),
-        "source": {
-            "database": database_name,
-            "bucket": bucket,
-        },
-        "alembic_revision": alembic_revision,
-        "database": {
-            "dump_file": dump_path.name,
-            "sha256": _sha256_file(dump_path),
-            "tables": database_snapshot,
-        },
-        "object_store": {
-            "directory": object_dir.name,
-            "objects": object_manifest,
-        },
-        "runtime_configs": config_metadata,
-        "validation": {
-            "database_restore": "passed",
-            "object_mirror": "passed",
-        },
-        "consistency_boundary": "uncoordinated_full_dump_then_object_mirror",
-    }
-    _assert_manifest_has_no_secrets(manifest)
-    manifest_path = partial_dir / "manifest.json"
-    _write_json(manifest_path, manifest)
-    (partial_dir / "manifest.sha256").write_text(
-        f"{_sha256_file(manifest_path)}  manifest.json\n",
-        encoding="utf-8",
-    )
-    partial_dir.replace(final_dir)
+        database_snapshot, alembic_revision, config_metadata = _snapshot_restored_dump(
+            dump_path=dump_path,
+            verification_database=verification_database,
+        )
+        object_dir.mkdir()
+        run(("mc", "mirror", "--overwrite", f"{MC_ALIAS}/{bucket}", str(object_dir)))
+        object_manifest = _object_manifest(
+            object_dir,
+            source_metadata=_minio_metadata(bucket),
+        )
+        manifest: dict[str, object] = {
+            "format_version": BACKUP_FORMAT_VERSION,
+            "backup_id": backup_id,
+            "created_at": datetime.now(UTC).isoformat(),
+            "source": {
+                "database": database_name,
+                "bucket": bucket,
+            },
+            "alembic_revision": alembic_revision,
+            "database": {
+                "dump_file": dump_path.name,
+                "sha256": _sha256_file(dump_path),
+                "tables": database_snapshot,
+            },
+            "object_store": {
+                "directory": object_dir.name,
+                "objects": object_manifest,
+            },
+            "runtime_configs": config_metadata,
+            "validation": {
+                "database_restore": "passed",
+                "object_mirror": "passed",
+            },
+            "consistency_boundary": "uncoordinated_full_dump_then_object_mirror",
+        }
+        _assert_manifest_has_no_secrets(manifest)
+        manifest_path = partial_dir / "manifest.json"
+        _write_json(manifest_path, manifest)
+        (partial_dir / "manifest.sha256").write_text(
+            f"{_sha256_file(manifest_path)}  manifest.json\n",
+            encoding="utf-8",
+        )
+        partial_dir.replace(final_dir)
+        completed = True
+    finally:
+        if not completed:
+            _remove_current_partial_backup(
+                output_root=output_root,
+                partial_dir=partial_dir,
+                backup_id=backup_id,
+            )
     _write_success_metric(
         metrics_file,
         "knowledge_uploader_backup_last_success_timestamp_seconds",
@@ -148,7 +158,11 @@ def restore(
     _require_non_production(target_environment)
     _validate_restore_target_names(target_database, target_bucket)
     _require_environment(("PGHOST", "PGPORT", "PGUSER", "PGPASSWORD", "MC_HOST_source"))
-    _write_attempt_metric(metrics_file, "knowledge_uploader_restore_drill", success=False)
+    _write_attempt_metric(
+        metrics_file,
+        "knowledge_uploader_logical_restore_validation",
+        success=False,
+    )
     source_dir = backup_dir.resolve()
     evidence_root = evidence_dir.resolve()
     if evidence_root == source_dir or source_dir in evidence_root.parents:
@@ -238,9 +252,13 @@ def restore(
     _write_json(evidence_root / f"{evidence_name}.json", evidence)
     _write_success_metric(
         metrics_file,
-        "knowledge_uploader_restore_drill_last_success_timestamp_seconds",
+        "knowledge_uploader_logical_restore_validation_last_success_timestamp_seconds",
     )
-    _write_attempt_metric(metrics_file, "knowledge_uploader_restore_drill", success=True)
+    _write_attempt_metric(
+        metrics_file,
+        "knowledge_uploader_logical_restore_validation",
+        success=True,
+    )
     return evidence
 
 
@@ -498,6 +516,27 @@ def _cleanup_restore_targets(database_name: str, bucket: str) -> None:
         )
     )
     run(("mc", "rb", "--force", f"{MC_ALIAS}/{bucket}"))
+
+
+def _remove_current_partial_backup(
+    *,
+    output_root: Path,
+    partial_dir: Path,
+    backup_id: str,
+) -> None:
+    root = output_root.resolve()
+    expected_name = f".partial-{backup_id}"
+    if partial_dir.name != expected_name:
+        raise RuntimeError("refusing to clean an unexpected partial backup path")
+    resolved = partial_dir.resolve()
+    try:
+        relative = resolved.relative_to(root)
+    except ValueError as error:
+        raise RuntimeError("refusing to clean a partial backup outside output root") from error
+    if len(relative.parts) != 1 or relative.name != expected_name:
+        raise RuntimeError("refusing to clean a nested or renamed partial backup")
+    if resolved.exists():
+        shutil.rmtree(resolved)
 
 
 def _verify_health_url(url: str) -> None:

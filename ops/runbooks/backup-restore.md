@@ -60,8 +60,10 @@ Never point this tool at a production target.
 `KnowledgeUploaderBackupMissing` fires when no validated timestamp exists.
 `KnowledgeUploaderBackupStale` fires when the most recent validated backup is older than 24 hours.
 `KnowledgeUploaderBackupLastAttemptFailed` 在一次任务开始后即进入失败候选状态，只有完整校验
-成功才改为成功，因此进程崩溃也会在两分钟内报警。恢复演练同样记录 last-attempt；从未演练
-或成功证据超过 90 天会触发 missing/stale 告警。
+成功才改为成功，因此进程崩溃也会在两分钟内报警。当前工具只写
+`knowledge_uploader_logical_restore_validation_*`；它不会刷新季度 DR drill 指标。完整 DR drill
+时间戳只能由外部门禁在隔离服务 ready、主链 smoke、配对恢复点、RPO/RTO 全部验证后写入。
+从未完成真实演练或成功证据超过 90 天仍会触发 missing/stale 告警。
 Treat either as a data-protection incident: inspect the one-shot container log, confirm PostgreSQL
 and MinIO health and capacity, repair the cause, create a fresh validated backup, and perform an
 isolated restore drill before closing the incident.
