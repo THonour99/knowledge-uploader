@@ -33,18 +33,18 @@ export function extensionAcceptValue(extensions: string[]): string {
 }
 
 export function allowedExtensionsFromPolicy(policy: UploadPolicy | undefined): string[] {
-  if (!policy || policy.allowed_extensions.length === 0) {
-    return DEFAULT_ALLOWED_EXTENSIONS;
+  if (!policy) {
+    return [];
   }
   return policy.allowed_extensions;
 }
 
 export function allowMultiFileFromPolicy(policy: UploadPolicy | undefined): boolean {
-  return policy?.allow_multi_file !== false;
+  return policy?.allow_multi_file === true;
 }
 
 export function uploadEnabledFromPolicy(policy: UploadPolicy | undefined): boolean {
-  return policy?.upload_enabled !== false;
+  return policy?.upload_enabled === true;
 }
 
 export function allowUserDeleteFromPolicy(policy: UploadPolicy | undefined): boolean {

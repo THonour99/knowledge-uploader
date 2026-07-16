@@ -101,6 +101,18 @@ const SUBMITTABLE_STATUSES = new Set([
   "rejected",
 ]);
 
+const USER_DELETABLE_STATUSES = new Set([
+  "uploaded",
+  "approved",
+  "rejected",
+  "failed",
+  "parsed",
+  "analysis_failed",
+  "analyzed",
+  "sensitive_review_required",
+  "disabled",
+]);
+
 const ANALYSIS_FAILED_SUBMISSION_DISABLED_CODE = "ANALYSIS_FAILED_SUBMISSION_DISABLED";
 const SENSITIVE_RISK_ACKNOWLEDGEMENT_REQUIRED_CODE = "SENSITIVE_RISK_ACKNOWLEDGEMENT_REQUIRED";
 
@@ -341,6 +353,7 @@ export default function MyFilesPage() {
     value: tag.id,
   }));
   const allowUserDelete = allowUserDeleteFromPolicy(uploadPolicyQuery.data);
+  const uploadPolicyReady = uploadPolicyQuery.isSuccess && uploadPolicyQuery.data !== undefined;
   const files = filesQuery.data?.items ?? [];
   const total = filesQuery.data?.total ?? 0;
 
@@ -384,7 +397,7 @@ export default function MyFilesPage() {
           提交
         </Button>
       ) : null}
-      {allowUserDelete ? (
+      {allowUserDelete && USER_DELETABLE_STATUSES.has(file.status) ? (
         <Popconfirm
           title="删除文件"
           description="仅允许删除策略放行且非运行态的文件。确认继续？"
@@ -452,7 +465,11 @@ export default function MyFilesPage() {
         <Button
           type="primary"
           icon={<CloudUploadOutlined />}
-          disabled={departmentBlocked || uploadPolicyQuery.data?.upload_enabled === false}
+          disabled={
+            departmentBlocked ||
+            !uploadPolicyReady ||
+            uploadPolicyQuery.data?.upload_enabled !== true
+          }
           onClick={() => navigate("/upload")}
         >
           上传文档
@@ -460,6 +477,20 @@ export default function MyFilesPage() {
       }
     >
       {departmentBlocked ? <DepartmentAssignmentAlert className="workbench-gate-alert" /> : null}
+      {uploadPolicyQuery.isError ? (
+        <Alert
+          className="workbench-gate-alert"
+          type="error"
+          showIcon
+          message="上传与删除策略加载失败"
+          description="上传入口和用户删除操作已安全暂停；文档浏览、下载与审核状态不受影响。"
+          action={
+            <Button size="small" onClick={() => void uploadPolicyQuery.refetch()}>
+              重试策略
+            </Button>
+          }
+        />
+      ) : null}
       {submitRecovery ? (
         <Alert
           className="workbench-gate-alert"

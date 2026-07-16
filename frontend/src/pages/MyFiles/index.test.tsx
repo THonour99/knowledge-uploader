@@ -587,6 +587,38 @@ describe("MyFilesPage", () => {
     expect(screen.queryByRole("button", { name: /删除/ })).not.toBeInTheDocument();
   });
 
+  it("hides delete for pending-review and pipeline-running files", async () => {
+    vi.mocked(listDocuments).mockResolvedValue({
+      items: [
+        mockFile2,
+        { ...mockFile2, id: "file-queued", original_name: "排队文档.pdf", status: "queued" },
+        { ...mockFile2, id: "file-parsing", original_name: "解析文档.pdf", status: "parsing" },
+      ],
+      total: 3,
+    });
+    vi.mocked(listTags).mockResolvedValue(mockTagsResponse);
+
+    renderWithProviders(<MyFilesPage />);
+
+    await screen.findAllByText("技术架构.docx");
+    expect(screen.queryByRole("button", { name: "删除 技术架构.docx" })).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "删除 排队文档.pdf" })).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "删除 解析文档.pdf" })).not.toBeInTheDocument();
+  });
+
+  it("fails closed for upload and delete when policy loading fails", async () => {
+    vi.mocked(getUploadPolicy).mockRejectedValueOnce(new Error("policy unavailable"));
+    vi.mocked(listDocuments).mockResolvedValue(mockFilesResponse);
+    vi.mocked(listTags).mockResolvedValue(mockTagsResponse);
+
+    renderWithProviders(<MyFilesPage />);
+
+    expect(await screen.findByText("上传与删除策略加载失败")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: /上传文档/ })).toBeDisabled();
+    expect(screen.queryByRole("button", { name: /删除/ })).not.toBeInTheDocument();
+    expect(screen.getByRole("button", { name: /重\s*试策略/ })).toBeInTheDocument();
+  });
+
   it("re-fetches file list after successful delete", async () => {
     vi.mocked(listDocuments).mockResolvedValue(mockFilesResponse);
     vi.mocked(listTags).mockResolvedValue(mockTagsResponse);

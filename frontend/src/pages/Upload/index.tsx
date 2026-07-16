@@ -120,13 +120,14 @@ export default function UploadPage() {
     () => allowedExtensionsFromPolicy(uploadPolicyQuery.data),
     [uploadPolicyQuery.data],
   );
+  const uploadPolicyReady = uploadPolicyQuery.isSuccess && uploadPolicyQuery.data !== undefined;
   const allowMultiFile = allowMultiFileFromPolicy(uploadPolicyQuery.data);
   const uploadEnabled = uploadEnabledFromPolicy(uploadPolicyQuery.data);
-  const canUpload = uploadEnabled && !departmentBlocked;
+  const canUpload = uploadPolicyReady && uploadEnabled && !departmentBlocked;
   const acceptValue = useMemo(() => extensionAcceptValue(allowedExtensions), [allowedExtensions]);
-  const allowedExtensionText = allowedExtensions
-    .map((extension) => extension.toUpperCase())
-    .join("、");
+  const allowedExtensionText = uploadPolicyReady
+    ? allowedExtensions.map((extension) => extension.toUpperCase()).join("、")
+    : "正在读取上传策略";
 
   // Guard against stale closures when updating individual queue rows.
   const queueRef = useRef(queue);
@@ -179,6 +180,10 @@ export default function UploadPage() {
         return;
       }
 
+      if (!uploadPolicyReady) {
+        message.warning("上传策略尚未就绪，请重试");
+        return;
+      }
       if (!uploadEnabled) {
         message.warning("当前系统已关闭员工上传");
         return;
@@ -247,7 +252,15 @@ export default function UploadPage() {
         message.warning(`上传完成：${successCount} 成功，${failCount} 失败`);
       }
     },
-    [buildQueue, updateItem, form, message, uploadEnabled, departmentBlocked],
+    [
+      buildQueue,
+      updateItem,
+      form,
+      message,
+      uploadPolicyReady,
+      uploadEnabled,
+      departmentBlocked,
+    ],
   );
 
   const handleSaveDraft = useCallback(() => {
@@ -297,7 +310,21 @@ export default function UploadPage() {
             {departmentBlocked ? (
               <DepartmentAssignmentAlert className="upload-disabled-alert" />
             ) : null}
-            {!uploadEnabled ? (
+            {uploadPolicyQuery.isError ? (
+              <Alert
+                type="error"
+                showIcon
+                className="upload-disabled-alert"
+                message="上传策略加载失败，上传入口已暂停"
+                description="为避免使用过期的文件类型、大小或开关配置，策略恢复前不会发送文件。"
+                action={
+                  <Button size="small" onClick={() => void uploadPolicyQuery.refetch()}>
+                    重试
+                  </Button>
+                }
+              />
+            ) : null}
+            {uploadPolicyReady && !uploadEnabled ? (
               <Alert
                 type="warning"
                 showIcon

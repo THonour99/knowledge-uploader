@@ -10,7 +10,7 @@
 import type { CSSProperties, ReactNode } from "react";
 import { App as AntdApp, ConfigProvider } from "antd";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { render, screen, fireEvent } from "@testing-library/react";
+import { render, screen, fireEvent, waitFor } from "@testing-library/react";
 import { MemoryRouter } from "react-router-dom";
 import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import type { UploadFile } from "antd/es/upload/interface";
@@ -365,17 +365,29 @@ describe("UploadPage rendering", () => {
     expect(screen.getByRole("button", { name: /保存草稿/ })).toBeDisabled();
   });
 
+  it("fails closed and offers retry when upload policy cannot be loaded", async () => {
+    vi.mocked(getUploadPolicy).mockRejectedValueOnce(new Error("policy unavailable"));
+
+    renderWithProviders(<UploadPage />);
+
+    expect(await screen.findByText("上传策略加载失败，上传入口已暂停")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: /开始上传/ })).toBeDisabled();
+    expect(screen.getByRole("button", { name: /保存草稿/ })).toBeDisabled();
+    expect(screen.getByRole("button", { name: /重\s*试/ })).toBeInTheDocument();
+  });
+
   it("shows empty-queue placeholder before any files are selected", () => {
     renderWithProviders(<UploadPage />);
 
     expect(screen.getByText(/选择文件后会显示待上传队列/)).toBeInTheDocument();
   });
 
-  it("submit button is enabled by default", () => {
+  it("enables submit only after a trusted upload policy is loaded", async () => {
     renderWithProviders(<UploadPage />);
 
     const btn = screen.getByRole("button", { name: /开始上传/ });
-    expect(btn).not.toBeDisabled();
+    expect(btn).toBeDisabled();
+    await waitFor(() => expect(btn).not.toBeDisabled());
   });
 
   it("does not render a visibility selector", () => {
@@ -395,6 +407,7 @@ describe("UploadPage rendering", () => {
     renderWithProviders(<UploadPage />);
 
     const submitBtn = screen.getByRole("button", { name: /开始上传/ });
+    await waitFor(() => expect(submitBtn).not.toBeDisabled());
     fireEvent.click(submitBtn);
 
     // AntD will render validation error message.
