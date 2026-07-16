@@ -80,6 +80,7 @@ async def http_exception_handler(request: Request, exc: HTTPException) -> JSONRe
     return JSONResponse(
         status_code=exc.status_code,
         content=error_response(str(error_code), message, request),
+        headers=exc.headers,
     )
 
 
