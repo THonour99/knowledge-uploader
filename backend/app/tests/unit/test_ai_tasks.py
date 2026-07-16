@@ -115,6 +115,7 @@ async def _create_file(
     stored_name: str = "file-handbook.txt",
     extension: str = "txt",
     mime_type: str = "text/plain",
+    submit_after_upload: bool | None = None,
 ) -> UUID:
     from app.core.database import AsyncSessionFactory
     from app.modules.document.models import File
@@ -137,6 +138,11 @@ async def _create_file(
         status=status_value,
         review_status="pending",
         ai_analysis_enabled_at_upload=ai_enabled,
+        ai_config_snapshot=(
+            {"submit_after_upload": submit_after_upload}
+            if submit_after_upload is not None
+            else None
+        ),
     )
     async with AsyncSessionFactory() as session:
         session.add(file)
@@ -279,6 +285,102 @@ async def test_ai_analysis_generates_summary_category_and_tags() -> None:
         assert analysis.summary == "handbook onboarding policy and employee benefits"
         assert analysis.suggested_category_id == category_id
         assert analysis.sensitive_risk_level == "none"
+
+
+async def test_ai_analysis_auto_submits_and_emits_outbox_chain() -> None:
+    from app.core.database import AsyncSessionFactory
+    from app.core.outbox import EventOutbox
+    from app.modules.document.models import File
+
+    uploader_id = await _create_user()
+    file_id = await _create_file(uploader_id=uploader_id, submit_after_upload=True)
+
+    await _run_analysis(file_id, FakeAiStorage(content=b"ordinary handbook content"))
+
+    async with AsyncSessionFactory() as session:
+        file = await session.get(File, file_id)
+        assert file is not None
+        assert file.status == "pending_review"
+        assert file.ai_config_snapshot is not None
+        assert file.ai_config_snapshot["submit_after_upload"] is True
+        events_result = await session.execute(
+            select(EventOutbox)
+            .where(EventOutbox.aggregate_id == str(file_id))
+            .order_by(EventOutbox.id)
+        )
+        outbox_events = list(events_result.scalars())
+
+    assert [event.event_type for event in outbox_events] == [
+        "ai.text.extracted",
+        "ai.file.analyzed",
+        "review.file.submitted",
+    ]
+    assert outbox_events[-1].payload["auto_submitted"] is True
+    assert outbox_events[-1].payload["analysis_failed"] is False
+
+
+async def test_critical_analysis_blocks_automatic_review_submission() -> None:
+    from app.core.database import AsyncSessionFactory
+    from app.core.outbox import EventOutbox
+    from app.modules.ai.models import SensitiveRule
+    from app.modules.document.models import File
+
+    uploader_id = await _create_user()
+    file_id = await _create_file(uploader_id=uploader_id, submit_after_upload=True)
+    async with AsyncSessionFactory() as session:
+        session.add(
+            SensitiveRule(
+                name="严重风险词",
+                rule_type="keyword",
+                keywords=["绝密凭证"],
+                risk_level="critical",
+                action="block_sync",
+                enabled=True,
+            )
+        )
+        await session.commit()
+
+    await _run_analysis(file_id, FakeAiStorage(content="包含绝密凭证".encode()))
+
+    async with AsyncSessionFactory() as session:
+        file = await session.get(File, file_id)
+        assert file is not None
+        assert file.status == "sensitive_review_required"
+        events_result = await session.execute(
+            select(EventOutbox)
+            .where(EventOutbox.aggregate_id == str(file_id))
+            .order_by(EventOutbox.id)
+        )
+        outbox_events = list(events_result.scalars())
+
+    assert "review.file.submitted" not in {event.event_type for event in outbox_events}
+    analyzed_event = next(
+        event for event in outbox_events if event.event_type == "ai.file.analyzed"
+    )
+    assert analyzed_event.payload["auto_submitted"] is False
+    assert analyzed_event.payload["auto_submit_blocked_reason"] == "critical_sensitive_content"
+
+
+async def test_analysis_failure_auto_submission_obeys_feature_gate() -> None:
+    from app.core.database import AsyncSessionFactory
+    from app.core.outbox import EventOutbox
+    from app.modules.document.models import File
+
+    uploader_id = await _create_user()
+    file_id = await _create_file(uploader_id=uploader_id, submit_after_upload=True)
+    await _set_ai_feature(feature_name="allow_sync_when_analysis_failed", enabled=False)
+
+    await _run_analysis(file_id, FakeAiStorage(content=b"", fail=True))
+
+    async with AsyncSessionFactory() as session:
+        file = await session.get(File, file_id)
+        assert file is not None
+        assert file.status == "analysis_failed"
+        events_result = await session.execute(
+            select(EventOutbox).where(EventOutbox.aggregate_id == str(file_id))
+        )
+        outbox_events = list(events_result.scalars())
+    assert "review.file.submitted" not in {event.event_type for event in outbox_events}
 
 
 async def test_ai_analysis_stores_extracted_tables_and_markdown() -> None:

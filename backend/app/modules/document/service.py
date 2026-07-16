@@ -189,7 +189,9 @@ class DocumentService:
             status="uploaded",
             review_status="pending",
             ai_analysis_enabled_at_upload=effective_ai_analysis_enabled,
-            ai_config_snapshot=None,
+            # uploaded 是产品语义上的草稿。AI 开启时必须持久化自动提交意图,
+            # 否则异步 worker 完成分析后无法判断是否应进入审核队列。
+            ai_config_snapshot={"submit_after_upload": submit_after_upload},
         )
         try:
             await self._repository.add(file)
@@ -676,6 +678,9 @@ class DocumentService:
                 "object_key": file.object_key,
                 "status": file.status,
                 "ai_analysis_enabled_at_upload": file.ai_analysis_enabled_at_upload,
+                "submit_after_upload": bool(
+                    (file.ai_config_snapshot or {}).get("submit_after_upload", False)
+                ),
             },
         )
 

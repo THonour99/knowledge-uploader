@@ -1184,6 +1184,11 @@ class AiAnalysisService:
                 )
             file = await self._get_file_or_raise(file_id)
             file = await self._transition_file(file, "analysis_queued")
+            await self._append_analysis_event(
+                event_type=events.AI_TEXT_EXTRACTED,
+                file=file,
+                payload={"text_length": len(extracted_text), "table_count": len(tables)},
+            )
             file = await self._transition_file(file, "analyzing")
 
             categories = await self._repository.list_categories()
@@ -1249,14 +1254,14 @@ class AiAnalysisService:
                     file.simhash_band_2 = None
                     file.simhash_band_3 = None
 
-            target_status = (
+            analysis_target_status = (
                 "sensitive_review_required"
                 if requires_sensitive_review(sensitive_hits)
                 else "analyzed"
             )
             file.tags = merge_tags(file.tags, tags)
             file.category_id = category.category_id or file.category_id
-            file = await self._transition_file(file, target_status)
+            file = await self._transition_file(file, analysis_target_status)
             analysis.status = "succeeded"
             analysis.extracted_text = truncate_text(extracted_text, parse_max_chars)
             analysis.summary = summary
@@ -1272,6 +1277,44 @@ class AiAnalysisService:
             analysis.similar_file_ids = similar_file_ids
             analysis.error_message = None
             analysis.finished_at = datetime.now(UTC)
+            auto_submit_requested = self._auto_submit_requested(file)
+            auto_submitted = False
+            auto_submit_blocked_reason: str | None = None
+            if auto_submit_requested:
+                if risk_level == "critical":
+                    auto_submit_blocked_reason = "critical_sensitive_content"
+                else:
+                    file = await self._transition_file(file, "pending_review")
+                    auto_submitted = True
+
+            await self._append_analysis_event(
+                event_type=events.AI_FILE_ANALYZED,
+                file=file,
+                payload={
+                    "analysis_id": str(analysis.id),
+                    "analysis_status": analysis.status,
+                    "sensitive_risk_level": risk_level,
+                    "auto_submit_requested": auto_submit_requested,
+                    "auto_submitted": auto_submitted,
+                    "auto_submit_blocked_reason": auto_submit_blocked_reason,
+                },
+            )
+            if sensitive_hits:
+                await self._append_analysis_event(
+                    event_type=events.AI_SENSITIVE_DETECTED,
+                    file=file,
+                    payload={
+                        "analysis_id": str(analysis.id),
+                        "sensitive_risk_level": risk_level,
+                        "hit_count": len(sensitive_hits),
+                    },
+                )
+            if auto_submitted:
+                await self._append_review_submitted_event(
+                    file=file,
+                    previous_status=analysis_target_status,
+                    analysis_failed=False,
+                )
             await self._session.commit()
             return analysis.id
         except exceptions.AiAnalysisTransientError:
@@ -1302,7 +1345,10 @@ class AiAnalysisService:
         analysis.error_message = None
         analysis.started_at = started_at
         analysis.finished_at = None
-        file.ai_config_snapshot = self._analysis_snapshot(provider=provider)
+        file.ai_config_snapshot = {
+            **(file.ai_config_snapshot or {}),
+            **self._analysis_snapshot(provider=provider),
+        }
         await self._repository.update_file_analysis_state(file)
         await self._session.commit()
         return analysis
@@ -1339,6 +1385,16 @@ class AiAnalysisService:
         analysis.status = "failed"
         analysis.error_message = error_message[:MAX_ERROR_MESSAGE_LENGTH]
         analysis.finished_at = datetime.now(UTC)
+        auto_submit_requested = self._auto_submit_requested(file)
+        allow_submit = await self._allow_submit_when_analysis_failed()
+        if auto_submit_requested and allow_submit and file.status == "analysis_failed":
+            previous_status = file.status
+            file = await self._transition_file(file, "pending_review")
+            await self._append_review_submitted_event(
+                file=file,
+                previous_status=previous_status,
+                analysis_failed=True,
+            )
         await self._session.commit()
 
     async def _get_file_or_raise(self, file_id: uuid.UUID) -> AiFileRecord:
@@ -1360,6 +1416,53 @@ class AiAnalysisService:
             "provider_type": provider.provider_type if provider is not None else None,
             "chat_model": provider.chat_model if provider is not None else None,
         }
+
+    def _auto_submit_requested(self, file: AiFileRecord) -> bool:
+        snapshot = file.ai_config_snapshot or {}
+        return snapshot.get("submit_after_upload") is True
+
+    async def _allow_submit_when_analysis_failed(self) -> bool:
+        feature = await self._repository.get_feature_config("allow_sync_when_analysis_failed")
+        if feature is not None:
+            return feature.enabled
+        return self._settings.ai_allow_sync_when_analysis_failed
+
+    async def _append_analysis_event(
+        self,
+        *,
+        event_type: str,
+        file: AiFileRecord,
+        payload: dict[str, object],
+    ) -> None:
+        await OutboxRepository(self._session).append(
+            event_type=event_type,
+            aggregate_type="file",
+            aggregate_id=str(file.id),
+            payload={"file_id": str(file.id), "status": file.status, **payload},
+        )
+
+    async def _append_review_submitted_event(
+        self,
+        *,
+        file: AiFileRecord,
+        previous_status: str,
+        analysis_failed: bool,
+    ) -> None:
+        await OutboxRepository(self._session).append(
+            event_type=events.REVIEW_FILE_SUBMITTED,
+            aggregate_type="file",
+            aggregate_id=str(file.id),
+            payload={
+                "file_id": str(file.id),
+                "actor_id": None,
+                "actor_type": "system",
+                "previous_status": previous_status,
+                "status": file.status,
+                "review_status": "pending",
+                "analysis_failed": analysis_failed,
+                "auto_submitted": True,
+            },
+        )
 
 
 def clean_optional_text(value: str | None) -> str | None:
