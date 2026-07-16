@@ -16,6 +16,12 @@ describe("StatusTag", () => {
     expect(screen.getByText("unknown_status")).toBeInTheDocument();
   });
 
+  it("labels missing risk data as not assessed", () => {
+    render(<StatusTag kind="risk" value="unknown" />);
+
+    expect(screen.getByText("未评估")).toBeInTheDocument();
+  });
+
   it("renders dataset status labels", () => {
     render(<StatusTag kind="dataset" value="unbound" />);
 

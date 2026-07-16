@@ -388,6 +388,35 @@ describe("MyFilesPage", () => {
     expect((await screen.findAllByText("技术架构.docx")).length).toBeGreaterThan(0);
   });
 
+  it("shows a retryable error instead of a false empty state when actionable summaries fail", async () => {
+    const actionableStatuses = new Set([
+      "rejected",
+      "analysis_failed",
+      "sensitive_review_required",
+      "uploaded",
+      "analyzed",
+    ]);
+    vi.mocked(listDocuments).mockImplementation(async (params = {}) => {
+      if (params.page_size === 4 && params.status && actionableStatuses.has(params.status)) {
+        throw new Error("summary unavailable");
+      }
+      return { items: [], total: 0 };
+    });
+    vi.mocked(listTags).mockResolvedValue(mockTagsResponse);
+
+    renderWithProviders(<MyFilesPage />);
+
+    expect(await screen.findByText("待办汇总加载失败")).toBeInTheDocument();
+    expect(screen.queryByText("当前没有需要继续处理的文档")).not.toBeInTheDocument();
+    expect(screen.getByText(/当前无法确认全部待处理文档/)).toBeInTheDocument();
+    const callsBeforeRetry = vi.mocked(listDocuments).mock.calls.length;
+    fireEvent.click(screen.getByRole("button", { name: "重试待办汇总" }));
+
+    await waitFor(() => {
+      expect(vi.mocked(listDocuments).mock.calls.length).toBeGreaterThan(callsBeforeRetry);
+    });
+  });
+
   it("puts analysis failures in continue processing and allows submission", async () => {
     vi.mocked(listDocuments).mockImplementation(async (params = {}) => {
       if (params.status === "analysis_failed" && params.page_size === 4) {

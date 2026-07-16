@@ -1513,11 +1513,6 @@ a {
   color: var(--ku-text-secondary);
 }
 
-.file-title-cell__star {
-  color: var(--ku-text-disabled);
-  font-size: 13px;
-}
-
 .uploader-cell {
   display: inline-flex;
   align-items: center;

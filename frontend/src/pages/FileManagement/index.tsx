@@ -20,7 +20,6 @@ import type { MenuProps } from "antd";
 import {
   CheckCircleOutlined,
   ClockCircleOutlined,
-  DeleteOutlined,
   EyeOutlined,
   FileExcelOutlined,
   FileOutlined,
@@ -30,16 +29,14 @@ import {
   FileWordOutlined,
   DownOutlined,
   FilterOutlined,
-  InboxOutlined,
   LockOutlined,
   UpOutlined,
   ReloadOutlined,
-  StarOutlined,
   UnlockOutlined,
 } from "@ant-design/icons";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import dayjs from "dayjs";
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import type { Key } from "react";
 import type { ColumnsType } from "antd/es/table";
 import type { FormInstance } from "antd/es/form";
@@ -50,9 +47,7 @@ import {
   type KnowledgeFile,
   type ReviewDecisionPayload,
   approveFile,
-  archiveFile,
   claimReviewFile,
-  deleteFile,
   getUploadPolicy,
   isApiError,
   listCategories,
@@ -89,27 +84,13 @@ const REVIEW_QUEUES = [
   { value: "overdue", label: "已超时" },
 ] as const;
 
-const ARCHIVABLE_STATUSES = new Set<KnowledgeFile["status"]>([
-  "approved",
-  "parsed",
-  "failed",
-  "rejected",
-  "analyzed",
-  "pending_review",
-]);
+type ReviewQueue = (typeof REVIEW_QUEUES)[number]["value"];
+type RiskFilter = "all" | "none" | "low" | "medium" | "high" | "critical";
 
-const DELETABLE_STATUSES = new Set<KnowledgeFile["status"]>([
-  "uploaded",
-  "pending_review",
-  "approved",
-  "rejected",
-  "failed",
-  "parsed",
-  "analysis_failed",
-  "analyzed",
-  "sensitive_review_required",
-  "disabled",
-]);
+const REVIEW_QUEUE_VALUES = new Set<string>(REVIEW_QUEUES.map((queue) => queue.value));
+const RISK_FILTER_VALUES = new Set<string>(["all", "none", "low", "medium", "high", "critical"]);
+const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+const EXTENSION_PATTERN = /^[a-z0-9][a-z0-9+._-]{0,15}$/i;
 
 function formatFileSize(size: number): string {
   if (size < 1024) {
@@ -137,7 +118,14 @@ export function hasActiveReviewClaim(
   userId: string | null | undefined,
   now = Date.now(),
 ): boolean {
-  if (!userId || file.claimed_by !== userId || !file.claimed_at || !file.claim_expires_at) {
+  return Boolean(userId && file.claimed_by === userId && hasValidReviewClaim(file, now));
+}
+
+export function hasValidReviewClaim(
+  file: Pick<KnowledgeFile, "claimed_by" | "claimed_at" | "claim_expires_at">,
+  now = Date.now(),
+): boolean {
+  if (!file.claimed_by || !file.claimed_at || !file.claim_expires_at) {
     return false;
   }
   const claimedAt = Date.parse(file.claimed_at);
@@ -157,17 +145,6 @@ export function eligibleReviewTargets(files: KnowledgeFile[], userId: string | n
   );
 }
 
-function reviewClaimExpired(
-  file: Pick<KnowledgeFile, "claimed_by" | "claim_expires_at">,
-  now = Date.now(),
-): boolean {
-  if (!file.claimed_by || !file.claim_expires_at) {
-    return false;
-  }
-  const expiresAt = Date.parse(file.claim_expires_at);
-  return !Number.isFinite(expiresAt) || expiresAt <= now;
-}
-
 function buildMappingOptions(mappings: DatasetMapping[], categoryId?: string) {
   return mappings
     .filter((mapping) => mapping.enabled)
@@ -178,17 +155,14 @@ function buildMappingOptions(mappings: DatasetMapping[], categoryId?: string) {
     }));
 }
 
-function riskLevel(file: KnowledgeFile): "none" | "low" | "medium" | "high" | "critical" {
-  if (file.sensitive_risk_level) {
-    return file.sensitive_risk_level;
-  }
-  if (file.status === "sensitive_review_required") {
-    return "high";
-  }
-  if (file.review_status === "rejected" || file.status === "rejected") {
-    return "medium";
-  }
-  return "low";
+function riskLevel(
+  file: KnowledgeFile,
+): "unknown" | "none" | "low" | "medium" | "high" | "critical" {
+  return file.sensitive_risk_level ?? "unknown";
+}
+
+function isUuid(value: string | null): value is string {
+  return Boolean(value && UUID_PATTERN.test(value));
 }
 
 function uploaderText(file: KnowledgeFile): string {
@@ -268,23 +242,76 @@ export default function FileManagementPage() {
   const page = positiveInteger(searchParams.get("page"), 1);
   const pageSize = Math.min(100, positiveInteger(searchParams.get("page_size"), 20));
   const serverSearch = searchParams.get("q")?.trim() ?? "";
-  const queue = (searchParams.get("queue") ?? "all") as
-    | "all"
-    | "unclaimed"
-    | "mine"
-    | "due_soon"
-    | "overdue";
+  const rawQueue = searchParams.get("queue");
+  const queue: ReviewQueue = REVIEW_QUEUE_VALUES.has(rawQueue ?? "all")
+    ? ((rawQueue as ReviewQueue | null) ?? "all")
+    : "all";
+  const rawRiskFilter = searchParams.get("risk");
+  const riskFilter: RiskFilter = RISK_FILTER_VALUES.has(rawRiskFilter ?? "all")
+    ? ((rawRiskFilter as RiskFilter | null) ?? "all")
+    : "all";
+  const rawExtensionFilter = searchParams.get("extension")?.trim() ?? "";
+  const extensionFilter = EXTENSION_PATTERN.test(rawExtensionFilter)
+    ? rawExtensionFilter.toLowerCase()
+    : undefined;
+  const rawTagIdFilter = searchParams.get("tag_id");
+  const tagIdFilter = isUuid(rawTagIdFilter) ? rawTagIdFilter : undefined;
   const [searchText, setSearchText] = useState(serverSearch);
   const [claimFeedback, setClaimFeedback] = useState<{
     fileId: string;
     message: string;
   } | null>(null);
-  const [riskFilter, setRiskFilter] = useState("all");
-  const [filtersExpanded, setFiltersExpanded] = useState(false);
+  const [filtersExpanded, setFiltersExpanded] = useState(
+    riskFilter !== "all" || Boolean(extensionFilter || tagIdFilter),
+  );
   const [bulkApproving, setBulkApproving] = useState(false);
-  // 新增：服务端筛选参数
-  const [extensionFilter, setExtensionFilter] = useState<string | undefined>(undefined);
-  const [tagIdFilter, setTagIdFilter] = useState<string | undefined>(undefined);
+
+  useEffect(() => {
+    setSearchText(serverSearch);
+  }, [serverSearch]);
+
+  useEffect(() => {
+    if (riskFilter !== "all" || extensionFilter || tagIdFilter) {
+      setFiltersExpanded(true);
+    }
+  }, [extensionFilter, riskFilter, tagIdFilter]);
+
+  const serializedSearchParams = searchParams.toString();
+  useEffect(() => {
+    const next = new URLSearchParams(serializedSearchParams);
+    let changed = false;
+    if (rawQueue && !REVIEW_QUEUE_VALUES.has(rawQueue)) {
+      next.delete("queue");
+      changed = true;
+    }
+    if (rawRiskFilter && !RISK_FILTER_VALUES.has(rawRiskFilter)) {
+      next.delete("risk");
+      changed = true;
+    }
+    if (rawExtensionFilter && !EXTENSION_PATTERN.test(rawExtensionFilter)) {
+      next.delete("extension");
+      changed = true;
+    } else if (rawExtensionFilter && rawExtensionFilter !== extensionFilter) {
+      next.set("extension", extensionFilter ?? "");
+      changed = true;
+    }
+    if (rawTagIdFilter && !isUuid(rawTagIdFilter)) {
+      next.delete("tag_id");
+      changed = true;
+    }
+    if (changed) {
+      next.set("page", "1");
+      setSearchParams(next, { replace: true });
+    }
+  }, [
+    extensionFilter,
+    rawExtensionFilter,
+    rawQueue,
+    rawRiskFilter,
+    rawTagIdFilter,
+    serializedSearchParams,
+    setSearchParams,
+  ]);
 
   const updateCoreQuery = (key: string, value?: string | number) => {
     setSearchParams(
@@ -403,14 +430,14 @@ export default function FileManagementPage() {
   const highRiskCount = files.filter((file) =>
     ["high", "critical"].includes(riskLevel(file)),
   ).length;
-  const unclaimedCount = files.filter((file) => !file.claimed_by).length;
+  const unclaimedCount = files.filter((file) => !hasValidReviewClaim(file)).length;
   const mineCount = files.filter(canDecideFile).length;
   const selectedPendingCount = selectedFiles.filter(
     (file) => file.status === "pending_review" && canDecideFile(file),
   ).length;
   const selectedRatio =
     files.length > 0 ? Math.round((selectedFiles.length / files.length) * 100) : 0;
-  const nextUnclaimedFile = files.find((file) => !file.claimed_by);
+  const nextUnclaimedFile = files.find((file) => !hasValidReviewClaim(file));
   const dueSoonCount = files.filter((file) => reviewSla(file).state === "due_soon").length;
   const overdueCount = files.filter((file) => reviewSla(file).state === "overdue").length;
 
@@ -534,28 +561,6 @@ export default function FileManagementPage() {
     },
   });
 
-  const deleteMutation = useMutation({
-    mutationFn: (id: string) => deleteFile(id),
-    onSuccess: async () => {
-      message.success("文件已删除");
-      await refreshFiles();
-    },
-    onError: (error) => {
-      message.error(error.message);
-    },
-  });
-
-  const archiveMutation = useMutation({
-    mutationFn: (id: string) => archiveFile(id),
-    onSuccess: async () => {
-      message.success("文件已归档");
-      await refreshFiles();
-    },
-    onError: (error) => {
-      message.error(error.message);
-    },
-  });
-
   // ── Modal 开关 ────────────────────────────────────────────────────────────────
 
   const openApproveModal = (file: KnowledgeFile) => {
@@ -592,9 +597,6 @@ export default function FileManagementPage() {
 
   const resetFilters = () => {
     setSearchText("");
-    setRiskFilter("all");
-    setExtensionFilter(undefined);
-    setTagIdFilter(undefined);
     setSearchParams(new URLSearchParams(), { replace: true });
   };
 
@@ -654,7 +656,6 @@ export default function FileManagementPage() {
               </button>
               <span className="file-title-cell__meta">
                 <Typography.Text type="secondary">{record.mime_type}</Typography.Text>
-                <StarOutlined className="file-title-cell__star" />
               </span>
             </span>
           </div>
@@ -744,19 +745,26 @@ export default function FileManagementPage() {
       dataIndex: "claimed_by",
       key: "claimed_by",
       width: 120,
-      render: (_value: string | null, record) =>
-        record.claimed_by ? (
-          <Space direction="vertical" size={1}>
-            <Typography.Text>
-              {record.claimed_by === user?.id ? "我" : record.claimed_by_name || "其他审核人"}
-            </Typography.Text>
-            <Typography.Text type="secondary">
-              {record.claimed_at ? dayjs(record.claimed_at).format("MM-DD HH:mm") : "已领取"}
-            </Typography.Text>
-          </Space>
-        ) : (
-          <Typography.Text type="secondary">待领取</Typography.Text>
-        ),
+      render: (_value: string | null, record) => {
+        const validClaim = hasValidReviewClaim(record);
+        if (validClaim) {
+          return (
+            <Space direction="vertical" size={1}>
+              <Typography.Text>
+                {record.claimed_by === user?.id ? "我" : record.claimed_by_name || "其他审核人"}
+              </Typography.Text>
+              <Typography.Text type="secondary">
+                {record.claimed_at ? dayjs(record.claimed_at).format("MM-DD HH:mm") : "已领取"}
+              </Typography.Text>
+            </Space>
+          );
+        }
+        return (
+          <Typography.Text type={record.claimed_by ? "warning" : "secondary"}>
+            {record.claimed_by ? "领取已失效" : "待领取"}
+          </Typography.Text>
+        );
+      },
     },
     {
       title: "操作",
@@ -765,18 +773,11 @@ export default function FileManagementPage() {
       fixed: "right" as const,
       render: (_, record) => {
         const canDecide = record.status === "pending_review" && canDecideFile(record);
-        const canClaim =
-          record.status === "pending_review" && (!record.claimed_by || reviewClaimExpired(record));
-        const claimedByMe = record.claimed_by === user?.id;
-        const canForceRelease =
-          user?.role === Roles.SYSTEM_ADMIN && Boolean(record.claimed_by) && !claimedByMe;
+        const validClaim = hasValidReviewClaim(record);
+        const canClaim = record.status === "pending_review" && !validClaim;
+        const claimedByMe = canDecide;
+        const canForceRelease = user?.role === Roles.SYSTEM_ADMIN && validClaim && !claimedByMe;
 
-        const canArchive =
-          ARCHIVABLE_STATUSES.has(record.status) &&
-          (record.status !== "pending_review" || canDecide);
-        const canDelete =
-          DELETABLE_STATUSES.has(record.status) &&
-          (record.status !== "pending_review" || canDecide);
         const moreItems: MenuProps["items"] = [];
 
         if (canDecide) {
@@ -784,26 +785,6 @@ export default function FileManagementPage() {
             key: "classify",
             label: "编辑审核草案",
             onClick: () => openClassificationModal(record),
-          });
-        }
-        if (canArchive) {
-          moreItems.push({
-            key: "archive",
-            icon: <InboxOutlined />,
-            label: "归档",
-            onClick: () => archiveMutation.mutate(record.id),
-          });
-        }
-        if (canDelete) {
-          if (moreItems.length > 0) {
-            moreItems.push({ type: "divider" });
-          }
-          moreItems.push({
-            key: "delete",
-            icon: <DeleteOutlined />,
-            label: "删除",
-            danger: true,
-            onClick: () => deleteMutation.mutate(record.id),
           });
         }
 
@@ -906,12 +887,17 @@ export default function FileManagementPage() {
         <Button
           type="primary"
           icon={<LockOutlined />}
-          disabled={!nextUnclaimedFile}
           loading={claimMutation.isPending && claimMutation.variables === nextUnclaimedFile?.id}
+          title={
+            nextUnclaimedFile
+              ? "领取当前页下一份可领取任务"
+              : "当前页没有可领取项，点击打开待领取队列"
+          }
           onClick={() => {
             if (nextUnclaimedFile) {
               claimMutation.mutate(nextUnclaimedFile.id);
             } else {
+              message.info("当前页没有可直接领取项，已为你打开待领取队列");
               updateCoreQuery("queue", "unclaimed");
             }
           }}
@@ -983,28 +969,32 @@ export default function FileManagementPage() {
             <>
               <Select
                 className="filter-toolbar__control"
+                aria-label="风险等级筛选"
                 value={riskFilter}
                 options={[
                   { label: "风险等级：全部", value: "all" },
+                  { label: "无风险", value: "none" },
                   { label: "低风险", value: "low" },
                   { label: "中风险", value: "medium" },
                   { label: "高风险", value: "high" },
                   { label: "严重风险", value: "critical" },
                 ]}
-                onChange={setRiskFilter}
+                onChange={(value) => updateCoreQuery("risk", value)}
               />
               <Select
                 className="filter-toolbar__control"
+                aria-label="文件类型筛选"
                 value={extensionFilter ?? "all"}
                 options={extensionOptions}
-                onChange={(value) => setExtensionFilter(value === "all" ? undefined : value)}
+                onChange={(value) => updateCoreQuery("extension", value)}
                 placeholder="文件类型：全部"
               />
               <Select
                 className="filter-toolbar__control"
+                aria-label="标签筛选"
                 value={tagIdFilter ?? "all"}
                 options={tagOptions}
-                onChange={(value) => setTagIdFilter(value === "all" ? undefined : value)}
+                onChange={(value) => updateCoreQuery("tag_id", value)}
                 loading={tagsQuery.isLoading}
                 placeholder="标签：全部"
               />

@@ -59,6 +59,14 @@ const SUMMARY_STATUSES = [
   "rejected",
 ] as const;
 
+const ACTIONABLE_SUMMARY_STATUSES = [
+  "rejected",
+  "analysis_failed",
+  "sensitive_review_required",
+  "uploaded",
+  "analyzed",
+] as const;
+
 const STATUS_RAIL = [
   { status: "uploaded", label: "草稿", hint: "补充信息并提交", danger: false },
   { status: "analyzed", label: "分析完成", hint: "等待你提交", danger: false },
@@ -305,14 +313,22 @@ export default function MyFilesPage() {
   const summaryByStatus = new Map(
     SUMMARY_STATUSES.map((summaryStatus, index) => [summaryStatus, summaryQueries[index]]),
   );
+  const actionableSummaryQueries = ACTIONABLE_SUMMARY_STATUSES.map((summaryStatus) =>
+    summaryByStatus.get(summaryStatus),
+  ).filter((query): query is NonNullable<typeof query> => Boolean(query));
+  const actionableSummaryErrorCount = actionableSummaryQueries.filter(
+    (query) => query.isError,
+  ).length;
+  const actionableSummaryAllFailed =
+    actionableSummaryQueries.length > 0 &&
+    actionableSummaryErrorCount === actionableSummaryQueries.length;
+  const actionableSummaryPending = actionableSummaryQueries.some((query) => query.isPending);
   const continueFiles = Array.from(
     new Map(
-      ["rejected", "analysis_failed", "sensitive_review_required", "uploaded", "analyzed"].flatMap(
-        (summaryStatus) =>
-          (
-            summaryByStatus.get(summaryStatus as (typeof SUMMARY_STATUSES)[number])?.data?.items ??
-            []
-          ).map((file) => [file.id, file] as const),
+      ACTIONABLE_SUMMARY_STATUSES.flatMap((summaryStatus) =>
+        (summaryByStatus.get(summaryStatus)?.data?.items ?? []).map(
+          (file) => [file.id, file] as const,
+        ),
       ),
     ).values(),
   )
@@ -500,6 +516,29 @@ export default function MyFilesPage() {
             <Typography.Text type="secondary">只列出你现在可以采取行动的文档</Typography.Text>
           </div>
         </div>
+        {actionableSummaryErrorCount > 0 ? (
+          <Alert
+            className="workbench-gate-alert"
+            type={actionableSummaryAllFailed ? "error" : "warning"}
+            showIcon
+            message={actionableSummaryAllFailed ? "待办汇总加载失败" : "待办汇总加载不完整"}
+            description="当前无法确认全部待处理文档，请重试后再判断是否存在待办。"
+            action={
+              <Button
+                size="small"
+                onClick={() =>
+                  void Promise.all(
+                    actionableSummaryQueries
+                      .filter((query) => query.isError)
+                      .map((query) => query.refetch()),
+                  )
+                }
+              >
+                重试待办汇总
+              </Button>
+            }
+          />
+        ) : null}
         {continueFiles.length > 0 ? (
           <div className="continue-list">
             {continueFiles.map((file) => (
@@ -522,6 +561,10 @@ export default function MyFilesPage() {
               </article>
             ))}
           </div>
+        ) : actionableSummaryErrorCount > 0 ? null : actionableSummaryPending ? (
+          <Typography.Text type="secondary" role="status">
+            正在加载待办汇总…
+          </Typography.Text>
         ) : (
           <Empty image={Empty.PRESENTED_IMAGE_SIMPLE} description="当前没有需要继续处理的文档" />
         )}

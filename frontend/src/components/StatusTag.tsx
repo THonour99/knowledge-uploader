@@ -78,6 +78,7 @@ const statusMap: Record<StatusKind, Record<string, StatusMeta>> = {
     canceled: { label: "已取消", color: "default" },
   },
   risk: {
+    unknown: { label: "未评估", color: "default" },
     none: { label: "无风险", color: "default" },
     low: { label: "低风险", color: "success" },
     medium: { label: "中风险", color: "warning" },
