@@ -1,0 +1,34 @@
+services:
+  backup-restore:
+    image: knowledge-uploader-ops:dev
+    build:
+      context: .
+      dockerfile: ops/Dockerfile
+      target: runtime
+    environment:
+      APP_ENV: "${APP_ENV:-development}"
+      POSTGRES_DB: "${POSTGRES_DB:-knowledge_uploader}"
+      MINIO_BUCKET: "${MINIO_BUCKET:-knowledge-files}"
+      PGHOST: "${POSTGRES_HOST:-postgres}"
+      PGPORT: "${POSTGRES_PORT:-5432}"
+      PGUSER: "${POSTGRES_USER:-knowledge}"
+      PGPASSWORD: "${POSTGRES_PASSWORD:-knowledge_password}"
+      MC_HOST_source: "http://${MINIO_ACCESS_KEY:-knowledge}:${MINIO_SECRET_KEY:-knowledge_password}@minio:9000"
+    volumes:
+      - backups:/backups
+      - backup-metrics:/metrics
+      - dr-evidence:/evidence
+    depends_on:
+      postgres:
+        condition: service_healthy
+      minio:
+        condition: service_healthy
+    networks:
+      - knowledge-uploader
+    profiles:
+      - ops
+
+volumes:
+  backups:
+  backup-metrics:
+  dr-evidence:
