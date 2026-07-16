@@ -50,23 +50,21 @@ import { allowUserDeleteFromPolicy, allowedExtensionsFromPolicy } from "../../ut
 
 const STATUS_RAIL: Array<{
   key: keyof EmployeeStatusCounts;
-  filterStatus: string;
+  filterStatus?: string;
   label: string;
   hint: string;
   danger: boolean;
 }> = [
   {
     key: "draft",
-    filterStatus: "uploaded",
     label: "草稿",
-    hint: "上传或分析完成，等待提交",
+    hint: "上传或分析完成；聚合项请用下方筛选",
     danger: false,
   },
   {
     key: "ai_processing",
-    filterStatus: "analyzing",
     label: "AI 处理中",
-    hint: "提取与分析进行中",
+    hint: "提取与分析进行中；聚合项请用下方筛选",
     danger: false,
   },
   {
@@ -99,9 +97,8 @@ const STATUS_RAIL: Array<{
   },
   {
     key: "sync_processing",
-    filterStatus: "queued",
     label: "入库处理中",
-    hint: "排队、上传或解析",
+    hint: "排队、上传或解析；聚合项请用下方筛选",
     danger: false,
   },
   {
@@ -113,9 +110,8 @@ const STATUS_RAIL: Array<{
   },
   {
     key: "sync_failed",
-    filterStatus: "failed",
     label: "入库失败",
-    hint: "联系管理员处理",
+    hint: "含同步与清理失败；聚合项请用下方筛选",
     danger: true,
   },
   {
@@ -545,20 +541,15 @@ export default function MyFilesPage() {
 
       <section className="status-rail" aria-label="文档状态轨道">
         {STATUS_RAIL.map((item, index) => {
-          return (
-            <button
-              className={[
-                "status-rail__item",
-                item.danger ? "status-rail__item--danger" : "",
-                status === item.filterStatus ? "status-rail__item--active" : "",
-              ]
-                .filter(Boolean)
-                .join(" ")}
-              key={item.key}
-              type="button"
-              aria-pressed={status === item.filterStatus}
-              onClick={() => setQueryValue("status", item.filterStatus)}
-            >
+          const className = [
+            "status-rail__item",
+            item.danger ? "status-rail__item--danger" : "",
+            item.filterStatus && status === item.filterStatus ? "status-rail__item--active" : "",
+          ]
+            .filter(Boolean)
+            .join(" ");
+          const content = (
+            <>
               <span className="status-rail__step">{index + 1}</span>
               <span className="status-rail__copy">
                 <strong>{item.label}</strong>
@@ -571,6 +562,28 @@ export default function MyFilesPage() {
                     ? "—"
                     : (statusCounts?.[item.key] ?? 0)}
               </span>
+            </>
+          );
+          if (!item.filterStatus) {
+            return (
+              <article
+                className={`${className} status-rail__item--aggregate`}
+                key={item.key}
+                aria-label={`${item.label}（聚合状态）`}
+              >
+                {content}
+              </article>
+            );
+          }
+          return (
+            <button
+              className={className}
+              key={item.key}
+              type="button"
+              aria-pressed={status === item.filterStatus}
+              onClick={() => setQueryValue("status", item.filterStatus)}
+            >
+              {content}
             </button>
           );
         })}

@@ -3,7 +3,7 @@ import type { CSSProperties, ReactNode } from "react";
 import { App as AntdApp, ConfigProvider } from "antd";
 import type * as AntdModule from "antd";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { MemoryRouter } from "react-router-dom";
 import type * as RouterModule from "react-router-dom";
 import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
@@ -549,6 +549,23 @@ describe("MyFilesPage", () => {
     );
     expect(getEmployeeDashboard).toHaveBeenCalledTimes(1);
     expect(railButton).toHaveAttribute("aria-pressed", "true");
+  });
+
+  it("does not present draft or sync-processing aggregate counts as exact filters", async () => {
+    vi.mocked(listDocuments).mockResolvedValue({ items: [], total: 0 });
+    vi.mocked(listTags).mockResolvedValue(mockTagsResponse);
+
+    renderWithProviders(<MyFilesPage />);
+    const rail = screen.getByRole("region", { name: "文档状态轨道" });
+    await waitFor(() => expect(getEmployeeDashboard).toHaveBeenCalledTimes(1));
+
+    expect(within(rail).queryByRole("button", { name: /草稿/ })).not.toBeInTheDocument();
+    expect(within(rail).queryByRole("button", { name: /入库处理中/ })).not.toBeInTheDocument();
+    expect(screen.getByLabelText("草稿（聚合状态）")).toHaveTextContent("聚合项请用下方筛选");
+    expect(screen.getByLabelText("入库处理中（聚合状态）")).toHaveTextContent(
+      "聚合项请用下方筛选",
+    );
+    expect(listDocuments).toHaveBeenCalledTimes(1);
   });
 
   it("shows a recoverable explanation when policy blocks analysis-failed submission", async () => {

@@ -769,6 +769,14 @@ a {
   box-shadow: inset 0 -3px 0 var(--ku-color-primary);
 }
 
+.status-rail__item--aggregate {
+  cursor: default;
+}
+
+.status-rail__item--aggregate:hover {
+  background: transparent;
+}
+
 .status-rail__item--danger .status-rail__step,
 .status-rail__item--danger .status-rail__count {
   color: var(--ku-color-danger);
