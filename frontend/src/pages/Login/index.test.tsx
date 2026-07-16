@@ -79,6 +79,11 @@ describe("LoginPage", () => {
     fireEvent.click(screen.getByRole("button", { name: /登\s*录/ }));
 
     expect(await screen.findByText("dashboard-entry")).toBeInTheDocument();
+    expect(login).toHaveBeenCalledWith({
+      email: "employee@company.com",
+      password: "Secret123!",
+    });
+    expect(screen.queryByText("记住我")).not.toBeInTheDocument();
   });
 
   it("handles EMAIL_NOT_VERIFIED separately and resends verification", async () => {

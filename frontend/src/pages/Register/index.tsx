@@ -97,6 +97,14 @@ export default function RegisterPage() {
             }
           />
         ) : null}
+        {departmentsQuery.isSuccess && departmentsQuery.data.length === 0 ? (
+          <Alert
+            type="warning"
+            showIcon
+            message="暂无可注册部门"
+            description="当前没有开放注册的部门，请联系系统管理员完成部门配置。"
+          />
+        ) : null}
         <Form.Item
           label="公司邮箱"
           name="email"

@@ -1,7 +1,7 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { App as AntdApp, Button, Form, Input, Result } from "antd";
 import { useMutation, useQuery } from "@tanstack/react-query";
-import { Link, useNavigate, useSearchParams } from "react-router-dom";
+import { Link, useLocation, useNavigate, useSearchParams } from "react-router-dom";
 
 import { resendVerification, verifyEmail } from "../../api/client";
 import { AuthLayout } from "../AuthLayout";
@@ -12,18 +12,28 @@ interface ResendFormValues {
 
 export default function VerifyEmailPage() {
   const navigate = useNavigate();
+  const location = useLocation();
   const [searchParams] = useSearchParams();
   const token = searchParams.get("token")?.trim() ?? "";
+  const verificationComplete = Boolean(
+    (location.state as { emailVerified?: boolean } | null)?.emailVerified,
+  );
   const { message } = AntdApp.useApp();
   const [resent, setResent] = useState(false);
 
   const verifyQuery = useQuery({
-    queryKey: ["auth", "verify-email"],
+    queryKey: ["auth", "verify-email", token],
     queryFn: () => verifyEmail({ token }),
     enabled: token.length > 0,
     retry: false,
     staleTime: Number.POSITIVE_INFINITY,
   });
+
+  useEffect(() => {
+    if (verifyQuery.isSuccess && token) {
+      navigate("/verify-email", { replace: true, state: { emailVerified: true } });
+    }
+  }, [navigate, token, verifyQuery.isSuccess]);
 
   const resendMutation = useMutation({
     mutationFn: (values: ResendFormValues) => resendVerification(values),
@@ -37,21 +47,7 @@ export default function VerifyEmailPage() {
   });
 
   const content = (() => {
-    if (!token) {
-      return (
-        <Result
-          status="warning"
-          title="验证链接缺少令牌"
-          subTitle="请使用验证邮件中的完整链接，或重新发送验证邮件。"
-        />
-      );
-    }
-
-    if (verifyQuery.isPending) {
-      return <Result status="info" title="正在验证邮箱" subTitle="请稍候，不要重复打开链接。" />;
-    }
-
-    if (verifyQuery.isSuccess) {
+    if (verificationComplete || verifyQuery.isSuccess) {
       return (
         <Result
           status="success"
@@ -64,6 +60,20 @@ export default function VerifyEmailPage() {
           }
         />
       );
+    }
+
+    if (!token) {
+      return (
+        <Result
+          status="warning"
+          title="验证链接缺少令牌"
+          subTitle="请使用验证邮件中的完整链接，或重新发送验证邮件。"
+        />
+      );
+    }
+
+    if (verifyQuery.isPending) {
+      return <Result status="info" title="正在验证邮箱" subTitle="请稍候，不要重复打开链接。" />;
     }
 
     return (
@@ -82,7 +92,7 @@ export default function VerifyEmailPage() {
       footer={<Link to="/login">返回登录</Link>}
     >
       {content}
-      {verifyQuery.isError || !token ? (
+      {verifyQuery.isError || (!token && !verificationComplete) ? (
         <Form<ResendFormValues>
           className="auth-form auth-form--resend"
           layout="vertical"

@@ -146,4 +146,16 @@ describe("RegisterPage", () => {
     expect(await screen.findByText("两次输入的密码不一致")).toBeInTheDocument();
     expect(register).not.toHaveBeenCalled();
   });
+
+  it("explains how to recover when no department is open for registration", async () => {
+    vi.mocked(listRegistrationDepartments).mockResolvedValue([]);
+
+    renderRegisterPage();
+
+    expect(await screen.findByText("暂无可注册部门")).toBeInTheDocument();
+    expect(
+      screen.getByText("当前没有开放注册的部门，请联系系统管理员完成部门配置。"),
+    ).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "提交注册" })).toBeDisabled();
+  });
 });

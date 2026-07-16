@@ -1,6 +1,5 @@
 import { useState } from "react";
-import { Alert, App as AntdApp, Button, Checkbox, Form, Input, Typography } from "antd";
-import type { CheckboxChangeEvent } from "antd/es/checkbox";
+import { Alert, App as AntdApp, Button, Form, Input, Typography } from "antd";
 import { useMutation } from "@tanstack/react-query";
 import { Link, useLocation, useNavigate } from "react-router-dom";
 
@@ -11,7 +10,6 @@ import { AuthLayout } from "../AuthLayout";
 interface LoginFormValues {
   email: string;
   password: string;
-  remember?: boolean;
 }
 
 export default function LoginPage() {
@@ -19,7 +17,6 @@ export default function LoginPage() {
   const location = useLocation();
   const { message } = AntdApp.useApp();
   const setSession = useAuthStore((state) => state.setSession);
-  const [form] = Form.useForm<LoginFormValues>();
   const [unverifiedEmail, setUnverifiedEmail] = useState<string | null>(null);
   const registeredEmail =
     typeof location.state === "object" &&
@@ -44,7 +41,6 @@ export default function LoginPage() {
       login({
         email: values.email,
         password: values.password,
-        remember_me: Boolean(values.remember),
       }),
     onSuccess: (session) => {
       setUnverifiedEmail(null);
@@ -61,10 +57,6 @@ export default function LoginPage() {
     },
   });
 
-  const handleRememberChange = (event: CheckboxChangeEvent) => {
-    form.setFieldValue("remember", event.target.checked);
-  };
-
   return (
     <AuthLayout
       title="欢迎回来"
@@ -76,10 +68,9 @@ export default function LoginPage() {
       }
     >
       <Form<LoginFormValues>
-        form={form}
         className="auth-form"
         layout="vertical"
-        initialValues={{ remember: true, email: registeredEmail }}
+        initialValues={{ email: registeredEmail }}
         onFinish={(values) => mutation.mutate(values)}
         requiredMark={false}
       >
@@ -117,9 +108,6 @@ export default function LoginPage() {
         ) : null}
 
         <div className="auth-form-row">
-          <Form.Item name="remember" valuePropName="checked" noStyle>
-            <Checkbox onChange={handleRememberChange}>记住我</Checkbox>
-          </Form.Item>
           <Link to="/forgot-password">忘记密码</Link>
         </div>
 

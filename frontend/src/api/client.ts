@@ -53,7 +53,6 @@ export function getUserFacingErrorMessage(error: unknown, fallback: string): str
 export interface LoginRequest {
   email: string;
   password: string;
-  remember_me: boolean;
 }
 
 export interface LoginResponse {

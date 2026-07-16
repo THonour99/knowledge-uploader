@@ -2,7 +2,7 @@ import type { CSSProperties } from "react";
 import { App as AntdApp, ConfigProvider } from "antd";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { fireEvent, render, screen, waitFor } from "@testing-library/react";
-import { MemoryRouter } from "react-router-dom";
+import { MemoryRouter, useLocation, useNavigate } from "react-router-dom";
 import { afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 
 import { resendVerification, verifyEmail } from "../../api/client";
@@ -33,6 +33,17 @@ beforeAll(() => {
 
 afterEach(() => vi.clearAllMocks());
 
+function VerificationRouteProbe() {
+  const navigate = useNavigate();
+  const location = useLocation();
+  return (
+    <>
+      <button onClick={() => navigate("/verify-email?token=second-token")}>切换验证令牌</button>
+      <span data-testid="verification-location">{`${location.pathname}${location.search}`}</span>
+    </>
+  );
+}
+
 function renderPage(entry: string) {
   const queryClient = new QueryClient({
     defaultOptions: { queries: { retry: false }, mutations: { retry: false } },
@@ -43,6 +54,7 @@ function renderPage(entry: string) {
         <QueryClientProvider client={queryClient}>
           <div style={themeCssVariables as CSSProperties}>
             <MemoryRouter initialEntries={[entry]}>
+              <VerificationRouteProbe />
               <VerifyEmailPage />
             </MemoryRouter>
           </div>
@@ -69,6 +81,34 @@ describe("VerifyEmailPage", () => {
 
     expect(await screen.findByText("邮箱验证成功")).toBeInTheDocument();
     expect(verifyEmail).toHaveBeenCalledWith({ token: "verify-token" });
+    await waitFor(() => {
+      expect(screen.getByTestId("verification-location")).toHaveTextContent("/verify-email");
+      expect(screen.getByTestId("verification-location")).not.toHaveTextContent("token=");
+    });
+  });
+
+  it("uses a separate cache entry and request when the URL token changes", async () => {
+    vi.mocked(verifyEmail).mockResolvedValue({
+      id: "employee-1",
+      name: "员工",
+      email: "employee@company.com",
+      role: "employee",
+      status: "active",
+      email_verified: true,
+      department: "技术部",
+      phone: null,
+    });
+
+    renderPage("/verify-email?token=first-token");
+
+    expect(await screen.findByText("邮箱验证成功")).toBeInTheDocument();
+    await waitFor(() => expect(verifyEmail).toHaveBeenCalledWith({ token: "first-token" }));
+    fireEvent.click(screen.getByRole("button", { name: "切换验证令牌" }));
+
+    await waitFor(() => {
+      expect(verifyEmail).toHaveBeenCalledWith({ token: "second-token" });
+      expect(verifyEmail).toHaveBeenCalledTimes(2);
+    });
   });
 
   it("does not call verify without a token and offers resend recovery", async () => {
