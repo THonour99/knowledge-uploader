@@ -4,12 +4,10 @@ import {
   Avatar,
   Button,
   Card,
-  Checkbox,
   Dropdown,
   Form,
   Input,
   Modal,
-  Pagination,
   Popconfirm,
   Progress,
   Radio,
@@ -38,7 +36,7 @@ import {
 } from "@ant-design/icons";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import dayjs from "dayjs";
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import type { Key } from "react";
 import type { ColumnsType } from "antd/es/table";
 import type { FormInstance } from "antd/es/form";
@@ -61,8 +59,6 @@ import {
   updateFileClassification,
 } from "../../api/client";
 import { StatusTag } from "../../components/StatusTag";
-import { useMediaQuery } from "../../hooks/useMediaQuery";
-import { useNow } from "../../hooks/useNow";
 import { PageContainer } from "../../layouts/PageContainer";
 import { Roles, useAuthStore } from "../../store/auth.store";
 import { allowedExtensionsFromPolicy } from "../../utils/uploadConfig";
@@ -112,21 +108,9 @@ export function buildBulkApproveOnlyPayload(
   return {
     sync_decision: "approve_only",
     category_id: file.category_id ?? null,
+    dataset_mapping_id: null,
     reason: "批量审核通过",
   };
-}
-
-export function buildReviewDecisionPayload(values: ReviewFormValues): ReviewDecisionPayload {
-  const syncDecision = values.sync_decision ?? "approve_only";
-  const payload: ReviewDecisionPayload = {
-    sync_decision: syncDecision,
-    category_id: values.category_id ?? null,
-    reason: values.reason?.trim() || null,
-  };
-  if (syncDecision === "sync" && values.dataset_mapping_id) {
-    payload.dataset_mapping_id = values.dataset_mapping_id;
-  }
-  return payload;
 }
 
 export function hasActiveReviewClaim(
@@ -155,13 +139,9 @@ export function hasValidReviewClaim(
   );
 }
 
-export function eligibleReviewTargets(
-  files: KnowledgeFile[],
-  userId: string | null | undefined,
-  now = Date.now(),
-) {
+export function eligibleReviewTargets(files: KnowledgeFile[], userId: string | null | undefined) {
   return files.filter(
-    (file) => file.status === "pending_review" && hasActiveReviewClaim(file, userId, now),
+    (file) => file.status === "pending_review" && hasActiveReviewClaim(file, userId),
   );
 }
 
@@ -194,7 +174,7 @@ function positiveInteger(value: string | null, fallback: number): number {
   return Number.isInteger(parsed) && parsed > 0 ? parsed : fallback;
 }
 
-export function reviewSla(file: KnowledgeFile, now = Date.now()): {
+function reviewSla(file: KnowledgeFile): {
   label: string;
   detail: string;
   state: "normal" | "due_soon" | "overdue" | "unknown";
@@ -203,7 +183,7 @@ export function reviewSla(file: KnowledgeFile, now = Date.now()): {
     return { label: "未设置", detail: "等待 SLA 数据", state: "unknown" };
   }
   const dueAt = dayjs(file.review_due_at);
-  const minutes = dueAt.diff(dayjs(now), "minute");
+  const minutes = dueAt.diff(dayjs(), "minute");
   if (minutes <= 0) {
     return {
       label: `已超时 ${Math.max(1, Math.ceil(Math.abs(minutes) / 60))} 小时`,
@@ -250,9 +230,6 @@ export default function FileManagementPage() {
   const { message } = AntdApp.useApp();
   const queryClient = useQueryClient();
   const user = useAuthStore((state) => state.user);
-  const now = useNow();
-  const isMobile = useMediaQuery("(max-width: 767px)");
-  const refreshedExpiredClaims = useRef(new Set<string>());
   const [approveForm] = Form.useForm<ReviewFormValues>();
   const [rejectForm] = Form.useForm<ReviewFormValues>();
   const [classificationForm] = Form.useForm<ReviewFormValues>();
@@ -448,51 +425,30 @@ export default function FileManagementPage() {
     [selectedRowKeys],
   );
   const selectedFiles = files.filter((file) => selectedKeySet.has(file.id));
-  const canDecideFile = (file: KnowledgeFile) => hasActiveReviewClaim(file, user?.id, now);
+  const canDecideFile = (file: KnowledgeFile) => hasActiveReviewClaim(file, user?.id);
   const pendingReviewCount = files.filter((file) => file.status === "pending_review").length;
   const highRiskCount = files.filter((file) =>
     ["high", "critical"].includes(riskLevel(file)),
   ).length;
-  const unclaimedCount = files.filter((file) => !hasValidReviewClaim(file, now)).length;
+  const unclaimedCount = files.filter((file) => !hasValidReviewClaim(file)).length;
   const mineCount = files.filter(canDecideFile).length;
   const selectedPendingCount = selectedFiles.filter(
     (file) => file.status === "pending_review" && canDecideFile(file),
   ).length;
   const selectedRatio =
     files.length > 0 ? Math.round((selectedFiles.length / files.length) * 100) : 0;
-  const nextUnclaimedFile = files.find((file) => !hasValidReviewClaim(file, now));
-  const dueSoonCount = files.filter((file) => reviewSla(file, now).state === "due_soon").length;
-  const overdueCount = files.filter((file) => reviewSla(file, now).state === "overdue").length;
+  const nextUnclaimedFile = files.find((file) => !hasValidReviewClaim(file));
+  const dueSoonCount = files.filter((file) => reviewSla(file).state === "due_soon").length;
+  const overdueCount = files.filter((file) => reviewSla(file).state === "overdue").length;
 
   // ── 刷新辅助 ─────────────────────────────────────────────────────────────────
 
-  const refreshFiles = useCallback(async () => {
+  const refreshFiles = async () => {
     await Promise.all([
       queryClient.invalidateQueries({ queryKey: ["review-files"] }),
       queryClient.invalidateQueries({ queryKey: ["documents"] }),
     ]);
-  }, [queryClient]);
-
-  useEffect(() => {
-    let shouldRefresh = false;
-    for (const file of files) {
-      if (!file.claimed_by || !file.claim_expires_at) {
-        continue;
-      }
-      const expiresAt = Date.parse(file.claim_expires_at);
-      if (!Number.isFinite(expiresAt) || expiresAt > now) {
-        continue;
-      }
-      const expiryKey = `${file.id}:${file.claim_expires_at}`;
-      if (!refreshedExpiredClaims.current.has(expiryKey)) {
-        refreshedExpiredClaims.current.add(expiryKey);
-        shouldRefresh = true;
-      }
-    }
-    if (shouldRefresh) {
-      void refreshFiles();
-    }
-  }, [files, now, refreshFiles]);
+  };
 
   // ── mutations ────────────────────────────────────────────────────────────────
 
@@ -536,7 +492,12 @@ export default function FileManagementPage() {
 
   const approveMutation = useMutation({
     mutationFn: ({ id, values }: { id: string; values: ReviewFormValues }) =>
-      approveFile(id, buildReviewDecisionPayload(values)),
+      approveFile(id, {
+        sync_decision: values.sync_decision ?? "approve_only",
+        category_id: values.category_id ?? null,
+        dataset_mapping_id: values.dataset_mapping_id ?? null,
+        reason: values.reason?.trim() || null,
+      }),
     onSuccess: async (_file, variables) => {
       message.success(
         variables.values.sync_decision === "sync"
@@ -640,7 +601,7 @@ export default function FileManagementPage() {
   };
 
   const handleBulkApprove = async () => {
-    const targets = eligibleReviewTargets(selectedFiles, user?.id, now);
+    const targets = eligibleReviewTargets(selectedFiles, user?.id);
 
     if (targets.length === 0) {
       message.warning("已选文件中没有可批量审核项");
@@ -768,7 +729,7 @@ export default function FileManagementPage() {
       key: "review_due_at",
       width: 140,
       render: (_value: string | null, record) => {
-        const sla = reviewSla(record, now);
+        const sla = reviewSla(record);
         return (
           <span className={`review-sla review-sla--${sla.state}`}>
             <span>
@@ -785,7 +746,7 @@ export default function FileManagementPage() {
       key: "claimed_by",
       width: 120,
       render: (_value: string | null, record) => {
-        const validClaim = hasValidReviewClaim(record, now);
+        const validClaim = hasValidReviewClaim(record);
         if (validClaim) {
           return (
             <Space direction="vertical" size={1}>
@@ -812,7 +773,7 @@ export default function FileManagementPage() {
       fixed: "right" as const,
       render: (_, record) => {
         const canDecide = record.status === "pending_review" && canDecideFile(record);
-        const validClaim = hasValidReviewClaim(record, now);
+        const validClaim = hasValidReviewClaim(record);
         const canClaim = record.status === "pending_review" && !validClaim;
         const claimedByMe = canDecide;
         const canForceRelease = user?.role === Roles.SYSTEM_ADMIN && validClaim && !claimedByMe;
@@ -916,88 +877,6 @@ export default function FileManagementPage() {
     },
   ];
 
-  const changePage = (nextPage: number, nextPageSize: number) => {
-    setSearchParams(
-      (previous) => {
-        const next = new URLSearchParams(previous);
-        next.set("page", String(nextPage));
-        next.set("page_size", String(nextPageSize));
-        return next;
-      },
-      { replace: true },
-    );
-  };
-
-  const toggleSelectedFile = (fileId: string, checked: boolean) => {
-    setSelectedRowKeys((previous) => {
-      const next = new Set(previous.map(String));
-      if (checked) {
-        next.add(fileId);
-      } else {
-        next.delete(fileId);
-      }
-      return Array.from(next);
-    });
-  };
-
-  const renderMobileActions = (record: KnowledgeFile) => {
-    const canDecide = record.status === "pending_review" && canDecideFile(record);
-    const validClaim = hasValidReviewClaim(record, now);
-    const canClaim = record.status === "pending_review" && !validClaim;
-    const claimedByMe = canDecide;
-    const canForceRelease = user?.role === Roles.SYSTEM_ADMIN && validClaim && !claimedByMe;
-
-    return (
-      <div className="review-mobile-card__actions" aria-label={`${record.original_name} 审核操作`}>
-        <Button onClick={() => navigate(`/files/${record.id}#original`)}>查看原件</Button>
-        {canClaim ? (
-          <Button
-            icon={<LockOutlined />}
-            loading={claimMutation.isPending && claimMutation.variables === record.id}
-            onClick={() => claimMutation.mutate(record.id)}
-          >
-            {record.claimed_by ? "重新领取" : "领取"}
-          </Button>
-        ) : null}
-        {canDecide ? (
-          <>
-            <Button type="primary" onClick={() => openApproveModal(record)}>
-              批准
-            </Button>
-            <Button danger onClick={() => openRejectModal(record)}>
-              驳回
-            </Button>
-            <Button onClick={() => openClassificationModal(record)}>编辑草案</Button>
-          </>
-        ) : null}
-        {claimedByMe ? (
-          <Button
-            icon={<UnlockOutlined />}
-            loading={
-              releaseClaimMutation.isPending &&
-              releaseClaimMutation.variables?.fileId === record.id
-            }
-            onClick={() => releaseClaimMutation.mutate({ fileId: record.id })}
-          >
-            释放
-          </Button>
-        ) : null}
-        {canForceRelease ? (
-          <Button
-            danger
-            icon={<UnlockOutlined />}
-            onClick={() => {
-              setForceReleasingFile(record);
-              setForceReleaseReason("");
-            }}
-          >
-            强制释放
-          </Button>
-        ) : null}
-      </div>
-    );
-  };
-
   // ── 渲染 ──────────────────────────────────────────────────────────────────────
 
   return (
@@ -1031,12 +910,9 @@ export default function FileManagementPage() {
         {REVIEW_QUEUES.map((item) => (
           <button
             key={item.value}
-            id={`review-queue-tab-${item.value}`}
             type="button"
             role="tab"
             aria-selected={queue === item.value}
-            aria-controls="review-queue-panel"
-            tabIndex={queue === item.value ? 0 : -1}
             className={
               queue === item.value
                 ? "review-queue-tab review-queue-tab--active"
@@ -1050,13 +926,7 @@ export default function FileManagementPage() {
         ))}
       </nav>
 
-      <Card
-        id="review-queue-panel"
-        className="document-panel table-card"
-        role="tabpanel"
-        aria-labelledby={`review-queue-tab-${queue}`}
-        aria-busy={reviewFilesQuery.isFetching}
-      >
+      <Card className="document-panel table-card">
         {reviewFilesQuery.isError ? (
           <Alert
             className="review-queue-error"
@@ -1234,99 +1104,39 @@ export default function FileManagementPage() {
           </Space>
         </div>
 
-        {isMobile ? (
-          <div className="review-mobile-list" role="list" aria-label="移动端审核队列">
-            {files.map((file) => {
-              const sla = reviewSla(file, now);
-              const validClaim = hasValidReviewClaim(file, now);
-              return (
-                <article className="review-mobile-card" role="listitem" key={file.id}>
-                  <header className="review-mobile-card__header">
-                    <Checkbox
-                      checked={selectedKeySet.has(file.id)}
-                      onChange={(event) => toggleSelectedFile(file.id, event.target.checked)}
-                      aria-label={`选择 ${file.original_name}`}
-                    />
-                    <button
-                      type="button"
-                      className="review-mobile-card__title"
-                      onClick={() => navigate(`/files/${file.id}#original`)}
-                    >
-                      {file.original_name}
-                    </button>
-                    <StatusTag kind="risk" value={riskLevel(file)} />
-                  </header>
-                  <div className="review-mobile-card__meta">
-                    <span>{uploaderText(file)}</span>
-                    <span>{file.department ?? "未分配部门"}</span>
-                    <span>{formatFileSize(file.size)}</span>
-                  </div>
-                  <div className="review-mobile-card__state">
-                    <StatusTag kind="review" value="pending" />
-                    <span className={`review-sla review-sla--${sla.state}`}>
-                      <span>
-                        <ClockCircleOutlined /> {sla.label}
-                      </span>
-                      <small>{sla.detail}</small>
-                    </span>
-                    <Typography.Text type={validClaim ? undefined : "secondary"}>
-                      {validClaim
-                        ? file.claimed_by === user?.id
-                          ? "由我领取"
-                          : `由 ${file.claimed_by_name || "其他审核人"} 领取`
-                        : file.claimed_by
-                          ? "领取已失效"
-                          : "待领取"}
-                    </Typography.Text>
-                  </div>
-                  {renderMobileActions(file)}
-                  {claimFeedback?.fileId === file.id ? (
-                    <Typography.Text type="danger" role="alert">
-                      {claimFeedback.message}
-                    </Typography.Text>
-                  ) : null}
-                </article>
+        <Table<KnowledgeFile>
+          className="file-management-table"
+          rowKey="id"
+          columns={columns}
+          dataSource={files}
+          loading={reviewFilesQuery.isLoading}
+          pagination={{
+            current: page,
+            pageSize,
+            total: reviewFilesQuery.data?.total ?? 0,
+            showSizeChanger: true,
+            pageSizeOptions: [10, 20, 50],
+            showTotal: (value) => `共 ${value} 条`,
+            onChange: (nextPage, nextPageSize) => {
+              setSearchParams(
+                (previous) => {
+                  const next = new URLSearchParams(previous);
+                  next.set("page", String(nextPage));
+                  next.set("page_size", String(nextPageSize));
+                  return next;
+                },
+                { replace: true },
               );
-            })}
-            {files.length === 0 && !reviewFilesQuery.isLoading ? (
-              <Typography.Text type="secondary">暂无文件</Typography.Text>
-            ) : null}
-            <Pagination
-              className="review-mobile-pagination"
-              current={page}
-              pageSize={pageSize}
-              total={reviewFilesQuery.data?.total ?? 0}
-              showSizeChanger
-              pageSizeOptions={[10, 20, 50]}
-              onChange={changePage}
-              showTotal={(value) => `共 ${value} 条`}
-            />
-          </div>
-        ) : (
-          <Table<KnowledgeFile>
-            className="file-management-table"
-            rowKey="id"
-            columns={columns}
-            dataSource={files}
-            loading={reviewFilesQuery.isLoading}
-            pagination={{
-              current: page,
-              pageSize,
-              total: reviewFilesQuery.data?.total ?? 0,
-              showSizeChanger: true,
-              pageSizeOptions: [10, 20, 50],
-              showTotal: (value) => `共 ${value} 条`,
-              onChange: changePage,
-            }}
-            locale={{ emptyText: "暂无文件" }}
-            tableLayout="fixed"
-            rowSelection={{
-              selectedRowKeys,
-              onChange: setSelectedRowKeys,
-            }}
-            scroll={{ x: 1420 }}
-          />
-        )}
+            },
+          }}
+          locale={{ emptyText: "暂无文件" }}
+          tableLayout="fixed"
+          rowSelection={{
+            selectedRowKeys,
+            onChange: setSelectedRowKeys,
+          }}
+          scroll={{ x: 1420 }}
+        />
       </Card>
 
       {/* ── 审核通过 Modal ── */}
@@ -1544,7 +1354,7 @@ export default function FileManagementPage() {
             if (!classifyingFile) {
               return;
             }
-            if (!hasActiveReviewClaim(classifyingFile, user?.id, now)) {
+            if (!hasActiveReviewClaim(classifyingFile, user?.id)) {
               message.warning("领取已失效，请刷新队列并重新领取后再编辑审核草案");
               setClassifyingFile(null);
               void refreshFiles();

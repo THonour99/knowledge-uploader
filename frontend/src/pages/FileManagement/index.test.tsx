@@ -1,7 +1,7 @@
 import type { CSSProperties } from "react";
 import { App as AntdApp, ConfigProvider } from "antd";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { act, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
+import { fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { MemoryRouter, useLocation, useNavigate } from "react-router-dom";
 import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 
@@ -24,7 +24,6 @@ import { useAuthStore } from "../../store/auth.store";
 import { themeCssVariables } from "../../theme/tokens";
 import FileManagementPage, {
   buildBulkApproveOnlyPayload,
-  buildReviewDecisionPayload,
   eligibleReviewTargets,
   hasActiveReviewClaim,
   hasValidReviewClaim,
@@ -116,16 +115,6 @@ beforeAll(() => {
 });
 
 beforeEach(() => {
-  vi.mocked(window.matchMedia).mockImplementation((query: string) => ({
-    matches: false,
-    media: query,
-    onchange: null,
-    addListener: vi.fn(),
-    removeListener: vi.fn(),
-    addEventListener: vi.fn(),
-    removeEventListener: vi.fn(),
-    dispatchEvent: vi.fn(),
-  }));
   useAuthStore.setState({
     accessToken: "token",
     user: {
@@ -210,13 +199,7 @@ describe("FileManagementPage", () => {
         }),
       );
     });
-    const overdueTab = screen.getByRole("tab", { name: /已超时/ });
-    expect(overdueTab).toHaveAttribute("aria-selected", "true");
-    expect(overdueTab).toHaveAttribute("aria-controls", "review-queue-panel");
-    expect(screen.getByRole("tabpanel")).toHaveAttribute(
-      "aria-labelledby",
-      "review-queue-tab-overdue",
-    );
+    expect(screen.getByRole("tab", { name: /已超时/ })).toHaveAttribute("aria-selected", "true");
   });
 
   it("normalizes invalid URL filters before querying the review queue", async () => {
@@ -360,6 +343,7 @@ describe("FileManagementPage", () => {
       expect(approveFile).toHaveBeenCalledWith("review-file-1", {
         sync_decision: "approve_only",
         category_id: null,
+        dataset_mapping_id: null,
         reason: null,
       });
     });
@@ -375,78 +359,9 @@ describe("FileManagementPage", () => {
     expect(buildBulkApproveOnlyPayload(file)).toEqual({
       sync_decision: "approve_only",
       category_id: "category-1",
+      dataset_mapping_id: null,
       reason: "批量审核通过",
     });
-    expect(
-      buildReviewDecisionPayload({
-        sync_decision: "approve_only",
-        category_id: "category-1",
-        dataset_mapping_id: "mapping-that-must-not-leak",
-      }),
-    ).not.toHaveProperty("dataset_mapping_id");
-    expect(
-      buildReviewDecisionPayload({
-        sync_decision: "sync",
-        category_id: "category-1",
-        dataset_mapping_id: "mapping-1",
-      }),
-    ).toMatchObject({ dataset_mapping_id: "mapping-1" });
-  });
-
-  it("renders a compact action-complete queue instead of a table on a 390px viewport", async () => {
-    vi.mocked(window.matchMedia).mockImplementation((query: string) => ({
-      matches: query === "(max-width: 767px)",
-      media: query,
-      onchange: null,
-      addListener: vi.fn(),
-      removeListener: vi.fn(),
-      addEventListener: vi.fn(),
-      removeEventListener: vi.fn(),
-      dispatchEvent: vi.fn(),
-    }));
-    const file = makeReviewFile();
-    vi.mocked(listReviewFiles).mockResolvedValue({ items: [file], total: 1 });
-
-    renderWorkbench();
-
-    await screen.findByText("待审核制度.pdf");
-    const mobileQueue = screen.getByRole("list", { name: "移动端审核队列" });
-    expect(within(mobileQueue).getByText("待审核制度.pdf")).toBeInTheDocument();
-    expect(within(mobileQueue).getByRole("button", { name: "查看原件" })).toBeInTheDocument();
-    expect(within(mobileQueue).getByRole("button", { name: /领取$/ })).toBeInTheDocument();
-    expect(screen.queryByRole("table")).not.toBeInTheDocument();
-  });
-
-  it("disables decisions and refreshes as soon as the current user's claim expires", async () => {
-    vi.useFakeTimers({ shouldAdvanceTime: true });
-    const start = Date.parse("2026-07-16T08:00:00Z");
-    vi.setSystemTime(start);
-    const file = makeReviewFile({
-      claimed_by: "admin-1",
-      claimed_by_name: "部门管理员",
-      claimed_at: new Date(start - 60_000).toISOString(),
-      claim_expires_at: new Date(start + 1_000).toISOString(),
-      review_due_at: new Date(start + 3_600_000).toISOString(),
-    });
-    vi.mocked(listReviewFiles).mockResolvedValue({ items: [file], total: 1 });
-
-    try {
-      renderWorkbench();
-      expect(await screen.findByRole("button", { name: "审核" })).toBeInTheDocument();
-      const callsBeforeExpiry = vi.mocked(listReviewFiles).mock.calls.length;
-
-      await act(async () => {
-        await vi.advanceTimersByTimeAsync(1_100);
-      });
-
-      expect(screen.queryByRole("button", { name: "审核" })).not.toBeInTheDocument();
-      expect(screen.getByRole("button", { name: /重新领取/ })).toBeInTheDocument();
-      await waitFor(() => {
-        expect(vi.mocked(listReviewFiles).mock.calls.length).toBeGreaterThan(callsBeforeExpiry);
-      });
-    } finally {
-      vi.useRealTimers();
-    }
   });
 
   it("allows decisions and bulk approval only for the user's unexpired claim", () => {
