@@ -18,9 +18,10 @@ RUN if [ -f package-lock.json ]; then npm ci; else npm install; fi
 COPY . .
 RUN npm run build
 
-FROM --platform=$BUILDPLATFORM ${NGINX_IMAGE} AS runtime
+FROM --platform=$TARGETPLATFORM ${NGINX_IMAGE} AS runtime
 
 ARG NGINX_IMAGE
+ARG TARGETPLATFORM
 
 COPY nginx.conf /etc/nginx/conf.d/default.conf
 COPY --from=builder /app/dist /usr/share/nginx/html

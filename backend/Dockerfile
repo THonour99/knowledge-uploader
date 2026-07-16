@@ -1,38 +1,55 @@
 ARG PYTHON_IMAGE=python:3.11-slim-bookworm
-FROM --platform=$BUILDPLATFORM ${PYTHON_IMAGE} AS builder
 
-ARG PYTHON_IMAGE
-ARG TARGETPLATFORM
+FROM --platform=$BUILDPLATFORM ${PYTHON_IMAGE} AS requirements-source
+
 ARG BUILDPLATFORM
+ARG TARGETPLATFORM
 
-ENV PYTHONDONTWRITEBYTECODE=1 \
-    PYTHONUNBUFFERED=1 \
-    PYTHONUTF8=1 \
-    PIP_NO_CACHE_DIR=1 \
-    PIP_DISABLE_PIP_VERSION_CHECK=1
+WORKDIR /requirements
+COPY requirements.txt ./
 
-WORKDIR /build
+# Native wheels must be resolved and installed in a target-platform stage.
+# Copying site-packages from BUILDPLATFORM would produce invalid ARM64 images.
+FROM --platform=$TARGETPLATFORM ${PYTHON_IMAGE} AS target-dependencies
 
-COPY requirements.txt requirements-dev.txt ./
-RUN pip install --user --no-cache-dir -r requirements-dev.txt
+ENV PIP_DISABLE_PIP_VERSION_CHECK=1
+ENV PIP_NO_CACHE_DIR=1
+ENV PYTHONDONTWRITEBYTECODE=1
+ENV PYTHONUTF8=1
+
+COPY --from=requirements-source /requirements/requirements.txt /requirements.txt
+RUN python -m pip install --prefix=/install --no-cache-dir -r /requirements.txt
+
+FROM --platform=$TARGETPLATFORM ${PYTHON_IMAGE} AS development-dependencies
+
+ENV PIP_DISABLE_PIP_VERSION_CHECK=1
+ENV PIP_NO_CACHE_DIR=1
+ENV PYTHONDONTWRITEBYTECODE=1
+ENV PYTHONUTF8=1
+
+COPY requirements.txt requirements-dev.txt /
+RUN python -m pip install --prefix=/install --no-cache-dir -r /requirements-dev.txt
 
 FROM --platform=$TARGETPLATFORM ${PYTHON_IMAGE} AS runtime
 
-ARG PYTHON_IMAGE
 ARG TARGETPLATFORM
 
-ENV PYTHONDONTWRITEBYTECODE=1 \
-    PYTHONUNBUFFERED=1 \
-    PYTHONUTF8=1 \
-    LANG=C.UTF-8 \
-    LC_ALL=C.UTF-8 \
-    PATH=/root/.local/bin:$PATH
+ENV PYTHONDONTWRITEBYTECODE=1
+ENV PYTHONUNBUFFERED=1
+ENV PYTHONUTF8=1
+ENV LANG=C.UTF-8
+ENV LC_ALL=C.UTF-8
+ENV PATH=/usr/local/bin:$PATH
 
 WORKDIR /app
 
-COPY --from=builder /root/.local /root/.local
+COPY --from=target-dependencies /install/ /usr/local/
 COPY . /app
 
 EXPOSE 8000
 
 CMD ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8000"]
+
+FROM runtime AS development
+
+COPY --from=development-dependencies /install/ /usr/local/
