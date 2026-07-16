@@ -96,6 +96,7 @@ def test_enqueue_email_uses_confirmed_persistent_encrypted_message(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     from app.modules.notification import tasks
+    from app.workers.celery_app import celery_app
 
     captured: dict[str, object] = {}
 
@@ -158,9 +159,9 @@ def test_enqueue_email_uses_confirmed_persistent_encrypted_message(
         "body",
         None,
     )
-    assert tasks.celery_app.conf.broker_transport_options["confirm_publish"] is True
+    assert celery_app.conf.broker_transport_options["confirm_publish"] is True
 
-    message = tasks.celery_app.amqp.as_task_v2(
+    message = celery_app.amqp.as_task_v2(
         task_id="email-argsrepr-contract",
         name="notification.send_email",
         args=[encrypted_envelope],
@@ -214,8 +215,31 @@ def test_auth_email_expiry_is_applied_to_broker_and_checked_by_worker(
     captured: dict[str, object] = {}
 
     class FakeSender:
-        def send_task(self, _name: str, **kwargs: object) -> object:
-            captured.update(kwargs)
+        def send_task(
+            self,
+            name: str,
+            args: list[str],
+            queue: str,
+            delivery_mode: int,
+            task_id: str,
+            retry: bool,
+            retry_policy: object,
+            expires: datetime | None,
+            argsrepr: str,
+        ) -> object:
+            captured.update(
+                {
+                    "name": name,
+                    "args": args,
+                    "queue": queue,
+                    "delivery_mode": delivery_mode,
+                    "task_id": task_id,
+                    "retry": retry,
+                    "retry_policy": retry_policy,
+                    "expires": expires,
+                    "argsrepr": argsrepr,
+                }
+            )
             return object()
 
     expires_at = datetime.now(UTC) + timedelta(minutes=10)
@@ -248,3 +272,111 @@ def test_auth_email_expiry_is_applied_to_broker_and_checked_by_worker(
 
     assert tasks.send_email_task.run(expired) == "expired"
     assert results == ["expired"]
+
+
+def test_persisted_notification_tasks_use_late_ack_and_bounded_dlq_delivery() -> None:
+    from app.modules.notification import tasks
+
+    for task in (tasks.process_domain_event_task, tasks.send_persisted_email_task):
+        assert task.acks_late is True
+        assert task.acks_on_failure_or_timeout is False
+        assert task.reject_on_worker_lost is True
+        assert task.max_retries == tasks.NOTIFICATION_TASK_MAX_RETRIES
+
+
+def test_domain_notification_handler_queues_only_stable_event_id() -> None:
+    from app.core.events import EventDispatchContext
+    from app.modules.notification.handlers import queue_domain_notification
+
+    sent: list[dict[str, object]] = []
+
+    class FakeEnvelope:
+        def __init__(self) -> None:
+            self.event_id = 42
+            self.event_type = "review.file.rejected"
+            self.payload: dict[str, object] = {
+                "reason": "private rejection reason",
+                "email": "private@company.test",
+                "error_message": "provider secret",
+            }
+
+    class FakeSender:
+        def send_task(
+            self,
+            name: str,
+            args: list[str],
+            queue: str,
+            *,
+            countdown: int | None = None,
+        ) -> object:
+            sent.append(
+                {
+                    "name": name,
+                    "args": args,
+                    "queue": queue,
+                    "countdown": countdown,
+                }
+            )
+            return object()
+
+    queue_domain_notification(
+        FakeEnvelope(),
+        EventDispatchContext(sender=FakeSender()),
+    )
+
+    assert sent == [
+        {
+            "name": "notification.process_domain_event",
+            "args": ["42"],
+            "queue": "notification_queue",
+            "countdown": None,
+        }
+    ]
+    assert "private rejection reason" not in str(sent)
+    assert "private@company.test" not in str(sent)
+    assert "provider secret" not in str(sent)
+
+
+def test_email_request_handler_accepts_only_notification_id() -> None:
+    from app.core.events import EventDispatchContext
+    from app.modules.notification.handlers import queue_persisted_email
+
+    notification_id = "11111111-1111-4111-8111-111111111111"
+    sent: list[list[str]] = []
+
+    class FakeEnvelope:
+        def __init__(self) -> None:
+            self.event_id = 43
+            self.event_type = "notification.email.requested"
+            self.payload: dict[str, object] = {"notification_id": notification_id}
+
+    class UnsafeEnvelope:
+        def __init__(self) -> None:
+            self.event_id = 44
+            self.event_type = "notification.email.requested"
+            self.payload: dict[str, object] = {
+                "notification_id": notification_id,
+                "recipient_email": "must-not-pass@company.test",
+            }
+
+    class FakeSender:
+        def send_task(
+            self,
+            name: str,
+            args: list[str],
+            queue: str,
+            *,
+            countdown: int | None = None,
+        ) -> object:
+            assert name == "notification.send_persisted_email"
+            assert queue == "notification_queue"
+            assert countdown is None
+            sent.append(args)
+            return object()
+
+    context = EventDispatchContext(sender=FakeSender())
+    queue_persisted_email(FakeEnvelope(), context)
+    with pytest.raises(RuntimeError, match="only notification_id"):
+        queue_persisted_email(UnsafeEnvelope(), context)
+
+    assert sent == [[notification_id]]

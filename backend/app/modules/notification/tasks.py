@@ -6,9 +6,11 @@ import os
 import uuid
 from collections.abc import Mapping
 from datetime import UTC, datetime
-from typing import Protocol
+from typing import NoReturn, Protocol
 
 import structlog
+from celery import Task
+from celery.exceptions import MaxRetriesExceededError, Reject
 
 from app.adapters.email import (
     EmailConfigurationError,
@@ -24,6 +26,9 @@ from app.core.email_delivery_metrics import (
 from app.core.security import decrypt_secret, encrypt_secret
 from app.workers.celery_app import celery_app
 
+from . import exceptions
+from .repository import NotificationRepository  # noqa: TID251 - same-module repository dependency
+
 logger = structlog.get_logger(__name__)
 EMAIL_ENVELOPE_VERSION = 1
 EMAIL_PUBLISH_RETRY_POLICY: Mapping[str, int | float] = {
@@ -32,6 +37,9 @@ EMAIL_PUBLISH_RETRY_POLICY: Mapping[str, int | float] = {
     "interval_step": 0.5,
     "interval_max": 2,
 }
+NOTIFICATION_TASK_MAX_RETRIES = 5
+NOTIFICATION_TASK_BASE_COUNTDOWN_SECONDS = 15
+NOTIFICATION_TASK_MAX_COUNTDOWN_SECONDS = 120
 
 
 class EmailEnvelopeError(RuntimeError):
@@ -84,49 +92,74 @@ def send_email_task(encrypted_envelope: str) -> str:
     return "sent"
 
 
-@celery_app.task(name="notification.review_approved")  # type: ignore[misc]
-def review_approved_notification_task(file_id: str) -> str:
-    asyncio.run(_handle_review_approved(file_id))
-    return file_id
-
-
-@celery_app.task(name="notification.review_rejected")  # type: ignore[misc]
-def review_rejected_notification_task(file_id: str, reason: str) -> str:
-    asyncio.run(_handle_review_rejected(file_id=file_id, reason=reason))
-    return file_id
-
-
-@celery_app.task(name="notification.ragflow_sync_failed")  # type: ignore[misc]
-def ragflow_sync_failed_notification_task(sync_task_id: str, error_message: str) -> str:
-    asyncio.run(
-        _handle_ragflow_sync_failed(
-            sync_task_id=sync_task_id,
-            error_message=error_message,
+@celery_app.task(  # type: ignore[misc]
+    name="notification.process_domain_event",
+    bind=True,
+    queue="notification_queue",
+    acks_late=True,
+    acks_on_failure_or_timeout=False,
+    reject_on_worker_lost=True,
+    max_retries=NOTIFICATION_TASK_MAX_RETRIES,
+)
+def process_domain_event_task(self: Task, event_id: str) -> str:
+    try:
+        return run_process_domain_event_task(event_id)
+    except (
+        exceptions.NotificationSourceEventNotFoundError,
+        exceptions.UnsupportedNotificationSourceEventError,
+        ValueError,
+    ) as error:
+        raise Reject(reason=type(error).__name__, requeue=False) from None
+    except Exception as error:
+        logger.error(
+            "notification.event.processing_failed",
+            event_id=event_id,
+            error_type=type(error).__name__,
+            retries=int(self.request.retries or 0),
         )
-    )
-    return sync_task_id
+        _retry_or_reject(self, error)
 
 
-@celery_app.task(name="notification.document_expiry")  # type: ignore[misc]
-def document_expiry_notification_task(
-    file_id: str,
-    recipient_user_id: str,
-    recipient_email: str,
-    file_name: str,
-    expires_at: str,
-    expiry_status: str,
-) -> str:
-    asyncio.run(
-        _handle_document_expiry(
-            file_id=file_id,
-            recipient_user_id=recipient_user_id,
-            recipient_email=recipient_email,
-            file_name=file_name,
-            expires_at=expires_at,
-            expiry_status=expiry_status,
+@celery_app.task(  # type: ignore[misc]
+    name="notification.send_persisted_email",
+    bind=True,
+    queue="notification_queue",
+    acks_late=True,
+    acks_on_failure_or_timeout=False,
+    reject_on_worker_lost=True,
+    max_retries=NOTIFICATION_TASK_MAX_RETRIES,
+)
+def send_persisted_email_task(self: Task, notification_id: str) -> str:
+    try:
+        result = run_send_persisted_email_task(notification_id)
+    except (exceptions.NotificationEmailNotFoundError, ValueError) as error:
+        raise Reject(reason=type(error).__name__, requeue=False) from None
+    except EmailConfigurationError as error:
+        _record_email_delivery_result_best_effort("configuration_failure")
+        logger.error(
+            "notification.persisted_email.configuration_failed",
+            notification_id=notification_id,
+            retries=int(self.request.retries or 0),
         )
-    )
-    return file_id
+        _retry_or_reject(self, error)
+    except EmailDeliveryError as error:
+        _record_email_delivery_result_best_effort("failure")
+        logger.warning(
+            "notification.persisted_email.delivery_failed",
+            notification_id=notification_id,
+            retries=int(self.request.retries or 0),
+        )
+        _retry_or_reject(self, error)
+    except Exception as error:
+        logger.error(
+            "notification.persisted_email.infrastructure_failed",
+            notification_id=notification_id,
+            error_type=type(error).__name__,
+            retries=int(self.request.retries or 0),
+        )
+        _retry_or_reject(self, error)
+    _record_email_delivery_result_best_effort("success")
+    return result
 
 
 async def _send_email(*, recipient: str, subject: str, body: str) -> None:
@@ -134,71 +167,89 @@ async def _send_email(*, recipient: str, subject: str, body: str) -> None:
     await adapter.send(recipient, subject, body)
 
 
-async def _handle_review_approved(file_id: str) -> None:
+def run_process_domain_event_task(event_id: str) -> str:
+    parsed_event_id = _positive_event_id(event_id)
+    asyncio.run(_process_domain_event(parsed_event_id))
+    return event_id
+
+
+async def _process_domain_event(event_id: int) -> None:
     from . import handlers
 
     try:
         async with AsyncSessionFactory() as session:
-            await handlers.handle_review_file_approved({"file_id": file_id}, session=session)
+            await handlers.handle_source_event_id(event_id, session=session)
     finally:
         await engine.dispose()
 
 
-async def _handle_review_rejected(*, file_id: str, reason: str) -> None:
-    from . import handlers
+def run_send_persisted_email_task(notification_id: str) -> str:
+    parsed_notification_id = uuid.UUID(notification_id)
+    result = asyncio.run(_send_persisted_email(parsed_notification_id))
+    return result
 
+
+async def _send_persisted_email(notification_id: uuid.UUID) -> str:
     try:
         async with AsyncSessionFactory() as session:
-            await handlers.handle_review_file_rejected(
-                {"file_id": file_id, "reason": reason},
-                session=session,
-            )
+            repository = NotificationRepository(session)
+            delivery = await repository.get_email_for_delivery(notification_id)
+            if delivery is None:
+                raise exceptions.NotificationEmailNotFoundError(
+                    "persisted email notification not found"
+                )
+            notification = delivery.notification
+            if notification.delivery_status == "sent":
+                return "already_sent"
+
+            notification.delivery_attempts += 1
+            try:
+                # The row lock serializes duplicate Celery deliveries. SMTP cannot offer
+                # exactly-once across a process crash after send and before this commit;
+                # that unavoidable boundary is documented and delivery remains at-least-once.
+                await _send_email(
+                    recipient=delivery.recipient_email,
+                    subject=notification.title,
+                    body=notification.body,
+                )
+            except (EmailConfigurationError, EmailDeliveryError) as error:
+                notification.delivery_status = "failed"
+                notification.last_delivery_error = type(error).__name__[:120]
+                await session.commit()
+                raise
+            notification.delivery_status = "sent"
+            notification.last_delivery_error = None
+            notification.delivered_at = datetime.now(UTC)
+            await session.commit()
+            return "sent"
     finally:
         await engine.dispose()
 
 
-async def _handle_ragflow_sync_failed(*, sync_task_id: str, error_message: str) -> None:
-    from . import handlers
-
+def _retry_or_reject(task: Task, error: BaseException) -> NoReturn:
+    retries = int(task.request.retries or 0)
+    error_type = type(error).__name__
+    max_retries = task.max_retries
+    if max_retries is not None and retries >= max_retries:
+        raise Reject(reason=error_type, requeue=False) from None
+    countdown = min(
+        (2**retries) * NOTIFICATION_TASK_BASE_COUNTDOWN_SECONDS,
+        NOTIFICATION_TASK_MAX_COUNTDOWN_SECONDS,
+    )
     try:
-        async with AsyncSessionFactory() as session:
-            await handlers.handle_ragflow_sync_failed(
-                {
-                    "sync_task_id": sync_task_id,
-                    "error_message": error_message,
-                },
-                session=session,
-            )
-    finally:
-        await engine.dispose()
+        raise task.retry(exc=RuntimeError(error_type), countdown=countdown)
+    except MaxRetriesExceededError:
+        raise Reject(reason=error_type, requeue=False) from None
 
 
-async def _handle_document_expiry(
-    *,
-    file_id: str,
-    recipient_user_id: str,
-    recipient_email: str,
-    file_name: str,
-    expires_at: str,
-    expiry_status: str,
-) -> None:
-    from . import handlers
-
+def _positive_event_id(value: str) -> int:
     try:
-        async with AsyncSessionFactory() as session:
-            await handlers.handle_document_expiry_reminder(
-                {
-                    "file_id": file_id,
-                    "recipient_user_id": recipient_user_id,
-                    "recipient_email": recipient_email,
-                    "file_name": file_name,
-                    "expires_at": expires_at,
-                    "expiry_status": expiry_status,
-                },
-                session=session,
-            )
-    finally:
-        await engine.dispose()
+        event_id = int(value)
+    except ValueError:
+        raise ValueError("event_id must be a positive integer") from None
+    if event_id < 1 or str(event_id) != value:
+        raise ValueError("event_id must be a canonical positive integer")
+    return event_id
 
 
 def enqueue_email(

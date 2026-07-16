@@ -318,25 +318,29 @@ async def _dispatch_pending_events(sender: FakeCelerySender) -> list[dict[str, o
     return sender.sent[start:]
 
 
+def _single_task_arg(sent_task: dict[str, object]) -> str:
+    args = sent_task["args"]
+    assert isinstance(args, list)
+    assert len(args) == 1
+    return str(args[0])
+
+
 async def _run_sent_tasks(sent_tasks: list[dict[str, object]]) -> None:
     from app.core.database import AsyncSessionFactory
     from app.modules.ai.tasks import run_ai_analyze_file_task_async
-    from app.modules.notification.handlers import handle_review_file_approved
+    from app.modules.notification.handlers import handle_source_event_id
     from app.modules.ragflow.tasks import (
         run_create_ragflow_upload_task_async,
         run_ragflow_upload_task_async,
     )
 
     for sent_task in sent_tasks:
-        args = sent_task["args"]
-        assert isinstance(args, list)
-        assert len(args) == 1
-        task_arg = str(args[0])
+        task_arg = _single_task_arg(sent_task)
         if sent_task["name"] == "ai.analyze_file":
             await run_ai_analyze_file_task_async(task_arg)
-        elif sent_task["name"] == "notification.review_approved":
+        elif sent_task["name"] == "notification.process_domain_event":
             async with AsyncSessionFactory() as session:
-                await handle_review_file_approved({"file_id": task_arg}, session=session)
+                await handle_source_event_id(int(task_arg), session=session)
         elif sent_task["name"] == "ragflow.create_upload_task":
             await run_create_ragflow_upload_task_async(task_arg)
         elif sent_task["name"] == "ragflow.upload":
@@ -359,6 +363,11 @@ async def test_full_pipeline_upload_analyze_approve_syncs_to_ragflow(
     client, storage, ragflow_client = full_pipeline_client
     sender = FakeCelerySender()
     uploader_id = await _create_user(email="e2e-uploader@company.com", password="password123")
+    department_admin_id = await _create_user(
+        email="e2e-dept-admin@company.com",
+        password="password123",
+        role="dept_admin",
+    )
     admin_id = await _create_user(
         email="e2e-admin@company.com",
         password="password123",
@@ -468,24 +477,56 @@ async def test_full_pipeline_upload_analyze_approve_syncs_to_ragflow(
     assert approved_file["ragflow_dataset_id"] == "ragflow-e2e"
 
     review_tasks = await _dispatch_pending_events(sender)
-    assert review_tasks == [
-        {
-            "name": "ragflow.create_upload_task",
-            "args": [str(file_id)],
-            "queue": "ragflow_queue",
-        },
-        {
-            "name": "notification.review_approved",
-            "args": [str(file_id)],
-            "queue": "notification_queue",
-        },
+    assert [task["name"] for task in review_tasks] == [
+        "notification.process_domain_event",
+        "notification.process_domain_event",
+        "ragflow.create_upload_task",
+        "notification.process_domain_event",
     ]
+    notification_event_ids = [
+        int(_single_task_arg(task))
+        for task in review_tasks
+        if task["name"] == "notification.process_domain_event"
+    ]
+    async with AsyncSessionFactory() as session:
+        notification_source_events = list(
+            (
+                await session.execute(
+                    select(EventOutbox)
+                    .where(EventOutbox.id.in_(notification_event_ids))
+                    .order_by(EventOutbox.id)
+                )
+            ).scalars()
+        )
+    assert [event.event_type for event in notification_source_events] == [
+        "ai.file.analyzed",
+        "review.file.submitted",
+        "review.file.approved",
+    ]
+    assert all(
+        _single_task_arg(task) != str(file_id)
+        for task in review_tasks
+        if task["name"] == "notification.process_domain_event"
+    )
     await _run_sent_tasks(review_tasks)
 
-    ragflow_tasks = await _dispatch_pending_events(sender)
+    queued_tasks = await _dispatch_pending_events(sender)
+    ragflow_tasks = [task for task in queued_tasks if task["name"] == "ragflow.upload"]
+    email_tasks = [
+        task for task in queued_tasks if task["name"] == "notification.send_persisted_email"
+    ]
     assert len(ragflow_tasks) == 1
-    assert ragflow_tasks[0]["name"] == "ragflow.upload"
+    assert len(email_tasks) == 3
+    for task in email_tasks:
+        UUID(_single_task_arg(task))
     await _run_sent_tasks(ragflow_tasks)
+
+    ragflow_result_tasks = await _dispatch_pending_events(sender)
+    assert [task["name"] for task in ragflow_result_tasks] == ["notification.process_domain_event"]
+    await _run_sent_tasks(ragflow_result_tasks)
+    final_email_tasks = await _dispatch_pending_events(sender)
+    assert [task["name"] for task in final_email_tasks] == ["notification.send_persisted_email"]
+    UUID(_single_task_arg(final_email_tasks[0]))
 
     async with AsyncSessionFactory() as session:
         final_file = await session.get(File, file_id)
@@ -505,9 +546,19 @@ async def test_full_pipeline_upload_analyze_approve_syncs_to_ragflow(
         )
         audit_logs = list(audit_result.scalars())
         notification_result = await session.execute(
-            select(Notification).where(Notification.user_id == uploader_id)
+            select(Notification).where(
+                Notification.user_id == uploader_id,
+                Notification.channel == "in_app",
+            )
         )
         notifications = list(notification_result.scalars())
+        department_notification_result = await session.execute(
+            select(Notification).where(
+                Notification.user_id == department_admin_id,
+                Notification.channel == "in_app",
+            )
+        )
+        department_notifications = list(department_notification_result.scalars())
 
     assert final_file.status == "parsed"
     assert final_file.review_status == "approved"
@@ -529,9 +580,34 @@ async def test_full_pipeline_upload_analyze_approve_syncs_to_ragflow(
         "file.review_claim",
         "file.approve",
     ]
-    assert len(notifications) == 1
-    assert notifications[0].type == "review_approved"
-    assert str(notifications[0].metadata_json["file_id"]) == str(file_id)
+    notifications_by_type = {notification.type: notification for notification in notifications}
+    assert set(notifications_by_type) == {
+        "ai_analysis_succeeded",
+        "review_approved",
+        "ragflow_sync_succeeded",
+    }
+    assert notifications_by_type["ai_analysis_succeeded"].metadata_json == {
+        "resource_type": "file",
+        "resource_id": str(file_id),
+        "status": "succeeded",
+    }
+    assert notifications_by_type["review_approved"].metadata_json == {
+        "resource_type": "file",
+        "resource_id": str(file_id),
+        "status": "approved",
+    }
+    assert notifications_by_type["ragflow_sync_succeeded"].metadata_json == {
+        "resource_type": "sync_task",
+        "resource_id": str(sync_task.id),
+        "status": "succeeded",
+    }
+    assert len(department_notifications) == 1
+    assert department_notifications[0].type == "review_submitted"
+    assert department_notifications[0].metadata_json == {
+        "resource_type": "file",
+        "resource_id": str(file_id),
+        "status": "pending_review",
+    }
     assert storage.reads == [
         (final_file.bucket, final_file.object_key),
         (final_file.bucket, final_file.object_key),

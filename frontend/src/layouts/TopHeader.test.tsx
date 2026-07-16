@@ -314,6 +314,81 @@ describe("TopHeader", () => {
     });
     expect(screen.getByTestId("current-path")).toHaveTextContent("/dashboard");
   });
+
+  it("opens a paginated notification center and filters unread items", async () => {
+    vi.mocked(getSystemHealth).mockResolvedValue({ status: "ok" });
+    vi.mocked(getSystemReadiness).mockResolvedValue({
+      status: "ok",
+      dependencies: {
+        database: { status: "ok" },
+        rabbitmq: { status: "ok" },
+        redis: { status: "ok" },
+        minio: { status: "ok" },
+      },
+    });
+    vi.mocked(listNotifications).mockImplementation(async (params = {}) => {
+      if (params.page_size === 10) {
+        return {
+          ...mockNotifications,
+          total: 12,
+          page: params.page ?? 1,
+          page_size: 10,
+          items: params.unread_only ? [mockNotifications.items[0]] : mockNotifications.items,
+        };
+      }
+      return mockNotifications;
+    });
+    useAuthStore.setState({
+      accessToken: "token",
+      user: {
+        id: "user-1",
+        name: "王明",
+        email: "wangming@example.com",
+        role: "system_admin",
+      },
+    });
+
+    renderWithProviders(<TopHeader />);
+
+    fireEvent.click(await screen.findByRole("button", { name: "通知中心" }));
+
+    const drawerTitle = await screen.findByText("通知中心", {
+      selector: ".ant-drawer-title",
+    });
+    const drawer = drawerTitle.closest<HTMLElement>(".ant-drawer-content");
+    expect(drawer).not.toBeNull();
+    if (!drawer) {
+      throw new Error("notification center drawer did not render");
+    }
+    await waitFor(() => {
+      expect(listNotifications).toHaveBeenCalledWith({
+        page: 1,
+        page_size: 10,
+        unread_only: false,
+      });
+    });
+    expect(within(drawer).getByText("2 条未读")).toBeInTheDocument();
+    expect(within(drawer).getByRole("button", { name: "全部标为已读" })).toBeInTheDocument();
+
+    fireEvent.click(within(drawer).getByText("未读"));
+    await waitFor(() => {
+      expect(listNotifications).toHaveBeenCalledWith({
+        page: 1,
+        page_size: 10,
+        unread_only: true,
+      });
+    });
+
+    fireEvent.click(await within(drawer).findByTitle("2"));
+    await waitFor(() => {
+      expect(listNotifications).toHaveBeenCalledWith({
+        page: 2,
+        page_size: 10,
+        unread_only: true,
+      });
+    });
+  });
+
   it("navigates to matched admin page from global search", async () => {
     vi.mocked(getSystemHealth).mockResolvedValue({ status: "ok" });
     vi.mocked(getSystemReadiness).mockResolvedValue({

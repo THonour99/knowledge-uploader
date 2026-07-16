@@ -8,7 +8,21 @@ import {
   ProfileOutlined,
   UserOutlined,
 } from "@ant-design/icons";
-import { App as AntdApp, Avatar, Badge, Button, Dropdown, Input, Space, Typography } from "antd";
+import {
+  App as AntdApp,
+  Avatar,
+  Badge,
+  Button,
+  Drawer,
+  Dropdown,
+  Empty,
+  Input,
+  List,
+  Pagination,
+  Segmented,
+  Space,
+  Typography,
+} from "antd";
 import type { MenuProps } from "antd";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import dayjs from "dayjs";
@@ -28,6 +42,7 @@ import { StatusTag } from "../components/StatusTag";
 import { appNavigationRoutes, utilityNavigation } from "../router/routes";
 import { Roles, useAuthStore } from "../store/auth.store";
 import { useUiStore } from "../store/ui.store";
+import "./TopHeader.notification.css";
 
 type HealthStatusValue = "ok" | "error" | "unknown";
 
@@ -83,6 +98,7 @@ function formatNotificationTime(value: string): string {
 }
 
 const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+const NOTIFICATION_CENTER_PAGE_SIZE = 10;
 
 function isUuid(value: unknown): value is string {
   return typeof value === "string" && UUID_PATTERN.test(value);
@@ -162,6 +178,9 @@ export function TopHeader() {
   const setMobileNavigationOpen = useUiStore((state) => state.setMobileNavigationOpen);
   const headerTitle = getHeaderTitle(location.pathname);
   const [now, setNow] = useState(() => dayjs());
+  const [notificationCenterOpen, setNotificationCenterOpen] = useState(false);
+  const [notificationPage, setNotificationPage] = useState(1);
+  const [notificationUnreadOnly, setNotificationUnreadOnly] = useState(false);
 
   useEffect(() => {
     const timer = window.setInterval(() => setNow(dayjs()), 60_000);
@@ -174,6 +193,17 @@ export function TopHeader() {
     enabled: Boolean(user),
     staleTime: 30_000,
     refetchInterval: 60_000,
+  });
+  const notificationCenterQuery = useQuery({
+    queryKey: ["notifications", "center", user?.id, notificationPage, notificationUnreadOnly],
+    queryFn: () =>
+      listNotifications({
+        page: notificationPage,
+        page_size: NOTIFICATION_CENTER_PAGE_SIZE,
+        unread_only: notificationUnreadOnly,
+      }),
+    enabled: Boolean(user) && notificationCenterOpen,
+    staleTime: 15_000,
   });
   const healthQuery = useQuery({
     queryKey: ["system", "health", "top-header"],
@@ -189,8 +219,9 @@ export function TopHeader() {
     staleTime: 30_000,
     refetchInterval: 60_000,
   });
-  const notifications = notificationsQuery.data?.items ?? [];
   const unreadCount = notificationsQuery.data?.unread_count ?? 0;
+  const notificationCenterItems = notificationCenterQuery.data?.items ?? [];
+  const notificationCenterTotal = notificationCenterQuery.data?.total ?? 0;
   const refreshNotifications = () => queryClient.invalidateQueries({ queryKey: ["notifications"] });
   const readMutation = useMutation({
     mutationFn: markNotificationRead,
@@ -259,6 +290,7 @@ export function TopHeader() {
         canAccessTaskLogs: user?.role !== Roles.EMPLOYEE,
       });
       if (target) {
+        setNotificationCenterOpen(false);
         navigate(target);
       } else {
         message.info("该通知没有可访问的详情");
@@ -267,57 +299,6 @@ export function TopHeader() {
       message.error(error instanceof Error ? error.message : "通知状态更新失败");
     }
   };
-
-  const notificationMenuItems: MenuProps["items"] = (() => {
-    if (notifications.length === 0) {
-      return [
-        {
-          key: "empty",
-          disabled: true,
-          label: <span className="top-header-notification-empty">暂无通知</span>,
-        },
-      ];
-    }
-
-    const items: MenuProps["items"] = notifications.map((notification) => ({
-      key: notification.id,
-      onClick: () => void handleNotificationClick(notification),
-      label: (
-        <div
-          className={[
-            "top-header-notification",
-            notification.read_at ? "" : "top-header-notification--unread",
-          ]
-            .filter(Boolean)
-            .join(" ")}
-        >
-          <Typography.Text strong ellipsis>
-            {notification.title}
-          </Typography.Text>
-          <Typography.Text type="secondary" ellipsis>
-            {notification.body}
-          </Typography.Text>
-          <Typography.Text type="secondary" className="top-header-notification__time">
-            {formatNotificationTime(notification.created_at)}
-          </Typography.Text>
-        </div>
-      ),
-    }));
-
-    if (unreadCount > 0) {
-      items.unshift(
-        {
-          key: "mark-all-read",
-          label: readAllMutation.isPending ? "正在标记全部已读…" : "全部标为已读",
-          disabled: readAllMutation.isPending,
-          onClick: () => readAllMutation.mutate(),
-        },
-        { type: "divider" },
-      );
-    }
-
-    return items;
-  })();
 
   const handleLogout = () => {
     void logout()
@@ -411,15 +392,17 @@ export function TopHeader() {
         </Typography.Text>
       </div>
       <Space size={12} className="top-header__actions">
-        <Dropdown
-          menu={{ items: notificationMenuItems }}
-          trigger={["click"]}
-          placement="bottomRight"
-        >
-          <Badge count={unreadCount} size="small" overflowCount={99}>
-            <Button type="text" icon={<BellOutlined />} aria-label="通知中心" />
-          </Badge>
-        </Dropdown>
+        <Badge count={unreadCount} size="small" overflowCount={99}>
+          <Button
+            type="text"
+            icon={<BellOutlined />}
+            aria-label="通知中心"
+            onClick={() => {
+              setNotificationPage(1);
+              setNotificationCenterOpen(true);
+            }}
+          />
+        </Badge>
         <Dropdown menu={{ items: userMenuItems }} trigger={["click"]}>
           <Button type="text" className="top-header__user">
             <Avatar size={28} icon={user?.name ? undefined : <UserOutlined />}>
@@ -433,6 +416,99 @@ export function TopHeader() {
           </Button>
         </Dropdown>
       </Space>
+      <Drawer
+        title="通知中心"
+        placement="right"
+        width={440}
+        open={notificationCenterOpen}
+        onClose={() => setNotificationCenterOpen(false)}
+        rootClassName="notification-center-drawer"
+        extra={
+          <Button
+            type="link"
+            size="small"
+            disabled={
+              readAllMutation.isPending ||
+              (notificationCenterQuery.data?.unread_count ?? unreadCount) === 0
+            }
+            loading={readAllMutation.isPending}
+            onClick={() => readAllMutation.mutate()}
+          >
+            全部标为已读
+          </Button>
+        }
+      >
+        <div className="notification-center">
+          <div className="notification-center__toolbar">
+            <Segmented
+              aria-label="通知筛选"
+              value={notificationUnreadOnly ? "unread" : "all"}
+              options={[
+                { label: "全部", value: "all" },
+                { label: "未读", value: "unread" },
+              ]}
+              onChange={(value) => {
+                setNotificationUnreadOnly(value === "unread");
+                setNotificationPage(1);
+              }}
+            />
+            <Typography.Text type="secondary">
+              {notificationCenterQuery.data?.unread_count ?? unreadCount} 条未读
+            </Typography.Text>
+          </div>
+
+          {notificationCenterQuery.isError ? (
+            <Empty image={Empty.PRESENTED_IMAGE_SIMPLE} description="通知加载失败">
+              <Button onClick={() => void notificationCenterQuery.refetch()}>重新加载</Button>
+            </Empty>
+          ) : (
+            <List
+              className="notification-center__list"
+              loading={notificationCenterQuery.isPending}
+              dataSource={notificationCenterItems}
+              locale={{
+                emptyText: notificationUnreadOnly ? "没有未读通知" : "暂无通知",
+              }}
+              renderItem={(notification) => (
+                <List.Item
+                  className={
+                    notification.read_at
+                      ? "notification-center__item"
+                      : "notification-center__item notification-center__item--unread"
+                  }
+                  onClick={() => void handleNotificationClick(notification)}
+                >
+                  <button
+                    type="button"
+                    className="notification-center__item-button"
+                    aria-label={"打开通知：" + notification.title}
+                  >
+                    <span className="notification-center__item-copy">
+                      <Typography.Text strong>{notification.title}</Typography.Text>
+                      <Typography.Text type="secondary">{notification.body}</Typography.Text>
+                    </span>
+                    <Typography.Text type="secondary" className="notification-center__item-time">
+                      {formatNotificationTime(notification.created_at)}
+                    </Typography.Text>
+                  </button>
+                </List.Item>
+              )}
+            />
+          )}
+
+          {notificationCenterTotal > NOTIFICATION_CENTER_PAGE_SIZE ? (
+            <Pagination
+              className="notification-center__pagination"
+              current={notificationPage}
+              pageSize={NOTIFICATION_CENTER_PAGE_SIZE}
+              total={notificationCenterTotal}
+              showSizeChanger={false}
+              hideOnSinglePage
+              onChange={setNotificationPage}
+            />
+          ) : null}
+        </div>
+      </Drawer>
     </header>
   );
 }

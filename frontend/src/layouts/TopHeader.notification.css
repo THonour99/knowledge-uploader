@@ -1,0 +1,110 @@
+.notification-center {
+  display: flex;
+  min-height: 100%;
+  flex-direction: column;
+  gap: 16px;
+}
+
+.notification-center__toolbar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.notification-center__list {
+  min-height: 180px;
+}
+
+.notification-center__list .ant-list-item {
+  position: relative;
+  padding: 0;
+  border-block-end-color: var(--ku-border);
+}
+
+.notification-center__item--unread::before {
+  position: absolute;
+  z-index: 1;
+  top: 20px;
+  left: 4px;
+  width: 7px;
+  height: 7px;
+  border-radius: 999px;
+  background: var(--ku-color-primary);
+  content: "";
+}
+
+.notification-center__item-button {
+  display: flex;
+  width: 100%;
+  min-width: 0;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 16px 8px 16px 20px;
+  border: 0;
+  background: transparent;
+  color: inherit;
+  cursor: pointer;
+  font: inherit;
+  text-align: left;
+}
+
+.notification-center__item-button:hover {
+  background: var(--ku-bg-subtle);
+}
+
+.notification-center__item-button:focus-visible {
+  border-radius: var(--ku-radius-control);
+  outline: 2px solid var(--ku-color-primary);
+  outline-offset: -2px;
+}
+
+.notification-center__item-copy {
+  display: grid;
+  min-width: 0;
+  gap: 5px;
+}
+
+.notification-center__item-copy .ant-typography {
+  margin: 0;
+  overflow-wrap: anywhere;
+}
+
+.notification-center__item-time {
+  flex: 0 0 auto;
+  padding-top: 2px;
+  font-size: 12px;
+  white-space: nowrap;
+}
+
+.notification-center__pagination {
+  align-self: center;
+  margin-top: auto;
+  padding-top: 8px;
+}
+
+@media (max-width: 640px) {
+  .notification-center-drawer .ant-drawer-content-wrapper {
+    width: 100% !important;
+    max-width: 100vw;
+  }
+
+  .notification-center-drawer .ant-drawer-header {
+    padding-inline: 16px;
+  }
+
+  .notification-center-drawer .ant-drawer-body {
+    padding: 16px;
+  }
+
+  .notification-center__item-button {
+    flex-direction: column;
+    gap: 6px;
+    padding-right: 6px;
+  }
+
+  .notification-center__item-time {
+    padding-top: 0;
+  }
+}

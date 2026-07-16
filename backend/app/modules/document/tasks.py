@@ -1,13 +1,12 @@
 from __future__ import annotations
 
 import asyncio
-from collections.abc import Sequence
 from datetime import UTC, datetime, timedelta
-from typing import Protocol
 
 import structlog
 
 from app.core.database import AsyncSessionFactory, engine
+from app.core.outbox import OutboxRepository
 from app.workers.celery_app import celery_app
 
 from .repository import DocumentRepository, ExpiryScanCandidate  # noqa: TID251
@@ -16,11 +15,8 @@ logger = structlog.get_logger(__name__)
 
 DEFAULT_EXPIRY_LOOKAHEAD_DAYS = 30
 DEFAULT_EXPIRY_SCAN_BATCH_SIZE = 500
-
-
-class TaskSender(Protocol):
-    def send_task(self, name: str, args: list[str], queue: str) -> object:
-        pass
+DOCUMENT_FILE_EXPIRING_EVENT = "document.file.expiring"
+DOCUMENT_FILE_EXPIRED_EVENT = "document.file.expired"
 
 
 @celery_app.task(name="document.scan_expiring_files")  # type: ignore[misc]
@@ -66,13 +62,24 @@ async def run_scan_expiring_files_task_async(
                 warning_deadline=warning_deadline,
                 limit=max(1, min(batch_size, 10_000)),
             )
-            queued = enqueue_expiry_notification_tasks(candidates)
+            queued = 0
             for candidate in candidates:
-                await repository.mark_expiry_notification_sent(
+                accepted = await repository.mark_expiry_notification_sent(
                     file_id=candidate.file_id,
                     notification_kind=candidate.notification_kind,
                     sent_at=now,
                 )
+                if not accepted:
+                    continue
+                await OutboxRepository(session).append(
+                    event_type=_expiry_event_type(candidate),
+                    aggregate_type="file",
+                    aggregate_id=str(candidate.file_id),
+                    # Notification workers receive only EventOutbox.id and reload this
+                    # canonical file. No email, filename, expiry text, or error reaches Celery.
+                    payload={},
+                )
+                queued += 1
             await session.commit()
         logger.info("document.expiry_scan.completed", queued=queued)
         return queued
@@ -80,22 +87,9 @@ async def run_scan_expiring_files_task_async(
         await engine.dispose()
 
 
-def enqueue_expiry_notification_tasks(
-    candidates: Sequence[ExpiryScanCandidate],
-    *,
-    sender: TaskSender = celery_app,
-) -> int:
-    for candidate in candidates:
-        sender.send_task(
-            "notification.document_expiry",
-            args=[
-                str(candidate.file_id),
-                "",
-                "",
-                candidate.original_name,
-                candidate.expires_at.isoformat(),
-                "expired" if candidate.notification_kind == "expired" else "expiring",
-            ],
-            queue="notification_queue",
-        )
-    return len(candidates)
+def _expiry_event_type(candidate: ExpiryScanCandidate) -> str:
+    if candidate.notification_kind == "expired":
+        return DOCUMENT_FILE_EXPIRED_EVENT
+    if candidate.notification_kind == "warning":
+        return DOCUMENT_FILE_EXPIRING_EVENT
+    raise ValueError("invalid expiry notification kind")
