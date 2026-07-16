@@ -22,6 +22,10 @@ class RagflowClientError(Exception):
     pass
 
 
+class RagflowSubmissionOutcomeUnknownError(RagflowClientError):
+    """远端提交可能已生效; 调用方必须先对账再决定是否重试。"""
+
+
 class RagflowDocumentNotFoundError(RagflowClientError):
     """远端文档不存在 (HTTP 404 或 RAGFlow not found 语义), 删除场景按幂等成功处理。"""
 
@@ -37,6 +41,13 @@ class RagflowClient(Protocol):
         content: bytes,
         content_type: str,
     ) -> RagflowUploadResult: ...
+
+    async def find_document_by_name(
+        self,
+        *,
+        dataset_id: str,
+        name: str,
+    ) -> RagflowUploadResult | None: ...
 
     async def update_document_metadata(
         self,

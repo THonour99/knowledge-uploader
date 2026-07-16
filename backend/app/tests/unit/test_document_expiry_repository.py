@@ -85,6 +85,7 @@ async def _create_file(
     file = File(
         id=file_id,
         original_name=f"{file_id}.txt",
+        title=f"{file_id}.txt",
         stored_name=f"{file_id}.txt",
         extension="txt",
         mime_type="text/plain",

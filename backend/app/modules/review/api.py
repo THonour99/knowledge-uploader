@@ -1,17 +1,26 @@
 from __future__ import annotations
 
-from typing import Annotated, NoReturn
+from typing import Annotated, Literal, NoReturn
 from uuid import UUID
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request, Response
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.core.access_scope import ScopedAdminDep
+from app.core.access_scope import (
+    ScopedAdminDep,
+    build_department_access_scope,
+    get_department_scope_store,
+)
 from app.core.database import get_session
 from app.core.deps import get_current_user
 from app.core.permissions import AdminUserDep
 from app.core.responses import success_response
-from app.modules.document.schemas import FileListResponse, FileResponse, effective_expiry_status
+from app.modules.document.schemas import (
+    FileDraftUpdateRequest,
+    FileListResponse,
+    FileResponse,
+    effective_expiry_status,
+)
 from app.modules.user.schemas import AuthUserRecord
 
 from .exceptions import ReviewError
@@ -28,7 +37,10 @@ from .schemas import (
     DatasetMappingResponse,
     DatasetMappingUpdateRequest,
     RejectFileRequest,
+    ReleaseReviewClaimRequest,
     ReviewDecisionRequest,
+    ReviewDecisionResponse,
+    SubmitReviewRequest,
     TagCreateRequest,
     TagListResponse,
     TagMergeRequest,
@@ -103,10 +115,12 @@ def _file_response(file: ReviewFileRecord) -> FileResponse:
     return FileResponse(
         id=file.id,
         original_name=file.original_name,
+        title=file.title,
         extension=file.extension,
         mime_type=file.mime_type,
         size=file.size,
         uploader_id=file.uploader_id,
+        uploader_name=file.uploader_name,
         department_id=file.department_id,
         department_name=file.department,
         department_code=None,
@@ -118,6 +132,14 @@ def _file_response(file: ReviewFileRecord) -> FileResponse:
         tags=file.tags,
         status=file.status,
         review_status=file.review_status,
+        submitted_at=file.submitted_at,
+        review_due_at=file.review_due_at,
+        claimed_by=file.claimed_by,
+        claimed_by_name=file.claimed_by_name,
+        claimed_at=file.claimed_at,
+        claim_expires_at=file.claim_expires_at,
+        review_version=file.review_version,
+        sensitive_risk_level=file.sensitive_risk_level,
         ragflow_dataset_id=file.ragflow_dataset_id,
         ragflow_document_id=file.ragflow_document_id,
         ragflow_parse_status=file.ragflow_parse_status,
@@ -393,21 +415,97 @@ async def list_review_files(
     current_user: CurrentUserDep,
     scope: ScopedAdminDep,
     session: SessionDep,
-    extension: Annotated[str | None, Query()] = None,
+    page: Annotated[int, Query(ge=1)] = 1,
+    page_size: Annotated[int, Query(ge=1, le=100)] = 20,
+    q: Annotated[str | None, Query(max_length=200)] = None,
+    queue: Annotated[
+        Literal["unclaimed", "mine", "due_soon", "overdue"] | None,
+        Query(),
+    ] = None,
+    extension: Annotated[
+        str | None,
+        Query(min_length=1, max_length=20, pattern=r"^[A-Za-z0-9]+$"),
+    ] = None,
     tag_id: Annotated[UUID | None, Query()] = None,
+    department_id: Annotated[UUID | None, Query()] = None,
+    sensitive_risk_level: Annotated[
+        Literal["none", "low", "medium", "high", "critical"] | None,
+        Query(),
+    ] = None,
+    sort: Annotated[
+        Literal["submitted_at", "review_due_at", "uploaded_at", "original_name", "risk"] | None,
+        Query(),
+    ] = None,
+    order: Annotated[Literal["asc", "desc"], Query()] = "asc",
 ) -> dict[str, object]:
     try:
-        files = await _service(session).list_review_files(
+        result = await _service(session).list_review_files(
             current_user=current_user,
             scope=scope,
             context=_context_from(request),
+            page=page,
+            page_size=page_size,
+            search=q,
+            queue=queue,
             extension=extension,
             tag_id=tag_id,
+            department_id=department_id,
+            sensitive_risk_level=sensitive_risk_level,
+            sort=sort,
+            order=order,
         )
     except ReviewError as error:
         _raise_review_error(error)
-    response = FileListResponse(items=[_file_response(file) for file in files], total=len(files))
+    response = FileListResponse(
+        items=[_file_response(file) for file in result.items],
+        total=result.total,
+        page=result.page,
+        page_size=result.page_size,
+        total_pages=(result.total + result.page_size - 1) // result.page_size,
+    )
     return success_response(response.model_dump(mode="json"), request)
+
+
+@router.post("/api/review/files/{file_id}/claim")
+async def claim_review_file(
+    file_id: UUID,
+    request: Request,
+    current_user: CurrentUserDep,
+    scope: ScopedAdminDep,
+    session: SessionDep,
+) -> dict[str, object]:
+    try:
+        file = await _service(session).claim_file_for_review(
+            current_user=current_user,
+            scope=scope,
+            file_id=file_id,
+            context=_context_from(request),
+        )
+    except ReviewError as error:
+        _raise_review_error(error)
+    return success_response(_file_response(file).model_dump(mode="json"), request)
+
+
+@router.delete("/api/review/files/{file_id}/claim")
+async def release_review_file_claim(
+    file_id: UUID,
+    request: Request,
+    current_user: CurrentUserDep,
+    scope: ScopedAdminDep,
+    session: SessionDep,
+    payload: ReleaseReviewClaimRequest | None = None,
+) -> dict[str, object]:
+    try:
+        file = await _service(session).release_file_review_claim(
+            current_user=current_user,
+            scope=scope,
+            file_id=file_id,
+            reason=payload.reason if payload is not None else None,
+            context=_context_from(request),
+        )
+    except ReviewError as error:
+        _raise_review_error(error)
+    return success_response(_file_response(file).model_dump(mode="json"), request)
 
 
 @router.post("/api/files/{file_id}/submit-review")
@@ -416,11 +514,15 @@ async def submit_file_for_review(
     request: Request,
     current_user: CurrentUserDep,
     session: SessionDep,
+    payload: SubmitReviewRequest | None = None,
 ) -> dict[str, object]:
     try:
         file = await _service(session).submit_file_for_review(
             current_user=current_user,
             file_id=file_id,
+            acknowledge_sensitive_risk=(
+                payload.acknowledge_sensitive_risk if payload is not None else False
+            ),
             context=_context_from(request),
         )
     except ReviewError as error:
@@ -447,7 +549,12 @@ async def approve_file(
         )
     except ReviewError as error:
         _raise_review_error(error)
-    return success_response(_file_response(file).model_dump(mode="json"), request)
+    response = ReviewDecisionResponse(
+        **_file_response(file).model_dump(),
+        sync_decision=payload.sync_decision,
+        sync_task_id=None,
+    )
+    return success_response(response.model_dump(mode="json"), request)
 
 
 @router.post("/api/files/{file_id}/reject")
@@ -475,20 +582,32 @@ async def reject_file(
 @router.patch("/api/files/{file_id}")
 async def update_file_classification(
     file_id: UUID,
-    payload: UpdateFileClassificationRequest,
+    payload: UpdateFileClassificationRequest | FileDraftUpdateRequest,
     request: Request,
     current_user: CurrentUserDep,
-    scope: ScopedAdminDep,
     session: SessionDep,
 ) -> dict[str, object]:
     try:
-        file = await _service(session).update_file_classification(
-            current_user=current_user,
-            scope=scope,
-            file_id=file_id,
-            request=payload,
-            context=_context_from(request),
-        )
+        service = _service(session)
+        if isinstance(payload, FileDraftUpdateRequest):
+            file = await service.update_file_draft(
+                current_user=current_user,
+                file_id=file_id,
+                request=payload,
+                context=_context_from(request),
+            )
+        else:
+            scope = await build_department_access_scope(
+                current_user=current_user,
+                store=get_department_scope_store(session),
+            )
+            file = await service.update_file_classification(
+                current_user=current_user,
+                scope=scope,
+                file_id=file_id,
+                request=payload,
+                context=_context_from(request),
+            )
     except ReviewError as error:
         _raise_review_error(error)
     return success_response(_file_response(file).model_dump(mode="json"), request)

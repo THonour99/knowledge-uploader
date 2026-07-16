@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import os
-from collections.abc import AsyncGenerator
+from collections.abc import AsyncGenerator, Awaitable, Callable
 from importlib import import_module
 
 import pytest
@@ -100,12 +100,23 @@ async def _login(client: AsyncClient, *, email: str, password: str) -> str:
     return str(response.json()["data"]["access_token"])
 
 
+def _response_without_request_id(response: object) -> dict[str, object]:
+    from httpx import Response
+
+    assert isinstance(response, Response)
+    payload = response.json()
+    assert isinstance(payload, dict)
+    request_id = payload.pop("request_id", None)
+    assert isinstance(request_id, str) and request_id
+    return payload
+
+
 async def test_employee_can_access_upload_policy(policy_client: AsyncClient) -> None:
     await _create_user(email="employee@company.com", password="password123")
     token = await _login(policy_client, email="employee@company.com", password="password123")
 
     response = await policy_client.get(
-        "/api/upload-policy",
+        "/api/files/policy",
         headers={"Authorization": f"Bearer {token}"},
     )
     assert response.status_code == 200
@@ -123,7 +134,7 @@ async def test_upload_policy_returns_env_fallback_extensions(policy_client: Asyn
     token = await _login(policy_client, email="employee2@company.com", password="password123")
 
     response = await policy_client.get(
-        "/api/upload-policy",
+        "/api/files/policy",
         headers={"Authorization": f"Bearer {token}"},
     )
     assert response.status_code == 200
@@ -133,6 +144,128 @@ async def test_upload_policy_returns_env_fallback_extensions(policy_client: Asyn
     assert "txt" in data["allowed_extensions"]
 
 
+async def test_upload_policy_fails_closed_for_corrupt_upload_enabled(
+    policy_client: AsyncClient,
+    set_system_config: Callable[[str, object], Awaitable[None]],
+) -> None:
+    await _create_user(email="corrupt-enabled@company.com", password="password123")
+    token = await _login(policy_client, email="corrupt-enabled@company.com", password="password123")
+    await set_system_config("upload.enabled", "yes")
+
+    response = await policy_client.get(
+        "/api/files/policy",
+        headers={"Authorization": f"Bearer {token}"},
+    )
+
+    assert response.status_code == 200
+    assert response.json()["data"]["upload_enabled"] is False
+
+
+@pytest.mark.parametrize(
+    ("configured_value", "expected"),
+    [
+        (None, True),
+        (True, True),
+        (False, False),
+        ("true", False),
+        (1, False),
+    ],
+)
+async def test_upload_enabled_defaults_only_when_runtime_key_is_missing(
+    monkeypatch: pytest.MonkeyPatch,
+    configured_value: object | None,
+    expected: bool,
+) -> None:
+    from app.modules.document import service as document_service  # noqa: TID251
+
+    async def get_runtime_config(_key: str) -> object | None:
+        return configured_value
+
+    monkeypatch.setattr(document_service, "get_config", get_runtime_config)
+
+    assert await document_service.resolve_upload_enabled() is expected
+
+
+async def test_upload_size_hard_cap_does_not_require_constrained_settings_field(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from app.core.config import Settings
+    from app.modules.document import service as document_service  # noqa: TID251
+
+    async def get_runtime_config(_key: str) -> object | None:
+        return None
+
+    legacy_settings = Settings.model_construct(
+        upload_max_file_size_bytes=500 * 1024 * 1024,
+    )
+    monkeypatch.setattr(document_service, "get_config", get_runtime_config)
+
+    assert (
+        await document_service.resolve_upload_max_size_bytes(legacy_settings)
+        == 200 * 1024 * 1024
+    )
+
+
+async def test_upload_policy_rejects_bool_as_size_and_uses_execution_fallback(
+    policy_client: AsyncClient,
+    set_system_config: Callable[[str, object], Awaitable[None]],
+) -> None:
+    await _create_user(email="corrupt-size@company.com", password="password123")
+    token = await _login(policy_client, email="corrupt-size@company.com", password="password123")
+    await set_system_config("upload.max_file_size_mb", True)
+
+    response = await policy_client.get(
+        "/api/files/policy",
+        headers={"Authorization": f"Bearer {token}"},
+    )
+
+    assert response.status_code == 200
+    assert response.json()["data"]["max_file_size_mb"] == 10
+
+
+async def test_upload_policy_enforces_in_memory_hard_limit(
+    policy_client: AsyncClient,
+    set_system_config: Callable[[str, object], Awaitable[None]],
+) -> None:
+    await _create_user(email="memory-limit@company.com", password="password123")
+    token = await _login(policy_client, email="memory-limit@company.com", password="password123")
+    headers = {"Authorization": f"Bearer {token}"}
+
+    await set_system_config("upload.max_file_size_mb", 200)
+    boundary = await policy_client.get("/api/files/policy", headers=headers)
+    await set_system_config("upload.max_file_size_mb", 201)
+    above_boundary = await policy_client.get("/api/files/policy", headers=headers)
+
+    assert boundary.status_code == 200
+    assert boundary.json()["data"]["max_file_size_mb"] == 200
+    assert above_boundary.status_code == 200
+    # 绕过配置 API 注入越界脏值时执行层 fail closed 到环境配置 (fixture 为 10MB)。
+    assert above_boundary.json()["data"]["max_file_size_mb"] == 10
+
+
 async def test_upload_policy_requires_auth(policy_client: AsyncClient) -> None:
-    response = await policy_client.get("/api/upload-policy")
-    assert response.status_code == 401
+    canonical = await policy_client.get("/api/files/policy")
+    compatibility_alias = await policy_client.get("/api/upload-policy")
+
+    assert canonical.status_code == 401
+    assert compatibility_alias.status_code == canonical.status_code
+    assert _response_without_request_id(compatibility_alias) == _response_without_request_id(
+        canonical
+    )
+
+
+async def test_upload_policy_compatibility_alias_matches_canonical_route(
+    policy_client: AsyncClient,
+) -> None:
+    await _create_user(email="policy-alias@company.com", password="password123")
+    token = await _login(policy_client, email="policy-alias@company.com", password="password123")
+    headers = {"Authorization": f"Bearer {token}"}
+
+    canonical = await policy_client.get("/api/files/policy", headers=headers)
+    compatibility_alias = await policy_client.get("/api/upload-policy", headers=headers)
+
+    assert canonical.status_code == 200
+    assert compatibility_alias.status_code == canonical.status_code
+    assert _response_without_request_id(compatibility_alias) == _response_without_request_id(
+        canonical
+    )

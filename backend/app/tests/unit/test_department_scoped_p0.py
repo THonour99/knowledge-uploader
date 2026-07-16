@@ -3,7 +3,7 @@ from __future__ import annotations
 import os
 import uuid
 from collections.abc import AsyncGenerator
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from importlib import import_module
 from pathlib import Path
 from typing import Any
@@ -409,9 +409,11 @@ async def _create_file(
     from app.modules.document.models import File
 
     file_id = uuid.uuid4()
+    submitted_at = datetime.now(UTC) if status == "pending_review" else None
     file = File(
         id=file_id,
         original_name=f"{file_id}.pdf",
+        title=f"{file_id}.pdf",
         stored_name=f"{file_id}.pdf",
         extension="pdf",
         mime_type="application/pdf",
@@ -429,6 +431,10 @@ async def _create_file(
         tags=[],
         status=status,
         review_status=review_status,
+        submitted_at=submitted_at,
+        review_due_at=(
+            submitted_at + timedelta(hours=24) if submitted_at is not None else None
+        ),
         ragflow_dataset_id=ragflow_dataset_id,
         ai_analysis_enabled_at_upload=False,
         uploaded_at=datetime.now(UTC),
@@ -614,7 +620,11 @@ async def test_upload_ignores_forged_department_id_and_uses_uploader_department(
         "/api/files/upload",
         headers=_auth(token),
         files={"file": ("forged.pdf", PDF_BYTES, "application/pdf")},
-        data={"department_id": str(legal_id), "visibility": "company"},
+        data={
+            "department_id": str(legal_id),
+            "visibility": "company",
+            "submit_after_upload": "false",
+        },
     )
 
     assert response.status_code == 201, response.text
@@ -716,7 +726,11 @@ async def test_dept_admin_scope_isolates_files_review_actions_and_ragflow_tasks(
     hidden_approve = await p0_client.post(
         f"/api/files/{legal_file_id}/approve",
         headers=_auth(token),
-        json={"category_id": str(category_id), "dataset_mapping_id": str(dataset_id)},
+        json={
+            "sync_decision": "sync",
+            "category_id": str(category_id),
+            "dataset_mapping_id": str(dataset_id),
+        },
     )
     task_list = await p0_client.get("/api/tasks", headers=_auth(token))
     task_detail = await p0_client.get(f"/api/tasks/{finance_task_id}", headers=_auth(token))
@@ -796,7 +810,11 @@ async def test_self_review_is_denied_by_default_for_dept_and_system_admins(
     dept_approve = await p0_client.post(
         f"/api/files/{dept_file_id}/approve",
         headers=_auth(dept_token),
-        json={"category_id": str(category_id), "dataset_mapping_id": str(dataset_id)},
+        json={
+            "sync_decision": "sync",
+            "category_id": str(category_id),
+            "dataset_mapping_id": str(dataset_id),
+        },
     )
     dept_reject = await p0_client.post(
         f"/api/files/{dept_file_id}/reject",
@@ -806,7 +824,11 @@ async def test_self_review_is_denied_by_default_for_dept_and_system_admins(
     system_approve = await p0_client.post(
         f"/api/files/{system_file_id}/approve",
         headers=_auth(system_token),
-        json={"category_id": str(category_id), "dataset_mapping_id": str(dataset_id)},
+        json={
+            "sync_decision": "sync",
+            "category_id": str(category_id),
+            "dataset_mapping_id": str(dataset_id),
+        },
     )
 
     assert dept_approve.status_code == 403
@@ -847,7 +869,11 @@ async def test_revoked_managed_department_blocks_old_file_and_task_ids(
     after_approve = await p0_client.post(
         f"/api/files/{file_id}/approve",
         headers=_auth(token),
-        json={"category_id": str(category_id), "dataset_mapping_id": str(dataset_id)},
+        json={
+            "sync_decision": "sync",
+            "category_id": str(category_id),
+            "dataset_mapping_id": str(dataset_id),
+        },
     )
     after_task = await p0_client.get(f"/api/tasks/{task_id}", headers=_auth(token))
     after_retry = await p0_client.post(f"/api/tasks/{task_id}/retry", headers=_auth(token))
@@ -915,4 +941,5 @@ async def test_disabled_managed_department_blocks_old_file_delete_and_submit_ids
     assert after_review_list.json()["data"]["items"] == []
     _assert_hidden_or_forbidden(after_detail)
     _assert_hidden_or_forbidden(after_delete)
-    _assert_hidden_or_forbidden(after_submit)
+    assert after_submit.status_code == 403
+    assert after_submit.json()["error_code"] == "DEPARTMENT_ASSIGNMENT_REQUIRED"

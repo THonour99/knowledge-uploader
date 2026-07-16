@@ -62,8 +62,18 @@ class FakeCelerySender:
     def __init__(self) -> None:
         self.sent: list[dict[str, object]] = []
 
-    def send_task(self, name: str, args: list[str], queue: str) -> object:
-        self.sent.append({"name": name, "args": args, "queue": queue})
+    def send_task(
+        self,
+        name: str,
+        args: list[str],
+        queue: str,
+        *,
+        countdown: int | None = None,
+    ) -> object:
+        sent: dict[str, object] = {"name": name, "args": args, "queue": queue}
+        if countdown is not None:
+            sent["countdown"] = countdown
+        self.sent.append(sent)
         return object()
 
 
@@ -85,6 +95,7 @@ class FakeRagflowClient:
         self.metadata_updates: list[dict[str, object]] = []
         self.parse_requests: list[tuple[str, str]] = []
         self.status_requests: list[tuple[str, str]] = []
+        self.remote_documents: dict[tuple[str, str], object] = {}
 
     async def ping(self) -> bool:
         return True
@@ -107,7 +118,20 @@ class FakeRagflowClient:
                 "content_type": content_type,
             }
         )
-        return RagflowUploadResult(document_id="ragflow-e2e-document", raw={})
+        result = RagflowUploadResult(
+            document_id="ragflow-e2e-document",
+            raw={"id": "ragflow-e2e-document", "name": filename},
+        )
+        self.remote_documents[(dataset_id, filename)] = result
+        return result
+
+    async def find_document_by_name(
+        self,
+        *,
+        dataset_id: str,
+        name: str,
+    ) -> object | None:
+        return self.remote_documents.get((dataset_id, name))
 
     async def update_document_metadata(
         self,
@@ -251,19 +275,29 @@ async def full_pipeline_client(
 async def _create_user(*, email: str, password: str, role: str = "employee") -> UUID:
     from app.core.database import AsyncSessionFactory
     from app.core.security import hash_password
+    from app.modules.department.models import Department
     from app.modules.user.models import User
 
     normalized_email = email.lower()
-    user = User(
-        name=email.split("@", 1)[0],
-        email=normalized_email,
-        email_domain=normalized_email.rsplit("@", 1)[1],
-        password_hash=hash_password(password),
-        role=role,
-        status="active",
-        email_verified=True,
-    )
     async with AsyncSessionFactory() as session:
+        department = (
+            await session.execute(select(Department).where(Department.code == "pipeline-tests"))
+        ).scalar_one_or_none()
+        if department is None:
+            department = Department(name="E2E 测试部", code="pipeline-tests", status="active")
+            session.add(department)
+            await session.flush()
+        user = User(
+            name=email.split("@", 1)[0],
+            email=normalized_email,
+            email_domain=normalized_email.rsplit("@", 1)[1],
+            password_hash=hash_password(password),
+            department_id=department.id,
+            department=department.name,
+            role=role,
+            status="active",
+            email_verified=True,
+        )
         session.add(user)
         await session.commit()
         await session.refresh(user)
@@ -325,7 +359,7 @@ async def test_full_pipeline_upload_analyze_approve_syncs_to_ragflow(
     client, storage, ragflow_client = full_pipeline_client
     sender = FakeCelerySender()
     uploader_id = await _create_user(email="e2e-uploader@company.com", password="password123")
-    await _create_user(
+    admin_id = await _create_user(
         email="e2e-admin@company.com",
         password="password123",
         role="system_admin",
@@ -365,7 +399,11 @@ async def test_full_pipeline_upload_analyze_approve_syncs_to_ragflow(
         "/api/files/upload",
         headers={"Authorization": f"Bearer {uploader_token}"},
         files={"file": ("handbook.txt", TEXT_BYTES, "text/plain")},
-        data={"description": "E2E handbook", "visibility": "department"},
+        data={
+            "description": "E2E handbook",
+            "visibility": "department",
+            "submit_after_upload": "false",
+        },
     )
     assert upload_response.status_code == 201
     uploaded_file = upload_response.json()["data"]
@@ -383,6 +421,8 @@ async def test_full_pipeline_upload_analyze_approve_syncs_to_ragflow(
         analyzed_file = await session.get(File, file_id)
         assert analyzed_file is not None
         assert analyzed_file.status == "analyzed"
+        assert analyzed_file.submitted_at is None
+        assert analyzed_file.review_due_at is None
         assert analyzed_file.category_id == UUID(category["id"])
         assert "handbook" in analyzed_file.tags
 
@@ -395,15 +435,27 @@ async def test_full_pipeline_upload_analyze_approve_syncs_to_ragflow(
 
     submit_response = await client.post(
         f"/api/files/{file_id}/submit-review",
-        headers={"Authorization": f"Bearer {admin_token}"},
+        headers={"Authorization": f"Bearer {uploader_token}"},
     )
     assert submit_response.status_code == 200
-    assert submit_response.json()["data"]["status"] == "pending_review"
+    submitted_file = submit_response.json()["data"]
+    assert submitted_file["status"] == "pending_review"
+    assert submitted_file["review_status"] == "pending"
+    assert submitted_file["submitted_at"] is not None
+    assert submitted_file["review_due_at"] is not None
+
+    claim_response = await client.post(
+        f"/api/review/files/{file_id}/claim",
+        headers={"Authorization": f"Bearer {admin_token}"},
+    )
+    assert claim_response.status_code == 200
+    assert claim_response.json()["data"]["review_status"] == "in_review"
 
     approve_response = await client.post(
         f"/api/files/{file_id}/approve",
         headers={"Authorization": f"Bearer {admin_token}"},
         json={
+            "sync_decision": "sync",
             "category_id": category["id"],
             "dataset_mapping_id": mapping["id"],
             "reason": "E2E 通过",
@@ -418,14 +470,14 @@ async def test_full_pipeline_upload_analyze_approve_syncs_to_ragflow(
     review_tasks = await _dispatch_pending_events(sender)
     assert review_tasks == [
         {
-            "name": "notification.review_approved",
-            "args": [str(file_id)],
-            "queue": "notification_queue",
-        },
-        {
             "name": "ragflow.create_upload_task",
             "args": [str(file_id)],
             "queue": "ragflow_queue",
+        },
+        {
+            "name": "notification.review_approved",
+            "args": [str(file_id)],
+            "queue": "notification_queue",
         },
     ]
     await _run_sent_tasks(review_tasks)
@@ -466,12 +518,15 @@ async def test_full_pipeline_upload_analyze_approve_syncs_to_ragflow(
     assert sync_task.finished_at is not None
     assert [event.event_type for event in file_events] == [
         "document.file.uploaded",
+        "ai.text.extracted",
+        "ai.file.analyzed",
         "review.file.submitted",
         "review.file.approved",
     ]
     assert [log.action for log in audit_logs] == [
         "file.upload",
         "file.submit_review",
+        "file.review_claim",
         "file.approve",
     ]
     assert len(notifications) == 1
@@ -493,6 +548,12 @@ async def test_full_pipeline_upload_analyze_approve_syncs_to_ragflow(
     assert ragflow_client.status_requests == [("ragflow-e2e", "ragflow-e2e-document")]
     metadata = cast(dict[str, object], ragflow_client.metadata_updates[0]["metadata"])
     assert metadata["file_id"] == str(file_id)
-    assert metadata["uploader"] == str(uploader_id)
-    assert metadata["category"] == category["id"]
+    assert metadata["uploader_id"] == str(uploader_id)
+    assert metadata["department_id"] == str(final_file.department_id)
+    assert metadata["category_id"] == category["id"]
+    assert metadata["reviewer_id"] == str(admin_id)
+    assert metadata["reviewed_at"] is not None
     assert "handbook" in cast(list[str], metadata["tags"])
+    assert set(metadata).isdisjoint(
+        {"email", "object_key", "api_key", "description", "private_note", "reason"}
+    )

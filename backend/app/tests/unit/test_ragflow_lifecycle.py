@@ -1,7 +1,9 @@
 from __future__ import annotations
 
+import asyncio
 import os
 from collections.abc import AsyncGenerator, Awaitable, Callable
+from datetime import UTC, datetime, timedelta
 from uuid import UUID
 
 import pytest
@@ -124,12 +126,16 @@ async def _create_file(
     hash_value: str = "c" * 64,
     ragflow_dataset_id: str | None = "ragflow-r4-dataset",
     ragflow_document_id: str | None = "ragflow-r4-doc",
+    category_id: UUID | None = None,
+    dataset_mapping_id: UUID | None = None,
 ) -> UUID:
     from app.core.database import AsyncSessionFactory
     from app.modules.document.models import File
 
+    submitted_at = datetime.now(UTC) if status_value == "pending_review" else None
     file = File(
         original_name="r4-lifecycle.pdf",
+        title="r4-lifecycle.pdf",
         stored_name="file-r4-lifecycle.pdf",
         extension="pdf",
         mime_type="application/pdf",
@@ -145,6 +151,12 @@ async def _create_file(
         tags=[],
         status=status_value,
         review_status=review_status,
+        submitted_at=submitted_at,
+        review_due_at=(
+            submitted_at + timedelta(hours=24) if submitted_at is not None else None
+        ),
+        category_id=category_id,
+        dataset_mapping_id=dataset_mapping_id,
         ragflow_dataset_id=ragflow_dataset_id,
         ragflow_document_id=ragflow_document_id,
         ai_analysis_enabled_at_upload=False,
@@ -156,12 +168,52 @@ async def _create_file(
         return file.id
 
 
+async def _create_dataset_mapping(
+    *,
+    ragflow_dataset_id: str = "ragflow-r4-dataset",
+    enabled: bool = True,
+) -> tuple[UUID, UUID]:
+    from app.core.database import AsyncSessionFactory
+    from app.modules.review.models import Category, DatasetMapping
+
+    suffix = os.urandom(4).hex()
+    async with AsyncSessionFactory() as session:
+        category = Category(
+            name=f"R4 生命周期分类 {suffix}",
+            code=f"r4-lifecycle-{suffix}",
+            keywords=[],
+        )
+        session.add(category)
+        await session.flush()
+        mapping = DatasetMapping(
+            name=f"R4 生命周期映射 {suffix}",
+            category_id=category.id,
+            ragflow_dataset_id=ragflow_dataset_id,
+            ragflow_dataset_name=f"R4 Dataset {suffix}",
+            enabled=enabled,
+        )
+        session.add(mapping)
+        await session.commit()
+        await session.refresh(mapping)
+        return category.id, mapping.id
+
+
 class FakeCelerySender:
     def __init__(self) -> None:
         self.sent: list[dict[str, object]] = []
 
-    def send_task(self, name: str, args: list[str], queue: str) -> object:
-        self.sent.append({"name": name, "args": args, "queue": queue})
+    def send_task(
+        self,
+        name: str,
+        args: list[str],
+        queue: str,
+        *,
+        countdown: int | None = None,
+    ) -> object:
+        sent: dict[str, object] = {"name": name, "args": args, "queue": queue}
+        if countdown is not None:
+            sent["countdown"] = countdown
+        self.sent.append(sent)
         return object()
 
 
@@ -182,6 +234,7 @@ def _lifecycle_event(
     payload: dict[str, object],
 ) -> EventOutbox:
     return EventOutbox(
+        id=1,
         event_type=event_type,
         aggregate_type="file",
         aggregate_id=str(payload.get("file_id", "file-1")),
@@ -297,6 +350,7 @@ async def test_file_archived_event_skips_when_keep_remote_enabled() -> None:
 
 async def test_delete_sync_task_queued_event_routes_to_delete_worker() -> None:
     event = EventOutbox(
+        id=1,
         event_type="ragflow.sync_task.queued",
         aggregate_type="sync_task",
         aggregate_id="task-9",
@@ -418,7 +472,9 @@ async def test_ragflow_delete_worker_deletes_remote_document(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     from app.core.database import AsyncSessionFactory
+    from app.core.outbox import EventOutbox
     from app.modules.document.models import File
+    from app.modules.ragflow import events as ragflow_events
     from app.modules.ragflow import tasks
     from app.modules.ragflow.models import SyncTask, SyncTaskLog
 
@@ -435,6 +491,12 @@ async def test_ragflow_delete_worker_deletes_remote_document(
             select(SyncTaskLog).where(SyncTaskLog.task_id == task_id).order_by(SyncTaskLog.id)
         )
         logs = list(log_result.scalars())
+        event_result = await session.execute(
+            select(EventOutbox).where(
+                EventOutbox.event_type == ragflow_events.RAGFLOW_SYNC_TASK_SUCCEEDED
+            )
+        )
+        success_event = event_result.scalar_one_or_none()
         assert task is not None
         assert file is not None
 
@@ -449,6 +511,7 @@ async def test_ragflow_delete_worker_deletes_remote_document(
         "ragflow document deleted",
         "ragflow delete task completed",
     ]
+    assert success_event is None
 
 
 @pytest.mark.parametrize(
@@ -567,8 +630,7 @@ async def test_ragflow_delete_worker_marks_file_cleanup_failed_on_error(
     client = FakeDeleteRagflowClient(error=RagflowClientError("RAGFlow request failed: HTTP 500"))
     _patch_ragflow_client(monkeypatch, client)
 
-    with pytest.raises(RuntimeError, match="RagflowClientError"):
-        await tasks.run_ragflow_delete_task_async(str(task_id))
+    await tasks.run_ragflow_delete_task_async(str(task_id))
 
     async with AsyncSessionFactory() as session:
         task = await session.get(SyncTask, task_id)
@@ -622,8 +684,7 @@ async def test_failed_delete_task_can_be_retried_from_task_api(
     file_id, task_id = await _setup_delete_task()
     client = FakeDeleteRagflowClient(error=RagflowClientError("RAGFlow request failed: HTTP 500"))
     _patch_ragflow_client(monkeypatch, client)
-    with pytest.raises(RuntimeError, match="RagflowClientError"):
-        await tasks.run_ragflow_delete_task_async(str(task_id))
+    await tasks.run_ragflow_delete_task_async(str(task_id))
 
     response = await lifecycle_client.post(
         f"/api/tasks/{task_id}/retry",
@@ -669,10 +730,12 @@ async def test_admin_manual_sync_approved_file_creates_task_and_audit(
         review_status="approved",
         ragflow_document_id=None,
     )
+    category_id, mapping_id = await _create_dataset_mapping()
 
     response = await lifecycle_client.post(
         f"/api/admin/files/{file_id}/sync",
         headers={"Authorization": f"Bearer {token}"},
+        json={"dataset_mapping_id": str(mapping_id)},
     )
 
     assert response.status_code == 200
@@ -690,8 +753,13 @@ async def test_admin_manual_sync_approved_file_creates_task_and_audit(
         audit_log = audit_result.scalar_one()
 
     assert file.status == "queued"
+    assert file.category_id == category_id
+    assert file.dataset_mapping_id == mapping_id
+    assert file.ragflow_dataset_id == "ragflow-r4-dataset"
     assert audit_log.target_type == "file"
     assert audit_log.target_id == file_id
+    assert audit_log.metadata_json["dataset_mapping_id"] == str(mapping_id)
+    assert audit_log.metadata_json["ragflow_dataset_id"] == "ragflow-r4-dataset"
 
 
 async def test_admin_manual_sync_failed_file_creates_task(
@@ -702,19 +770,142 @@ async def test_admin_manual_sync_failed_file_creates_task(
         email="r4-manual-sync-failed@company.com",
         password="password123",
     )
+    category_id, mapping_id = await _create_dataset_mapping()
     file_id = await _create_file(
         uploader_id=uploader_id,
         status_value="failed",
         review_status="approved",
+        category_id=category_id,
+        dataset_mapping_id=mapping_id,
     )
 
     response = await lifecycle_client.post(
         f"/api/admin/files/{file_id}/sync",
         headers={"Authorization": f"Bearer {token}"},
+        json={"dataset_mapping_id": str(mapping_id)},
     )
 
     assert response.status_code == 200
     assert response.json()["data"]["status"] == "queued"
+
+
+async def test_manual_sync_revalidates_mapping_after_concurrent_disable(
+    lifecycle_client: AsyncClient,
+) -> None:
+    from app.core.database import AsyncSessionFactory
+    from app.modules.document.models import File
+    from app.modules.ragflow.models import SyncTask
+    from app.modules.review.models import DatasetMapping
+
+    token = await _create_admin_token(lifecycle_client)
+    uploader_id = await _create_user(
+        email="r4-manual-sync-mapping-race@company.com",
+        password="password123",
+    )
+    file_id = await _create_file(
+        uploader_id=uploader_id,
+        status_value="approved",
+        review_status="approved",
+        ragflow_document_id=None,
+    )
+    _category_id, mapping_id = await _create_dataset_mapping()
+
+    async with AsyncSessionFactory() as lock_session:
+        result = await lock_session.execute(
+            select(DatasetMapping)
+            .where(DatasetMapping.id == mapping_id)
+            .with_for_update()
+        )
+        mapping = result.scalar_one()
+        mapping.enabled = False
+        await lock_session.flush()
+        request_task = asyncio.create_task(
+            lifecycle_client.post(
+                f"/api/admin/files/{file_id}/sync",
+                headers={"Authorization": f"Bearer {token}"},
+                json={"dataset_mapping_id": str(mapping_id)},
+            )
+        )
+        await asyncio.sleep(0.1)
+        assert request_task.done() is False
+        await lock_session.commit()
+        response = await asyncio.wait_for(request_task, timeout=3)
+
+    assert response.status_code == 422
+    assert response.json()["message"] == "dataset mapping not found or disabled"
+    async with AsyncSessionFactory() as session:
+        file = await session.get(File, file_id)
+        task_result = await session.execute(select(SyncTask).where(SyncTask.file_id == file_id))
+        assert file is not None
+    assert file.status == "approved"
+    assert list(task_result.scalars()) == []
+
+
+async def test_manual_sync_rejects_switching_dataset_for_existing_remote_document(
+    lifecycle_client: AsyncClient,
+) -> None:
+    from app.core.database import AsyncSessionFactory
+    from app.modules.document.models import File
+    from app.modules.ragflow.models import SyncTask
+
+    token = await _create_admin_token(lifecycle_client)
+    uploader_id = await _create_user(
+        email="r4-manual-sync-remote-target@company.com",
+        password="password123",
+    )
+    original_category_id, original_mapping_id = await _create_dataset_mapping(
+        ragflow_dataset_id="original-remote-dataset"
+    )
+    _replacement_category_id, replacement_mapping_id = await _create_dataset_mapping(
+        ragflow_dataset_id="replacement-remote-dataset"
+    )
+    file_id = await _create_file(
+        uploader_id=uploader_id,
+        status_value="failed",
+        review_status="approved",
+        ragflow_dataset_id="original-remote-dataset",
+        ragflow_document_id="existing-remote-document",
+        category_id=original_category_id,
+        dataset_mapping_id=original_mapping_id,
+    )
+
+    response = await lifecycle_client.post(
+        f"/api/admin/files/{file_id}/sync",
+        headers={"Authorization": f"Bearer {token}"},
+        json={"dataset_mapping_id": str(replacement_mapping_id)},
+    )
+
+    assert response.status_code == 422
+    assert response.json()["message"] == "dataset mapping does not match file category"
+
+    # Even a second mapping for the same category cannot move an existing remote document.
+    from app.modules.review.models import DatasetMapping
+
+    async with AsyncSessionFactory() as session:
+        replacement = await session.get(DatasetMapping, replacement_mapping_id)
+        assert replacement is not None
+        replacement.category_id = original_category_id
+        await session.commit()
+
+    response = await lifecycle_client.post(
+        f"/api/admin/files/{file_id}/sync",
+        headers={"Authorization": f"Bearer {token}"},
+        json={"dataset_mapping_id": str(replacement_mapping_id)},
+    )
+
+    assert response.status_code == 409
+    assert response.json()["message"] == "an existing ragflow document cannot change dataset target"
+    async with AsyncSessionFactory() as session:
+        file = await session.get(File, file_id)
+        task_result = await session.execute(select(SyncTask).where(SyncTask.file_id == file_id))
+        assert file is not None
+
+    assert file.status == "failed"
+    assert file.category_id == original_category_id
+    assert file.dataset_mapping_id == original_mapping_id
+    assert file.ragflow_dataset_id == "original-remote-dataset"
+    assert file.ragflow_document_id == "existing-remote-document"
+    assert list(task_result.scalars()) == []
 
 
 async def test_manual_sync_requires_allowlist_for_runtime_api_key(
@@ -741,13 +932,15 @@ async def test_manual_sync_requires_allowlist_for_runtime_api_key(
         review_status="approved",
         ragflow_document_id=None,
     )
+    _category_id, mapping_id = await _create_dataset_mapping()
 
     response = await lifecycle_client.post(
         f"/api/admin/files/{file_id}/sync",
         headers={"Authorization": f"Bearer {token}"},
+        json={"dataset_mapping_id": str(mapping_id)},
     )
 
-    assert response.status_code == 400
+    assert response.status_code == 422
     assert response.json()["message"] == "ragflow dataset id is not allowed"
     async with AsyncSessionFactory() as session:
         file = await session.get(File, file_id)
@@ -780,15 +973,180 @@ async def test_manual_sync_allows_runtime_api_key_when_dataset_is_allowed(
         review_status="approved",
         ragflow_document_id=None,
     )
+    _category_id, mapping_id = await _create_dataset_mapping()
+
+    response = await lifecycle_client.post(
+        f"/api/admin/files/{file_id}/sync",
+        headers={"Authorization": f"Bearer {token}"},
+        json={"dataset_mapping_id": str(mapping_id)},
+    )
+
+    assert response.status_code == 200
+    assert response.json()["data"]["task_type"] == "ragflow_upload"
+    assert response.json()["data"]["status"] == "queued"
+
+
+async def test_manual_sync_requires_explicit_mapping_and_never_uses_old_target(
+    lifecycle_client: AsyncClient,
+) -> None:
+    from app.core.database import AsyncSessionFactory
+    from app.modules.document.models import File
+    from app.modules.ragflow.models import SyncTask
+
+    token = await _create_admin_token(lifecycle_client)
+    uploader_id = await _create_user(
+        email="r4-manual-sync-explicit@company.com",
+        password="password123",
+    )
+    file_id = await _create_file(
+        uploader_id=uploader_id,
+        status_value="approved",
+        review_status="approved",
+        ragflow_dataset_id="legacy-dataset",
+        ragflow_document_id=None,
+    )
 
     response = await lifecycle_client.post(
         f"/api/admin/files/{file_id}/sync",
         headers={"Authorization": f"Bearer {token}"},
     )
 
-    assert response.status_code == 200
-    assert response.json()["data"]["task_type"] == "ragflow_upload"
-    assert response.json()["data"]["status"] == "queued"
+    assert response.status_code == 422
+    async with AsyncSessionFactory() as session:
+        file = await session.get(File, file_id)
+        task_result = await session.execute(select(SyncTask).where(SyncTask.file_id == file_id))
+        assert file is not None
+        assert file.status == "approved"
+        assert file.dataset_mapping_id is None
+        assert file.ragflow_dataset_id == "legacy-dataset"
+        assert list(task_result.scalars()) == []
+
+
+async def test_manual_sync_rejects_disabled_or_category_mismatched_mapping(
+    lifecycle_client: AsyncClient,
+) -> None:
+    from app.core.database import AsyncSessionFactory
+    from app.modules.document.models import File
+
+    token = await _create_admin_token(lifecycle_client)
+    uploader_id = await _create_user(
+        email="r4-manual-sync-mapping-validation@company.com",
+        password="password123",
+    )
+    disabled_file_id = await _create_file(
+        uploader_id=uploader_id,
+        status_value="approved",
+        review_status="approved",
+        ragflow_document_id=None,
+    )
+    _disabled_category_id, disabled_mapping_id = await _create_dataset_mapping(
+        ragflow_dataset_id="disabled-dataset",
+        enabled=False,
+    )
+    disabled_response = await lifecycle_client.post(
+        f"/api/admin/files/{disabled_file_id}/sync",
+        headers={"Authorization": f"Bearer {token}"},
+        json={"dataset_mapping_id": str(disabled_mapping_id)},
+    )
+
+    first_category_id, _first_mapping_id = await _create_dataset_mapping(
+        ragflow_dataset_id="first-dataset"
+    )
+    _second_category_id, second_mapping_id = await _create_dataset_mapping(
+        ragflow_dataset_id="second-dataset"
+    )
+    mismatch_file_id = await _create_file(
+        uploader_id=uploader_id,
+        status_value="approved",
+        review_status="approved",
+        ragflow_document_id=None,
+        hash_value="f" * 64,
+    )
+    async with AsyncSessionFactory() as session:
+        file = await session.get(File, mismatch_file_id)
+        assert file is not None
+        file.category_id = first_category_id
+        await session.commit()
+    mismatch_response = await lifecycle_client.post(
+        f"/api/admin/files/{mismatch_file_id}/sync",
+        headers={"Authorization": f"Bearer {token}"},
+        json={"dataset_mapping_id": str(second_mapping_id)},
+    )
+
+    assert disabled_response.status_code == 422
+    assert disabled_response.json()["message"] == "dataset mapping not found or disabled"
+    assert mismatch_response.status_code == 422
+    assert mismatch_response.json()["message"] == "dataset mapping does not match file category"
+
+
+async def test_manual_sync_high_risk_requires_enabled_policy_and_reason(
+    lifecycle_client: AsyncClient,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from app.core.database import AsyncSessionFactory
+    from app.modules.ai.models import DocumentAnalysis
+    from app.modules.audit.models import AuditLog
+    from app.modules.ragflow import service as ragflow_service  # noqa: TID251
+
+    allow_high_risk = False
+
+    async def get_runtime_config(key: str) -> object | None:
+        if key == "ragflow.allow_high_risk_sync":
+            return allow_high_risk
+        if key == "ragflow.sync_max_retries":
+            return 3
+        return None
+
+    monkeypatch.setattr(ragflow_service, "get_config", get_runtime_config)
+    token = await _create_admin_token(lifecycle_client)
+    uploader_id = await _create_user(
+        email="r4-manual-sync-high@company.com",
+        password="password123",
+    )
+    file_id = await _create_file(
+        uploader_id=uploader_id,
+        status_value="approved",
+        review_status="approved",
+        ragflow_document_id=None,
+    )
+    _category_id, mapping_id = await _create_dataset_mapping()
+    async with AsyncSessionFactory() as session:
+        session.add(
+            DocumentAnalysis(
+                file_id=file_id,
+                status="succeeded",
+                sensitive_risk_level="high",
+                sensitive_hits=[],
+            )
+        )
+        await session.commit()
+
+    disabled_response = await lifecycle_client.post(
+        f"/api/admin/files/{file_id}/sync",
+        headers={"Authorization": f"Bearer {token}"},
+        json={"dataset_mapping_id": str(mapping_id), "reason": "已确认业务必要性"},
+    )
+    allow_high_risk = True
+    missing_reason_response = await lifecycle_client.post(
+        f"/api/admin/files/{file_id}/sync",
+        headers={"Authorization": f"Bearer {token}"},
+        json={"dataset_mapping_id": str(mapping_id)},
+    )
+    allowed_response = await lifecycle_client.post(
+        f"/api/admin/files/{file_id}/sync",
+        headers={"Authorization": f"Bearer {token}"},
+        json={"dataset_mapping_id": str(mapping_id), "reason": "已确认业务必要性"},
+    )
+
+    assert disabled_response.status_code == 422
+    assert missing_reason_response.status_code == 422
+    assert allowed_response.status_code == 200
+    async with AsyncSessionFactory() as session:
+        audit_result = await session.execute(
+            select(AuditLog).where(AuditLog.action == "file.manual_sync")
+        )
+        audit_log = audit_result.scalar_one()
+    assert audit_log.reason == "已确认业务必要性"
 
 
 async def test_manual_sync_rejects_file_not_in_syncable_state(
@@ -802,13 +1160,15 @@ async def test_manual_sync_rejects_file_not_in_syncable_state(
     file_id = await _create_file(
         uploader_id=uploader_id,
         status_value="pending_review",
-        review_status="in_review",
+        review_status="pending",
         ragflow_document_id=None,
     )
+    _category_id, mapping_id = await _create_dataset_mapping()
 
     response = await lifecycle_client.post(
         f"/api/admin/files/{file_id}/sync",
         headers={"Authorization": f"Bearer {token}"},
+        json={"dataset_mapping_id": str(mapping_id)},
     )
 
     assert response.status_code == 409
@@ -830,7 +1190,9 @@ async def test_manual_sync_rejects_duplicate_active_task(
         uploader_id=uploader_id,
         status_value="failed",
         review_status="approved",
+        ragflow_document_id=None,
     )
+    _category_id, mapping_id = await _create_dataset_mapping()
     async with AsyncSessionFactory() as session:
         session.add(
             SyncTask(
@@ -846,6 +1208,7 @@ async def test_manual_sync_rejects_duplicate_active_task(
     response = await lifecycle_client.post(
         f"/api/admin/files/{file_id}/sync",
         headers={"Authorization": f"Bearer {token}"},
+        json={"dataset_mapping_id": str(mapping_id)},
     )
 
     assert response.status_code == 409
@@ -863,7 +1226,9 @@ async def test_manual_sync_rejects_when_sync_lock_is_busy(
         uploader_id=uploader_id,
         status_value="failed",
         review_status="approved",
+        ragflow_document_id=None,
     )
+    _category_id, mapping_id = await _create_dataset_mapping()
     redis_client = from_url(  # type: ignore[no-untyped-call]
         os.environ["CACHE_REDIS_URL"],
         encoding="utf-8",
@@ -874,6 +1239,7 @@ async def test_manual_sync_rejects_when_sync_lock_is_busy(
         response = await lifecycle_client.post(
             f"/api/admin/files/{file_id}/sync",
             headers={"Authorization": f"Bearer {token}"},
+            json={"dataset_mapping_id": str(mapping_id)},
         )
     finally:
         await redis_client.delete(f"lock:sync:{file_id}")
@@ -899,6 +1265,7 @@ async def test_manual_sync_blocked_for_critical_sensitive_file(
         review_status="approved",
         ragflow_document_id=None,
     )
+    _category_id, mapping_id = await _create_dataset_mapping()
     async with AsyncSessionFactory() as session:
         session.add(
             DocumentAnalysis(
@@ -919,6 +1286,7 @@ async def test_manual_sync_blocked_for_critical_sensitive_file(
     response = await lifecycle_client.post(
         f"/api/admin/files/{file_id}/sync",
         headers={"Authorization": f"Bearer {token}"},
+        json={"dataset_mapping_id": str(mapping_id)},
     )
 
     assert response.status_code == 409
@@ -944,10 +1312,12 @@ async def test_employee_cannot_manual_sync(lifecycle_client: AsyncClient) -> Non
         status_value="failed",
         review_status="approved",
     )
+    _category_id, mapping_id = await _create_dataset_mapping()
 
     response = await lifecycle_client.post(
         f"/api/admin/files/{file_id}/sync",
         headers={"Authorization": f"Bearer {token}"},
+        json={"dataset_mapping_id": str(mapping_id)},
     )
 
     assert response.status_code == 403
@@ -957,10 +1327,12 @@ async def test_manual_sync_returns_404_for_unknown_file(
     lifecycle_client: AsyncClient,
 ) -> None:
     token = await _create_admin_token(lifecycle_client)
+    _category_id, mapping_id = await _create_dataset_mapping()
 
     response = await lifecycle_client.post(
         "/api/admin/files/00000000-0000-0000-0000-000000000000/sync",
         headers={"Authorization": f"Bearer {token}"},
+        json={"dataset_mapping_id": str(mapping_id)},
     )
 
     assert response.status_code == 404

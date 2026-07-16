@@ -17,6 +17,13 @@ class ConfigDefinition:
 
 CONFIG_DEFINITIONS: tuple[ConfigDefinition, ...] = (
     ConfigDefinition(
+        key="upload.enabled",
+        group="upload",
+        value_type="bool",
+        default=True,
+        description="是否允许员工发起新的文件上传",
+    ),
+    ConfigDefinition(
         key="upload.allowed_extensions",
         group="upload",
         value_type="list",
@@ -28,9 +35,9 @@ CONFIG_DEFINITIONS: tuple[ConfigDefinition, ...] = (
         group="upload",
         value_type="int",
         default=50,
-        description="单文件最大大小 MB",
+        description="单文件最大大小 MB 当前内存上传架构硬上限 200MB 可下调不可上调",
         min_value=1,
-        max_value=10240,
+        max_value=200,
     ),
     ConfigDefinition(
         key="upload.user_quota_mb",
@@ -175,6 +182,24 @@ CONFIG_DEFINITIONS: tuple[ConfigDefinition, ...] = (
         description="critical 敏感等级是否阻止同步",
     ),
     ConfigDefinition(
+        key="review.claim_timeout_minutes",
+        group="review",
+        value_type="int",
+        default=30,
+        description="审核领取有效分钟数 修改仅影响新领取 已有领取不追溯缩短",
+        min_value=5,
+        max_value=1440,
+    ),
+    ConfigDefinition(
+        key="review.sla_hours",
+        group="review",
+        value_type="int",
+        default=24,
+        description="审核 SLA 小时数 修改仅影响新提交 已有截止时间不追溯缩短",
+        min_value=1,
+        max_value=720,
+    ),
+    ConfigDefinition(
         key="basic.system_name",
         group="basic",
         value_type="string",
@@ -264,11 +289,20 @@ CONFIG_DEFINITIONS: tuple[ConfigDefinition, ...] = (
         max_value=3600,
     ),
     ConfigDefinition(
+        key="ragflow.parse_poll_timeout_seconds",
+        group="ragflow",
+        value_type="int",
+        default=3600,
+        description="RAGFlow 解析状态轮询总时限秒 与请求重试次数相互独立",
+        min_value=60,
+        max_value=86400,
+    ),
+    ConfigDefinition(
         key="ragflow.allow_high_risk_sync",
         group="ragflow",
         value_type="bool",
         default=False,
-        description="是否允许 high 风险文件同步",
+        description="是否允许管理员填写理由后批准 high 风险文件同步",
     ),
     ConfigDefinition(
         key="ragflow.delete_remote_on_file_delete",

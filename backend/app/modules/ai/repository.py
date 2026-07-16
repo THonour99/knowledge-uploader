@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import uuid
 from dataclasses import dataclass
+from datetime import datetime
 from typing import cast
 
 from sqlalchemy import (
@@ -9,6 +10,7 @@ from sqlalchemy import (
     Boolean,
     Column,
     DateTime,
+    Integer,
     MetaData,
     SmallInteger,
     String,
@@ -46,6 +48,9 @@ FILES = Table(
     Column("description", Text),
     Column("tags", JSONB, nullable=False),
     Column("status", String(40), nullable=False),
+    Column("submitted_at", DateTime(timezone=True)),
+    Column("review_due_at", DateTime(timezone=True)),
+    Column("review_version", Integer, nullable=False),
     Column("category_id", UUID(as_uuid=True)),
     Column("ai_analysis_enabled_at_upload", Boolean, nullable=False),
     Column("ai_config_snapshot", JSONB),
@@ -85,6 +90,9 @@ class AiFileRecord:
     description: str | None
     tags: list[str]
     status: str
+    submitted_at: datetime | None
+    review_due_at: datetime | None
+    review_version: int
     category_id: uuid.UUID | None
     ai_analysis_enabled_at_upload: bool
     ai_config_snapshot: dict[str, object] | None
@@ -227,6 +235,9 @@ class AiRepository:
             .where(FILES.c.id == file.id)
             .values(
                 status=file.status,
+                submitted_at=file.submitted_at,
+                review_due_at=file.review_due_at,
+                review_version=file.review_version,
                 category_id=file.category_id,
                 tags=file.tags,
                 ai_config_snapshot=file.ai_config_snapshot,
@@ -282,6 +293,17 @@ class AiRepository:
         )
         return result.scalar_one_or_none()
 
+    async def get_document_analysis_for_update(
+        self,
+        file_id: uuid.UUID,
+    ) -> DocumentAnalysis | None:
+        result = await self._session.execute(
+            select(DocumentAnalysis)
+            .where(DocumentAnalysis.file_id == file_id)
+            .with_for_update()
+        )
+        return result.scalar_one_or_none()
+
     async def add_document_analysis(self, analysis: DocumentAnalysis) -> DocumentAnalysis:
         self._session.add(analysis)
         await self._session.flush()
@@ -302,6 +324,9 @@ def file_record_from_row(row: RowMapping) -> AiFileRecord:
         description=cast(str | None, row["description"]),
         tags=cast(list[str], row["tags"]),
         status=cast(str, row["status"]),
+        submitted_at=cast(datetime | None, row["submitted_at"]),
+        review_due_at=cast(datetime | None, row["review_due_at"]),
+        review_version=cast(int, row["review_version"]),
         category_id=cast(uuid.UUID | None, row["category_id"]),
         ai_analysis_enabled_at_upload=cast(bool, row["ai_analysis_enabled_at_upload"]),
         ai_config_snapshot=cast(dict[str, object] | None, row["ai_config_snapshot"]),

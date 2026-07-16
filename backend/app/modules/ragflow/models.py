@@ -39,6 +39,10 @@ class SyncTask(Base):
         ),
         CheckConstraint("retry_count >= 0", name="ck_sync_tasks_retry_count_non_negative"),
         CheckConstraint("max_retry_count >= 0", name="ck_sync_tasks_max_retry_count_non_negative"),
+        CheckConstraint(
+            "reconcile_attempt_count >= 0",
+            name="ck_sync_tasks_reconcile_attempt_count_non_negative",
+        ),
         Index("idx_sync_tasks_file_id", "file_id"),
         Index("idx_sync_tasks_status", "status"),
         Index("idx_sync_tasks_task_type", "task_type"),
@@ -63,6 +67,15 @@ class SyncTask(Base):
     retry_count: Mapped[int] = mapped_column(Integer, nullable=False, server_default="0")
     max_retry_count: Mapped[int] = mapped_column(Integer, nullable=False, server_default="3")
     error_message: Mapped[str | None] = mapped_column(Text)
+    lease_token: Mapped[str | None] = mapped_column(String(64))
+    lease_heartbeat_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    reconcile_attempt_count: Mapped[int] = mapped_column(
+        Integer,
+        nullable=False,
+        server_default="0",
+    )
+    reconcile_not_before: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    recovery_probe_due_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     started_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     finished_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     created_at: Mapped[datetime] = mapped_column(

@@ -4,7 +4,7 @@ import re
 import uuid
 from collections.abc import Iterable, Mapping, Sequence
 from dataclasses import dataclass
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from ipaddress import ip_address
 from typing import Protocol
 from urllib.parse import urlparse
@@ -17,6 +17,7 @@ from app.core.audit import record_admin_audit_log
 from app.core.config import Settings
 from app.core.document_state import DocumentStateError, DocumentStateMachine
 from app.core.outbox import OutboxRepository
+from app.core.review_policy import review_submission_times
 from app.core.runtime_config import get_config as get_runtime_config
 from app.core.security import decrypt_api_key, encrypt_api_key
 from app.modules.user.schemas import AuthUserRecord
@@ -60,6 +61,7 @@ from .simhash import compute_simhash, hamming_distance, simhash_bands
 ADMIN_ROLES = {"system_admin"}
 SYSTEM_ADMIN_ROLE = "system_admin"
 MAX_ERROR_MESSAGE_LENGTH = 500
+AI_HARD_DISABLED_MESSAGE = "AI analysis disabled by environment"
 GLOBAL_FEATURE_KEYS = {
     "ai_analysis",
     "allow_external_llm",
@@ -836,7 +838,6 @@ class AiConfigService:
         changed_fields: list[str],
     ) -> dict[str, object]:
         return {
-            "rule_name": rule.name,
             "rule_type": rule.rule_type,
             "risk_level": rule.risk_level,
             "action": rule.action,
@@ -1110,6 +1111,8 @@ class AiConfigService:
 
 
 class AiAnalysisService:
+    ANALYSIS_LEASE_SECONDS = 900
+
     def __init__(
         self,
         *,
@@ -1126,29 +1129,46 @@ class AiAnalysisService:
         file_id: uuid.UUID,
         *,
         storage: AiObjectStorage,
+        delivery_token: str | None = None,
     ) -> uuid.UUID:
+        lease_token = (delivery_token or uuid.uuid4().hex)[:64]
         config_service = AiConfigService(
             session=self._session,
             repository=self._repository,
             settings=self._settings,
         )
-        if not self._settings.ai_analysis_enabled:
-            raise exceptions.AiAnalysisPreconditionError("AI analysis disabled")
-        await config_service._ensure_defaults()
-        features = await config_service._feature_map()
-        if not features["ai_analysis"].enabled:
-            raise exceptions.AiAnalysisPreconditionError("AI analysis disabled")
-
         file = await self._get_file_or_raise(file_id)
         if not file.ai_analysis_enabled_at_upload:
             raise exceptions.AiAnalysisPreconditionError("AI disabled when file was uploaded")
-        idempotent_analysis = await self._get_analysis_for_idempotent_delivery(file)
+        if not self._settings.ai_analysis_enabled:
+            await self._continue_auto_submit_without_analysis(file)
+            raise exceptions.AiAnalysisPreconditionError("AI analysis disabled")
+        await config_service._ensure_defaults()
+        features = await config_service._feature_map()
+        # The DB switch controls new uploads/queueing. Once a task is queued, the
+        # upload-time snapshot is authoritative so a hot toggle cannot strand it.
+        idempotent_analysis = await self._get_analysis_for_idempotent_delivery(
+            file,
+            lease_token=lease_token,
+        )
         if idempotent_analysis is not None:
             await self._session.commit()
             return idempotent_analysis.id
 
         provider = await self._repository.get_enabled_provider()
-        analysis = await self._start_analysis(file=file, provider=provider)
+        analysis = await self._start_analysis(
+            file=file,
+            provider=provider,
+            lease_token=lease_token,
+        )
+        lease_analysis_id = analysis.id
+        lease_started_at = analysis.started_at
+        if lease_started_at is None:
+            raise exceptions.AiAnalysisPreconditionError("analysis lease missing")
+        # Persist the lease before the state transition and external storage read. If the
+        # delivery is stale (for example the file already entered review), the failure path
+        # can still fence and record this exact execution instead of rolling the lease away.
+        await self._session.commit()
         try:
             file = await self._transition_file(file, "extracting_text")
             await self._session.commit()
@@ -1161,7 +1181,12 @@ class AiAnalysisService:
                     # 永久性存储错误: 交给外层 except Exception 兜底
                     # (外层负责 rollback 并以异常类型名标记 analysis_failed)。
                     raise
-                await self._session.rollback()
+                await self._release_analysis_for_retry(
+                    file_id=file_id,
+                    analysis_id=lease_analysis_id,
+                    lease_token=lease_token,
+                    lease_started_at=lease_started_at,
+                )
                 raise exceptions.AiAnalysisTransientError("object storage unavailable") from exc
             parse_max_pages, parse_max_chars = await resolve_parse_limits()
             extracted_text = extract_text(
@@ -1183,6 +1208,16 @@ class AiAnalysisService:
                     max_chars=parse_max_chars,
                 )
             file = await self._get_file_or_raise(file_id)
+            current_analysis = await self._repository.get_document_analysis_for_update(file_id)
+            if (
+                current_analysis is None
+                or current_analysis.status != "running"
+                or current_analysis.lease_token != lease_token
+                or current_analysis.started_at != lease_started_at
+            ):
+                await self._session.rollback()
+                return lease_analysis_id
+            analysis = current_analysis
             file = await self._transition_file(file, "analysis_queued")
             await self._append_analysis_event(
                 event_type=events.AI_TEXT_EXTRACTED,
@@ -1276,6 +1311,7 @@ class AiAnalysisService:
             analysis.quality_detail = quality_result.detail if quality_result is not None else {}
             analysis.similar_file_ids = similar_file_ids
             analysis.error_message = None
+            analysis.lease_token = None
             analysis.finished_at = datetime.now(UTC)
             auto_submit_requested = self._auto_submit_requested(file)
             auto_submitted = False
@@ -1284,6 +1320,8 @@ class AiAnalysisService:
                 if risk_level == "critical":
                     auto_submit_blocked_reason = "critical_sensitive_content"
                 else:
+                    file.submitted_at, file.review_due_at = await review_submission_times()
+                    file.review_version += 1
                     file = await self._transition_file(file, "pending_review")
                     auto_submitted = True
 
@@ -1321,19 +1359,83 @@ class AiAnalysisService:
             raise
         except exceptions.DocumentParseError as exc:
             await self._session.rollback()
-            await self._mark_analysis_failed(file_id=file_id, error_message=str(exc))
+            await self._mark_analysis_failed(
+                file_id=file_id,
+                error_message=str(exc),
+                error_code=events.AiAnalysisFailureCode.INVALID_OUTPUT,
+                expected_delivery_token=lease_token,
+                expected_started_at=lease_started_at,
+                verify_started_at=True,
+            )
             return analysis.id
         except Exception as exc:
             await self._session.rollback()
             error_type = type(exc).__name__
-            await self._mark_analysis_failed(file_id=file_id, error_message=error_type)
+            await self._mark_analysis_failed(
+                file_id=file_id,
+                error_message=error_type,
+                error_code=events.AiAnalysisFailureCode.INTERNAL,
+                expected_delivery_token=lease_token,
+                expected_started_at=lease_started_at,
+                verify_started_at=True,
+            )
             return analysis.id
+
+    async def recover_hard_disabled_intermediate_file(self, file_id: uuid.UUID) -> bool:
+        if self._settings.ai_analysis_enabled:
+            raise exceptions.AiAnalysisPreconditionError("AI environment switch is enabled")
+        file = await self._get_file_or_raise(file_id)
+        if file.status not in AI_ANALYSIS_IN_PROGRESS_FILE_STATUSES:
+            await self._session.rollback()
+            return False
+
+        previous_status = file.status
+        if self._auto_submit_requested(file):
+            file.submitted_at, file.review_due_at = await review_submission_times()
+            file.review_version += 1
+            file = await self._transition_file(file, "pending_review")
+            await self._append_review_submitted_event(
+                file=file,
+                previous_status=previous_status,
+                analysis_failed=False,
+                analysis_skipped_reason="environment_disabled_recovery",
+            )
+        else:
+            file.submitted_at = None
+            file.review_due_at = None
+            file = await self._transition_file(file, "uploaded")
+
+        analysis = await self._repository.get_document_analysis_for_update(file_id)
+        if analysis is not None and analysis.status == "running":
+            analysis.status = "failed"
+            analysis.error_message = AI_HARD_DISABLED_MESSAGE
+            analysis.lease_token = None
+            analysis.finished_at = datetime.now(UTC)
+        await self._session.commit()
+        return True
+
+    async def _continue_auto_submit_without_analysis(self, file: AiFileRecord) -> bool:
+        if not self._auto_submit_requested(file) or file.status != "uploaded":
+            return False
+        previous_status = file.status
+        file.submitted_at, file.review_due_at = await review_submission_times()
+        file.review_version += 1
+        file = await self._transition_file(file, "pending_review")
+        await self._append_review_submitted_event(
+            file=file,
+            previous_status=previous_status,
+            analysis_failed=False,
+            analysis_skipped_reason="environment_disabled",
+        )
+        await self._session.commit()
+        return True
 
     async def _start_analysis(
         self,
         *,
         file: AiFileRecord,
         provider: AiProvider | None,
+        lease_token: str,
     ) -> DocumentAnalysis:
         analysis = await self._repository.get_document_analysis(file.id)
         started_at = datetime.now(UTC)
@@ -1343,6 +1445,7 @@ class AiAnalysisService:
         analysis.provider_id = provider.id if provider is not None else None
         analysis.status = "running"
         analysis.error_message = None
+        analysis.lease_token = lease_token
         analysis.started_at = started_at
         analysis.finished_at = None
         file.ai_config_snapshot = {
@@ -1350,29 +1453,76 @@ class AiAnalysisService:
             **self._analysis_snapshot(provider=provider),
         }
         await self._repository.update_file_analysis_state(file)
-        await self._session.commit()
         return analysis
 
     async def _get_analysis_for_idempotent_delivery(
         self,
         file: AiFileRecord,
+        *,
+        lease_token: str,
     ) -> DocumentAnalysis | None:
-        analysis = await self._repository.get_document_analysis(file.id)
+        analysis = await self._repository.get_document_analysis_for_update(file.id)
         if analysis is None:
             return None
-        if analysis.status == "running" and file.status in AI_ANALYSIS_IN_PROGRESS_FILE_STATUSES:
-            return analysis
+        if analysis.status == "running":
+            stale_before = datetime.now(UTC) - timedelta(seconds=self.ANALYSIS_LEASE_SECONDS)
+            if analysis.started_at is None and analysis.lease_token == lease_token:
+                # 同一 Celery task.retry 保留 task id; 仅原投递可从 retry-wait 重新获取租约。
+                return None
+            lease_freshness = analysis.started_at or analysis.updated_at
+            if lease_freshness is not None and lease_freshness > stale_before:
+                raise exceptions.AiAnalysisAlreadyRunningError(
+                    "analysis delivery is already running"
+                )
+            if file.status in AI_ANALYSIS_IN_PROGRESS_FILE_STATUSES:
+                file.status = DocumentStateMachine.transition(file.status, "analysis_failed")
+                await self._repository.update_file_analysis_state(file)
+            analysis.lease_token = None
+            return None
         if analysis.status == "succeeded" and file.status in AI_ANALYSIS_SUCCEEDED_FILE_STATUSES:
             return analysis
         return None
 
-    async def mark_analysis_failed(self, *, file_id: uuid.UUID, error_message: str) -> None:
+    async def mark_analysis_failed(
+        self,
+        *,
+        file_id: uuid.UUID,
+        error_message: str,
+        error_code: events.AiAnalysisFailureCode | str = events.AiAnalysisFailureCode.INTERNAL,
+        expected_delivery_token: str | None = None,
+        require_retry_wait: bool = False,
+    ) -> bool:
         """供 Celery 重试耗尽后调用的公开失败标记入口。"""
-        await self._mark_analysis_failed(file_id=file_id, error_message=error_message)
+        return await self._mark_analysis_failed(
+            file_id=file_id,
+            error_message=error_message,
+            error_code=error_code,
+            expected_delivery_token=expected_delivery_token,
+            expected_started_at=None,
+            verify_started_at=require_retry_wait,
+        )
 
-    async def _mark_analysis_failed(self, *, file_id: uuid.UUID, error_message: str) -> None:
+    async def _mark_analysis_failed(
+        self,
+        *,
+        file_id: uuid.UUID,
+        error_message: str,
+        error_code: events.AiAnalysisFailureCode | str = events.AiAnalysisFailureCode.INTERNAL,
+        expected_delivery_token: str | None = None,
+        expected_started_at: datetime | None = None,
+        verify_started_at: bool = False,
+    ) -> bool:
         file = await self._get_file_or_raise(file_id)
-        analysis = await self._repository.get_document_analysis(file_id)
+        analysis = await self._repository.get_document_analysis_for_update(file_id)
+        if expected_delivery_token is not None and (
+            analysis is None
+            or analysis.lease_token != expected_delivery_token
+            or (verify_started_at and analysis.started_at != expected_started_at)
+        ):
+            # 旧 worker 的超时/异常晚于新租约到达时必须静默丢弃, 不能覆盖新执行。
+            await self._session.rollback()
+            return False
+        should_publish_failure = analysis is None or analysis.status != "failed"
         if analysis is None:
             analysis = DocumentAnalysis(file_id=file_id)
             await self._repository.add_document_analysis(analysis)
@@ -1384,18 +1534,59 @@ class AiAnalysisService:
             pass
         analysis.status = "failed"
         analysis.error_message = error_message[:MAX_ERROR_MESSAGE_LENGTH]
+        analysis.lease_token = None
         analysis.finished_at = datetime.now(UTC)
         auto_submit_requested = self._auto_submit_requested(file)
         allow_submit = await self._allow_submit_when_analysis_failed()
         if auto_submit_requested and allow_submit and file.status == "analysis_failed":
             previous_status = file.status
+            file.submitted_at, file.review_due_at = await review_submission_times()
+            file.review_version += 1
             file = await self._transition_file(file, "pending_review")
             await self._append_review_submitted_event(
                 file=file,
                 previous_status=previous_status,
                 analysis_failed=True,
             )
+        if should_publish_failure:
+            await self._append_analysis_event(
+                event_type=events.AI_FILE_ANALYSIS_FAILED,
+                file=file,
+                payload={
+                    "analysis_id": str(analysis.id),
+                    "analysis_status": analysis.status,
+                    "error_code": events.normalize_analysis_failure_code(error_code).value,
+                },
+            )
         await self._session.commit()
+        return True
+
+    async def _release_analysis_for_retry(
+        self,
+        *,
+        file_id: uuid.UUID,
+        analysis_id: uuid.UUID,
+        lease_token: str,
+        lease_started_at: datetime,
+    ) -> bool:
+        """把瞬态失败租约原子转换为仅原 Celery task 可恢复的 retry-wait。"""
+        await self._session.rollback()
+        file = await self._repository.get_file_for_update(file_id)
+        analysis = await self._repository.get_document_analysis_for_update(file_id)
+        if (
+            file is None
+            or analysis is None
+            or analysis.id != analysis_id
+            or analysis.status != "running"
+            or analysis.lease_token != lease_token
+            or analysis.started_at != lease_started_at
+        ):
+            await self._session.rollback()
+            return False
+        analysis.started_at = None
+        analysis.finished_at = None
+        await self._session.commit()
+        return True
 
     async def _get_file_or_raise(self, file_id: uuid.UUID) -> AiFileRecord:
         file = await self._repository.get_file_for_update(file_id)
@@ -1447,6 +1638,7 @@ class AiAnalysisService:
         file: AiFileRecord,
         previous_status: str,
         analysis_failed: bool,
+        analysis_skipped_reason: str | None = None,
     ) -> None:
         await OutboxRepository(self._session).append(
             event_type=events.REVIEW_FILE_SUBMITTED,
@@ -1460,7 +1652,10 @@ class AiAnalysisService:
                 "status": file.status,
                 "review_status": "pending",
                 "analysis_failed": analysis_failed,
+                "analysis_skipped_reason": analysis_skipped_reason,
                 "auto_submitted": True,
+                "submitted_at": file.submitted_at.isoformat() if file.submitted_at else None,
+                "review_due_at": file.review_due_at.isoformat() if file.review_due_at else None,
             },
         )
 

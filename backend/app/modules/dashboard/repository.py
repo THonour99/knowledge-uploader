@@ -33,6 +33,7 @@ FILES = Table(
     _METADATA,
     Column("id", UUID(as_uuid=True), primary_key=True),
     Column("original_name", String(255), nullable=False),
+    Column("title", String(255), nullable=False),
     Column("extension", String(20), nullable=False),
     Column("size", BigInteger, nullable=False),
     Column("uploader_id", UUID(as_uuid=True), nullable=False),
@@ -153,6 +154,7 @@ class EmployeeCountsRecord:
 class RecentDocumentRecord:
     id: uuid.UUID
     original_name: str
+    title: str
     extension: str
     status: str
     review_status: str
@@ -187,6 +189,7 @@ class ReviewQueueCountsRecord:
 class ReviewQueueRecord:
     id: uuid.UUID
     original_name: str
+    title: str
     extension: str
     uploader_name: str
     department_id: uuid.UUID
@@ -309,6 +312,7 @@ class DashboardRepository:
             select(
                 FILES.c.id,
                 FILES.c.original_name,
+                FILES.c.title,
                 FILES.c.extension,
                 FILES.c.status,
                 FILES.c.review_status,
@@ -325,6 +329,7 @@ class DashboardRepository:
             RecentDocumentRecord(
                 id=cast(uuid.UUID, row.id),
                 original_name=cast(str, row.original_name),
+                title=cast(str, row.title),
                 extension=cast(str, row.extension),
                 status=cast(str, row.status),
                 review_status=cast(str, row.review_status),
@@ -501,6 +506,7 @@ class DashboardRepository:
         selected = [
             FILES.c.id,
             FILES.c.original_name,
+            FILES.c.title,
             FILES.c.extension,
             uploader.c.name.label("uploader_name"),
             FILES.c.department_id,
@@ -541,6 +547,7 @@ class DashboardRepository:
             predicates.append(
                 or_(
                     FILES.c.original_name.ilike(pattern, escape="\\"),
+                    FILES.c.title.ilike(pattern, escape="\\"),
                     uploader.c.name.ilike(pattern, escape="\\"),
                     DEPARTMENTS.c.name.ilike(pattern, escape="\\"),
                 )
@@ -579,6 +586,7 @@ class DashboardRepository:
             ReviewQueueRecord(
                 id=cast(uuid.UUID, row.id),
                 original_name=cast(str, row.original_name),
+                title=cast(str, row.title),
                 extension=cast(str, row.extension),
                 uploader_name=cast(str, row.uploader_name),
                 department_id=cast(uuid.UUID, row.department_id),

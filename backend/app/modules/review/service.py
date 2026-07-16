@@ -2,19 +2,23 @@ from __future__ import annotations
 
 import uuid
 from dataclasses import dataclass
+from datetime import UTC, datetime
 
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.access_scope import DepartmentAccessScope, get_department_scope_store
-from app.core.audit import record_admin_audit_log
+from app.core.audit import record_admin_audit_log, record_audit_log
 from app.core.config import get_settings
 from app.core.document_state import DocumentStateError, DocumentStateMachine
+from app.core.identity import has_assigned_department
 from app.core.outbox import OutboxRepository
 from app.core.ragflow_runtime import (
     is_ragflow_dataset_allowed,
     resolve_ragflow_runtime_settings,
 )
+from app.core.review_policy import review_claim_expiry, review_submission_times
 from app.core.runtime_config import get_config
+from app.modules.document.schemas import FileDraftUpdateRequest
 from app.modules.user.schemas import AuthUserRecord
 
 from . import events, exceptions
@@ -35,13 +39,30 @@ from .schemas import (
 ADMIN_ROLES = {"dept_admin", "system_admin"}
 SYSTEM_ADMIN_ROLE = "system_admin"
 VALID_VISIBILITIES = {"private", "department", "company"}
-REVIEW_RESUBMISSION_TRANSITIONS = {("rejected", "pending_review")}
+EXPIRED_CLAIM_RELEASE_BATCH_SIZE = 100
+DRAFT_EDITABLE_STATUSES = frozenset(
+    {
+        "uploaded",
+        "analyzed",
+        "analysis_failed",
+        "sensitive_review_required",
+        "rejected",
+    }
+)
 
 
 @dataclass(frozen=True)
 class RequestContext:
     ip_address: str
     user_agent: str
+
+
+@dataclass(frozen=True)
+class ReviewFilePage:
+    items: list[ReviewFileRecord]
+    total: int
+    page: int
+    page_size: int
 
 
 class ReviewService:
@@ -469,14 +490,51 @@ class ReviewService:
         current_user: AuthUserRecord,
         scope: DepartmentAccessScope,
         context: RequestContext,
+        page: int,
+        page_size: int,
+        search: str | None = None,
+        queue: str | None = None,
         extension: str | None = None,
         tag_id: uuid.UUID | None = None,
-    ) -> list[ReviewFileRecord]:
+        department_id: uuid.UUID | None = None,
+        sensitive_risk_level: str | None = None,
+        sort: str | None = None,
+        order: str = "asc",
+    ) -> ReviewFilePage:
         self._require_admin(current_user)
-        files = await self._repository.list_files(
-            extension=clean_optional_text(extension),
+        now = datetime.now(UTC)
+        expired_claims = await self._repository.release_expired_claims(
+            now=now,
+            department_ids=scope.query_department_ids(),
+            limit=EXPIRED_CLAIM_RELEASE_BATCH_SIZE,
+        )
+        for file_id, previous_claimant_id in expired_claims:
+            await self._record_admin_audit(
+                current_user=current_user,
+                action="file.review_claim_expired",
+                target_type="file",
+                target_id=file_id,
+                context=context,
+                metadata_json={
+                    "previous_claimed_by": str(previous_claimant_id),
+                    "auto_released": True,
+                },
+            )
+        normalized_extension = clean_optional_text(extension)
+        files, total = await self._repository.list_files(
+            page=page,
+            page_size=page_size,
+            now=now,
+            current_user_id=current_user.id,
+            search=clean_optional_text(search),
+            queue=queue,
+            extension=normalized_extension.lower() if normalized_extension is not None else None,
             tag_id=tag_id,
             department_ids=scope.query_department_ids(),
+            department_id=department_id,
+            sensitive_risk_level=sensitive_risk_level,
+            sort=sort,
+            order=order,
         )
         await self._record_admin_audit(
             current_user=current_user,
@@ -484,24 +542,54 @@ class ReviewService:
             target_type="file_collection",
             target_id=current_user.id,
             context=context,
-            metadata_json={"result_count": len(files), **scope.audit_metadata()},
+            metadata_json={
+                "result_count": len(files),
+                "total": total,
+                "page": page,
+                "page_size": page_size,
+                "queue": queue,
+                "expired_claims_released": len(expired_claims),
+                **scope.audit_metadata(),
+            },
         )
         await self._session.commit()
-        return files
+        return ReviewFilePage(items=files, total=total, page=page, page_size=page_size)
 
     async def submit_file_for_review(
         self,
         *,
         current_user: AuthUserRecord,
         file_id: uuid.UUID,
+        acknowledge_sensitive_risk: bool = False,
         context: RequestContext,
     ) -> ReviewFileRecord:
-        file = await self._get_file_or_raise(file_id)
+        if not has_assigned_department(current_user):
+            raise exceptions.department_assignment_required()
+        file = await self._get_file_for_update_or_raise(file_id)
         self._require_submit_permission(current_user, file)
+        if file.status not in {
+            "uploaded",
+            "analyzed",
+            "analysis_failed",
+            "sensitive_review_required",
+            "rejected",
+        }:
+            raise exceptions.review_already_decided()
         previous_status = file.status
         previous_review_status = file.review_status
+        await self._ensure_analysis_failed_submission_allowed(file)
+        sensitive_risk_level = await self._repository.get_file_sensitive_risk_level(file.id)
+        sensitive_submission = (
+            previous_status == "sensitive_review_required"
+            or await self._repository.file_requires_sensitive_acknowledgement(file.id)
+        )
+        if sensitive_submission and not acknowledge_sensitive_risk:
+            raise exceptions.sensitive_risk_acknowledgement_required()
         self._transition_file(file, "pending_review")
         file.review_status = "pending"
+        file.submitted_at, file.review_due_at = await review_submission_times()
+        self._clear_claim(file)
+        file.review_version += 1
         await self._record_audit(
             current_user=current_user,
             file=file,
@@ -513,6 +601,10 @@ class ReviewService:
                 "review_status": file.review_status,
                 "actor_role": current_user.role,
                 "submitted_by_owner": current_user.id == file.uploader_id,
+                "sensitive_risk_level": sensitive_risk_level,
+                "sensitive_risk_acknowledged": (
+                    acknowledge_sensitive_risk if sensitive_submission else False
+                ),
             },
         )
         await self._append_review_event(
@@ -523,6 +615,10 @@ class ReviewService:
                 "previous_status": previous_status,
                 "previous_review_status": previous_review_status,
                 "review_status": file.review_status,
+                "sensitive_risk_level": sensitive_risk_level,
+                "sensitive_risk_acknowledged": (
+                    acknowledge_sensitive_risk if sensitive_submission else False
+                ),
             },
         )
         file = await self._repository.update_file(file)
@@ -539,21 +635,50 @@ class ReviewService:
         context: RequestContext,
     ) -> ReviewFileRecord:
         self._require_admin(current_user)
-        file = await self._get_file_or_raise(file_id)
-        self_review_deadlock_exempt = await self._require_review_decision_permission(
-            current_user=current_user,
-            scope=scope,
+        file = await self._get_file_for_update_or_raise(file_id)
+        if file.status != "pending_review":
+            raise exceptions.review_already_decided()
+        self._require_scope_for_file(scope=scope, file=file)
+        now = datetime.now(UTC)
+        claim_expired = await self._expire_claim_if_needed(
             file=file,
+            current_user=current_user,
+            context=context,
+            now=now,
         )
+        try:
+            self_review_deadlock_exempt = await self._require_review_decision_permission(
+                current_user=current_user,
+                scope=scope,
+                file=file,
+                require_claim=True,
+            )
+        except exceptions.ReviewError:
+            if claim_expired:
+                file = await self._repository.update_file(file)
+                await self._session.commit()
+            raise
+        reason = clean_optional_text(request.reason)
+        if request.sync_decision == "approve_only" and request.dataset_mapping_id is not None:
+            raise exceptions.approve_only_dataset_forbidden()
+        if request.sync_decision == "sync" and request.dataset_mapping_id is None:
+            raise exceptions.dataset_mapping_required()
+        mapping = (
+            await self._get_dataset_mapping_or_raise(request.dataset_mapping_id)
+            if request.sync_decision == "sync" and request.dataset_mapping_id is not None
+            else None
+        )
+        # 所有同时依赖 mapping/category 的决策统一按 mapping -> category 加锁,
+        # 与 mapping 更新路径保持一致, 避免并发审核与配置修改形成锁顺序反转。
         category = (
             await self._get_category_or_raise(request.category_id) if request.category_id else None
         )
-        mapping = (
-            await self._get_dataset_mapping_or_raise(request.dataset_mapping_id)
-            if request.dataset_mapping_id
-            else None
-        )
-        if mapping is not None and category is not None and mapping.category_id != category.id:
+        effective_category_id = category.id if category is not None else file.category_id
+        if (
+            mapping is not None
+            and effective_category_id is not None
+            and mapping.category_id != effective_category_id
+        ):
             raise exceptions.dataset_mapping_not_found()
         if mapping is not None:
             await self._ensure_ragflow_dataset_allowed(
@@ -563,25 +688,33 @@ class ReviewService:
                 target_type="file",
                 target_id=file.id,
             )
+            await self._ensure_ragflow_sync_allowed(file, reason=reason)
         self._transition_file(file, "approved")
         file.review_status = "approved"
         if category is not None:
             file.category_id = category.id
         elif mapping is not None:
             file.category_id = mapping.category_id
-        if mapping is not None:
+        if request.sync_decision == "approve_only":
+            file.dataset_mapping_id = None
+            file.ragflow_dataset_id = None
+        elif mapping is not None:
             file.dataset_mapping_id = mapping.id
             file.ragflow_dataset_id = mapping.ragflow_dataset_id
-        if file.ragflow_dataset_id is not None:
-            await self._ensure_ragflow_sync_allowed(file)
+        if request.sync_decision == "sync":
+            if mapping is None:
+                raise exceptions.dataset_mapping_required()
             self._transition_file(file, "queued")
+        self._clear_claim(file)
+        file.review_version += 1
         await self._record_audit(
             current_user=current_user,
             file=file,
             action="file.approve",
             context=context,
-            reason=clean_optional_text(request.reason),
+            reason=reason,
             metadata_json={
+                "sync_decision": request.sync_decision,
                 "category_id": str(file.category_id) if file.category_id else None,
                 "dataset_mapping_id": str(file.dataset_mapping_id)
                 if file.dataset_mapping_id
@@ -602,7 +735,133 @@ class ReviewService:
                 if file.dataset_mapping_id
                 else None,
                 "ragflow_dataset_id": file.ragflow_dataset_id,
+                "sync_decision": request.sync_decision,
                 "file_department_id": str(file.department_id),
+            },
+        )
+        file = await self._repository.update_file(file)
+        await self._session.commit()
+        return file
+
+    async def claim_file_for_review(
+        self,
+        *,
+        current_user: AuthUserRecord,
+        scope: DepartmentAccessScope,
+        file_id: uuid.UUID,
+        context: RequestContext,
+    ) -> ReviewFileRecord:
+        self._require_admin(current_user)
+        file = await self._get_file_for_update_or_raise(file_id)
+        if file.status != "pending_review":
+            raise exceptions.review_already_decided()
+        await self._require_review_decision_permission(
+            current_user=current_user,
+            scope=scope,
+            file=file,
+            require_claim=False,
+        )
+        now = datetime.now(UTC)
+        await self._expire_claim_if_needed(
+            file=file,
+            current_user=current_user,
+            context=context,
+            now=now,
+        )
+        if file.claimed_by == current_user.id and self._claim_is_active(file, now=now):
+            await self._record_audit(
+                current_user=current_user,
+                file=file,
+                action="file.review_claim",
+                context=context,
+                metadata_json={
+                    "claimed_by": str(current_user.id),
+                    "idempotent": True,
+                    **scope.audit_metadata(file_department_id=file.department_id),
+                },
+            )
+            await self._session.commit()
+            return file
+        if file.claimed_by is not None:
+            raise exceptions.review_claim_conflict()
+        file.claimed_at, file.claim_expires_at = await review_claim_expiry(now=now)
+        file.claimed_by = current_user.id
+        file.review_status = "in_review"
+        file.review_version += 1
+        await self._record_audit(
+            current_user=current_user,
+            file=file,
+            action="file.review_claim",
+            context=context,
+            metadata_json={
+                "claimed_by": str(current_user.id),
+                "claimed_at": file.claimed_at.isoformat(),
+                "claim_expires_at": file.claim_expires_at.isoformat(),
+                **scope.audit_metadata(file_department_id=file.department_id),
+            },
+        )
+        file = await self._repository.update_file(file)
+        await self._session.commit()
+        return file
+
+    async def release_file_review_claim(
+        self,
+        *,
+        current_user: AuthUserRecord,
+        scope: DepartmentAccessScope,
+        file_id: uuid.UUID,
+        reason: str | None,
+        context: RequestContext,
+    ) -> ReviewFileRecord:
+        self._require_admin(current_user)
+        file = await self._get_file_for_update_or_raise(file_id)
+        if file.status != "pending_review":
+            raise exceptions.review_already_decided()
+        self._require_scope_for_file(scope=scope, file=file)
+        now = datetime.now(UTC)
+        if await self._expire_claim_if_needed(
+            file=file,
+            current_user=current_user,
+            context=context,
+            now=now,
+        ):
+            file = await self._repository.update_file(file)
+            await self._session.commit()
+            return file
+        if file.claimed_by is None:
+            await self._record_audit(
+                current_user=current_user,
+                file=file,
+                action="file.review_claim_release",
+                context=context,
+                metadata_json={
+                    "idempotent": True,
+                    "no_claim": True,
+                    **scope.audit_metadata(file_department_id=file.department_id),
+                },
+            )
+            await self._session.commit()
+            return file
+        cleaned_reason = clean_optional_text(reason)
+        force_release = file.claimed_by != current_user.id
+        if force_release and current_user.role != SYSTEM_ADMIN_ROLE:
+            raise exceptions.permission_denied()
+        if force_release and cleaned_reason is None:
+            raise exceptions.force_release_reason_required()
+        previous_claimant_id = file.claimed_by
+        self._clear_claim(file)
+        file.review_status = "pending"
+        file.review_version += 1
+        await self._record_audit(
+            current_user=current_user,
+            file=file,
+            action="file.review_claim_release",
+            context=context,
+            reason=cleaned_reason,
+            metadata_json={
+                "previous_claimed_by": str(previous_claimant_id),
+                "force_release": force_release,
+                **scope.audit_metadata(file_department_id=file.department_id),
             },
         )
         file = await self._repository.update_file(file)
@@ -619,20 +878,42 @@ class ReviewService:
         context: RequestContext,
     ) -> ReviewFileRecord:
         self._require_admin(current_user)
-        file = await self._get_file_or_raise(file_id)
-        self_review_deadlock_exempt = await self._require_review_decision_permission(
-            current_user=current_user,
-            scope=scope,
+        file = await self._get_file_for_update_or_raise(file_id)
+        if file.status != "pending_review":
+            raise exceptions.review_already_decided()
+        self._require_scope_for_file(scope=scope, file=file)
+        now = datetime.now(UTC)
+        claim_expired = await self._expire_claim_if_needed(
             file=file,
+            current_user=current_user,
+            context=context,
+            now=now,
         )
+        try:
+            self_review_deadlock_exempt = await self._require_review_decision_permission(
+                current_user=current_user,
+                scope=scope,
+                file=file,
+                require_claim=True,
+            )
+        except exceptions.ReviewError:
+            if claim_expired:
+                file = await self._repository.update_file(file)
+                await self._session.commit()
+            raise
+        cleaned_reason = clean_optional_text(reason)
+        if cleaned_reason is None:
+            raise exceptions.rejection_reason_required()
         self._transition_file(file, "rejected")
         file.review_status = "rejected"
+        self._clear_claim(file)
+        file.review_version += 1
         await self._record_audit(
             current_user=current_user,
             file=file,
             action="file.reject",
             context=context,
-            reason=reason.strip(),
+            reason=cleaned_reason,
             metadata_json={
                 "file_uploader_id": str(file.uploader_id),
                 "is_self_upload": current_user.id == file.uploader_id,
@@ -644,7 +925,7 @@ class ReviewService:
             event_type=events.REVIEW_FILE_REJECTED,
             file=file,
             current_user=current_user,
-            metadata_json={"reason": reason.strip()},
+            metadata_json={"reason": cleaned_reason},
         )
         file = await self._repository.update_file(file)
         await self._session.commit()
@@ -660,17 +941,55 @@ class ReviewService:
         context: RequestContext,
     ) -> ReviewFileRecord:
         self._require_admin(current_user)
-        file = await self._get_file_or_raise(file_id)
+        fields_set = request.model_fields_set
+        if not fields_set & {"category_id", "dataset_mapping_id"}:
+            raise exceptions.classification_patch_empty()
+        file = await self._get_file_for_update_or_raise(file_id)
+        if file.status != "pending_review":
+            raise exceptions.classification_draft_locked()
         self._require_scope_for_file(scope=scope, file=file)
-        category = (
-            await self._get_category_or_raise(request.category_id) if request.category_id else None
+        now = datetime.now(UTC)
+        claim_expired = await self._expire_claim_if_needed(
+            file=file,
+            current_user=current_user,
+            context=context,
+            now=now,
         )
-        mapping = (
-            await self._get_dataset_mapping_or_raise(request.dataset_mapping_id)
-            if request.dataset_mapping_id
-            else None
-        )
-        if mapping is not None and category is not None and mapping.category_id != category.id:
+        try:
+            await self._require_review_decision_permission(
+                current_user=current_user,
+                scope=scope,
+                file=file,
+                require_claim=True,
+            )
+        except exceptions.ReviewError:
+            if claim_expired:
+                file = await self._repository.update_file(file)
+                await self._session.commit()
+            raise
+        if file.ragflow_document_id is not None:
+            raise exceptions.classification_draft_locked()
+        if await self._repository.has_active_ragflow_upload_task(file.id):
+            raise exceptions.classification_draft_locked()
+        mapping = None
+        if "dataset_mapping_id" in fields_set and request.dataset_mapping_id is not None:
+            mapping = await self._get_dataset_mapping_or_raise(request.dataset_mapping_id)
+        category = None
+        if "category_id" in fields_set and request.category_id is not None:
+            category = await self._get_category_or_raise(request.category_id)
+
+        target_category_id = file.category_id
+        target_mapping_id = file.dataset_mapping_id
+        if "category_id" in fields_set:
+            target_category_id = category.id if category is not None else None
+            if "dataset_mapping_id" not in fields_set:
+                target_mapping_id = None
+        if "dataset_mapping_id" in fields_set:
+            target_mapping_id = mapping.id if mapping is not None else None
+            if mapping is not None and "category_id" not in fields_set:
+                target_category_id = mapping.category_id
+
+        if mapping is not None and target_category_id != mapping.category_id:
             raise exceptions.dataset_mapping_not_found()
         if mapping is not None:
             await self._ensure_ragflow_dataset_allowed(
@@ -680,15 +999,10 @@ class ReviewService:
                 target_type="file",
                 target_id=file.id,
             )
-            await self._ensure_ragflow_sync_allowed(file)
-        if category is not None:
-            file.category_id = category.id
-        elif mapping is not None:
-            file.category_id = mapping.category_id
-        else:
-            file.category_id = None
-        file.dataset_mapping_id = mapping.id if mapping is not None else None
-        file.ragflow_dataset_id = mapping.ragflow_dataset_id if mapping is not None else None
+        file.category_id = target_category_id
+        file.dataset_mapping_id = target_mapping_id
+        file.ragflow_dataset_id = None
+        file.review_version += 1
         await self._record_audit(
             current_user=current_user,
             file=file,
@@ -699,11 +1013,66 @@ class ReviewService:
                 "dataset_mapping_id": str(file.dataset_mapping_id)
                 if file.dataset_mapping_id
                 else None,
+                "draft": True,
+                "review_version": file.review_version,
                 "file_uploader_id": str(file.uploader_id),
                 **scope.audit_metadata(file_department_id=file.department_id),
             },
         )
         file = await self._repository.update_file(file)
+        await self._session.commit()
+        return file
+
+    async def update_file_draft(
+        self,
+        *,
+        current_user: AuthUserRecord,
+        file_id: uuid.UUID,
+        request: FileDraftUpdateRequest,
+        context: RequestContext,
+    ) -> ReviewFileRecord:
+        values: dict[str, object] = {}
+        changed_fields = request.model_fields_set & {"title", "description", "visibility"}
+        if "title" in changed_fields:
+            # Schema validation rejects null and strips surrounding whitespace.
+            values["title"] = request.title
+        if "description" in changed_fields:
+            values["description"] = clean_optional_text(request.description)
+        if "visibility" in changed_fields:
+            if request.visibility is None:
+                raise exceptions.invalid_visibility()
+            values["visibility"] = request.visibility
+
+        file = await self._repository.update_owner_draft_metadata(
+            file_id=file_id,
+            uploader_id=current_user.id,
+            expected_version=request.expected_version,
+            editable_statuses=DRAFT_EDITABLE_STATUSES,
+            values=values,
+        )
+        if file is None:
+            current = await self._repository.get_file(file_id)
+            if current is None or current.uploader_id != current_user.id:
+                raise exceptions.file_not_found()
+            if current.status not in DRAFT_EDITABLE_STATUSES:
+                raise exceptions.draft_metadata_locked()
+            raise exceptions.file_version_conflict()
+
+        await record_audit_log(
+            self._session,
+            actor_id=current_user.id,
+            action="file.update_draft",
+            target_type="file",
+            target_id=file.id,
+            ip_address=context.ip_address,
+            user_agent=context.user_agent,
+            metadata_json={
+                "changed_fields": sorted(changed_fields),
+                "expected_version": request.expected_version,
+                "review_version": file.review_version,
+                "file_department_id": str(file.department_id),
+            },
+        )
         await self._session.commit()
         return file
 
@@ -724,18 +1093,24 @@ class ReviewService:
         current_user: AuthUserRecord,
         scope: DepartmentAccessScope,
         file: ReviewFileRecord,
+        require_claim: bool,
     ) -> bool:
         self._require_scope_for_file(scope=scope, file=file)
-        if current_user.id != file.uploader_id:
-            return False
-        if current_user.role == SYSTEM_ADMIN_ROLE:
+        self_review_deadlock_exempt = False
+        if current_user.id == file.uploader_id:
+            if current_user.role != SYSTEM_ADMIN_ROLE:
+                raise exceptions.permission_denied()
             has_reviewer = await get_department_scope_store(self._session).has_non_self_reviewer(
                 file_department_id=file.department_id,
                 uploader_id=file.uploader_id,
             )
             if not has_reviewer:
-                return True
-        raise exceptions.permission_denied()
+                self_review_deadlock_exempt = True
+            else:
+                raise exceptions.permission_denied()
+        if require_claim and file.claimed_by != current_user.id:
+            raise exceptions.review_claim_required()
+        return self_review_deadlock_exempt
 
     async def _get_tag_or_raise(self, tag_id: uuid.UUID) -> Tag:
         tag = await self._repository.get_tag(tag_id)
@@ -744,7 +1119,7 @@ class ReviewService:
         return tag
 
     async def _get_category_or_raise(self, category_id: uuid.UUID) -> Category:
-        category = await self._repository.get_category(category_id)
+        category = await self._repository.get_category_for_update(category_id)
         if category is None:
             raise exceptions.category_not_found()
         return category
@@ -759,7 +1134,7 @@ class ReviewService:
         self,
         mapping_id: uuid.UUID,
     ) -> DatasetMapping:
-        mapping = await self._repository.get_dataset_mapping(mapping_id)
+        mapping = await self._repository.get_dataset_mapping_for_update(mapping_id)
         if mapping is None:
             raise exceptions.dataset_mapping_not_found()
         return mapping
@@ -770,14 +1145,30 @@ class ReviewService:
             raise exceptions.file_not_found()
         return file
 
+    async def _get_file_for_update_or_raise(self, file_id: uuid.UUID) -> ReviewFileRecord:
+        file = await self._repository.get_file_for_update(file_id)
+        if file is None:
+            raise exceptions.file_not_found()
+        return file
+
     async def _is_critical_sensitive_file(self, file_id: uuid.UUID) -> bool:
         risk_level = await self._repository.get_file_sensitive_risk_level(file_id)
         return risk_level == "critical"
 
-    async def _ensure_ragflow_sync_allowed(self, file: ReviewFileRecord) -> None:
-        if await self._is_critical_sensitive_file(file.id):
-            if await block_critical_sensitive_sync():
-                raise exceptions.invalid_state()
+    async def _ensure_ragflow_sync_allowed(
+        self,
+        file: ReviewFileRecord,
+        *,
+        reason: str | None = None,
+    ) -> None:
+        risk_level = await self._repository.get_file_sensitive_risk_level(file.id)
+        if risk_level == "critical":
+            raise exceptions.invalid_state()
+        if risk_level == "high":
+            if not await allow_high_risk_sync():
+                raise exceptions.high_risk_sync_not_allowed()
+            if reason is None:
+                raise exceptions.high_risk_reason_required()
         analysis_status = await self._repository.get_file_analysis_status(file.id)
         if analysis_status != "failed":
             return
@@ -789,9 +1180,71 @@ class ReviewService:
         if not allow_sync:
             raise exceptions.invalid_state()
 
+    async def _ensure_analysis_failed_submission_allowed(self, file: ReviewFileRecord) -> None:
+        if file.status != "analysis_failed":
+            return
+        allow_submit = await self._repository.get_ai_feature_enabled(
+            "allow_sync_when_analysis_failed"
+        )
+        if allow_submit is None:
+            allow_submit = get_settings().ai_allow_sync_when_analysis_failed
+        if not allow_submit:
+            raise exceptions.analysis_failed_submission_disabled()
+
+    async def _expire_claim_if_needed(
+        self,
+        *,
+        file: ReviewFileRecord,
+        current_user: AuthUserRecord,
+        context: RequestContext,
+        now: datetime,
+    ) -> bool:
+        claim_values = (file.claimed_by, file.claimed_at, file.claim_expires_at)
+        if all(value is None for value in claim_values):
+            return False
+        malformed_claim = any(value is None for value in claim_values)
+        if (
+            not malformed_claim
+            and file.claim_expires_at is not None
+            and file.claim_expires_at > now
+        ):
+            return False
+        previous_claimant_id = file.claimed_by
+        self._clear_claim(file)
+        file.review_status = "pending"
+        file.review_version += 1
+        await self._record_audit(
+            current_user=current_user,
+            file=file,
+            action="file.review_claim_expired",
+            context=context,
+            metadata_json={
+                "previous_claimed_by": (
+                    str(previous_claimant_id) if previous_claimant_id is not None else None
+                ),
+                "auto_released": True,
+                "invalid_claim_state": malformed_claim,
+            },
+        )
+        return True
+
+    @staticmethod
+    def _claim_is_active(file: ReviewFileRecord, *, now: datetime) -> bool:
+        return (
+            file.claimed_by is not None
+            and file.claimed_at is not None
+            and file.claim_expires_at is not None
+            and file.claim_expires_at > now
+        )
+
+    @staticmethod
+    def _clear_claim(file: ReviewFileRecord) -> None:
+        file.claimed_by = None
+        file.claimed_by_name = None
+        file.claimed_at = None
+        file.claim_expires_at = None
+
     def _transition_file(self, file: ReviewFileRecord, to_status: str) -> None:
-        if (file.status, to_status) in REVIEW_RESUBMISSION_TRANSITIONS:
-            DocumentStateMachine._allowed_transitions.update(REVIEW_RESUBMISSION_TRANSITIONS)
         try:
             file.status = DocumentStateMachine.transition(file.status, to_status)
         except DocumentStateError as exc:
@@ -873,12 +1326,6 @@ class ReviewService:
     ) -> None:
         if file.uploader_id == current_user.id:
             return
-        if current_user.role == SYSTEM_ADMIN_ROLE:
-            return
-        if current_user.role == "dept_admin" and file.department_id in set(
-            current_user.managed_department_ids
-        ):
-            return
         raise exceptions.permission_denied()
 
     def _require_system_admin(self, current_user: AuthUserRecord) -> None:
@@ -917,12 +1364,9 @@ class ReviewService:
         raise exceptions.dataset_not_allowed()
 
 
-async def block_critical_sensitive_sync() -> bool:
-    """读取 security.block_critical_sensitive_sync, 缺省 True (critical 默认阻止同步)。"""
-    value = await get_config("security.block_critical_sensitive_sync")
-    if isinstance(value, bool):
-        return value
-    return True
+async def allow_high_risk_sync() -> bool:
+    value = await get_config("ragflow.allow_high_risk_sync")
+    return value is True
 
 
 def clean_optional_text(value: str | None) -> str | None:

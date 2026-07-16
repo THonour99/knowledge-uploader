@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from io import BytesIO
+from typing import Protocol, cast
 
 import anyio
 from minio import Minio
@@ -27,6 +28,59 @@ PERMANENT_S3_ERROR_CODES: frozenset[str] = frozenset(
         "InvalidBucketName",
     }
 )
+STREAM_CHUNK_SIZE = 64 * 1024
+
+
+class _ObjectResponse(Protocol):
+    def read(self, amt: int | None = None) -> bytes: ...
+
+    def close(self) -> None: ...
+
+    def release_conn(self) -> None: ...
+
+
+class MinioObjectStream:
+    def __init__(
+        self,
+        response: _ObjectResponse,
+        *,
+        content_length: int | None,
+        chunk_size: int = STREAM_CHUNK_SIZE,
+    ) -> None:
+        self._response = response
+        self._remaining = content_length
+        self._chunk_size = chunk_size
+        self._closed = False
+
+    def __aiter__(self) -> MinioObjectStream:
+        return self
+
+    async def __anext__(self) -> bytes:
+        if self._closed or self._remaining == 0:
+            await self.aclose()
+            raise StopAsyncIteration
+        read_size = (
+            self._chunk_size if self._remaining is None else min(self._chunk_size, self._remaining)
+        )
+        chunk = await anyio.to_thread.run_sync(self._response.read, read_size)
+        if not chunk:
+            await self.aclose()
+            raise StopAsyncIteration
+        if self._remaining is not None:
+            self._remaining = max(0, self._remaining - len(chunk))
+        return chunk
+
+    async def aclose(self) -> None:
+        if self._closed:
+            return
+        self._closed = True
+        await anyio.to_thread.run_sync(self._close_sync)
+
+    def _close_sync(self) -> None:
+        try:
+            self._response.close()
+        finally:
+            self._response.release_conn()
 
 
 def is_transient_storage_error(error: BaseException) -> bool:
@@ -98,3 +152,35 @@ class MinioDocumentStorage:
         finally:
             response.close()
             response.release_conn()
+
+    async def open_object(
+        self,
+        *,
+        bucket: str,
+        object_key: str,
+        offset: int = 0,
+        length: int | None = None,
+    ) -> MinioObjectStream:
+        response = await anyio.to_thread.run_sync(
+            self._open_object_sync,
+            bucket,
+            object_key,
+            offset,
+            length,
+        )
+        return MinioObjectStream(response, content_length=length)
+
+    def _open_object_sync(
+        self,
+        bucket: str,
+        object_key: str,
+        offset: int,
+        length: int | None,
+    ) -> _ObjectResponse:
+        response = self._client.get_object(
+            bucket,
+            object_key,
+            offset=offset,
+            length=length or 0,
+        )
+        return cast(_ObjectResponse, response)

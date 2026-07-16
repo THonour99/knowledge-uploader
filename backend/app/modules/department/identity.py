@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import uuid
 
-from sqlalchemy import Column, MetaData, String, Table, select
+from sqlalchemy import Boolean, Column, MetaData, String, Table, select
 from sqlalchemy.dialects.postgresql import UUID
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -14,6 +14,7 @@ _USERS = Table(
     Column("id", UUID(as_uuid=True), primary_key=True),
     Column("role", String(40), nullable=False),
     Column("status", String(40), nullable=False),
+    Column("email_verified", Boolean, nullable=False),
 )
 
 
@@ -44,6 +45,7 @@ class SqlDepartmentScopeStore:
                 _USERS.c.id != uploader_id,
                 _USERS.c.role == "system_admin",
                 _USERS.c.status == "active",
+                _USERS.c.email_verified.is_(True),
             )
             .limit(1)
         )
@@ -58,6 +60,7 @@ class SqlDepartmentScopeStore:
                 _USERS.c.id != uploader_id,
                 _USERS.c.role == "dept_admin",
                 _USERS.c.status == "active",
+                _USERS.c.email_verified.is_(True),
                 UserManagedDepartment.department_id == file_department_id,
                 Department.status == "active",
             )

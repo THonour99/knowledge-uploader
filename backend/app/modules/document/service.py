@@ -3,6 +3,7 @@ from __future__ import annotations
 import re
 import uuid
 import zipfile
+from collections.abc import AsyncIterator
 from contextlib import suppress
 from dataclasses import dataclass
 from datetime import datetime, timedelta
@@ -18,7 +19,9 @@ from app.core.access_scope import DepartmentAccessScope
 from app.core.audit import record_admin_audit_log, record_audit_log
 from app.core.config import Settings
 from app.core.document_state import DocumentStateError, DocumentStateMachine
+from app.core.identity import has_assigned_department
 from app.core.outbox import OutboxRepository
+from app.core.review_policy import review_submission_times
 from app.core.runtime_config import get_config
 from app.modules.user.schemas import AuthUserRecord
 
@@ -59,6 +62,7 @@ UNSUPPORTED_LEGACY_EXTENSIONS = {"doc", "xls", "ppt"}
 TEXT_EXTENSIONS = {"txt", "md", "csv"}
 ADMIN_ROLES = {"dept_admin", "system_admin"}
 EXTRACTED_TEXT_PREVIEW_CHARS = 500
+MAX_IN_MEMORY_UPLOAD_BYTES = 200 * 1024 * 1024
 # 重新分析的合法源状态: 失败/已分析可重跑; 中间态属于 R1 遗留卡死文件, 允许救回
 REANALYZE_SOURCE_STATUSES = {
     "analysis_failed",
@@ -83,6 +87,27 @@ class DocumentStorage(Protocol):
     async def delete_object(self, *, bucket: str, object_key: str) -> None:
         pass
 
+    async def get_object(self, *, bucket: str, object_key: str) -> bytes:
+        pass
+
+    async def open_object(
+        self,
+        *,
+        bucket: str,
+        object_key: str,
+        offset: int = 0,
+        length: int | None = None,
+    ) -> DocumentContentStream:
+        pass
+
+
+class DocumentContentStream(Protocol):
+    def __aiter__(self) -> AsyncIterator[bytes]:
+        pass
+
+    async def aclose(self) -> None:
+        pass
+
 
 @dataclass(frozen=True)
 class UploadedFileResult:
@@ -96,6 +121,19 @@ class FileDetailResult:
     category_name: str | None
     analysis: FileAnalysisDetail | None
     sync_error: str | None
+
+
+@dataclass(frozen=True)
+class FileContentResult:
+    file: File
+
+
+@dataclass(frozen=True)
+class FilePage:
+    items: list[File]
+    total: int
+    page: int
+    page_size: int
 
 
 class DocumentService:
@@ -126,6 +164,7 @@ class DocumentService:
         client_ip: str,
         user_agent: str,
     ) -> UploadedFileResult:
+        await ensure_upload_allowed(current_user)
         await self._validate_size(len(data))
         sanitized_name, extension = sanitize_filename(original_filename)
         await self._validate_extension(extension)
@@ -165,13 +204,13 @@ class DocumentService:
             duplicate_file_id = duplicate.id
 
         effective_ai_analysis_enabled = await self._resolve_upload_ai_analysis_enabled(
-            submit_after_upload=submit_after_upload,
             requested_ai_analysis_enabled=ai_analysis_enabled,
         )
 
         file = File(
             id=file_id,
             original_name=sanitized_name,
+            title=sanitized_name,
             stored_name=stored_name,
             extension=extension,
             mime_type=mime_type,
@@ -206,6 +245,8 @@ class DocumentService:
             if submit_after_upload and not effective_ai_analysis_enabled:
                 previous_status = file.status
                 file.status = self._transition_or_raise(file.status, "pending_review")
+                file.submitted_at, file.review_due_at = await review_submission_times()
+                file.review_version += 1
                 await self._record_submit_review_audit(
                     file=file,
                     current_user=current_user,
@@ -233,11 +274,8 @@ class DocumentService:
     async def _resolve_upload_ai_analysis_enabled(
         self,
         *,
-        submit_after_upload: bool,
         requested_ai_analysis_enabled: bool | None,
     ) -> bool:
-        if not submit_after_upload:
-            return False
         if requested_ai_analysis_enabled is False:
             return False
         return await self._is_ai_analysis_enabled()
@@ -305,14 +343,29 @@ class DocumentService:
         self,
         current_user: AuthUserRecord,
         *,
+        page: int,
+        page_size: int,
+        search: str | None = None,
+        status: str | None = None,
         extension: str | None = None,
         tag_id: uuid.UUID | None = None,
-    ) -> list[File]:
-        return await self._repository.list_for_uploader(
+        expiry_status: str | None = None,
+        sort: str = "uploaded_at",
+        order: str = "desc",
+    ) -> FilePage:
+        items, total = await self._repository.list_for_uploader(
             current_user.id,
+            page=page,
+            page_size=page_size,
+            search=clean_optional_text(search),
+            status=clean_optional_text(status),
             extension=clean_optional_text(extension),
             tag_id=tag_id,
+            expiry_status=expiry_status,
+            sort=sort,
+            order=order,
         )
+        return FilePage(items=items, total=total, page=page, page_size=page_size)
 
     async def get_my_file(self, *, current_user: AuthUserRecord, file_id: uuid.UUID) -> File:
         file = await self._repository.get_for_uploader(
@@ -331,11 +384,12 @@ class DocumentService:
         client_ip: str,
         user_agent: str,
     ) -> FileDetailResult:
+        # 详情查看是只读操作, 不需要阻塞审核或归档等状态变更。
         file = await self._repository.get_by_id(file_id)
         if file is None or file.status in HIDDEN_FILE_STATUSES:
             raise exceptions.file_not_found()
         is_owner = file.uploader_id == current_user.id
-        is_admin_view = current_user.role in ADMIN_ROLES and not is_owner
+        is_admin_action = current_user.role in ADMIN_ROLES
         if not is_owner:
             if current_user.role not in ADMIN_ROLES:
                 raise exceptions.file_not_found()
@@ -371,7 +425,7 @@ class DocumentService:
         )
         # 审计在全部查询成功后写入并与之同事务提交, 避免 admin/员工两条路径事务边界不一致,
         # 也保证只记录实际成功返回的查看操作。
-        if is_admin_view:
+        if is_admin_action:
             await record_admin_audit_log(
                 self._session,
                 actor_id=current_user.id,
@@ -387,6 +441,49 @@ class DocumentService:
             )
             await self._session.commit()
         return result
+
+    async def get_file_content(
+        self,
+        *,
+        current_user: AuthUserRecord,
+        file_id: uuid.UUID,
+        disposition: str,
+        client_ip: str,
+        user_agent: str,
+    ) -> FileContentResult:
+        # 原件响应是长生命周期流, 授权查询不能持有行锁直到客户端读完。
+        file = await self._repository.get_by_id(file_id)
+        if file is None or file.status in HIDDEN_FILE_STATUSES:
+            raise exceptions.file_not_found()
+        is_owner = file.uploader_id == current_user.id
+        is_admin_action = current_user.role in ADMIN_ROLES
+        if not is_owner:
+            if current_user.role not in ADMIN_ROLES:
+                raise exceptions.file_not_found()
+            if not self._can_admin_access_file(current_user=current_user, file=file):
+                raise exceptions.file_not_found()
+        if is_admin_action:
+            await record_admin_audit_log(
+                self._session,
+                actor_id=current_user.id,
+                action="file.view_content",
+                target_type="file",
+                target_id=file.id,
+                ip_address=client_ip,
+                user_agent=user_agent[:512] or "unknown",
+                metadata_json={
+                    "original_name": file.original_name,
+                    "uploader_id": str(file.uploader_id),
+                    "disposition": disposition,
+                    "audit_semantics": "access_authorized_before_stream_open",
+                    "stream_completion_confirmed": False,
+                },
+            )
+        # StreamingResponse 在 service 返回后才开始读取对象。这里统一结束授权查询事务,
+        # 此审计仅表示访问已授权, 不代表对象已打开或流已完整传输。先持久化可避免慢客户端
+        # 长期占用连接/快照或延迟管理员访问尝试的可见性。
+        await self._session.commit()
+        return FileContentResult(file=file)
 
     async def refresh_expiry_statuses(
         self,
@@ -443,7 +540,7 @@ class DocumentService:
         user_agent: str,
     ) -> None:
         """软删文件: 状态机转 deleted, MinIO 对象保留, 远端清理交 ragflow 模块异步执行。"""
-        file = await self._repository.get_by_id(file_id)
+        file = await self._repository.get_by_id_for_update(file_id)
         if file is None or file.status in HIDDEN_FILE_STATUSES:
             raise exceptions.file_not_found()
         is_owner = file.uploader_id == current_user.id
@@ -456,6 +553,9 @@ class DocumentService:
                 raise exceptions.file_not_found()
         if not is_admin and await get_config("upload.allow_user_delete") is not True:
             raise exceptions.permission_denied()
+        if file.status == "pending_review":
+            raise exceptions.review_in_progress()
+        self._require_resolved_ragflow_upload_outcome(file)
         previous_status = file.status
         file.status = self._transition_or_raise(file.status, "deleted")
         delete_remote = (
@@ -502,10 +602,13 @@ class DocumentService:
     ) -> File:
         """归档文件 (-> disabled), 是否保留远端文档由配置决策后写入事件 payload。"""
         self._require_admin(current_user)
-        file = await self._repository.get_by_id(file_id)
+        file = await self._repository.get_by_id_for_update(file_id)
         if file is None or file.status in HIDDEN_FILE_STATUSES:
             raise exceptions.file_not_found()
         self._require_scope_for_file(scope=scope, file=file)
+        if file.status == "pending_review":
+            raise exceptions.review_in_progress()
+        self._require_resolved_ragflow_upload_outcome(file)
         previous_status = file.status
         file.status = self._transition_or_raise(file.status, "disabled")
         keep_remote = await get_config("ragflow.keep_remote_on_archive") is not False
@@ -539,6 +642,11 @@ class DocumentService:
         await self._session.refresh(file)
         return file
 
+    @staticmethod
+    def _require_resolved_ragflow_upload_outcome(file: File) -> None:
+        if file.ragflow_parse_status == "UPLOADING" and not file.ragflow_document_id:
+            raise exceptions.ragflow_reconciliation_pending()
+
     async def reanalyze_file(
         self,
         *,
@@ -555,7 +663,7 @@ class DocumentService:
         卡死在 extracting_text/analyzing 等中间态的文件也允许经此救回 (R1 遗留)。
         """
         self._require_admin(current_user)
-        file = await self._repository.get_by_id(file_id)
+        file = await self._repository.get_by_id_for_update(file_id)
         if file is None or file.status in HIDDEN_FILE_STATUSES:
             raise exceptions.file_not_found()
         self._require_scope_for_file(scope=scope, file=file)
@@ -701,6 +809,8 @@ class DocumentService:
                 "previous_status": previous_status,
                 "status": file.status,
                 "review_status": file.review_status,
+                "submitted_at": file.submitted_at.isoformat() if file.submitted_at else None,
+                "review_due_at": file.review_due_at.isoformat() if file.review_due_at else None,
             },
         )
 
@@ -713,9 +823,25 @@ async def resolve_upload_max_size_bytes(settings: Settings) -> int:
     比较前在此统一乘 1024*1024 换算; 非法值回退环境变量字节值。
     """
     value = await get_config("upload.max_file_size_mb")
-    if isinstance(value, bool) or not isinstance(value, int) or value <= 0:
-        return settings.upload_max_file_size_bytes
-    return value * 1024 * 1024
+    if isinstance(value, bool) or not isinstance(value, int) or not 1 <= value <= 200:
+        return min(settings.upload_max_file_size_bytes, MAX_IN_MEMORY_UPLOAD_BYTES)
+    return min(value * 1024 * 1024, MAX_IN_MEMORY_UPLOAD_BYTES)
+
+
+async def resolve_upload_enabled() -> bool:
+    value = await get_config("upload.enabled")
+    if value is None:
+        # This key was added after uploads were already enabled by default.
+        # Missing preserves that behavior; any present non-boolean still fails closed.
+        return True
+    return value is True
+
+
+async def ensure_upload_allowed(current_user: AuthUserRecord) -> None:
+    if not await resolve_upload_enabled():
+        raise exceptions.upload_disabled()
+    if not has_assigned_department(current_user):
+        raise exceptions.department_assignment_required()
 
 
 async def resolve_user_quota_mb() -> int | None:

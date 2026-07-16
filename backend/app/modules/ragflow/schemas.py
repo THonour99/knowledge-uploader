@@ -10,6 +10,11 @@ class RagflowModuleStatus(BaseModel):
     name: str = "ragflow"
 
 
+class ManualSyncRequest(BaseModel):
+    dataset_mapping_id: UUID
+    reason: str | None = Field(default=None, max_length=1000)
+
+
 class SyncTaskLogResponse(BaseModel):
     id: int
     task_id: UUID

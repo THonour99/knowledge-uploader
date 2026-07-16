@@ -18,7 +18,14 @@ class EventEnvelope(Protocol):
 
 
 class TaskSender(Protocol):
-    def send_task(self, name: str, args: list[str], queue: str) -> object:
+    def send_task(
+        self,
+        name: str,
+        args: list[str],
+        queue: str,
+        *,
+        countdown: int | None = None,
+    ) -> object:
         pass
 
 
@@ -50,11 +57,21 @@ def event_handler(event_cls: type[DomainEvent]) -> Callable[[EventHandler], Even
 
 
 def load_event_handlers(module_names: Iterable[str]) -> None:
-    for module_name in module_names:
+    ordered_module_names = tuple(module_names)
+    for module_name in ordered_module_names:
         if module_name in _LOADED_HANDLER_MODULES:
             continue
         import_module(module_name)
         _LOADED_HANDLER_MODULES.add(module_name)
+    # Handler modules can be imported during process bootstrap or test collection
+    # before the outbox worker loads its declared subscriber list. Always restore
+    # that declaration order so an early import cannot change side-effect ordering.
+    module_order = {module_name: index for index, module_name in enumerate(ordered_module_names)}
+    unknown_module_order = len(module_order)
+    for handlers in EVENT_HANDLERS.values():
+        handlers.sort(
+            key=lambda handler: module_order.get(handler.__module__, unknown_module_order)
+        )
 
 
 def dispatch_event(event: EventEnvelope, context: EventDispatchContext) -> int:

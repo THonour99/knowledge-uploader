@@ -85,6 +85,7 @@ async def _create_file(
     uploader_id: uuid.UUID,
     department_id: uuid.UUID,
     name: str,
+    title: str | None = None,
     status: str = "uploaded",
     review_status: str = "pending",
     file_id: uuid.UUID | None = None,
@@ -104,6 +105,7 @@ async def _create_file(
     file = File(
         id=file_id or uuid.uuid4(),
         original_name=name,
+        title=title or name,
         stored_name=f"{digest}.pdf",
         extension="pdf",
         mime_type="application/pdf",
@@ -290,6 +292,7 @@ async def test_employee_dashboard_is_owner_scoped_and_bounds_recent_lists() -> N
     assert data["employee"]["status_counts"]["draft"] == 6
     assert data["employee"]["action_counts"]["revise_rejected"] == 1
     assert len(data["employee"]["recent_documents"]) == 5
+    assert data["employee"]["recent_documents"][0]["title"] == "own-6.pdf"
     assert len(data["employee"]["recent_notifications"]) == 5
     assert all(
         item["original_name"] != "other-secret.pdf" for item in data["employee"]["recent_documents"]
@@ -415,6 +418,57 @@ async def test_department_admin_scope_priority_pagination_and_audit_are_bounded(
     assert audits[0].metadata_json["scope"] == "managed_departments"
     assert audits[0].metadata_json["department_count"] == 1
     assert "q" not in audits[0].metadata_json
+
+
+async def test_department_admin_queue_returns_title_and_searches_it_literally() -> None:
+    department = await _create_department(name="法务部", code="legal-dashboard")
+    admin = await _create_user(
+        name="Legal Admin",
+        email="legal-admin-dashboard@company.com",
+        department_id=department.id,
+        role="dept_admin",
+    )
+    uploader = await _create_user(
+        name="Legal Uploader",
+        email="legal-uploader-dashboard@company.com",
+        department_id=department.id,
+    )
+    await _manage_department(user_id=admin.id, department_id=department.id)
+    now = datetime.now(UTC)
+    target = await _create_file(
+        uploader_id=uploader.id,
+        department_id=department.id,
+        name="opaque-target.pdf",
+        title="100% 合规手册",
+        status="pending_review",
+        submitted_at=now - timedelta(hours=2),
+        review_due_at=now + timedelta(hours=2),
+    )
+    await _create_file(
+        uploader_id=uploader.id,
+        department_id=department.id,
+        name="opaque-decoy.pdf",
+        title="100X 合规手册",
+        status="pending_review",
+        submitted_at=now - timedelta(hours=1),
+        review_due_at=now + timedelta(hours=3),
+    )
+
+    response = await _get_dashboard(
+        _auth_record(user=admin, department=department),
+        params={"q": "100% 合规"},
+    )
+
+    assert response.status_code == 200
+    data = response.json()["data"]["admin"]
+    assert data["counts"]["scope_total_pending"] == 2
+    assert data["priority_queue"]["q_applied"] is True
+    assert data["priority_queue"]["total"] == 1
+    assert len(data["priority_queue"]["items"]) == 1
+    item = data["priority_queue"]["items"][0]
+    assert item["id"] == str(target.id)
+    assert item["original_name"] == "opaque-target.pdf"
+    assert item["title"] == "100% 合规手册"
 
 
 async def test_department_admin_without_managed_scope_fails_closed_and_is_audited() -> None:

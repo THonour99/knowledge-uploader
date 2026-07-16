@@ -78,6 +78,10 @@ class AiAnalysisTransientError(Exception):
     pass
 
 
+class AiAnalysisAlreadyRunningError(AiAnalysisTransientError):
+    pass
+
+
 class DocumentParseError(Exception):
     def __init__(self, *, format: str, reason: str) -> None:
         self.format = format

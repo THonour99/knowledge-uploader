@@ -14,6 +14,18 @@ class RagflowTaskError(Exception):
     status_code: int
 
 
+class RagflowTaskAlreadyRunningError(Exception):
+    """A redelivered worker message observed an execution that may still be alive."""
+
+
+class RagflowTaskLeaseLostError(Exception):
+    """A stale worker no longer owns the persisted execution fencing token."""
+
+
+class RagflowUploadOutcomeUnknownError(Exception):
+    """Remote upload may have committed, but no durable document id was observed."""
+
+
 def permission_denied() -> RagflowTaskError:
     return RagflowTaskError(
         ErrorCode.PERMISSION_DENIED,
@@ -74,7 +86,47 @@ def dataset_not_allowed() -> RagflowTaskError:
     return RagflowTaskError(
         ErrorCode.VALIDATION_ERROR,
         "ragflow dataset id is not allowed",
-        status.HTTP_400_BAD_REQUEST,
+        status.HTTP_422_UNPROCESSABLE_ENTITY,
+    )
+
+
+def dataset_mapping_not_found() -> RagflowTaskError:
+    return RagflowTaskError(
+        ErrorCode.VALIDATION_ERROR,
+        "dataset mapping not found or disabled",
+        status.HTTP_422_UNPROCESSABLE_ENTITY,
+    )
+
+
+def dataset_mapping_category_mismatch() -> RagflowTaskError:
+    return RagflowTaskError(
+        ErrorCode.VALIDATION_ERROR,
+        "dataset mapping does not match file category",
+        status.HTTP_422_UNPROCESSABLE_ENTITY,
+    )
+
+
+def remote_document_dataset_change_not_allowed() -> RagflowTaskError:
+    return RagflowTaskError(
+        ErrorCode.VALIDATION_ERROR,
+        "an existing ragflow document cannot change dataset target",
+        status.HTTP_409_CONFLICT,
+    )
+
+
+def high_risk_sync_not_allowed() -> RagflowTaskError:
+    return RagflowTaskError(
+        ErrorCode.VALIDATION_ERROR,
+        "high risk file sync is disabled",
+        status.HTTP_422_UNPROCESSABLE_ENTITY,
+    )
+
+
+def high_risk_reason_required() -> RagflowTaskError:
+    return RagflowTaskError(
+        ErrorCode.VALIDATION_ERROR,
+        "reason is required to sync a high risk file",
+        status.HTTP_422_UNPROCESSABLE_ENTITY,
     )
 
 

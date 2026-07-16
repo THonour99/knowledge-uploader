@@ -19,7 +19,7 @@
 from __future__ import annotations
 
 import uuid
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from uuid import UUID, uuid4
 
 import pytest
@@ -53,6 +53,7 @@ async def _create_user(
     email: str,
     role: str = "employee",
     department_id: UUID = UNASSIGNED_DEPARTMENT_ID,
+    email_verified: bool = True,
 ) -> UUID:
     from app.core.database import AsyncSessionFactory
     from app.core.security import hash_password
@@ -68,7 +69,7 @@ async def _create_user(
         department="seed",
         role=role,
         status="active",
-        email_verified=True,
+        email_verified=email_verified,
     )
     async with AsyncSessionFactory() as session:
         session.add(user)
@@ -100,9 +101,11 @@ async def _create_file(
     from app.modules.document.models import File
 
     file_id = uuid4()
+    submitted_at = datetime.now(UTC) if status == "pending_review" else None
     file = File(
         id=file_id,
         original_name=f"{file_id}.pdf",
+        title=f"{file_id}.pdf",
         stored_name=f"{file_id}.pdf",
         extension="pdf",
         mime_type="application/pdf",
@@ -120,6 +123,10 @@ async def _create_file(
         tags=[],
         status=status,
         review_status=review_status,
+        submitted_at=submitted_at,
+        review_due_at=(
+            submitted_at + timedelta(hours=24) if submitted_at is not None else None
+        ),
         ragflow_dataset_id=ragflow_dataset_id,
         ai_analysis_enabled_at_upload=False,
         uploaded_at=datetime.now(UTC),
@@ -358,7 +365,7 @@ async def test_self_approval_deadlock_exemption_not_triggered_when_second_system
     """
     # 该部门刻意不分配任何 dept_admin -> dept_admin 兜底分支必为空
     orphan_dept = await _create_department(name="Orphan Dept", code="orphan-dept")
-    category_id, dataset_id, _ = await _create_category_and_dataset()
+    _category_id, dataset_id, _ = await _create_category_and_dataset()
 
     uploader_admin = await _create_user(
         email="deadlock-uploader@company.com",
@@ -382,13 +389,69 @@ async def test_self_approval_deadlock_exemption_not_triggered_when_second_system
     approve_response = await redteam_client.post(
         f"/api/files/{file_id}/approve",
         headers=_auth(token),
-        json={"category_id": str(category_id), "dataset_mapping_id": str(dataset_id)},
+        json={"sync_decision": "approve_only"},
     )
 
     assert approve_response.status_code == 403, (
         "禁止自审被绕过: 存在第二位 system_admin 时死锁豁免仍误触发, "
         f"上传者自审自己的文件成功 (status={approve_response.status_code})"
     )
+
+
+@pytest.mark.parametrize("candidate_role", ["system_admin", "dept_admin"])
+async def test_unverified_reviewer_does_not_block_deadlock_exemption(
+    redteam_client: AsyncClient,
+    candidate_role: str,
+) -> None:
+    del redteam_client  # fixture owns isolated database lifecycle
+    from app.core.database import AsyncSessionFactory
+    from app.modules.department.identity import SqlDepartmentScopeStore
+
+    department_id = await _create_department(
+        name=f"Unverified {candidate_role}",
+        code=f"unverified-{candidate_role}",
+    )
+    uploader_id = await _create_user(
+        email=f"unverified-uploader-{candidate_role}@company.com",
+        role="system_admin",
+        department_id=department_id,
+    )
+    unverified_id = await _create_user(
+        email=f"unverified-candidate-{candidate_role}@company.com",
+        role=candidate_role,
+        department_id=department_id,
+        email_verified=False,
+    )
+    if candidate_role == "dept_admin":
+        await _assign_managed_departments(
+            user_id=unverified_id,
+            department_ids=[department_id],
+        )
+
+    async with AsyncSessionFactory() as session:
+        store = SqlDepartmentScopeStore(session)
+        assert not await store.has_non_self_reviewer(
+            file_department_id=department_id,
+            uploader_id=uploader_id,
+        )
+
+    verified_id = await _create_user(
+        email=f"verified-candidate-{candidate_role}@company.com",
+        role=candidate_role,
+        department_id=department_id,
+        email_verified=True,
+    )
+    if candidate_role == "dept_admin":
+        await _assign_managed_departments(
+            user_id=verified_id,
+            department_ids=[department_id],
+        )
+    async with AsyncSessionFactory() as session:
+        store = SqlDepartmentScopeStore(session)
+        assert await store.has_non_self_reviewer(
+            file_department_id=department_id,
+            uploader_id=uploader_id,
+        )
 
 
 async def test_self_approval_deadlock_exemption_audits_when_genuinely_alone(
@@ -406,7 +469,7 @@ async def test_self_approval_deadlock_exemption_audits_when_genuinely_alone(
     from app.modules.audit.models import AuditLog
 
     lonely_dept = await _create_department(name="Lonely Dept", code="lonely-dept")
-    category_id, dataset_id, _ = await _create_category_and_dataset()
+    _category_id, dataset_id, _ = await _create_category_and_dataset()
     # 全系统唯一 system_admin, 且该部门无 dept_admin -> 真死锁
     uploader_admin = await _create_user(
         email="lonely-admin@company.com",
@@ -421,12 +484,25 @@ async def test_self_approval_deadlock_exemption_audits_when_genuinely_alone(
         ragflow_dataset_id="ragflow-lonely",
     )
 
+    unclaimed_response = await redteam_client.post(
+        f"/api/files/{file_id}/approve",
+        headers=_auth(token),
+        json={"sync_decision": "approve_only"},
+    )
+    claim_response = await redteam_client.post(
+        f"/api/review/files/{file_id}/claim",
+        headers=_auth(token),
+    )
     approve_response = await redteam_client.post(
         f"/api/files/{file_id}/approve",
         headers=_auth(token),
-        json={"category_id": str(category_id), "dataset_mapping_id": str(dataset_id)},
+        json={"sync_decision": "approve_only"},
     )
 
+    assert unclaimed_response.status_code == 409
+    assert unclaimed_response.json()["error_code"] == "REVIEW_CLAIM_REQUIRED"
+    assert claim_response.status_code == 200
+    assert claim_response.json()["data"]["claimed_by"] == str(uploader_admin)
     assert approve_response.status_code == 200, (
         f"死锁豁免应放行唯一 system_admin 的自审, 实际 {approve_response.status_code}: "
         f"{approve_response.text}"
@@ -513,6 +589,7 @@ async def test_dept_admin_cannot_manual_sync_across_department(
     sync_response = await redteam_client.post(
         f"/api/admin/files/{legal_file}/sync",
         headers=_auth(token),
+        json={"dataset_mapping_id": str(dataset_id)},
     )
 
     assert sync_response.status_code in (403, 404), (

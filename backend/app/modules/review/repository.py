@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import uuid
-from datetime import datetime
+from datetime import datetime, timedelta
 from typing import cast
 
 from sqlalchemy import (
@@ -9,18 +9,23 @@ from sqlalchemy import (
     Boolean,
     Column,
     DateTime,
+    Integer,
     MetaData,
     String,
     Table,
     Text,
+    case,
     delete,
     func,
+    or_,
     select,
     update,
 )
 from sqlalchemy.dialects.postgresql import JSONB, UUID
 from sqlalchemy.engine import RowMapping
 from sqlalchemy.ext.asyncio import AsyncSession
+
+from app.core.review_policy import REVIEW_DUE_SOON_HOURS
 
 from .models import Category, DatasetMapping, FileTag, Tag
 from .records import ReviewFileRecord
@@ -30,6 +35,7 @@ FILES = Table(
     MetaData(),
     Column("id", UUID(as_uuid=True), primary_key=True),
     Column("original_name", String(255), nullable=False),
+    Column("title", String(255), nullable=False),
     Column("extension", String(20), nullable=False),
     Column("mime_type", String(120), nullable=False),
     Column("size", BigInteger, nullable=False),
@@ -43,6 +49,12 @@ FILES = Table(
     Column("tags", JSONB, nullable=False),
     Column("status", String(40), nullable=False),
     Column("review_status", String(40), nullable=False),
+    Column("submitted_at", DateTime(timezone=True)),
+    Column("review_due_at", DateTime(timezone=True)),
+    Column("claimed_by", UUID(as_uuid=True)),
+    Column("claimed_at", DateTime(timezone=True)),
+    Column("claim_expires_at", DateTime(timezone=True)),
+    Column("review_version", Integer, nullable=False),
     Column("ragflow_dataset_id", String(120)),
     Column("ragflow_document_id", String(120)),
     Column("ragflow_parse_status", String(40)),
@@ -57,12 +69,20 @@ FILES = Table(
 
 FILE_COLUMNS = tuple(FILES.c)
 
+USERS = Table(
+    "users",
+    MetaData(),
+    Column("id", UUID(as_uuid=True), primary_key=True),
+    Column("name", String(100), nullable=False),
+)
+
 DOCUMENT_ANALYSIS = Table(
     "document_analysis",
     MetaData(),
     Column("file_id", UUID(as_uuid=True), primary_key=True),
     Column("status", String(30), nullable=False),
     Column("sensitive_risk_level", String(20), nullable=False),
+    Column("sensitive_hits", JSONB, nullable=False),
 )
 
 AI_FEATURE_CONFIGS = Table(
@@ -71,6 +91,42 @@ AI_FEATURE_CONFIGS = Table(
     Column("feature_name", String(80), nullable=False),
     Column("enabled", Boolean, nullable=False),
 )
+
+SYNC_TASKS = Table(
+    "sync_tasks",
+    MetaData(),
+    Column("id", UUID(as_uuid=True), primary_key=True),
+    Column("file_id", UUID(as_uuid=True), nullable=False),
+    Column("task_type", String(40), nullable=False),
+    Column("status", String(40), nullable=False),
+)
+
+UPLOADER_NAME = (
+    select(USERS.c.name)
+    .where(USERS.c.id == FILES.c.uploader_id)
+    .correlate(FILES)
+    .scalar_subquery()
+    .label("uploader_name")
+)
+CLAIMED_BY_NAME = (
+    select(USERS.c.name)
+    .where(USERS.c.id == FILES.c.claimed_by)
+    .correlate(FILES)
+    .scalar_subquery()
+    .label("claimed_by_name")
+)
+SENSITIVE_RISK_LEVEL = (
+    select(DOCUMENT_ANALYSIS.c.sensitive_risk_level)
+    .where(DOCUMENT_ANALYSIS.c.file_id == FILES.c.id)
+    .correlate(FILES)
+    .scalar_subquery()
+    .label("sensitive_risk_level")
+)
+FILE_RECORD_COLUMNS = (*FILE_COLUMNS, UPLOADER_NAME, CLAIMED_BY_NAME, SENSITIVE_RISK_LEVEL)
+
+
+def _escape_like(value: str) -> str:
+    return value.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
 
 
 class ReviewRepository:
@@ -87,6 +143,12 @@ class ReviewRepository:
         result = await self._session.execute(select(Category).where(Category.id == category_id))
         return result.scalar_one_or_none()
 
+    async def get_category_for_update(self, category_id: uuid.UUID) -> Category | None:
+        result = await self._session.execute(
+            select(Category).where(Category.id == category_id).with_for_update()
+        )
+        return result.scalar_one_or_none()
+
     async def list_categories(self) -> list[Category]:
         result = await self._session.execute(select(Category).order_by(Category.created_at.desc()))
         return list(result.scalars())
@@ -100,6 +162,17 @@ class ReviewRepository:
     async def get_dataset_mapping(self, mapping_id: uuid.UUID) -> DatasetMapping | None:
         result = await self._session.execute(
             select(DatasetMapping).where(DatasetMapping.id == mapping_id)
+        )
+        return result.scalar_one_or_none()
+
+    async def get_dataset_mapping_for_update(
+        self,
+        mapping_id: uuid.UUID,
+    ) -> DatasetMapping | None:
+        result = await self._session.execute(
+            select(DatasetMapping)
+            .where(DatasetMapping.id == mapping_id)
+            .with_for_update()
         )
         return result.scalar_one_or_none()
 
@@ -145,9 +218,9 @@ class ReviewRepository:
             stmt = stmt.where(Tag.enabled == enabled)
             count_stmt = count_stmt.where(Tag.enabled == enabled)
         if search:
-            pattern = f"%{search}%"
-            stmt = stmt.where(Tag.name.ilike(pattern))
-            count_stmt = count_stmt.where(Tag.name.ilike(pattern))
+            pattern = f"%{_escape_like(search)}%"
+            stmt = stmt.where(Tag.name.ilike(pattern, escape="\\"))
+            count_stmt = count_stmt.where(Tag.name.ilike(pattern, escape="\\"))
         stmt = stmt.order_by(Tag.name.asc()).offset((page - 1) * page_size).limit(page_size)
         result = await self._session.execute(stmt)
         items = [(row[0], int(row[1])) for row in result.all()]
@@ -191,29 +264,117 @@ class ReviewRepository:
     async def list_files(
         self,
         *,
+        page: int,
+        page_size: int,
+        now: datetime,
+        current_user_id: uuid.UUID,
+        search: str | None = None,
+        queue: str | None = None,
         extension: str | None = None,
         tag_id: uuid.UUID | None = None,
         department_ids: frozenset[uuid.UUID] | None = None,
-    ) -> list[ReviewFileRecord]:
-        stmt = (
-            select(*FILE_COLUMNS)
-            .select_from(FILES)
-            .where(FILES.c.status.not_in(HIDDEN_FILE_STATUSES))
-        )
+        department_id: uuid.UUID | None = None,
+        sensitive_risk_level: str | None = None,
+        sort: str | None = None,
+        order: str = "asc",
+    ) -> tuple[list[ReviewFileRecord], int]:
+        stmt = select(*FILE_RECORD_COLUMNS).select_from(FILES)
+        count_stmt = select(func.count(func.distinct(FILES.c.id))).select_from(FILES)
+        predicates = [FILES.c.status == "pending_review"]
         if department_ids is not None:
             if not department_ids:
-                return []
-            stmt = stmt.where(FILES.c.department_id.in_(department_ids))
+                return [], 0
+            predicates.append(FILES.c.department_id.in_(department_ids))
+        if department_id is not None:
+            predicates.append(FILES.c.department_id == department_id)
         if extension:
-            stmt = stmt.where(FILES.c.extension == extension)
+            predicates.append(FILES.c.extension == extension)
+        if search:
+            pattern = f"%{_escape_like(search)}%"
+            predicates.append(
+                or_(
+                    FILES.c.title.ilike(pattern, escape="\\"),
+                    FILES.c.original_name.ilike(pattern, escape="\\"),
+                    FILES.c.description.ilike(pattern, escape="\\"),
+                    FILES.c.department.ilike(pattern, escape="\\"),
+                    UPLOADER_NAME.ilike(pattern, escape="\\"),
+                )
+            )
+        if queue == "unclaimed":
+            predicates.append(
+                or_(
+                    FILES.c.claimed_by.is_(None),
+                    FILES.c.claimed_at.is_(None),
+                    FILES.c.claim_expires_at.is_(None),
+                    FILES.c.claim_expires_at <= now,
+                )
+            )
+        elif queue == "mine":
+            predicates.extend(
+                (
+                    FILES.c.claimed_by == current_user_id,
+                    FILES.c.claim_expires_at > now,
+                )
+            )
+        elif queue == "due_soon":
+            due_soon = now + timedelta(hours=REVIEW_DUE_SOON_HOURS)
+            predicates.extend(
+                (
+                    FILES.c.review_due_at > now,
+                    FILES.c.review_due_at <= due_soon,
+                )
+            )
+        elif queue == "overdue":
+            predicates.append(FILES.c.review_due_at <= now)
+        if sensitive_risk_level:
+            predicates.append(SENSITIVE_RISK_LEVEL == sensitive_risk_level)
         if tag_id is not None:
-            stmt = stmt.join(FileTag, FileTag.file_id == FILES.c.id).where(FileTag.tag_id == tag_id)
-        result = await self._session.execute(stmt.order_by(FILES.c.uploaded_at.desc()))
-        return [file_record_from_row(row) for row in result.mappings()]
+            stmt = stmt.join(FileTag, FileTag.file_id == FILES.c.id)
+            count_stmt = count_stmt.join(FileTag, FileTag.file_id == FILES.c.id)
+            predicates.append(FileTag.tag_id == tag_id)
+        stmt = stmt.where(*predicates)
+        count_stmt = count_stmt.where(*predicates)
+
+        direction = "desc" if order == "desc" else "asc"
+        risk_rank = case(
+            (SENSITIVE_RISK_LEVEL == "critical", 0),
+            (SENSITIVE_RISK_LEVEL == "high", 1),
+            (SENSITIVE_RISK_LEVEL == "medium", 2),
+            (SENSITIVE_RISK_LEVEL == "low", 3),
+            else_=4,
+        )
+        sort_columns = {
+            "submitted_at": FILES.c.submitted_at,
+            "review_due_at": FILES.c.review_due_at,
+            "uploaded_at": FILES.c.uploaded_at,
+            "original_name": FILES.c.original_name,
+            "risk": risk_rank,
+        }
+        if sort in sort_columns:
+            sort_column = sort_columns[sort]
+            order_expression = (
+                sort_column.desc().nullslast()
+                if direction == "desc"
+                else sort_column.asc().nullslast()
+            )
+            stmt = stmt.order_by(order_expression, FILES.c.id.asc())
+        else:
+            overdue_rank = case((FILES.c.review_due_at <= now, 0), else_=1)
+            stmt = stmt.order_by(
+                overdue_rank.asc(),
+                risk_rank.asc(),
+                FILES.c.review_due_at.asc().nullslast(),
+                FILES.c.submitted_at.asc().nullslast(),
+                FILES.c.id.asc(),
+            )
+        stmt = stmt.offset((page - 1) * page_size).limit(page_size)
+        result = await self._session.execute(stmt)
+        total = int((await self._session.execute(count_stmt)).scalar_one())
+        return [file_record_from_row(row) for row in result.mappings()], total
 
     async def get_file(self, file_id: uuid.UUID) -> ReviewFileRecord | None:
         result = await self._session.execute(
-            select(*FILE_COLUMNS).where(
+            select(*FILE_RECORD_COLUMNS).where(
                 FILES.c.id == file_id,
                 FILES.c.status.not_in(HIDDEN_FILE_STATUSES),
             )
@@ -221,21 +382,124 @@ class ReviewRepository:
         row = result.mappings().one_or_none()
         return file_record_from_row(row) if row is not None else None
 
-    async def update_file(self, file: ReviewFileRecord) -> ReviewFileRecord:
+    async def get_file_for_update(self, file_id: uuid.UUID) -> ReviewFileRecord | None:
         result = await self._session.execute(
+            select(*FILE_RECORD_COLUMNS)
+            .where(
+                FILES.c.id == file_id,
+                FILES.c.status.not_in(HIDDEN_FILE_STATUSES),
+            )
+            .with_for_update(of=FILES)
+        )
+        row = result.mappings().one_or_none()
+        return file_record_from_row(row) if row is not None else None
+
+    async def has_active_ragflow_upload_task(self, file_id: uuid.UUID) -> bool:
+        result = await self._session.execute(
+            select(SYNC_TASKS.c.id)
+            .where(
+                SYNC_TASKS.c.file_id == file_id,
+                SYNC_TASKS.c.task_type == "ragflow_upload",
+                SYNC_TASKS.c.status.in_(("queued", "running")),
+            )
+            .limit(1)
+        )
+        return result.scalar_one_or_none() is not None
+
+    async def update_file(self, file: ReviewFileRecord) -> ReviewFileRecord:
+        await self._session.execute(
             update(FILES)
             .where(FILES.c.id == file.id)
             .values(
                 status=file.status,
                 review_status=file.review_status,
+                submitted_at=file.submitted_at,
+                review_due_at=file.review_due_at,
+                claimed_by=file.claimed_by,
+                claimed_at=file.claimed_at,
+                claim_expires_at=file.claim_expires_at,
+                review_version=file.review_version,
                 category_id=file.category_id,
                 dataset_mapping_id=file.dataset_mapping_id,
                 ragflow_dataset_id=file.ragflow_dataset_id,
                 updated_at=func.now(),
             )
+        )
+        updated = await self.get_file(file.id)
+        if updated is None:
+            msg = "updated review file is not readable"
+            raise RuntimeError(msg)
+        return updated
+
+    async def update_owner_draft_metadata(
+        self,
+        *,
+        file_id: uuid.UUID,
+        uploader_id: uuid.UUID,
+        expected_version: int,
+        editable_statuses: frozenset[str],
+        values: dict[str, object],
+    ) -> ReviewFileRecord | None:
+        result = await self._session.execute(
+            update(FILES)
+            .where(
+                FILES.c.id == file_id,
+                FILES.c.uploader_id == uploader_id,
+                FILES.c.status.in_(editable_statuses),
+                FILES.c.status.not_in(HIDDEN_FILE_STATUSES),
+                FILES.c.review_version == expected_version,
+            )
+            .values(
+                **values,
+                review_version=FILES.c.review_version + 1,
+                updated_at=func.now(),
+            )
             .returning(*FILE_COLUMNS)
         )
-        return file_record_from_row(result.mappings().one())
+        row = result.mappings().one_or_none()
+        return file_record_from_row(row) if row is not None else None
+
+    async def release_expired_claims(
+        self,
+        *,
+        now: datetime,
+        department_ids: frozenset[uuid.UUID] | None,
+        limit: int,
+    ) -> list[tuple[uuid.UUID, uuid.UUID]]:
+        predicates = [
+            FILES.c.status == "pending_review",
+            FILES.c.claimed_by.is_not(None),
+            FILES.c.claim_expires_at <= now,
+        ]
+        if department_ids is not None:
+            if not department_ids:
+                return []
+            predicates.append(FILES.c.department_id.in_(department_ids))
+        result = await self._session.execute(
+            select(FILES.c.id, FILES.c.claimed_by)
+            .where(*predicates)
+            .with_for_update(skip_locked=True, of=FILES)
+            .limit(limit)
+        )
+        expired = [
+            (cast(uuid.UUID, row.id), cast(uuid.UUID, row.claimed_by))
+            for row in result
+            if row.claimed_by is not None
+        ]
+        if expired:
+            await self._session.execute(
+                update(FILES)
+                .where(FILES.c.id.in_([file_id for file_id, _ in expired]))
+                .values(
+                    claimed_by=None,
+                    claimed_at=None,
+                    claim_expires_at=None,
+                    review_status="pending",
+                    review_version=FILES.c.review_version + 1,
+                    updated_at=func.now(),
+                )
+            )
+        return expired
 
     async def get_file_sensitive_risk_level(self, file_id: uuid.UUID) -> str | None:
         result = await self._session.execute(
@@ -244,6 +508,25 @@ class ReviewRepository:
             )
         )
         return cast(str | None, result.scalar_one_or_none())
+
+    async def file_requires_sensitive_acknowledgement(self, file_id: uuid.UUID) -> bool:
+        result = await self._session.execute(
+            select(
+                DOCUMENT_ANALYSIS.c.sensitive_risk_level,
+                DOCUMENT_ANALYSIS.c.sensitive_hits,
+            ).where(DOCUMENT_ANALYSIS.c.file_id == file_id)
+        )
+        row = result.mappings().one_or_none()
+        if row is None:
+            return False
+        if row["sensitive_risk_level"] in {"high", "critical"}:
+            return True
+        hits = cast(list[object] | None, row["sensitive_hits"])
+        return any(
+            isinstance(hit, dict)
+            and hit.get("action") in {"require_review", "block_sync"}
+            for hit in (hits or [])
+        )
 
     async def get_file_analysis_status(self, file_id: uuid.UUID) -> str | None:
         result = await self._session.execute(
@@ -264,10 +547,12 @@ def file_record_from_row(row: RowMapping) -> ReviewFileRecord:
     return ReviewFileRecord(
         id=cast(uuid.UUID, row["id"]),
         original_name=cast(str, row["original_name"]),
+        title=cast(str, row["title"]),
         extension=cast(str, row["extension"]),
         mime_type=cast(str, row["mime_type"]),
         size=cast(int, row["size"]),
         uploader_id=cast(uuid.UUID, row["uploader_id"]),
+        uploader_name=cast(str | None, row.get("uploader_name")),
         department_id=cast(uuid.UUID, row["department_id"]),
         department=cast(str | None, row["department"]),
         category_id=cast(uuid.UUID | None, row["category_id"]),
@@ -277,6 +562,14 @@ def file_record_from_row(row: RowMapping) -> ReviewFileRecord:
         tags=cast(list[str], row["tags"]),
         status=cast(str, row["status"]),
         review_status=cast(str, row["review_status"]),
+        submitted_at=cast(datetime | None, row["submitted_at"]),
+        review_due_at=cast(datetime | None, row["review_due_at"]),
+        claimed_by=cast(uuid.UUID | None, row["claimed_by"]),
+        claimed_by_name=cast(str | None, row.get("claimed_by_name")),
+        claimed_at=cast(datetime | None, row["claimed_at"]),
+        claim_expires_at=cast(datetime | None, row["claim_expires_at"]),
+        review_version=cast(int, row["review_version"]),
+        sensitive_risk_level=cast(str | None, row.get("sensitive_risk_level")),
         ragflow_dataset_id=cast(str | None, row["ragflow_dataset_id"]),
         ragflow_document_id=cast(str | None, row["ragflow_document_id"]),
         ragflow_parse_status=cast(str | None, row["ragflow_parse_status"]),

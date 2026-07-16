@@ -1,10 +1,14 @@
 from __future__ import annotations
 
+import asyncio
 import os
-from collections.abc import AsyncGenerator, Awaitable, Callable
+from collections.abc import AsyncGenerator, AsyncIterator, Awaitable, Callable
 from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta
+from hashlib import sha256
 from importlib import import_module
+from types import SimpleNamespace
+from typing import cast
 from uuid import UUID, uuid4
 
 import pytest
@@ -12,6 +16,7 @@ from httpx import ASGITransport, AsyncClient
 from redis.asyncio import from_url
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
+from starlette.types import Message, Scope
 
 pytestmark = pytest.mark.asyncio
 
@@ -24,6 +29,7 @@ PDF_BYTES = (
 )
 PNG_BYTES = b"\x89PNG\r\n\x1a\n\x00\x00\x00\rIHDR"
 OLE_BYTES = b"\xd0\xcf\x11\xe0\xa1\xb1\x1a\xe1fake compound file"
+UPLOAD_DRAFT_FORM = {"submit_after_upload": "false"}
 
 
 @dataclass
@@ -34,10 +40,65 @@ class StoredObject:
     content_type: str
 
 
+class FakeObjectStream:
+    def __init__(self, data: bytes, *, chunk_size: int = 8) -> None:
+        self._data = data
+        self._offset = 0
+        self._chunk_size = chunk_size
+        self.closed = False
+
+    def __aiter__(self) -> AsyncIterator[bytes]:
+        return self
+
+    async def __anext__(self) -> bytes:
+        if self._offset >= len(self._data):
+            await self.aclose()
+            raise StopAsyncIteration
+        end = min(self._offset + self._chunk_size, len(self._data))
+        chunk = self._data[self._offset : end]
+        self._offset = end
+        return chunk
+
+    async def aclose(self) -> None:
+        self.closed = True
+
+
+class BlockingObjectStream:
+    def __init__(self) -> None:
+        self.next_calls = 0
+        self.close_calls = 0
+        self.release_conn_calls = 0
+        self.next_started = asyncio.Event()
+        self._never = asyncio.Event()
+
+    def __aiter__(self) -> AsyncIterator[bytes]:
+        return self
+
+    async def __anext__(self) -> bytes:
+        self.next_calls += 1
+        self.next_started.set()
+        await self._never.wait()
+        raise StopAsyncIteration
+
+    async def aclose(self) -> None:
+        self.close_calls += 1
+        self.release_conn_calls += 1
+
+
+class FailingCloseObjectStream(BlockingObjectStream):
+    async def aclose(self) -> None:
+        self.close_calls += 1
+        self.release_conn_calls += 1
+        raise OSError("private cleanup detail must not escape")
+
+
 @dataclass
 class FakeDocumentStorage:
     objects: list[StoredObject] = field(default_factory=list)
     deleted_objects: list[tuple[str, str]] = field(default_factory=list)
+    get_object_calls: int = 0
+    open_calls: list[tuple[str, str, int, int | None]] = field(default_factory=list)
+    opened_streams: list[FakeObjectStream] = field(default_factory=list)
 
     async def put_object(
         self,
@@ -63,6 +124,30 @@ class FakeDocumentStorage:
             for stored in self.objects
             if stored.bucket != bucket or stored.object_key != object_key
         ]
+
+    async def get_object(self, *, bucket: str, object_key: str) -> bytes:
+        self.get_object_calls += 1
+        for stored in self.objects:
+            if stored.bucket == bucket and stored.object_key == object_key:
+                return stored.data
+        raise FileNotFoundError(object_key)
+
+    async def open_object(
+        self,
+        *,
+        bucket: str,
+        object_key: str,
+        offset: int = 0,
+        length: int | None = None,
+    ) -> FakeObjectStream:
+        self.open_calls.append((bucket, object_key, offset, length))
+        for stored in self.objects:
+            if stored.bucket == bucket and stored.object_key == object_key:
+                end = None if length is None else offset + length
+                stream = FakeObjectStream(stored.data[offset:end])
+                self.opened_streams.append(stream)
+                return stream
+        raise FileNotFoundError(object_key)
 
 
 async def _reset_database() -> None:
@@ -138,26 +223,63 @@ async def document_client() -> AsyncGenerator[tuple[AsyncClient, FakeDocumentSto
     app.dependency_overrides.clear()
 
 
-async def _create_user(*, email: str, password: str, role: str = "employee") -> UUID:
+async def _create_user(
+    *,
+    email: str,
+    password: str,
+    role: str = "employee",
+    assigned_department: bool = True,
+    department_code: str = "document-tests",
+    department_name: str = "文档测试部",
+) -> UUID:
     from app.core.database import AsyncSessionFactory
     from app.core.security import hash_password
+    from app.modules.department.models import UNASSIGNED_DEPARTMENT_ID, Department
     from app.modules.user.models import User
 
     normalized_email = email.lower()
-    user = User(
-        name=email.split("@", 1)[0],
-        email=normalized_email,
-        email_domain=normalized_email.rsplit("@", 1)[1],
-        password_hash=hash_password(password),
-        role=role,
-        status="active",
-        email_verified=True,
-    )
     async with AsyncSessionFactory() as session:
+        department = (
+            await session.execute(select(Department).where(Department.code == department_code))
+        ).scalar_one_or_none()
+        if department is None:
+            department = Department(name=department_name, code=department_code, status="active")
+            session.add(department)
+            await session.flush()
+        user = User(
+            name=email.split("@", 1)[0],
+            email=normalized_email,
+            email_domain=normalized_email.rsplit("@", 1)[1],
+            password_hash=hash_password(password),
+            department_id=department.id if assigned_department else UNASSIGNED_DEPARTMENT_ID,
+            department=department.name if assigned_department else None,
+            role=role,
+            status="active",
+            email_verified=True,
+        )
         session.add(user)
         await session.commit()
         await session.refresh(user)
         return user.id
+
+
+async def _get_user_department_id(user_id: UUID) -> UUID:
+    from app.core.database import AsyncSessionFactory
+    from app.modules.user.models import User
+
+    async with AsyncSessionFactory() as session:
+        user = await session.get(User, user_id)
+        assert user is not None
+        return user.department_id
+
+
+async def _grant_managed_department(*, admin_id: UUID, department_id: UUID) -> None:
+    from app.core.database import AsyncSessionFactory
+    from app.modules.department.models import UserManagedDepartment
+
+    async with AsyncSessionFactory() as session:
+        session.add(UserManagedDepartment(user_id=admin_id, department_id=department_id))
+        await session.commit()
 
 
 async def _login(client: AsyncClient, *, email: str, password: str) -> str:
@@ -181,7 +303,11 @@ async def test_upload_stores_file_metadata_and_minio_object(
         "/api/files/upload",
         headers={"Authorization": f"Bearer {token}"},
         files={"file": ("Handbook.pdf", PDF_BYTES, "application/pdf")},
-        data={"description": "员工手册", "visibility": "private"},
+        data={
+            "description": "员工手册",
+            "visibility": "private",
+            **UPLOAD_DRAFT_FORM,
+        },
     )
 
     assert response.status_code == 201
@@ -227,6 +353,131 @@ async def test_upload_stores_file_metadata_and_minio_object(
     assert audit_log.metadata_json["original_name"] == "Handbook.pdf"
     assert audit_log.metadata_json["size"] == len(PDF_BYTES)
     assert audit_log.metadata_json["duplicate"] is False
+
+
+async def test_upload_api_cannot_bypass_runtime_disabled_gate(
+    document_client: tuple[AsyncClient, FakeDocumentStorage],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from starlette.datastructures import UploadFile as StarletteUploadFile
+
+    from app.modules.document import api as document_api
+
+    client, storage = document_client
+    await _create_user(email="disabled-upload@company.com", password="password123")
+    token = await _login(client, email="disabled-upload@company.com", password="password123")
+
+    async def upload_disabled() -> bool:
+        return False
+
+    async def unexpected_rate_limit(*_args: object, **_kwargs: object) -> None:
+        pytest.fail("disabled upload must not consume rate-limit quota")
+
+    async def unexpected_read(self: StarletteUploadFile, size: int = -1) -> bytes:
+        pytest.fail(f"disabled upload must not read file content (size={size})")
+
+    monkeypatch.setattr(
+        "app.modules.document.service.resolve_upload_enabled",
+        upload_disabled,
+    )
+    monkeypatch.setattr(document_api, "_enforce_upload_rate_limit", unexpected_rate_limit)
+    monkeypatch.setattr(StarletteUploadFile, "read", unexpected_read)
+
+    response = await client.post(
+        "/api/files/upload",
+        headers={"Authorization": f"Bearer {token}"},
+        files={"file": ("blocked.pdf", PDF_BYTES, "application/pdf")},
+        data=UPLOAD_DRAFT_FORM,
+    )
+
+    assert response.status_code == 403
+    assert response.json()["error_code"] == "UPLOAD_DISABLED"
+    assert storage.objects == []
+
+
+async def test_unassigned_employee_cannot_upload(
+    document_client: tuple[AsyncClient, FakeDocumentStorage],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from starlette.datastructures import UploadFile as StarletteUploadFile
+
+    from app.modules.document import api as document_api
+
+    client, storage = document_client
+    await _create_user(
+        email="unassigned-upload@company.com",
+        password="password123",
+        assigned_department=False,
+    )
+    token = await _login(client, email="unassigned-upload@company.com", password="password123")
+
+    async def unexpected_rate_limit(*_args: object, **_kwargs: object) -> None:
+        pytest.fail("unassigned upload must not consume rate-limit quota")
+
+    async def unexpected_read(self: StarletteUploadFile, size: int = -1) -> bytes:
+        pytest.fail(f"unassigned upload must not read file content (size={size})")
+
+    monkeypatch.setattr(document_api, "_enforce_upload_rate_limit", unexpected_rate_limit)
+    monkeypatch.setattr(StarletteUploadFile, "read", unexpected_read)
+
+    response = await client.post(
+        "/api/files/upload",
+        headers={"Authorization": f"Bearer {token}"},
+        files={"file": ("blocked.pdf", PDF_BYTES, "application/pdf")},
+        data=UPLOAD_DRAFT_FORM,
+    )
+
+    assert response.status_code == 403
+    assert response.json()["error_code"] == "DEPARTMENT_ASSIGNMENT_REQUIRED"
+    assert storage.objects == []
+
+
+@pytest.mark.parametrize("role", ["dept_admin", "system_admin"])
+async def test_unassigned_admin_cannot_upload(
+    document_client: tuple[AsyncClient, FakeDocumentStorage],
+    role: str,
+) -> None:
+    client, storage = document_client
+    email = f"unassigned-{role}@company.com"
+    await _create_user(
+        email=email,
+        password="password123",
+        role=role,
+        assigned_department=False,
+    )
+    token = await _login(client, email=email, password="password123")
+
+    response = await client.post(
+        "/api/files/upload",
+        headers={"Authorization": f"Bearer {token}"},
+        files={"file": ("blocked.pdf", PDF_BYTES, "application/pdf")},
+        data=UPLOAD_DRAFT_FORM,
+    )
+
+    assert response.status_code == 403
+    assert response.json()["error_code"] == "DEPARTMENT_ASSIGNMENT_REQUIRED"
+    assert storage.objects == []
+
+
+async def test_upload_requires_explicit_submit_after_upload_choice(
+    document_client: tuple[AsyncClient, FakeDocumentStorage],
+) -> None:
+    client, storage = document_client
+    await _create_user(email="explicit-upload-choice@company.com", password="password123")
+    token = await _login(
+        client,
+        email="explicit-upload-choice@company.com",
+        password="password123",
+    )
+
+    response = await client.post(
+        "/api/files/upload",
+        headers={"Authorization": f"Bearer {token}"},
+        files={"file": ("choice.pdf", PDF_BYTES, "application/pdf")},
+    )
+
+    assert response.status_code == 422
+    assert storage.objects == []
 
 
 async def test_upload_can_submit_after_upload_when_ai_is_skipped(
@@ -291,7 +542,7 @@ async def test_upload_can_submit_after_upload_when_ai_is_skipped(
     assert outbox_events[1].payload["status"] == "pending_review"
 
 
-async def test_upload_save_draft_keeps_uploaded_and_disables_ai_pipeline(
+async def test_upload_save_draft_keeps_uploaded_while_ai_pipeline_runs(
     document_client: tuple[AsyncClient, FakeDocumentStorage],
 ) -> None:
     from app.core.database import AsyncSessionFactory
@@ -317,7 +568,7 @@ async def test_upload_save_draft_keeps_uploaded_and_disables_ai_pipeline(
     data = response.json()["data"]
     file_id = UUID(data["id"])
     assert data["status"] == "uploaded"
-    assert data["ai_analysis_enabled_at_upload"] is False
+    assert data["ai_analysis_enabled_at_upload"] is True
 
     async with AsyncSessionFactory() as session:
         saved_file = await session.get(File, file_id)
@@ -328,9 +579,81 @@ async def test_upload_save_draft_keeps_uploaded_and_disables_ai_pipeline(
 
     assert saved_file is not None
     assert saved_file.status == "uploaded"
-    assert saved_file.ai_analysis_enabled_at_upload is False
+    assert saved_file.ai_analysis_enabled_at_upload is True
+    assert saved_file.ai_config_snapshot is not None
+    assert saved_file.ai_config_snapshot["submit_after_upload"] is False
     assert outbox_event.event_type == "document.file.uploaded"
-    assert outbox_event.payload["ai_analysis_enabled_at_upload"] is False
+    assert outbox_event.payload["ai_analysis_enabled_at_upload"] is True
+    assert outbox_event.payload["submit_after_upload"] is False
+
+
+async def test_upload_save_draft_can_explicitly_skip_ai(
+    document_client: tuple[AsyncClient, FakeDocumentStorage],
+) -> None:
+    from app.core.database import AsyncSessionFactory
+    from app.modules.document.models import File
+
+    client, _storage = document_client
+    await _create_user(email="draft-no-ai@company.com", password="password123")
+    token = await _login(client, email="draft-no-ai@company.com", password="password123")
+
+    response = await client.post(
+        "/api/files/upload",
+        headers={"Authorization": f"Bearer {token}"},
+        files={"file": ("draft-no-ai.pdf", PDF_BYTES, "application/pdf")},
+        data={
+            "submit_after_upload": "false",
+            "ai_analysis_enabled": "false",
+        },
+    )
+
+    assert response.status_code == 201
+    file_id = UUID(response.json()["data"]["id"])
+    assert response.json()["data"]["status"] == "uploaded"
+    assert response.json()["data"]["ai_analysis_enabled_at_upload"] is False
+    async with AsyncSessionFactory() as session:
+        saved_file = await session.get(File, file_id)
+    assert saved_file is not None
+    assert saved_file.ai_config_snapshot is not None
+    assert saved_file.ai_config_snapshot["submit_after_upload"] is False
+
+
+async def test_upload_auto_submit_waits_for_enabled_ai_analysis(
+    document_client: tuple[AsyncClient, FakeDocumentStorage],
+) -> None:
+    from app.core.database import AsyncSessionFactory
+    from app.core.outbox import EventOutbox
+    from app.modules.document.models import File
+
+    client, _storage = document_client
+    await _create_user(email="submit-with-ai@company.com", password="password123")
+    token = await _login(client, email="submit-with-ai@company.com", password="password123")
+
+    response = await client.post(
+        "/api/files/upload",
+        headers={"Authorization": f"Bearer {token}"},
+        files={"file": ("submit-with-ai.pdf", PDF_BYTES, "application/pdf")},
+        data={
+            "submit_after_upload": "true",
+            "ai_analysis_enabled": "true",
+        },
+    )
+
+    assert response.status_code == 201
+    file_id = UUID(response.json()["data"]["id"])
+    assert response.json()["data"]["status"] == "uploaded"
+    assert response.json()["data"]["ai_analysis_enabled_at_upload"] is True
+    async with AsyncSessionFactory() as session:
+        saved_file = await session.get(File, file_id)
+        result = await session.execute(
+            select(EventOutbox).where(EventOutbox.aggregate_id == str(file_id))
+        )
+        events = list(result.scalars())
+    assert saved_file is not None
+    assert saved_file.ai_config_snapshot is not None
+    assert saved_file.ai_config_snapshot["submit_after_upload"] is True
+    assert [event.event_type for event in events] == ["document.file.uploaded"]
+    assert events[0].payload["submit_after_upload"] is True
 
 
 async def test_duplicate_upload_is_identified_without_reuploading_object(
@@ -344,11 +667,13 @@ async def test_duplicate_upload_is_identified_without_reuploading_object(
         "/api/files/upload",
         headers={"Authorization": f"Bearer {token}"},
         files={"file": ("first.pdf", PDF_BYTES, "application/pdf")},
+        data=UPLOAD_DRAFT_FORM,
     )
     second = await client.post(
         "/api/files/upload",
         headers={"Authorization": f"Bearer {token}"},
         files={"file": ("second.pdf", PDF_BYTES, "application/pdf")},
+        data=UPLOAD_DRAFT_FORM,
     )
 
     assert first.status_code == 201
@@ -374,11 +699,13 @@ async def test_same_hash_from_another_user_is_not_reported_as_duplicate(
         "/api/files/upload",
         headers={"Authorization": f"Bearer {first_token}"},
         files={"file": ("first.pdf", PDF_BYTES, "application/pdf")},
+        data=UPLOAD_DRAFT_FORM,
     )
     second = await client.post(
         "/api/files/upload",
         headers={"Authorization": f"Bearer {second_token}"},
         files={"file": ("second.pdf", PDF_BYTES, "application/pdf")},
+        data=UPLOAD_DRAFT_FORM,
     )
 
     assert first.status_code == 201
@@ -410,6 +737,7 @@ async def test_upload_deletes_new_object_when_database_commit_fails(
             "/api/files/upload",
             headers={"Authorization": f"Bearer {token}"},
             files={"file": ("handbook.pdf", PDF_BYTES, "application/pdf")},
+            data=UPLOAD_DRAFT_FORM,
         )
 
     assert storage.objects == []
@@ -434,6 +762,7 @@ async def test_duplicate_upload_does_not_delete_reused_object_when_commit_fails(
         "/api/files/upload",
         headers={"Authorization": f"Bearer {token}"},
         files={"file": ("first.pdf", PDF_BYTES, "application/pdf")},
+        data=UPLOAD_DRAFT_FORM,
     )
     assert first.status_code == 201
     assert len(storage.objects) == 1
@@ -448,6 +777,7 @@ async def test_duplicate_upload_does_not_delete_reused_object_when_commit_fails(
             "/api/files/upload",
             headers={"Authorization": f"Bearer {token}"},
             files={"file": ("second.pdf", PDF_BYTES, "application/pdf")},
+            data=UPLOAD_DRAFT_FORM,
         )
 
     assert len(storage.objects) == 1
@@ -465,6 +795,7 @@ async def test_upload_rejects_disallowed_extension(
         "/api/files/upload",
         headers={"Authorization": f"Bearer {token}"},
         files={"file": ("setup.exe", b"MZ fake executable", "application/octet-stream")},
+        data=UPLOAD_DRAFT_FORM,
     )
 
     assert response.status_code == 400
@@ -483,6 +814,7 @@ async def test_upload_rejects_mime_mismatch(
         "/api/files/upload",
         headers={"Authorization": f"Bearer {token}"},
         files={"file": ("fake.pdf", PNG_BYTES, "application/pdf")},
+        data=UPLOAD_DRAFT_FORM,
     )
 
     assert response.status_code == 400
@@ -501,6 +833,7 @@ async def test_upload_rejects_unrecognized_binary_disguised_as_pdf(
         "/api/files/upload",
         headers={"Authorization": f"Bearer {token}"},
         files={"file": ("fake.pdf", b"not a pdf", "application/pdf")},
+        data=UPLOAD_DRAFT_FORM,
     )
 
     assert response.status_code == 400
@@ -519,6 +852,7 @@ async def test_upload_rejects_pdf_with_only_magic_header(
         "/api/files/upload",
         headers={"Authorization": f"Bearer {token}"},
         files={"file": ("fake.pdf", b"%PDF-1.4\nplain payload", "application/pdf")},
+        data=UPLOAD_DRAFT_FORM,
     )
 
     assert response.status_code == 400
@@ -551,6 +885,7 @@ async def test_upload_rejects_legacy_ole_extension_even_if_configured(
         "/api/files/upload",
         headers={"Authorization": f"Bearer {token}"},
         files={"file": ("legacy.doc", OLE_BYTES, "application/msword")},
+        data=UPLOAD_DRAFT_FORM,
     )
 
     assert response.status_code == 400
@@ -569,6 +904,7 @@ async def test_upload_rejects_empty_file(
         "/api/files/upload",
         headers={"Authorization": f"Bearer {token}"},
         files={"file": ("empty.txt", b"", "text/plain")},
+        data=UPLOAD_DRAFT_FORM,
     )
 
     assert response.status_code == 400
@@ -590,6 +926,7 @@ async def test_upload_rejects_file_over_size_limit_before_storage(
         "/api/files/upload",
         headers={"Authorization": f"Bearer {token}"},
         files={"file": ("large.txt", b"a" * (1024 * 1024 + 1), "text/plain")},
+        data=UPLOAD_DRAFT_FORM,
     )
 
     assert response.status_code == 400
@@ -611,6 +948,7 @@ async def test_upload_sanitizes_reserved_filename_for_metadata_and_storage(
         "/api/files/upload",
         headers={"Authorization": f"Bearer {token}"},
         files={"file": ("CON.txt", b"safe text", "text/plain")},
+        data=UPLOAD_DRAFT_FORM,
     )
 
     assert response.status_code == 201
@@ -648,11 +986,13 @@ async def test_upload_is_rate_limited_per_user(
         "/api/files/upload",
         headers={"Authorization": f"Bearer {token}"},
         files={"file": ("first.txt", b"first text", "text/plain")},
+        data=UPLOAD_DRAFT_FORM,
     )
     second = await client.post(
         "/api/files/upload",
         headers={"Authorization": f"Bearer {token}"},
         files={"file": ("second.txt", b"second text", "text/plain")},
+        data=UPLOAD_DRAFT_FORM,
     )
 
     assert first.status_code == 201
@@ -680,11 +1020,13 @@ async def test_employee_lists_and_views_only_own_files(
         "/api/files/upload",
         headers={"Authorization": f"Bearer {owner_token}"},
         files={"file": ("owner.pdf", PDF_BYTES, "application/pdf")},
+        data=UPLOAD_DRAFT_FORM,
     )
     other_upload = await client.post(
         "/api/files/upload",
         headers={"Authorization": f"Bearer {other_token}"},
         files={"file": ("other.pdf", PDF_BYTES, "application/pdf")},
+        data=UPLOAD_DRAFT_FORM,
     )
 
     assert owner_upload.status_code == 201
@@ -715,6 +1057,238 @@ async def test_employee_lists_and_views_only_own_files(
     assert denied_detail.status_code == 404
     assert denied_detail.json()["error_code"] == "FILE_NOT_FOUND"
     assert other_id != owner_id
+
+
+async def test_my_files_uses_server_pagination_search_status_and_sort(
+    document_client: tuple[AsyncClient, FakeDocumentStorage],
+) -> None:
+    client, _storage = document_client
+    await _create_user(email="paged-owner@company.com", password="password123")
+    token = await _login(client, email="paged-owner@company.com", password="password123")
+    for filename in ("policy-beta.pdf", "notes.pdf", "policy-alpha.pdf"):
+        response = await client.post(
+            "/api/files/upload",
+            headers={"Authorization": f"Bearer {token}"},
+            files={"file": (filename, PDF_BYTES, "application/pdf")},
+            data={"submit_after_upload": "false"},
+        )
+        assert response.status_code == 201
+
+    response = await client.get(
+        "/api/files",
+        headers={"Authorization": f"Bearer {token}"},
+        params={
+            "q": "policy",
+            "status": "uploaded",
+            "page": 2,
+            "page_size": 1,
+            "sort": "original_name",
+            "order": "asc",
+        },
+    )
+
+    assert response.status_code == 200
+    data = response.json()["data"]
+    assert data["total"] == 2
+    assert data["page"] == 2
+    assert data["page_size"] == 1
+    assert data["total_pages"] == 2
+    assert [item["original_name"] for item in data["items"]] == ["policy-beta.pdf"]
+
+
+async def test_my_files_search_treats_percent_and_underscore_as_literals(
+    document_client: tuple[AsyncClient, FakeDocumentStorage],
+) -> None:
+    client, _storage = document_client
+    await _create_user(email="literal-search-owner@company.com", password="password123")
+    token = await _login(
+        client,
+        email="literal-search-owner@company.com",
+        password="password123",
+    )
+    file_ids: list[str] = []
+    for index, title in enumerate(("预算 100%_最终版", "预算 100AX最终版")):
+        upload = await client.post(
+            "/api/files/upload",
+            headers={"Authorization": f"Bearer {token}"},
+            files={"file": (f"literal-{index}.pdf", PDF_BYTES, "application/pdf")},
+            data=UPLOAD_DRAFT_FORM,
+        )
+        assert upload.status_code == 201
+        file_id = upload.json()["data"]["id"]
+        file_ids.append(file_id)
+        update = await client.patch(
+            f"/api/files/{file_id}",
+            headers={"Authorization": f"Bearer {token}"},
+            json={"expected_version": 0, "title": title},
+        )
+        assert update.status_code == 200
+
+    response = await client.get(
+        "/api/files",
+        headers={"Authorization": f"Bearer {token}"},
+        params={"q": "%_"},
+    )
+
+    assert response.status_code == 200
+    data = response.json()["data"]
+    assert data["total"] == 1
+    assert [item["id"] for item in data["items"]] == [file_ids[0]]
+
+
+async def test_owner_updates_draft_metadata_with_version_audit_and_title_search(
+    document_client: tuple[AsyncClient, FakeDocumentStorage],
+) -> None:
+    from app.core.database import AsyncSessionFactory
+    from app.modules.audit.models import AuditLog
+
+    client, _storage = document_client
+    owner_id = await _create_user(email="draft-editor@company.com", password="password123")
+    token = await _login(client, email="draft-editor@company.com", password="password123")
+    upload = await client.post(
+        "/api/files/upload",
+        headers={"Authorization": f"Bearer {token}"},
+        files={"file": ("legacy-name.pdf", PDF_BYTES, "application/pdf")},
+        data=UPLOAD_DRAFT_FORM,
+    )
+    assert upload.status_code == 201
+    uploaded = upload.json()["data"]
+    assert uploaded["title"] == "legacy-name.pdf"
+    assert uploaded["review_version"] == 0
+
+    response = await client.patch(
+        f"/api/files/{uploaded['id']}",
+        headers={"Authorization": f"Bearer {token}"},
+        json={
+            "expected_version": 0,
+            "title": "  新版安全手册  ",
+            "description": "员工可见说明",
+            "visibility": "department",
+        },
+    )
+
+    assert response.status_code == 200, response.text
+    updated = response.json()["data"]
+    assert updated["title"] == "新版安全手册"
+    assert updated["description"] == "员工可见说明"
+    assert updated["visibility"] == "department"
+    assert updated["review_version"] == 1
+    search = await client.get(
+        "/api/files",
+        headers={"Authorization": f"Bearer {token}"},
+        params={"q": "新版安全"},
+    )
+    assert search.status_code == 200
+    assert [item["id"] for item in search.json()["data"]["items"]] == [uploaded["id"]]
+
+    async with AsyncSessionFactory() as session:
+        audit = (
+            await session.execute(
+                select(AuditLog).where(
+                    AuditLog.actor_id == owner_id,
+                    AuditLog.action == "file.update_draft",
+                    AuditLog.target_id == UUID(uploaded["id"]),
+                )
+            )
+        ).scalar_one()
+    assert audit.metadata_json["changed_fields"] == ["description", "title", "visibility"]
+    assert audit.metadata_json["expected_version"] == 0
+    assert audit.metadata_json["review_version"] == 1
+
+
+async def test_draft_patch_is_owner_only_hides_deleted_and_locks_reviewed_files(
+    document_client: tuple[AsyncClient, FakeDocumentStorage],
+) -> None:
+    from app.core.database import AsyncSessionFactory
+    from app.modules.document.models import File
+
+    client, _storage = document_client
+    await _create_user(email="draft-owner@company.com", password="password123")
+    await _create_user(email="draft-attacker@company.com", password="password123")
+    owner_token = await _login(client, email="draft-owner@company.com", password="password123")
+    attacker_token = await _login(
+        client,
+        email="draft-attacker@company.com",
+        password="password123",
+    )
+    upload = await client.post(
+        "/api/files/upload",
+        headers={"Authorization": f"Bearer {owner_token}"},
+        files={"file": ("owner-only.pdf", PDF_BYTES, "application/pdf")},
+        data=UPLOAD_DRAFT_FORM,
+    )
+    file_id = UUID(upload.json()["data"]["id"])
+
+    denied = await client.patch(
+        f"/api/files/{file_id}",
+        headers={"Authorization": f"Bearer {attacker_token}"},
+        json={"expected_version": 0, "title": "越权标题"},
+    )
+    assert denied.status_code == 404
+    assert denied.json()["error_code"] == "FILE_NOT_FOUND"
+
+    async with AsyncSessionFactory() as session:
+        file = await session.get(File, file_id)
+        assert file is not None
+        file.status = "pending_review"
+        file.submitted_at = datetime.now(UTC)
+        file.review_due_at = file.submitted_at + timedelta(hours=24)
+        await session.commit()
+    locked = await client.patch(
+        f"/api/files/{file_id}",
+        headers={"Authorization": f"Bearer {owner_token}"},
+        json={"expected_version": 0, "title": "审核中不可改"},
+    )
+    assert locked.status_code == 409
+
+    async with AsyncSessionFactory() as session:
+        file = await session.get(File, file_id)
+        assert file is not None
+        file.status = "deleted"
+        file.submitted_at = None
+        file.review_due_at = None
+        await session.commit()
+    hidden = await client.patch(
+        f"/api/files/{file_id}",
+        headers={"Authorization": f"Bearer {owner_token}"},
+        json={"expected_version": 0, "title": "删除后不可见"},
+    )
+    assert hidden.status_code == 404
+    assert hidden.json()["error_code"] == "FILE_NOT_FOUND"
+
+
+async def test_concurrent_draft_patches_with_same_version_return_one_conflict(
+    document_client: tuple[AsyncClient, FakeDocumentStorage],
+) -> None:
+    client, _storage = document_client
+    await _create_user(email="draft-race@company.com", password="password123")
+    token = await _login(client, email="draft-race@company.com", password="password123")
+    upload = await client.post(
+        "/api/files/upload",
+        headers={"Authorization": f"Bearer {token}"},
+        files={"file": ("race.pdf", PDF_BYTES, "application/pdf")},
+        data=UPLOAD_DRAFT_FORM,
+    )
+    file_id = upload.json()["data"]["id"]
+
+    first, second = await asyncio.gather(
+        client.patch(
+            f"/api/files/{file_id}",
+            headers={"Authorization": f"Bearer {token}"},
+            json={"expected_version": 0, "title": "并发标题甲"},
+        ),
+        client.patch(
+            f"/api/files/{file_id}",
+            headers={"Authorization": f"Bearer {token}"},
+            json={"expected_version": 0, "title": "并发标题乙"},
+        ),
+    )
+
+    assert sorted([first.status_code, second.status_code]) == [200, 409]
+    conflict = first if first.status_code == 409 else second
+    success = first if first.status_code == 200 else second
+    assert conflict.json()["error_code"] == "FILE_VERSION_CONFLICT"
+    assert success.json()["data"]["review_version"] == 1
 
 
 async def _create_category_named(name: str) -> UUID:
@@ -796,6 +1370,7 @@ async def _upload_pdf(client: AsyncClient, *, token: str, filename: str) -> str:
         "/api/files/upload",
         headers={"Authorization": f"Bearer {token}"},
         files={"file": (filename, PDF_BYTES, "application/pdf")},
+        data=UPLOAD_DRAFT_FORM,
     )
     assert response.status_code == 201
     return str(response.json()["data"]["id"])
@@ -870,8 +1445,338 @@ async def test_file_detail_returns_null_extras_without_records(
     assert data["sync_error"] is None
 
 
-@pytest.mark.parametrize("admin_role", ["system_admin", "system_admin"])
-async def test_admin_views_any_file_detail_and_writes_audit(
+async def test_owner_reads_original_content_inline_and_with_byte_range(
+    document_client: tuple[AsyncClient, FakeDocumentStorage],
+) -> None:
+    client, storage = document_client
+    await _create_user(email="content-owner@company.com", password="password123")
+    token = await _login(client, email="content-owner@company.com", password="password123")
+    file_id = await _upload_pdf(client, token=token, filename="原件报告.pdf")
+
+    inline_response = await client.get(
+        f"/api/files/{file_id}/content",
+        headers={"Authorization": f"Bearer {token}"},
+    )
+    range_response = await client.get(
+        f"/api/files/{file_id}/content?disposition=attachment",
+        headers={
+            "Authorization": f"Bearer {token}",
+            "Range": "bytes=0-3",
+        },
+    )
+
+    assert inline_response.status_code == 200
+    assert inline_response.content == PDF_BYTES
+    assert inline_response.headers["content-type"] == "application/pdf"
+    assert inline_response.headers["accept-ranges"] == "bytes"
+    assert inline_response.headers["cache-control"] == "private, no-store"
+    assert inline_response.headers["content-length"] == str(len(PDF_BYTES))
+    assert inline_response.headers["content-security-policy"] == "sandbox"
+    assert inline_response.headers["etag"] == f'"{sha256(PDF_BYTES).hexdigest()}"'
+    assert inline_response.headers["x-content-type-options"] == "nosniff"
+    assert inline_response.headers["content-disposition"].startswith("inline;")
+    assert (
+        "filename*=UTF-8''%E5%8E%9F%E4%BB%B6%E6%8A%A5%E5%91%8A.pdf"
+        in (inline_response.headers["content-disposition"])
+    )
+    assert range_response.status_code == 206
+    assert range_response.content == PDF_BYTES[:4]
+    assert range_response.headers["content-range"] == f"bytes 0-3/{len(PDF_BYTES)}"
+    assert range_response.headers["content-length"] == "4"
+    assert range_response.headers["etag"] == inline_response.headers["etag"]
+    assert range_response.headers["content-disposition"].startswith("attachment;")
+    assert storage.get_object_calls == 0
+    assert storage.open_calls[0][2:] == (0, len(PDF_BYTES))
+    assert storage.open_calls[-1][2:] == (0, 4)
+    assert all(stream.closed for stream in storage.opened_streams)
+
+
+def _test_content_result() -> object:
+    return SimpleNamespace(
+        file=SimpleNamespace(
+            size=8,
+            mime_type="application/pdf",
+            extension="pdf",
+            original_name="preview.pdf",
+            hash="a" * 64,
+        )
+    )
+
+
+async def test_content_response_closes_stream_when_body_iteration_never_starts() -> None:
+    from app.modules.document import api as document_api
+    from app.modules.document.service import FileContentResult  # noqa: TID251 - same-module test
+
+    stream = BlockingObjectStream()
+    response = document_api._content_response(
+        cast(FileContentResult, _test_content_result()),
+        stream,
+        disposition="inline",
+        requested_range=None,
+    )
+    receive_blocked = asyncio.Event()
+
+    async def receive() -> Message:
+        await receive_blocked.wait()
+        return {"type": "http.disconnect"}
+
+    async def send(_message: Message) -> None:
+        raise RuntimeError("client disconnected before response body")
+
+    with pytest.raises(BaseExceptionGroup):
+        await response(cast(Scope, {"type": "http"}), receive, send)
+
+    assert stream.next_calls == 0
+    assert stream.close_calls == 1
+    assert stream.release_conn_calls == 1
+
+
+async def test_content_response_closes_stream_once_when_disconnected_before_first_chunk() -> None:
+    from app.modules.document import api as document_api
+    from app.modules.document.service import FileContentResult  # noqa: TID251 - same-module test
+
+    stream = BlockingObjectStream()
+    response = document_api._content_response(
+        cast(FileContentResult, _test_content_result()),
+        stream,
+        disposition="inline",
+        requested_range=None,
+    )
+    sent: list[Message] = []
+
+    async def receive() -> Message:
+        await stream.next_started.wait()
+        return {"type": "http.disconnect"}
+
+    async def send(message: Message) -> None:
+        sent.append(message)
+
+    await response(cast(Scope, {"type": "http"}), receive, send)
+
+    assert sent[0]["type"] == "http.response.start"
+    assert stream.next_calls == 1
+    assert stream.close_calls == 1
+    assert stream.release_conn_calls == 1
+
+
+async def test_content_cleanup_failure_does_not_replace_transport_error(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from app.modules.document import api as document_api
+    from app.modules.document.service import FileContentResult  # noqa: TID251 - same-module test
+
+    warnings: list[tuple[str, dict[str, object]]] = []
+
+    class FakeLogger:
+        def warning(self, event_name: str, **fields: object) -> None:
+            warnings.append((event_name, fields))
+
+    monkeypatch.setattr(document_api, "logger", FakeLogger())
+    stream = FailingCloseObjectStream()
+    response = document_api._content_response(
+        cast(FileContentResult, _test_content_result()),
+        stream,
+        disposition="inline",
+        requested_range=None,
+    )
+    receive_blocked = asyncio.Event()
+
+    async def receive() -> Message:
+        await receive_blocked.wait()
+        return {"type": "http.disconnect"}
+
+    async def send(_message: Message) -> None:
+        raise RuntimeError("primary transport failure")
+
+    with pytest.raises(BaseExceptionGroup) as raised:
+        await response(cast(Scope, {"type": "http"}), receive, send)
+
+    assert "primary transport failure" in repr(raised.value)
+    assert "private cleanup detail" not in repr(raised.value)
+    assert stream.next_calls == 0
+    assert stream.close_calls == 1
+    assert stream.release_conn_calls == 1
+    assert warnings == [
+        (
+            "document_content_stream_close_failed",
+            {"error_type": "OSError"},
+        )
+    ]
+
+
+async def test_original_content_rejects_invalid_or_multi_range(
+    document_client: tuple[AsyncClient, FakeDocumentStorage],
+) -> None:
+    client, _storage = document_client
+    await _create_user(email="range-owner@company.com", password="password123")
+    token = await _login(client, email="range-owner@company.com", password="password123")
+    file_id = await _upload_pdf(client, token=token, filename="range.pdf")
+
+    response = await client.get(
+        f"/api/files/{file_id}/content",
+        headers={
+            "Authorization": f"Bearer {token}",
+            "Range": "bytes=0-1,4-5",
+        },
+    )
+
+    assert response.status_code == 416
+    assert response.headers["content-range"] == f"bytes */{len(PDF_BYTES)}"
+
+
+@pytest.mark.parametrize(
+    ("extension", "mime_type"),
+    [
+        ("html", "text/html"),
+        ("xhtml", "application/xhtml+xml"),
+        ("bin", "application/octet-stream"),
+    ],
+)
+async def test_unsafe_or_unknown_content_type_is_never_served_inline(
+    document_client: tuple[AsyncClient, FakeDocumentStorage],
+    extension: str,
+    mime_type: str,
+) -> None:
+    from app.core.database import AsyncSessionFactory
+    from app.modules.document.models import File
+
+    client, _storage = document_client
+    await _create_user(email="unsafe-inline@company.com", password="password123")
+    token = await _login(client, email="unsafe-inline@company.com", password="password123")
+    file_id = await _upload_pdf(client, token=token, filename="unsafe.pdf")
+    async with AsyncSessionFactory() as session:
+        file = await session.get(File, UUID(file_id))
+        assert file is not None
+        file.extension = extension
+        file.mime_type = mime_type
+        await session.commit()
+
+    response = await client.get(
+        f"/api/files/{file_id}/content?disposition=inline",
+        headers={"Authorization": f"Bearer {token}"},
+    )
+
+    assert response.status_code == 200
+    assert response.headers["content-disposition"].startswith("attachment;")
+
+
+async def test_employee_cannot_read_another_users_original_content(
+    document_client: tuple[AsyncClient, FakeDocumentStorage],
+) -> None:
+    client, _storage = document_client
+    await _create_user(email="content-owner-2@company.com", password="password123")
+    owner_token = await _login(
+        client,
+        email="content-owner-2@company.com",
+        password="password123",
+    )
+    file_id = await _upload_pdf(client, token=owner_token, filename="private.pdf")
+    await _create_user(email="content-other@company.com", password="password123")
+    other_token = await _login(
+        client,
+        email="content-other@company.com",
+        password="password123",
+    )
+
+    response = await client.get(
+        f"/api/files/{file_id}/content",
+        headers={"Authorization": f"Bearer {other_token}"},
+    )
+
+    assert response.status_code == 404
+    assert response.json()["error_code"] == "FILE_NOT_FOUND"
+
+
+async def test_system_admin_downloads_original_and_writes_audit(
+    document_client: tuple[AsyncClient, FakeDocumentStorage],
+) -> None:
+    from app.core.database import AsyncSessionFactory
+    from app.modules.audit.models import AuditLog
+
+    client, _storage = document_client
+    owner_id = await _create_user(email="content-owner-3@company.com", password="password123")
+    owner_token = await _login(
+        client,
+        email="content-owner-3@company.com",
+        password="password123",
+    )
+    file_id = await _upload_pdf(client, token=owner_token, filename="admin-content.pdf")
+    admin_id = await _create_user(
+        email="content-admin@company.com",
+        password="password123",
+        role="system_admin",
+    )
+    admin_token = await _login(
+        client,
+        email="content-admin@company.com",
+        password="password123",
+    )
+
+    response = await client.get(
+        f"/api/files/{file_id}/content?disposition=attachment",
+        headers={"Authorization": f"Bearer {admin_token}"},
+    )
+
+    assert response.status_code == 200
+    assert response.content == PDF_BYTES
+    async with AsyncSessionFactory() as session:
+        result = await session.execute(
+            select(AuditLog).where(AuditLog.action == "file.view_content")
+        )
+        audit_log = result.scalar_one()
+    assert audit_log.actor_id == admin_id
+    assert audit_log.target_id == UUID(file_id)
+    assert audit_log.metadata_json["uploader_id"] == str(owner_id)
+    assert audit_log.metadata_json["disposition"] == "attachment"
+    assert audit_log.metadata_json["audit_semantics"] == "access_authorized_before_stream_open"
+    assert audit_log.metadata_json["stream_completion_confirmed"] is False
+
+
+async def test_admin_accessing_own_file_still_writes_detail_and_content_audits(
+    document_client: tuple[AsyncClient, FakeDocumentStorage],
+) -> None:
+    from app.core.database import AsyncSessionFactory
+    from app.modules.audit.models import AuditLog
+
+    client, _storage = document_client
+    admin_id = await _create_user(
+        email="admin-own-file@company.com",
+        password="password123",
+        role="system_admin",
+    )
+    token = await _login(client, email="admin-own-file@company.com", password="password123")
+    file_id = await _upload_pdf(client, token=token, filename="admin-owned.pdf")
+
+    detail_response = await client.get(
+        f"/api/files/{file_id}",
+        headers={"Authorization": f"Bearer {token}"},
+    )
+    content_response = await client.get(
+        f"/api/files/{file_id}/content?disposition=inline",
+        headers={"Authorization": f"Bearer {token}"},
+    )
+
+    assert detail_response.status_code == 200
+    assert content_response.status_code == 200
+    async with AsyncSessionFactory() as session:
+        result = await session.execute(
+            select(AuditLog).where(
+                AuditLog.actor_id == admin_id,
+                AuditLog.target_id == UUID(file_id),
+                AuditLog.action.in_(("file.view_detail", "file.view_content")),
+            )
+        )
+        logs = list(result.scalars())
+    assert {log.action for log in logs} == {"file.view_detail", "file.view_content"}
+    content_log = next(log for log in logs if log.action == "file.view_content")
+    assert content_log.metadata_json["audit_semantics"] == (
+        "access_authorized_before_stream_open"
+    )
+    assert content_log.metadata_json["stream_completion_confirmed"] is False
+
+
+@pytest.mark.parametrize("admin_role", ["system_admin", "dept_admin"])
+async def test_admin_views_authorized_file_detail_and_writes_audit(
     document_client: tuple[AsyncClient, FakeDocumentStorage],
     admin_role: str,
 ) -> None:
@@ -885,6 +1790,11 @@ async def test_admin_views_any_file_detail_and_writes_audit(
 
     admin_email = f"{admin_role.replace('_', '-')}@company.com"
     admin_id = await _create_user(email=admin_email, password="password123", role=admin_role)
+    if admin_role == "dept_admin":
+        await _grant_managed_department(
+            admin_id=admin_id,
+            department_id=await _get_user_department_id(owner_id),
+        )
     admin_token = await _login(client, email=admin_email, password="password123")
 
     response = await client.get(
@@ -909,6 +1819,57 @@ async def test_admin_views_any_file_detail_and_writes_audit(
     assert audit_logs[0].target_type == "file"
 
 
+async def test_dept_admin_cannot_view_unmanaged_department_file_detail(
+    document_client: tuple[AsyncClient, FakeDocumentStorage],
+) -> None:
+    from app.core.database import AsyncSessionFactory
+    from app.modules.audit.models import AuditLog
+
+    client, _storage = document_client
+    _owner_id = await _create_user(
+        email="detail-cross-dept-owner@company.com",
+        password="password123",
+    )
+    owner_token = await _login(
+        client,
+        email="detail-cross-dept-owner@company.com",
+        password="password123",
+    )
+    file_id = await _upload_pdf(client, token=owner_token, filename="cross-dept-view.pdf")
+    admin_id = await _create_user(
+        email="detail-cross-dept-admin@company.com",
+        password="password123",
+        role="dept_admin",
+        department_code="document-tests-other",
+        department_name="文档测试其他部门",
+    )
+    await _grant_managed_department(
+        admin_id=admin_id,
+        department_id=await _get_user_department_id(admin_id),
+    )
+    admin_token = await _login(
+        client,
+        email="detail-cross-dept-admin@company.com",
+        password="password123",
+    )
+
+    response = await client.get(
+        f"/api/files/{file_id}",
+        headers={"Authorization": f"Bearer {admin_token}"},
+    )
+
+    assert response.status_code == 404
+    assert response.json()["error_code"] == "FILE_NOT_FOUND"
+    async with AsyncSessionFactory() as session:
+        result = await session.execute(
+            select(AuditLog).where(
+                AuditLog.action == "file.view_detail",
+                AuditLog.target_id == UUID(file_id),
+            )
+        )
+        assert list(result.scalars()) == []
+
+
 async def test_file_detail_returns_analysis_fields(
     document_client: tuple[AsyncClient, FakeDocumentStorage],
 ) -> None:
@@ -921,7 +1882,7 @@ async def test_file_detail_returns_analysis_fields(
     upload_response = await client.post(
         "/api/files/upload",
         files={"file": ("test.pdf", PDF_BYTES, "application/pdf")},
-        data={"visibility": "private"},
+        data={"visibility": "private", **UPLOAD_DRAFT_FORM},
         headers={"Authorization": f"Bearer {token}"},
     )
     assert upload_response.status_code == 201

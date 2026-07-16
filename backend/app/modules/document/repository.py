@@ -16,6 +16,7 @@ from sqlalchemy import (
     Text,
     case,
     func,
+    or_,
     select,
 )
 from sqlalchemy import update as sql_update
@@ -75,6 +76,10 @@ AI_FEATURE_CONFIGS = Table(
 )
 
 
+def _escape_like(value: str) -> str:
+    return value.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
+
+
 @dataclass(frozen=True)
 class DocumentAnalysisRecord:
     status: str
@@ -107,6 +112,12 @@ class DocumentRepository:
         result = await self._session.execute(select(File).where(File.id == file_id))
         return result.scalar_one_or_none()
 
+    async def get_by_id_for_update(self, file_id: uuid.UUID) -> File | None:
+        result = await self._session.execute(
+            select(File).where(File.id == file_id).with_for_update()
+        )
+        return result.scalar_one_or_none()
+
     async def get_for_uploader(self, *, file_id: uuid.UUID, uploader_id: uuid.UUID) -> File | None:
         result = await self._session.execute(
             select(File).where(
@@ -121,21 +132,67 @@ class DocumentRepository:
         self,
         uploader_id: uuid.UUID,
         *,
+        page: int,
+        page_size: int,
+        search: str | None = None,
+        status: str | None = None,
         extension: str | None = None,
         tag_id: uuid.UUID | None = None,
-    ) -> list[File]:
+        expiry_status: str | None = None,
+        sort: str = "uploaded_at",
+        order: str = "desc",
+    ) -> tuple[list[File], int]:
         stmt = select(File).where(
             File.uploader_id == uploader_id,
             File.status.not_in(HIDDEN_FILE_STATUSES),
         )
+        count_stmt = select(func.count(func.distinct(File.id))).where(
+            File.uploader_id == uploader_id,
+            File.status.not_in(HIDDEN_FILE_STATUSES),
+        )
+        if search:
+            pattern = f"%{_escape_like(search)}%"
+            predicate = or_(
+                File.title.ilike(pattern, escape="\\"),
+                File.original_name.ilike(pattern, escape="\\"),
+                File.description.ilike(pattern, escape="\\"),
+            )
+            stmt = stmt.where(predicate)
+            count_stmt = count_stmt.where(predicate)
+        if status:
+            stmt = stmt.where(File.status == status)
+            count_stmt = count_stmt.where(File.status == status)
         if extension:
             stmt = stmt.where(File.extension == extension)
+            count_stmt = count_stmt.where(File.extension == extension)
+        if expiry_status:
+            stmt = stmt.where(File.expiry_status == expiry_status)
+            count_stmt = count_stmt.where(File.expiry_status == expiry_status)
         if tag_id is not None:
             stmt = stmt.join(FILE_TAGS, FILE_TAGS.c.file_id == File.id).where(
                 FILE_TAGS.c.tag_id == tag_id
             )
-        result = await self._session.execute(stmt.order_by(File.uploaded_at.desc()))
-        return list(result.scalars())
+            count_stmt = count_stmt.join(FILE_TAGS, FILE_TAGS.c.file_id == File.id).where(
+                FILE_TAGS.c.tag_id == tag_id
+            )
+        sort_columns = {
+            "uploaded_at": File.uploaded_at,
+            "updated_at": File.updated_at,
+            "original_name": File.original_name,
+            "title": File.title,
+            "size": File.size,
+            "status": File.status,
+        }
+        sort_column = sort_columns.get(sort, File.uploaded_at)
+        order_expression = sort_column.asc() if order == "asc" else sort_column.desc()
+        stmt = (
+            stmt.order_by(order_expression, File.id.asc())
+            .offset((page - 1) * page_size)
+            .limit(page_size)
+        )
+        result = await self._session.execute(stmt)
+        total = int((await self._session.execute(count_stmt)).scalar_one())
+        return list(result.scalars()), total
 
     async def find_first_by_hash_for_uploader(
         self,

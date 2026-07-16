@@ -54,6 +54,7 @@ class EmployeeActionCounts(BaseModel):
 class RecentDocument(BaseModel):
     id: UUID
     original_name: str
+    title: str
     extension: str
     status: str
     review_status: str
@@ -93,6 +94,7 @@ class ReviewQueueCounts(BaseModel):
 class ReviewQueueItem(BaseModel):
     id: UUID
     original_name: str
+    title: str
     extension: str
     uploader_name: str
     department_id: UUID

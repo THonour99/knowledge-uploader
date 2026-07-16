@@ -9,10 +9,12 @@ from uuid import UUID
 class ReviewFileRecord:
     id: UUID
     original_name: str
+    title: str
     extension: str
     mime_type: str
     size: int
     uploader_id: UUID
+    uploader_name: str | None
     department_id: UUID
     department: str | None
     category_id: UUID | None
@@ -22,6 +24,14 @@ class ReviewFileRecord:
     tags: list[str]  # AI 建议标签快照; 正式标签关联见 tags/file_tags
     status: str
     review_status: str
+    submitted_at: datetime | None
+    review_due_at: datetime | None
+    claimed_by: UUID | None
+    claimed_by_name: str | None
+    claimed_at: datetime | None
+    claim_expires_at: datetime | None
+    review_version: int
+    sensitive_risk_level: str | None
     ragflow_dataset_id: str | None
     ragflow_document_id: str | None
     ragflow_parse_status: str | None

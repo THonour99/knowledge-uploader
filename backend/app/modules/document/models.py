@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import uuid
 from datetime import datetime
+from typing import Protocol
 
 from sqlalchemy import (
     BigInteger,
@@ -10,6 +11,7 @@ from sqlalchemy import (
     DateTime,
     ForeignKey,
     Index,
+    Integer,
     SmallInteger,
     String,
     Text,
@@ -20,6 +22,18 @@ from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.orm import Mapped, mapped_column
 
 from app.db.base import Base
+
+
+class _InsertDefaultContext(Protocol):
+    def get_current_parameters(self) -> dict[str, object]: ...
+
+
+def _title_from_original_name(context: _InsertDefaultContext) -> str:
+    original_name = context.get_current_parameters().get("original_name")
+    if not isinstance(original_name, str) or not original_name:
+        msg = "original_name is required to derive file title"
+        raise ValueError(msg)
+    return original_name
 
 
 class File(Base):
@@ -53,6 +67,47 @@ class File(Base):
         Index("idx_files_hash", "hash"),
         Index("idx_files_status", "status"),
         Index("idx_files_review_status", "review_status"),
+        Index(
+            "idx_files_review_queue",
+            "review_due_at",
+            "submitted_at",
+            postgresql_where=sql_text("status = 'pending_review'"),
+        ),
+        Index(
+            "idx_files_review_claim",
+            "claimed_by",
+            "claim_expires_at",
+            postgresql_where=sql_text("claimed_by IS NOT NULL"),
+        ),
+        CheckConstraint("review_version >= 0", name="ck_files_review_version_non_negative"),
+        CheckConstraint(
+            "(submitted_at IS NULL AND review_due_at IS NULL) OR "
+            "(submitted_at IS NOT NULL AND review_due_at IS NOT NULL "
+            "AND review_due_at > submitted_at)",
+            name="ck_files_review_sla_pair_valid",
+        ),
+        CheckConstraint(
+            "status <> 'pending_review' OR "
+            "(submitted_at IS NOT NULL AND review_due_at IS NOT NULL)",
+            name="ck_files_pending_review_requires_sla",
+        ),
+        CheckConstraint(
+            "(claimed_by IS NULL AND claimed_at IS NULL AND claim_expires_at IS NULL) OR "
+            "(claimed_by IS NOT NULL AND claimed_at IS NOT NULL "
+            "AND claim_expires_at IS NOT NULL AND claim_expires_at > claimed_at)",
+            name="ck_files_claim_expiry_after_claim",
+        ),
+        CheckConstraint(
+            "(status = 'pending_review' AND ("
+            "(review_status = 'pending' AND claimed_by IS NULL "
+            "AND claimed_at IS NULL AND claim_expires_at IS NULL) OR "
+            "(review_status = 'in_review' AND claimed_by IS NOT NULL "
+            "AND claimed_at IS NOT NULL AND claim_expires_at IS NOT NULL))) OR "
+            "(status <> 'pending_review' AND claimed_by IS NULL "
+            "AND claimed_at IS NULL AND claim_expires_at IS NULL "
+            "AND review_status <> 'in_review')",
+            name="ck_files_claim_review_status_consistent",
+        ),
         Index("idx_files_category_id", "category_id"),
         Index("idx_files_dataset_mapping_id", "dataset_mapping_id"),
         Index("idx_files_object_key", "object_key"),
@@ -80,6 +135,11 @@ class File(Base):
 
     id: Mapped[uuid.UUID] = mapped_column(primary_key=True, default=uuid.uuid4)
     original_name: Mapped[str] = mapped_column(String(255), nullable=False)
+    title: Mapped[str] = mapped_column(
+        String(255),
+        nullable=False,
+        default=_title_from_original_name,
+    )
     stored_name: Mapped[str] = mapped_column(String(255), nullable=False)
     extension: Mapped[str] = mapped_column(String(20), nullable=False)
     mime_type: Mapped[str] = mapped_column(String(120), nullable=False)
@@ -118,6 +178,14 @@ class File(Base):
         nullable=False,
         server_default="pending",
     )
+    submitted_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    review_due_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    claimed_by: Mapped[uuid.UUID | None] = mapped_column(
+        ForeignKey("users.id", ondelete="RESTRICT"),
+    )
+    claimed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    claim_expires_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    review_version: Mapped[int] = mapped_column(Integer, nullable=False, server_default="0")
     ragflow_dataset_id: Mapped[str | None] = mapped_column(String(120))
     ragflow_document_id: Mapped[str | None] = mapped_column(String(120))
     ragflow_parse_status: Mapped[str | None] = mapped_column(String(40))

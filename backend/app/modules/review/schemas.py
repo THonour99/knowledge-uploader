@@ -1,9 +1,12 @@
 from __future__ import annotations
 
 from datetime import datetime
+from typing import Literal
 from uuid import UUID
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, ConfigDict, Field
+
+from app.modules.document.schemas import FileResponse
 
 
 class ReviewModuleStatus(BaseModel):
@@ -134,15 +137,34 @@ class TagListResponse(BaseModel):
 
 
 class ReviewDecisionRequest(BaseModel):
+    sync_decision: Literal["sync", "approve_only"]
     category_id: UUID | None = None
     dataset_mapping_id: UUID | None = None
-    reason: str | None = None
+    reason: str | None = Field(default=None, max_length=1000)
 
 
 class RejectFileRequest(BaseModel):
-    reason: str
+    reason: str = Field(min_length=1, max_length=1000)
+
+
+class ReleaseReviewClaimRequest(BaseModel):
+    reason: str | None = Field(default=None, max_length=1000)
+
+
+class SubmitReviewRequest(BaseModel):
+    acknowledge_sensitive_risk: bool = False
+
+
+class ReviewDecisionResponse(FileResponse):
+    sync_decision: Literal["sync", "approve_only"]
+    sync_task_id: UUID | None = None
 
 
 class UpdateFileClassificationRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    # Compatibility-only discriminator used by older clients; classification remains a
+    # metadata draft and never makes the approval/sync decision itself.
+    sync_decision: Literal["sync", "approve_only"] | None = None
     category_id: UUID | None = None
     dataset_mapping_id: UUID | None = None

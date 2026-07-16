@@ -50,6 +50,7 @@ async def _create_file_row(*, uploader_id: UUID, status: str = "uploaded") -> UU
 
     file = File(
         original_name="victim.txt",
+        title="victim.txt",
         stored_name="file-victim.txt",
         extension="txt",
         mime_type="text/plain",

@@ -9,10 +9,13 @@ from .base import (
     RagflowClientError,
     RagflowDocumentNotFoundError,
     RagflowDocumentStatus,
+    RagflowSubmissionOutcomeUnknownError,
     RagflowUploadResult,
 )
 
 DEFAULT_TIMEOUT_SECONDS = 30.0
+RAGFLOW_RECONCILIATION_PAGE_SIZE = 100
+RAGFLOW_RECONCILIATION_MAX_PAGES = 1000
 
 
 class HttpRagflowClient:
@@ -56,11 +59,68 @@ class HttpRagflowClient:
             "POST",
             f"/api/v1/datasets/{dataset_id}/documents",
             files={"file": (filename, content, content_type)},
+            submission_outcome_unknown=True,
         )
         document = self._extract_first_document(payload)
         document_id = document.get("id")
         if not isinstance(document_id, str) or not document_id:
-            raise self._client_error("RAGFlow upload response missing document id")
+            raise self._submission_outcome_unknown(
+                "RAGFlow upload response missing document id"
+            )
+        return RagflowUploadResult(document_id=document_id, raw=document)
+
+    async def find_document_by_name(
+        self,
+        *,
+        dataset_id: str,
+        name: str,
+    ) -> RagflowUploadResult | None:
+        """Use RAGFlow's keyword filter, then enforce exact-name uniqueness client-side."""
+        matches_by_id: dict[str, dict[str, object]] = {}
+        seen_pages: set[tuple[tuple[object, object], ...]] = set()
+        documents_seen = 0
+        exhausted = False
+        for page in range(1, RAGFLOW_RECONCILIATION_MAX_PAGES + 1):
+            payload = await self._request(
+                "GET",
+                f"/api/v1/datasets/{dataset_id}/documents",
+                params={
+                    "page": page,
+                    "page_size": RAGFLOW_RECONCILIATION_PAGE_SIZE,
+                    "keywords": name,
+                },
+            )
+            documents = self._extract_documents(payload)
+            if not documents:
+                exhausted = True
+                break
+            page_signature = tuple(
+                (document.get("id"), document.get("name")) for document in documents
+            )
+            if page_signature in seen_pages:
+                raise self._client_error("RAGFlow reconciliation pagination did not advance")
+            seen_pages.add(page_signature)
+            documents_seen += len(documents)
+            for document in documents:
+                if document.get("name") != name:
+                    continue
+                document_id = document.get("id")
+                if not isinstance(document_id, str) or not document_id:
+                    raise self._client_error(
+                        "RAGFlow reconciliation response missing document id"
+                    )
+                matches_by_id[document_id] = document
+            total = self._extract_total(payload)
+            if total is not None and documents_seen >= total:
+                exhausted = True
+                break
+        if not exhausted:
+            raise self._client_error("RAGFlow reconciliation pagination limit exceeded")
+        if not matches_by_id:
+            return None
+        if len(matches_by_id) > 1:
+            raise self._client_error("RAGFlow reconciliation found duplicate document names")
+        document_id, document = next(iter(matches_by_id.items()))
         return RagflowUploadResult(document_id=document_id, raw=document)
 
     async def update_document_metadata(
@@ -131,6 +191,7 @@ class HttpRagflowClient:
         json: object | None = None,
         files: RequestFiles | None = None,
         params: QueryParamTypes | None = None,
+        submission_outcome_unknown: bool = False,
     ) -> dict[str, object]:
         if not self._api_key.strip():
             raise self._client_error("RAGFlow API key is not configured")
@@ -144,6 +205,7 @@ class HttpRagflowClient:
                     json=json,
                     files=files,
                     params=params,
+                    follow_redirects=False,
                 )
             else:
                 async with httpx.AsyncClient(timeout=self._timeout_seconds) as client:
@@ -154,22 +216,48 @@ class HttpRagflowClient:
                         json=json,
                         files=files,
                         params=params,
+                        follow_redirects=False,
                     )
         except httpx.HTTPError as exc:
-            raise self._client_error(f"RAGFlow request failed: {type(exc).__name__}") from None
-        return self._parse_response(response)
+            message = f"RAGFlow request failed: {type(exc).__name__}"
+            if submission_outcome_unknown:
+                raise self._submission_outcome_unknown(message) from None
+            raise self._client_error(message) from None
+        return self._parse_response(
+            response,
+            submission_outcome_unknown=submission_outcome_unknown,
+        )
 
     def _headers(self) -> dict[str, str]:
         return {"Authorization": f"Bearer {self._api_key}"}
 
-    def _parse_response(self, response: httpx.Response) -> dict[str, object]:
+    def _parse_response(
+        self,
+        response: httpx.Response,
+        *,
+        submission_outcome_unknown: bool = False,
+    ) -> dict[str, object]:
+        if 300 <= response.status_code < 400:
+            raise self._client_error("RAGFlow request refused an HTTP redirect")
         if response.status_code >= 400:
+            if submission_outcome_unknown and response.status_code >= 500:
+                raise self._submission_outcome_unknown(
+                    f"RAGFlow request failed: HTTP {response.status_code}"
+                )
             raise self._client_error(f"RAGFlow request failed: HTTP {response.status_code}")
         try:
             payload = response.json()
         except ValueError:
+            if submission_outcome_unknown:
+                raise self._submission_outcome_unknown(
+                    "RAGFlow upload response is not JSON"
+                ) from None
             raise self._client_error("RAGFlow response is not JSON") from None
         if not isinstance(payload, dict):
+            if submission_outcome_unknown:
+                raise self._submission_outcome_unknown(
+                    "RAGFlow upload response has invalid shape"
+                )
             raise self._client_error("RAGFlow response has invalid shape")
 
         typed_payload = cast(dict[str, object], payload)
@@ -184,7 +272,9 @@ class HttpRagflowClient:
         documents = self._extract_documents(payload)
         if documents:
             return documents[0]
-        raise self._client_error("RAGFlow response missing document data")
+        raise self._submission_outcome_unknown(
+            "RAGFlow upload response missing document data"
+        )
 
     def _extract_document_by_id(
         self,
@@ -209,8 +299,27 @@ class HttpRagflowClient:
                 documents.extend(dict(item) for item in docs if isinstance(item, dict))
         return documents
 
+    def _extract_total(self, payload: dict[str, object]) -> int | None:
+        data = payload.get("data")
+        if not isinstance(data, dict):
+            return None
+        total = data.get("total")
+        if isinstance(total, int) and total >= 0:
+            return total
+        if isinstance(total, str) and total.isdigit():
+            return int(total)
+        return None
+
     def _client_error(self, message: str) -> RagflowClientError:
         return RagflowClientError(redact_secret(message, self._api_key))
+
+    def _submission_outcome_unknown(
+        self,
+        message: str,
+    ) -> RagflowSubmissionOutcomeUnknownError:
+        return RagflowSubmissionOutcomeUnknownError(
+            redact_secret(message, self._api_key)
+        )
 
 
 def _is_document_not_found(message: str) -> bool:

@@ -4,6 +4,9 @@ from .base import RagflowDocumentStatus, RagflowUploadResult
 
 
 class MockRagflowClient:
+    def __init__(self) -> None:
+        self._documents: dict[tuple[str, str], RagflowUploadResult] = {}
+
     async def ping(self) -> bool:
         return True
 
@@ -15,10 +18,20 @@ class MockRagflowClient:
         content: bytes,
         content_type: str,
     ) -> RagflowUploadResult:
-        return RagflowUploadResult(
+        result = RagflowUploadResult(
             document_id=f"mock-{dataset_id}-{filename}",
             raw={"dataset_id": dataset_id, "name": filename, "size": len(content)},
         )
+        self._documents[(dataset_id, filename)] = result
+        return result
+
+    async def find_document_by_name(
+        self,
+        *,
+        dataset_id: str,
+        name: str,
+    ) -> RagflowUploadResult | None:
+        return self._documents.get((dataset_id, name))
 
     async def update_document_metadata(
         self,

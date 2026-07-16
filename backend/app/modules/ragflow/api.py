@@ -20,7 +20,7 @@ from app.modules.user.schemas import AuthUserRecord
 
 from .exceptions import RagflowTaskError
 from .repository import RagflowTaskRepository  # noqa: TID251 - same-module repository dependency
-from .schemas import SyncTaskListResponse, SyncTaskLogResponse, SyncTaskResponse
+from .schemas import ManualSyncRequest, SyncTaskListResponse, SyncTaskLogResponse, SyncTaskResponse
 from .service import (  # noqa: TID251 - same-module service dependency
     RagflowTaskService,
     RequestContext,
@@ -165,6 +165,7 @@ async def cancel_task(
 @router.post("/api/admin/files/{file_id}/sync")
 async def manual_sync_file(
     file_id: UUID,
+    payload: ManualSyncRequest,
     request: Request,
     current_user: CurrentUserDep,
     scope: ScopedAdminDep,
@@ -175,6 +176,8 @@ async def manual_sync_file(
             current_user=current_user,
             scope=scope,
             file_id=file_id,
+            dataset_mapping_id=payload.dataset_mapping_id,
+            reason=payload.reason,
             context=_context_from(request),
         )
     except RagflowTaskError as error:

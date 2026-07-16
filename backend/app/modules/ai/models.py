@@ -257,6 +257,7 @@ class DocumentAnalysis(Base):
         server_default=sql_text("'[]'::jsonb"),
     )
     error_message: Mapped[str | None] = mapped_column(Text)
+    lease_token: Mapped[str | None] = mapped_column(String(64))
     started_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     finished_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     created_at: Mapped[datetime] = mapped_column(

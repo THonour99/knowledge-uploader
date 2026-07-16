@@ -432,6 +432,7 @@ def _recent_document(record: RecentDocumentRecord) -> RecentDocument:
     return RecentDocument(
         id=record.id,
         original_name=record.original_name,
+        title=record.title,
         extension=record.extension,
         status=record.status,
         review_status=record.review_status,
@@ -493,6 +494,7 @@ def _review_queue_item(
     return ReviewQueueItem(
         id=record.id,
         original_name=record.original_name,
+        title=record.title,
         extension=record.extension,
         uploader_name=record.uploader_name,
         department_id=record.department_id,

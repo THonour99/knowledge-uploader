@@ -1,9 +1,10 @@
 from __future__ import annotations
 
 from datetime import UTC, datetime, timedelta
+from typing import Annotated, Literal, Self
 from uuid import UUID
 
-from pydantic import BaseModel
+from pydantic import BaseModel, ConfigDict, Field, StringConstraints, model_validator
 
 
 class DocumentModuleStatus(BaseModel):
@@ -36,10 +37,12 @@ def effective_expiry_status(
 class FileResponse(BaseModel):
     id: UUID
     original_name: str
+    title: str
     extension: str
     mime_type: str
     size: int
     uploader_id: UUID
+    uploader_name: str | None = None
     department_id: UUID
     department_name: str | None = None
     department_code: str | None = None
@@ -52,6 +55,14 @@ class FileResponse(BaseModel):
     tags: list[str]
     status: str
     review_status: str
+    submitted_at: datetime | None = None
+    review_due_at: datetime | None = None
+    claimed_by: UUID | None = None
+    claimed_by_name: str | None = None
+    claimed_at: datetime | None = None
+    claim_expires_at: datetime | None = None
+    review_version: int = 0
+    sensitive_risk_level: str | None = None
     ragflow_dataset_id: str | None
     ragflow_document_id: str | None
     ragflow_parse_status: str | None
@@ -69,6 +80,38 @@ class FileResponse(BaseModel):
 class FileListResponse(BaseModel):
     items: list[FileResponse]
     total: int
+    page: int = 1
+    page_size: int = 20
+    total_pages: int = 0
+
+
+DraftTitle = Annotated[
+    str,
+    StringConstraints(strip_whitespace=True, min_length=1, max_length=255),
+]
+
+
+class FileDraftUpdateRequest(BaseModel):
+    """Owner-only draft metadata mutation guarded by the shared file version."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    expected_version: int = Field(ge=0)
+    title: DraftTitle | None = None
+    description: str | None = Field(default=None, max_length=2000)
+    visibility: Literal["private", "department", "company"] | None = None
+
+    @model_validator(mode="after")
+    def validate_patch(self) -> Self:
+        mutable_fields = {"title", "description", "visibility"}
+        supplied_fields = self.model_fields_set & mutable_fields
+        if not supplied_fields:
+            raise ValueError("at least one draft metadata field is required")
+        if "title" in supplied_fields and self.title is None:
+            raise ValueError("title cannot be null")
+        if "visibility" in supplied_fields and self.visibility is None:
+            raise ValueError("visibility cannot be null")
+        return self
 
 
 class FileAnalysisDetail(BaseModel):

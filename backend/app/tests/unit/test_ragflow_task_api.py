@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import os
 from collections.abc import AsyncGenerator, Awaitable, Callable
+from datetime import UTC, datetime, timedelta
 from uuid import UUID
 
 import pytest
@@ -122,7 +123,7 @@ async def _create_file(
     *,
     uploader_id: UUID,
     status_value: str = "pending_review",
-    review_status: str = "in_review",
+    review_status: str = "pending",
     hash_value: str = "b" * 64,
     department_id: UUID = UNASSIGNED_DEPARTMENT_ID,
     department: str | None = "QA",
@@ -134,8 +135,13 @@ async def _create_file(
     from app.core.database import AsyncSessionFactory
     from app.modules.document.models import File
 
+    submitted_at = datetime.now(UTC) if status_value == "pending_review" else None
+    review_due_at = (
+        submitted_at + timedelta(hours=24) if submitted_at is not None else None
+    )
     file = File(
         original_name="phase4-handbook.pdf",
+        title="phase4-handbook.pdf",
         stored_name="file-phase4-handbook.pdf",
         extension="pdf",
         mime_type="application/pdf",
@@ -152,6 +158,8 @@ async def _create_file(
         tags=[],
         status=status_value,
         review_status=review_status,
+        submitted_at=submitted_at,
+        review_due_at=review_due_at,
         ragflow_dataset_id=ragflow_dataset_id,
         ragflow_document_id=ragflow_document_id,
         ragflow_parse_status=ragflow_parse_status,
@@ -222,10 +230,20 @@ async def test_approving_file_queues_ragflow_creation_event(
     file_id = await _create_file(uploader_id=uploader_id)
     category_id, mapping_id = await _create_category_and_mapping(task_client, token)
 
+    claim_response = await task_client.post(
+        f"/api/review/files/{file_id}/claim",
+        headers={"Authorization": f"Bearer {token}"},
+    )
+    assert claim_response.status_code == 200
+
     response = await task_client.post(
         f"/api/files/{file_id}/approve",
         headers={"Authorization": f"Bearer {token}"},
-        json={"category_id": category_id, "dataset_mapping_id": mapping_id},
+        json={
+            "sync_decision": "sync",
+            "category_id": category_id,
+            "dataset_mapping_id": mapping_id,
+        },
     )
 
     assert response.status_code == 200
@@ -238,6 +256,8 @@ async def test_approving_file_queues_ragflow_creation_event(
 
     assert outbox_event.payload["file_id"] == str(file_id)
     assert outbox_event.payload["status"] == "queued"
+    assert outbox_event.payload["sync_decision"] == "sync"
+    assert outbox_event.payload["dataset_mapping_id"] == mapping_id
     assert outbox_event.payload["ragflow_dataset_id"] == "ragflow-phase4"
 
 
@@ -706,6 +726,8 @@ class _FakeRagflowClient:
         self.metadata_updates: list[dict[str, object]] = []
         self.parse_requests: list[tuple[str, str]] = []
         self.status_requests: list[tuple[str, str]] = []
+        self.find_requests: list[tuple[str, str]] = []
+        self.remote_documents: dict[tuple[str, str], object] = {}
 
     async def ping(self) -> bool:
         return True
@@ -728,7 +750,21 @@ class _FakeRagflowClient:
                 "content_type": content_type,
             }
         )
-        return RagflowUploadResult(document_id=self.document_id, raw={"id": self.document_id})
+        result = RagflowUploadResult(
+            document_id=self.document_id,
+            raw={"id": self.document_id, "name": filename},
+        )
+        self.remote_documents[(dataset_id, filename)] = result
+        return result
+
+    async def find_document_by_name(
+        self,
+        *,
+        dataset_id: str,
+        name: str,
+    ) -> object | None:
+        self.find_requests.append((dataset_id, name))
+        return self.remote_documents.get((dataset_id, name))
 
     async def update_document_metadata(
         self,
@@ -772,18 +808,125 @@ class _FakeRagflowClient:
         )
 
 
+class _LostFirstUploadResponseClient(_FakeRagflowClient):
+    def __init__(self) -> None:
+        super().__init__(document_id="ragflow-reconciled-doc")
+        self._lose_response = True
+
+    async def upload_document(
+        self,
+        *,
+        dataset_id: str,
+        filename: str,
+        content: bytes,
+        content_type: str,
+    ) -> object:
+        result = await super().upload_document(
+            dataset_id=dataset_id,
+            filename=filename,
+            content=content,
+            content_type=content_type,
+        )
+        if self._lose_response:
+            from app.adapters.ragflow.base import RagflowSubmissionOutcomeUnknownError
+
+            self._lose_response = False
+            raise RagflowSubmissionOutcomeUnknownError(
+                "connection lost after remote upload committed"
+            )
+        return result
+
+
+class _PerNameRagflowClient(_FakeRagflowClient):
+    async def upload_document(
+        self,
+        *,
+        dataset_id: str,
+        filename: str,
+        content: bytes,
+        content_type: str,
+    ) -> object:
+        self.document_id = f"ragflow-doc-{len(self.uploads) + 1}"
+        return await super().upload_document(
+            dataset_id=dataset_id,
+            filename=filename,
+            content=content,
+            content_type=content_type,
+        )
+
+
+class _EventuallyConsistentLostUploadClient(_LostFirstUploadResponseClient):
+    async def find_document_by_name(
+        self,
+        *,
+        dataset_id: str,
+        name: str,
+    ) -> object | None:
+        self.find_requests.append((dataset_id, name))
+        if len(self.find_requests) <= 4:
+            return None
+        return self.remote_documents.get((dataset_id, name))
+
+
+class _ExplicitlyRejectedUploadClient(_FakeRagflowClient):
+    async def upload_document(
+        self,
+        *,
+        dataset_id: str,
+        filename: str,
+        content: bytes,
+        content_type: str,
+    ) -> object:
+        from app.adapters.ragflow.base import RagflowClientError
+
+        self.uploads.append(
+            {
+                "dataset_id": dataset_id,
+                "filename": filename,
+                "content": content,
+                "content_type": content_type,
+            }
+        )
+        raise RagflowClientError(
+            "HTTP 413 private-body sk-live-secret must-never-reach-database"
+        )
+
+
+class _BlockingReconcileClient(_FakeRagflowClient):
+    def __init__(self) -> None:
+        super().__init__()
+        self.reconcile_entered = asyncio.Event()
+        self.reconcile_release = asyncio.Event()
+
+    async def find_document_by_name(
+        self,
+        *,
+        dataset_id: str,
+        name: str,
+    ) -> object | None:
+        self.find_requests.append((dataset_id, name))
+        self.reconcile_entered.set()
+        await self.reconcile_release.wait()
+        return None
+
+
 async def test_ragflow_upload_worker_uploads_minio_object_and_parses_document(
     task_client: AsyncClient,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     from app.core.database import AsyncSessionFactory
+    from app.core.outbox import EventOutbox
+    from app.modules.ai.models import DocumentAnalysis
+    from app.modules.audit.models import AuditLog
     from app.modules.document.models import File
+    from app.modules.ragflow import events as ragflow_events
     from app.modules.ragflow import tasks
     from app.modules.ragflow.models import SyncTask, SyncTaskLog
     from app.modules.ragflow.tasks import (
         create_ragflow_upload_sync_task,
         run_ragflow_upload_task_async,
     )
+    from app.modules.user.models import User
 
     token = await _create_admin_token(task_client)
     uploader_id = await _create_user(email="phase4-worker@company.com", password="password123")
@@ -803,7 +946,36 @@ async def test_ragflow_upload_worker_uploads_minio_object_and_parses_document(
         dataset_mapping_id=UUID(mapping_id),
         ragflow_dataset_id="ragflow-phase5",
     )
+    reviewed_at = datetime(2026, 7, 16, 8, 30, tzinfo=UTC)
     async with AsyncSessionFactory() as session:
+        reviewer_id = (
+            await session.execute(
+                select(User.id).where(User.email == "phase4-system@company.com")
+            )
+        ).scalar_one()
+        session.add(
+            AuditLog(
+                actor_id=reviewer_id,
+                action="file.approve",
+                target_type="file",
+                target_id=file_id,
+                ip_address="127.0.0.1",
+                user_agent="metadata-contract-test",
+                metadata_json={
+                    "object_key": "must-not-leak",
+                    "private_note": "must-not-leak",
+                },
+                reason="private approval note must not leak",
+                created_at=reviewed_at,
+            )
+        )
+        session.add(
+            DocumentAnalysis(
+                file_id=file_id,
+                status="succeeded",
+                sensitive_risk_level="high",
+            )
+        )
         task_id = await create_ragflow_upload_sync_task(session=session, file_id=file_id)
         await session.commit()
 
@@ -819,6 +991,9 @@ async def test_ragflow_upload_worker_uploads_minio_object_and_parses_document(
     )
 
     await run_ragflow_upload_task_async(str(task_id))
+    # Redelivery after the terminal commit is a no-op and must not duplicate
+    # the canonical completion event.
+    await run_ragflow_upload_task_async(str(task_id))
 
     async with AsyncSessionFactory() as session:
         result = await session.execute(select(SyncTask).where(SyncTask.id == task_id))
@@ -828,6 +1003,13 @@ async def test_ragflow_upload_worker_uploads_minio_object_and_parses_document(
         )
         logs = list(log_result.scalars())
         file = await session.get(File, file_id)
+        success_event_result = await session.execute(
+            select(EventOutbox).where(
+                EventOutbox.event_type == ragflow_events.RAGFLOW_SYNC_TASK_SUCCEEDED,
+                EventOutbox.aggregate_id == str(task_id),
+            )
+        )
+        success_events = list(success_event_result.scalars())
         assert file is not None
 
     assert task.status == "succeeded"
@@ -838,21 +1020,31 @@ async def test_ragflow_upload_worker_uploads_minio_object_and_parses_document(
     assert file.ragflow_parse_status == "DONE"
     assert file.ragflow_error_message is None
     assert file.last_sync_at is not None
+    assert len(success_events) == 1
+    assert success_events[0].payload == {
+        "sync_task_id": str(task_id),
+        "file_id": str(file_id),
+        "task_type": "ragflow_upload",
+        "status": "succeeded",
+    }
     assert storage.reads == [("knowledge-files", f"uploads/{uploader_id}/file-phase4-handbook.pdf")]
+    expected_document_name = f"{file_id}-phase4-handbook.pdf"
     assert client.uploads == [
         {
             "dataset_id": "ragflow-phase5",
-            "filename": "file-phase4-handbook.pdf",
+            "filename": expected_document_name,
             "content": b"phase 5 document body",
             "content_type": "application/pdf",
         }
     ]
+    assert client.metadata_updates[0]["name"] == expected_document_name
     assert client.parse_requests == [("ragflow-phase5", "ragflow-doc-phase5")]
     assert client.status_requests == [("ragflow-phase5", "ragflow-doc-phase5")]
     assert [log.message for log in logs] == [
         "ragflow upload task queued",
         "ragflow upload task started",
-        "ragflow document upload started",
+        "ragflow document reconciliation started",
+        "ragflow document remote upload requested",
         "ragflow document uploaded",
         "ragflow document metadata updated",
         "ragflow document parse started",
@@ -862,21 +1054,954 @@ async def test_ragflow_upload_worker_uploads_minio_object_and_parses_document(
     assert client.metadata_updates[0]["metadata"] == {
         "source": "knowledge_uploader",
         "file_id": str(file_id),
-        "uploader": str(uploader_id),
-        "department": "Legacy QA",
+        "version_id": str(file_id),
+        "version_number": 1,
+        "uploader_id": str(uploader_id),
         "department_id": str(department_id),
         "department_name": "研发知识部",
         "department_code": "research-ops",
-        "category": None,
+        "category_id": None,
         "tags": [],
         "visibility": "private",
-        "summary": None,
-        "version": "1",
+        "reviewer_id": str(reviewer_id),
+        "reviewed_at": reviewed_at.isoformat(),
+        "sensitive_risk_level": "high",
+        "content_hash": "b" * 64,
         "uploaded_at": file.uploaded_at.isoformat(),
     }
+    metadata = client.metadata_updates[0]["metadata"]
+    assert isinstance(metadata, dict)
+    assert set(metadata).isdisjoint(
+        {"email", "object_key", "api_key", "description", "private_note", "reason"}
+    )
 
 
-async def test_ragflow_upload_worker_reuses_existing_document_on_retry(
+async def test_ragflow_upload_automatically_reconciles_remote_success_without_duplicate(
+    task_client: AsyncClient,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from app.core.database import AsyncSessionFactory
+    from app.modules.document.models import File
+    from app.modules.ragflow import tasks
+    from app.modules.ragflow.models import SyncTask, SyncTaskLog
+    from app.modules.ragflow.tasks import create_ragflow_upload_sync_task
+
+    token = await _create_admin_token(task_client)
+    uploader_id = await _create_user(
+        email="ragflow-reconcile-owner@company.com",
+        password="password123",
+    )
+    _, mapping_id = await _create_category_and_mapping(
+        task_client,
+        token,
+        ragflow_dataset_id="ragflow-reconcile",
+        ragflow_dataset_name="远端对账知识库",
+    )
+    file_id = await _create_file(
+        uploader_id=uploader_id,
+        status_value="queued",
+        review_status="approved",
+        dataset_mapping_id=UUID(mapping_id),
+        ragflow_dataset_id="ragflow-reconcile",
+    )
+    async with AsyncSessionFactory() as session:
+        task_id = await create_ragflow_upload_sync_task(session=session, file_id=file_id)
+        await session.commit()
+
+    storage = _FakeReadableStorage(b"remote upload reconciliation body")
+    client = _LostFirstUploadResponseClient()
+    monkeypatch.setattr(tasks, "build_document_storage", lambda _settings: storage)
+
+    async def _fake_build_ragflow_client() -> object:
+        return client
+
+    monkeypatch.setattr(
+        tasks,
+        "build_ragflow_client_from_runtime_config",
+        _fake_build_ragflow_client,
+    )
+
+    await tasks.run_ragflow_upload_task_async(str(task_id))
+    async with AsyncSessionFactory() as session:
+        deferred_task = await session.get(SyncTask, task_id)
+        assert deferred_task is not None
+        assert deferred_task.status == "queued"
+        assert deferred_task.reconcile_attempt_count == 1
+        deferred_task.reconcile_not_before = datetime.now(UTC) - timedelta(seconds=1)
+        await session.commit()
+    await tasks.run_ragflow_upload_task_async(str(task_id))
+
+    async with AsyncSessionFactory() as session:
+        task = await session.get(SyncTask, task_id)
+        file = await session.get(File, file_id)
+        log_result = await session.execute(
+            select(SyncTaskLog).where(SyncTaskLog.task_id == task_id)
+        )
+        messages = [log.message for log in log_result.scalars()]
+    assert task is not None
+    assert task.status == "succeeded"
+    assert task.lease_token is None
+    assert file is not None
+    assert file.status == "parsed"
+    assert file.ragflow_document_id == "ragflow-reconciled-doc"
+    assert len(client.uploads) == 1
+    assert len(client.find_requests) == 2
+    assert len(storage.reads) == 1
+    expected_document_name = f"{file_id}-phase4-handbook.pdf"
+    assert client.uploads[0]["filename"] == expected_document_name
+    assert client.find_requests == [
+        ("ragflow-reconcile", expected_document_name),
+        ("ragflow-reconcile", expected_document_name),
+    ]
+    assert client.metadata_updates[0]["name"] == expected_document_name
+    assert "ragflow document reconciled after interrupted upload" in messages
+
+
+async def test_deduplicated_local_rows_keep_distinct_remote_document_identities(
+    task_client: AsyncClient,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from app.core.database import AsyncSessionFactory
+    from app.modules.document.models import File
+    from app.modules.ragflow import tasks
+    from app.modules.ragflow.models import SyncTask
+    from app.modules.ragflow.tasks import create_ragflow_upload_sync_task
+
+    token = await _create_admin_token(task_client)
+    uploader_id = await _create_user(
+        email="ragflow-deduplicated-owner@company.com",
+        password="password123",
+    )
+    _, mapping_id = await _create_category_and_mapping(
+        task_client,
+        token,
+        ragflow_dataset_id="ragflow-deduplicated",
+        ragflow_dataset_name="去重隔离知识库",
+    )
+    first_file_id = await _create_file(
+        uploader_id=uploader_id,
+        status_value="queued",
+        review_status="approved",
+        hash_value="d" * 64,
+        dataset_mapping_id=UUID(mapping_id),
+        ragflow_dataset_id="ragflow-deduplicated",
+    )
+    second_file_id = await _create_file(
+        uploader_id=uploader_id,
+        status_value="queued",
+        review_status="approved",
+        hash_value="d" * 64,
+        dataset_mapping_id=UUID(mapping_id),
+        ragflow_dataset_id="ragflow-deduplicated",
+    )
+    async with AsyncSessionFactory() as session:
+        first = await session.get(File, first_file_id)
+        second = await session.get(File, second_file_id)
+        assert first is not None and second is not None
+        # Local SHA256 deduplication deliberately reuses the physical MinIO object.
+        second.stored_name = first.stored_name
+        second.object_key = first.object_key
+        first_task_id = await create_ragflow_upload_sync_task(
+            session=session,
+            file_id=first_file_id,
+        )
+        second_task_id = await create_ragflow_upload_sync_task(
+            session=session,
+            file_id=second_file_id,
+        )
+        await session.commit()
+
+    storage = _FakeReadableStorage(b"one physical object, two logical files")
+    client = _PerNameRagflowClient()
+    monkeypatch.setattr(tasks, "build_document_storage", lambda _settings: storage)
+
+    async def _fake_build_ragflow_client() -> object:
+        return client
+
+    monkeypatch.setattr(
+        tasks,
+        "build_ragflow_client_from_runtime_config",
+        _fake_build_ragflow_client,
+    )
+
+    await tasks.run_ragflow_upload_task_async(str(first_task_id))
+    await tasks.run_ragflow_upload_task_async(str(second_task_id))
+
+    async with AsyncSessionFactory() as session:
+        first = await session.get(File, first_file_id)
+        second = await session.get(File, second_file_id)
+        first_task = await session.get(SyncTask, first_task_id)
+        second_task = await session.get(SyncTask, second_task_id)
+        assert first is not None and second is not None
+        assert first_task is not None and second_task is not None
+
+    first_name = f"{first_file_id}-phase4-handbook.pdf"
+    second_name = f"{second_file_id}-phase4-handbook.pdf"
+    assert first.object_key == second.object_key
+    assert [upload["filename"] for upload in client.uploads] == [first_name, second_name]
+    assert first.ragflow_document_id == "ragflow-doc-1"
+    assert second.ragflow_document_id == "ragflow-doc-2"
+    assert first.ragflow_document_id != second.ragflow_document_id
+    assert [update["name"] for update in client.metadata_updates] == [first_name, second_name]
+    metadata_file_ids: list[object] = []
+    for update in client.metadata_updates:
+        metadata = update["metadata"]
+        assert isinstance(metadata, dict)
+        metadata_file_ids.append(metadata["file_id"])
+    assert metadata_file_ids == [str(first_file_id), str(second_file_id)]
+    assert first_task.status == second_task.status == "succeeded"
+
+
+async def test_timeout_after_accept_automatically_reconciles_without_second_upload(
+    task_client: AsyncClient,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from app.core.database import AsyncSessionFactory
+    from app.core.outbox import EventOutbox
+    from app.modules.document.models import File
+    from app.modules.ragflow import tasks
+    from app.modules.ragflow.exceptions import RagflowTaskAlreadyRunningError
+    from app.modules.ragflow.models import SyncTask
+    from app.modules.ragflow.tasks import create_ragflow_upload_sync_task
+
+    token = await _create_admin_token(task_client)
+    uploader_id = await _create_user(
+        email="ragflow-eventual-owner@company.com",
+        password="password123",
+    )
+    _, mapping_id = await _create_category_and_mapping(
+        task_client,
+        token,
+        ragflow_dataset_id="ragflow-eventual",
+        ragflow_dataset_name="最终一致性知识库",
+    )
+    file_id = await _create_file(
+        uploader_id=uploader_id,
+        status_value="queued",
+        review_status="approved",
+        dataset_mapping_id=UUID(mapping_id),
+        ragflow_dataset_id="ragflow-eventual",
+    )
+    async with AsyncSessionFactory() as session:
+        task_id = await create_ragflow_upload_sync_task(session=session, file_id=file_id)
+        await session.commit()
+
+    storage = _FakeReadableStorage(b"eventually consistent upload")
+    client = _EventuallyConsistentLostUploadClient()
+    monkeypatch.setattr(tasks, "build_document_storage", lambda _settings: storage)
+
+    async def _fake_build_ragflow_client() -> object:
+        return client
+
+    monkeypatch.setattr(
+        tasks,
+        "build_ragflow_client_from_runtime_config",
+        _fake_build_ragflow_client,
+    )
+
+    await tasks.run_ragflow_upload_task_async(str(task_id))
+
+    async with AsyncSessionFactory() as session:
+        task = await session.get(SyncTask, task_id)
+        file = await session.get(File, file_id)
+        assert task is not None
+        assert file is not None
+        assert task.status == "queued"
+        assert task.reconcile_attempt_count == 1
+        assert file.status == "syncing"
+        assert file.ragflow_parse_status == "UPLOADING"
+        assert len(client.uploads) == 1
+        await session.commit()
+
+    with pytest.raises(RagflowTaskAlreadyRunningError):
+        await tasks.run_ragflow_upload_task_async(str(task_id))
+    assert len(client.find_requests) == 1
+    assert len(client.uploads) == 1
+
+    async with AsyncSessionFactory() as session:
+        task = await session.get(SyncTask, task_id)
+        assert task is not None
+        task.reconcile_not_before = datetime.now(UTC) - timedelta(seconds=1)
+        await session.commit()
+    await tasks.run_ragflow_upload_task_async(str(task_id))
+
+    async with AsyncSessionFactory() as session:
+        task = await session.get(SyncTask, task_id)
+        assert task is not None
+        assert task.status == "queued"
+        assert task.reconcile_attempt_count == 2
+        task.reconcile_not_before = datetime.now(UTC) - timedelta(seconds=1)
+        await session.commit()
+    await tasks.run_ragflow_upload_task_async(str(task_id))
+
+    async with AsyncSessionFactory() as session:
+        task = await session.get(SyncTask, task_id)
+        file = await session.get(File, file_id)
+        event_result = await session.execute(
+            select(EventOutbox).where(
+                EventOutbox.aggregate_id == str(task_id),
+                EventOutbox.event_type == "ragflow.sync_task.queued",
+            )
+        )
+        countdowns = [
+            event.payload.get("countdown_seconds")
+            for event in event_result.scalars()
+            if event.payload.get("countdown_seconds") is not None
+        ]
+        assert task is not None
+        assert file is not None
+
+    assert task.status == "failed"
+    assert task.error_message == "RagflowUploadOutcomeUnknownError"
+    assert file.status == "failed"
+    assert file.ragflow_parse_status == "UPLOADING"
+    assert file.ragflow_document_id is None
+    assert len(client.uploads) == 1
+    assert len(client.find_requests) == 3
+    assert len(storage.reads) == 1
+    assert countdowns == [5, 30]
+
+
+async def test_explicit_upload_rejection_fails_without_reconciliation_or_secret_leak(
+    task_client: AsyncClient,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from app.core.database import AsyncSessionFactory
+    from app.core.outbox import EventOutbox
+    from app.modules.document.models import File
+    from app.modules.ragflow import tasks
+    from app.modules.ragflow.models import SyncTask, SyncTaskLog
+    from app.modules.ragflow.tasks import create_ragflow_upload_sync_task
+
+    token = await _create_admin_token(task_client)
+    uploader_id = await _create_user(
+        email="ragflow-rejected-owner@company.com",
+        password="password123",
+    )
+    _, mapping_id = await _create_category_and_mapping(
+        task_client,
+        token,
+        ragflow_dataset_id="ragflow-rejected",
+        ragflow_dataset_name="明确拒绝知识库",
+    )
+    file_id = await _create_file(
+        uploader_id=uploader_id,
+        status_value="queued",
+        review_status="approved",
+        dataset_mapping_id=UUID(mapping_id),
+        ragflow_dataset_id="ragflow-rejected",
+    )
+    async with AsyncSessionFactory() as session:
+        task_id = await create_ragflow_upload_sync_task(session=session, file_id=file_id)
+        await session.commit()
+
+    client = _ExplicitlyRejectedUploadClient()
+    monkeypatch.setattr(
+        tasks,
+        "build_document_storage",
+        lambda _settings: _FakeReadableStorage(b"explicit rejection"),
+    )
+
+    async def _fake_build_ragflow_client() -> object:
+        return client
+
+    monkeypatch.setattr(
+        tasks,
+        "build_ragflow_client_from_runtime_config",
+        _fake_build_ragflow_client,
+    )
+    await tasks.run_ragflow_upload_task_async(str(task_id))
+
+    async with AsyncSessionFactory() as session:
+        task = await session.get(SyncTask, task_id)
+        file = await session.get(File, file_id)
+        messages = list(
+            (
+                await session.execute(
+                    select(SyncTaskLog.message).where(SyncTaskLog.task_id == task_id)
+                )
+            ).scalars()
+        )
+        queued_payloads = list(
+            (
+                await session.execute(
+                    select(EventOutbox.payload).where(
+                        EventOutbox.aggregate_id == str(task_id),
+                        EventOutbox.event_type == "ragflow.sync_task.queued",
+                    )
+                )
+            ).scalars()
+        )
+    assert task is not None
+    assert file is not None
+    assert task.status == "failed"
+    assert task.error_message == "RagflowClientError"
+    assert task.reconcile_attempt_count == 0
+    assert task.reconcile_not_before is None
+    assert file.status == "failed"
+    assert file.ragflow_error_message == "RagflowClientError"
+    assert len(client.find_requests) == 1
+    assert len(client.uploads) == 1
+    assert all(payload.get("countdown_seconds") is None for payload in queued_payloads)
+    persisted_text = " ".join(messages + [str(payload) for payload in queued_payloads])
+    assert "private-body" not in persisted_text
+    assert "sk-live-secret" not in persisted_text
+
+
+async def test_remote_reconciliation_does_not_hold_task_or_file_row_locks(
+    task_client: AsyncClient,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from app.core.database import AsyncSessionFactory
+    from app.modules.document.models import File
+    from app.modules.ragflow import tasks
+    from app.modules.ragflow.models import SyncTask
+    from app.modules.ragflow.tasks import create_ragflow_upload_sync_task
+
+    token = await _create_admin_token(task_client)
+    uploader_id = await _create_user(
+        email="ragflow-short-transaction@company.com",
+        password="password123",
+    )
+    _, mapping_id = await _create_category_and_mapping(
+        task_client,
+        token,
+        ragflow_dataset_id="ragflow-short-transaction",
+        ragflow_dataset_name="短事务知识库",
+    )
+    file_id = await _create_file(
+        uploader_id=uploader_id,
+        status_value="queued",
+        review_status="approved",
+        dataset_mapping_id=UUID(mapping_id),
+        ragflow_dataset_id="ragflow-short-transaction",
+    )
+    async with AsyncSessionFactory() as session:
+        task_id = await create_ragflow_upload_sync_task(session=session, file_id=file_id)
+        await session.commit()
+
+    client = _BlockingReconcileClient()
+    monkeypatch.setattr(
+        tasks,
+        "build_document_storage",
+        lambda _settings: _FakeReadableStorage(b"short transaction"),
+    )
+
+    async def _fake_build_ragflow_client() -> object:
+        return client
+
+    monkeypatch.setattr(
+        tasks,
+        "build_ragflow_client_from_runtime_config",
+        _fake_build_ragflow_client,
+    )
+    worker = asyncio.create_task(tasks.run_ragflow_upload_task_async(str(task_id)))
+    await asyncio.wait_for(client.reconcile_entered.wait(), timeout=3)
+    try:
+        async with AsyncSessionFactory() as session:
+            await session.execute(
+                select(SyncTask).where(SyncTask.id == task_id).with_for_update(nowait=True)
+            )
+            await session.execute(
+                select(File).where(File.id == file_id).with_for_update(nowait=True)
+            )
+            await session.rollback()
+    finally:
+        client.reconcile_release.set()
+    await asyncio.wait_for(worker, timeout=5)
+
+    async with AsyncSessionFactory() as session:
+        task = await session.get(SyncTask, task_id)
+    assert task is not None
+    assert task.status == "succeeded"
+
+
+async def test_execution_heartbeat_token_mismatch_cancels_external_operation(
+    task_client: AsyncClient,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from app.core.database import AsyncSessionFactory
+    from app.modules.ragflow import tasks
+    from app.modules.ragflow.exceptions import RagflowTaskLeaseLostError
+    from app.modules.ragflow.models import SyncTask
+    from app.modules.ragflow.tasks import create_ragflow_upload_sync_task
+
+    await _create_admin_token(task_client)
+    uploader_id = await _create_user(
+        email="ragflow-heartbeat-mismatch@company.com",
+        password="password123",
+    )
+    file_id = await _create_file(uploader_id=uploader_id)
+    async with AsyncSessionFactory() as session:
+        task_id = await create_ragflow_upload_sync_task(session=session, file_id=file_id)
+        task = await session.get(SyncTask, task_id)
+        assert task is not None
+        task.status = "running"
+        task.lease_token = "current-execution"
+        task.started_at = datetime.now(UTC)
+        await session.commit()
+
+    operation_canceled = asyncio.Event()
+
+    async def blocked_operation() -> None:
+        try:
+            await asyncio.Event().wait()
+        finally:
+            operation_canceled.set()
+
+    monkeypatch.setattr(tasks, "RAGFLOW_HEARTBEAT_INTERVAL_SECONDS", 0.01)
+    with pytest.raises(RagflowTaskLeaseLostError):
+        await tasks._run_with_execution_heartbeat(
+            task_id=task_id,
+            execution_token="stale-execution",
+            operation=blocked_operation,
+        )
+
+    assert operation_canceled.is_set()
+    async with AsyncSessionFactory() as session:
+        task = await session.get(SyncTask, task_id)
+    assert task is not None
+    assert task.status == "running"
+    assert task.lease_token == "current-execution"
+
+
+async def test_execution_heartbeat_is_canceled_when_operation_finishes(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from app.modules.ragflow import tasks
+
+    heartbeat_canceled = asyncio.Event()
+
+    async def pending_heartbeat(**_kwargs: object) -> None:
+        try:
+            await asyncio.Event().wait()
+        finally:
+            heartbeat_canceled.set()
+
+    async def completed_operation() -> None:
+        return None
+
+    monkeypatch.setattr(tasks, "_maintain_ragflow_execution_lease", pending_heartbeat)
+    await tasks._run_with_execution_heartbeat(
+        task_id=UUID("00000000-0000-0000-0000-000000000099"),
+        execution_token="finished-execution",
+        operation=completed_operation,
+    )
+
+    assert heartbeat_canceled.is_set()
+
+
+async def test_heartbeat_timestamp_survives_stale_business_session_commit(
+    task_client: AsyncClient,
+) -> None:
+    from app.core.database import AsyncSessionFactory
+    from app.modules.ragflow.models import SyncTask
+    from app.modules.ragflow.repository import (  # noqa: TID251 - same-module test
+        RagflowTaskRepository,
+    )
+    from app.modules.ragflow.service import (  # noqa: TID251 - same-module test
+        RAGFLOW_EXECUTION_LEASE_SECONDS,
+        RagflowTaskService,
+    )
+    from app.modules.ragflow.tasks import create_ragflow_upload_sync_task
+
+    await _create_admin_token(task_client)
+    uploader_id = await _create_user(
+        email="ragflow-heartbeat-stale-session@company.com",
+        password="password123",
+    )
+    file_id = await _create_file(uploader_id=uploader_id)
+    async with AsyncSessionFactory() as session:
+        task_id = await create_ragflow_upload_sync_task(session=session, file_id=file_id)
+        task = await session.get(SyncTask, task_id)
+        assert task is not None
+        initial_started_at = datetime.now(UTC) - timedelta(
+            seconds=RAGFLOW_EXECUTION_LEASE_SECONDS + 60
+        )
+        task.status = "running"
+        task.lease_token = "heartbeat-owner"
+        task.started_at = initial_started_at
+        task.lease_heartbeat_at = initial_started_at
+        await session.commit()
+
+    async with AsyncSessionFactory() as business_session:
+        stale_task = await business_session.get(SyncTask, task_id)
+        assert stale_task is not None
+        async with AsyncSessionFactory() as heartbeat_session:
+            heartbeat_service = RagflowTaskService(
+                session=heartbeat_session,
+                repository=RagflowTaskRepository(heartbeat_session),
+            )
+            await heartbeat_service.heartbeat_execution_lease(
+                task_id=task_id,
+                execution_token="heartbeat-owner",
+            )
+            await heartbeat_service.heartbeat_execution_lease(
+                task_id=task_id,
+                execution_token="heartbeat-owner",
+            )
+        stale_task.error_message = "business session progress"
+        await business_session.commit()
+
+    async with AsyncSessionFactory() as session:
+        claim_service = RagflowTaskService(
+            session=session,
+            repository=RagflowTaskRepository(session),
+        )
+        reclaimed = await claim_service.claim_running(
+            task_id,
+            execution_token="would-be-stealer",
+        )
+    assert reclaimed is False
+
+    async with AsyncSessionFactory() as session:
+        task = await session.get(SyncTask, task_id)
+    assert task is not None
+    assert task.started_at == initial_started_at
+    assert task.lease_heartbeat_at is not None
+    assert task.lease_heartbeat_at > initial_started_at
+    assert task.lease_token == "heartbeat-owner"
+    assert task.error_message == "business session progress"
+
+
+async def test_exhausted_redelivery_schedules_unique_probe_and_stale_task_recovers(
+    task_client: AsyncClient,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from app.core.database import AsyncSessionFactory
+    from app.core.outbox import EventOutbox
+    from app.modules.ragflow import tasks
+    from app.modules.ragflow.models import SyncTask
+    from app.modules.ragflow.repository import (  # noqa: TID251 - same-module test
+        RagflowTaskRepository,
+    )
+    from app.modules.ragflow.service import (  # noqa: TID251 - same-module test
+        RAGFLOW_EXECUTION_LEASE_SECONDS,
+        RagflowTaskService,
+    )
+    from app.modules.ragflow.tasks import create_ragflow_upload_sync_task
+
+    token = await _create_admin_token(task_client)
+    uploader_id = await _create_user(
+        email="ragflow-recovery-probe@company.com",
+        password="password123",
+    )
+    _, mapping_id = await _create_category_and_mapping(
+        task_client,
+        token,
+        ragflow_dataset_id="ragflow-recovery-probe",
+        ragflow_dataset_name="恢复探针知识库",
+    )
+    file_id = await _create_file(
+        uploader_id=uploader_id,
+        status_value="queued",
+        review_status="approved",
+        dataset_mapping_id=UUID(mapping_id),
+        ragflow_dataset_id="ragflow-recovery-probe",
+    )
+    async with AsyncSessionFactory() as session:
+        task_id = await create_ragflow_upload_sync_task(session=session, file_id=file_id)
+        task = await session.get(SyncTask, task_id)
+        assert task is not None
+        task.status = "running"
+        task.lease_token = "dead-worker"
+        task.started_at = datetime.now(UTC)
+        await session.commit()
+
+    async with AsyncSessionFactory() as session:
+        service = RagflowTaskService(
+            session=session,
+            repository=RagflowTaskRepository(session),
+        )
+        assert await service.schedule_execution_recovery_probe(task_id) is True
+        assert await service.schedule_execution_recovery_probe(task_id) is False
+
+    async with AsyncSessionFactory() as session:
+        task = await session.get(SyncTask, task_id)
+        assert task is not None
+        assert task.status == "running"
+        stale_at = datetime.now(UTC) - timedelta(
+            seconds=RAGFLOW_EXECUTION_LEASE_SECONDS + 1
+        )
+        task.lease_heartbeat_at = stale_at
+        await session.commit()
+
+    client = _FakeRagflowClient()
+    monkeypatch.setattr(
+        tasks,
+        "build_document_storage",
+        lambda _settings: _FakeReadableStorage(b"recovered upload"),
+    )
+
+    async def _fake_build_ragflow_client() -> object:
+        return client
+
+    monkeypatch.setattr(
+        tasks,
+        "build_ragflow_client_from_runtime_config",
+        _fake_build_ragflow_client,
+    )
+    await tasks.run_ragflow_upload_task_async(str(task_id))
+
+    async with AsyncSessionFactory() as session:
+        task = await session.get(SyncTask, task_id)
+        event_result = await session.execute(
+            select(EventOutbox).where(
+                EventOutbox.aggregate_id == str(task_id),
+                EventOutbox.event_type == "ragflow.sync_task.queued",
+            )
+        )
+        probe_events = [
+            event
+            for event in event_result.scalars()
+            if event.payload.get("countdown_seconds") == 300
+        ]
+    assert task is not None
+    assert task.status == "succeeded"
+    assert task.recovery_probe_due_at is None
+    assert len(probe_events) == 1
+
+
+async def test_stale_execution_cannot_persist_success_or_failure(
+    task_client: AsyncClient,
+) -> None:
+    from app.core.database import AsyncSessionFactory
+    from app.core.outbox import EventOutbox
+    from app.modules.document.models import File
+    from app.modules.ragflow import events as ragflow_events
+    from app.modules.ragflow.models import SyncTask
+    from app.modules.ragflow.repository import (  # noqa: TID251 - same-module test
+        RagflowTaskRepository,
+    )
+    from app.modules.ragflow.service import RagflowTaskService  # noqa: TID251 - same-module test
+    from app.modules.ragflow.tasks import create_ragflow_upload_sync_task
+
+    await _create_admin_token(task_client)
+    uploader_id = await _create_user(
+        email="ragflow-fencing-owner@company.com",
+        password="password123",
+    )
+    file_id = await _create_file(
+        uploader_id=uploader_id,
+        status_value="queued",
+        review_status="approved",
+    )
+    async with AsyncSessionFactory() as session:
+        task_id = await create_ragflow_upload_sync_task(session=session, file_id=file_id)
+        task = await session.get(SyncTask, task_id)
+        assert task is not None
+        task.status = "running"
+        task.started_at = datetime.now(UTC)
+        task.lease_token = "current-execution"
+        await session.commit()
+
+    async with AsyncSessionFactory() as session:
+        service = RagflowTaskService(
+            session=session,
+            repository=RagflowTaskRepository(session),
+        )
+        await service.mark_succeeded(
+            task_id,
+            expected_lease_token="stale-execution",
+            publish_sync_success=True,
+        )
+        await service.mark_failed(
+            task_id,
+            "stale worker failure",
+            expected_lease_token="stale-execution",
+        )
+        task = await session.get(SyncTask, task_id)
+        file = await session.get(File, file_id)
+        event_result = await session.execute(
+            select(EventOutbox).where(
+                EventOutbox.event_type == ragflow_events.RAGFLOW_SYNC_TASK_SUCCEEDED
+            )
+        )
+        success_event = event_result.scalar_one_or_none()
+        assert task is not None
+        assert file is not None
+
+    assert task.status == "running"
+    assert task.lease_token == "current-execution"
+    assert task.finished_at is None
+    assert task.error_message is None
+    assert file.status == "queued"
+    assert file.ragflow_error_message is None
+    assert success_event is None
+
+
+async def test_ragflow_success_event_rolls_back_with_task_state(
+    task_client: AsyncClient,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from app.core.database import AsyncSessionFactory
+    from app.core.outbox import EventOutbox
+    from app.modules.ragflow import events as ragflow_events
+    from app.modules.ragflow.models import SyncTask
+    from app.modules.ragflow.repository import (  # noqa: TID251 - same-module test
+        RagflowTaskRepository,
+    )
+    from app.modules.ragflow.service import RagflowTaskService  # noqa: TID251 - same-module test
+    from app.modules.ragflow.tasks import create_ragflow_upload_sync_task
+
+    await _create_admin_token(task_client)
+    uploader_id = await _create_user(
+        email="ragflow-success-rollback@company.com",
+        password="password123",
+    )
+    file_id = await _create_file(
+        uploader_id=uploader_id,
+        status_value="parsed",
+        review_status="approved",
+        ragflow_parse_status="DONE",
+    )
+    async with AsyncSessionFactory() as session:
+        task_id = await create_ragflow_upload_sync_task(session=session, file_id=file_id)
+        task = await session.get(SyncTask, task_id)
+        assert task is not None
+        task.status = "running"
+        task.started_at = datetime.now(UTC)
+        task.lease_token = "current-execution"
+        await session.commit()
+
+    async with AsyncSessionFactory() as session:
+        service = RagflowTaskService(
+            session=session,
+            repository=RagflowTaskRepository(session),
+        )
+
+        async def _fail_commit() -> None:
+            await session.flush()
+            raise RuntimeError("commit unavailable")
+
+        monkeypatch.setattr(session, "commit", _fail_commit)
+        with pytest.raises(RuntimeError, match="commit unavailable"):
+            await service.mark_succeeded(
+                task_id,
+                expected_lease_token="current-execution",
+                publish_sync_success=True,
+            )
+        await session.rollback()
+
+    async with AsyncSessionFactory() as session:
+        task = await session.get(SyncTask, task_id)
+        event_result = await session.execute(
+            select(EventOutbox).where(
+                EventOutbox.event_type == ragflow_events.RAGFLOW_SYNC_TASK_SUCCEEDED
+            )
+        )
+        success_event = event_result.scalar_one_or_none()
+    assert task is not None
+    assert task.status == "running"
+    assert task.lease_token == "current-execution"
+    assert success_event is None
+
+
+async def test_failure_persistence_redelivery_waits_then_reclaims_stale_lease(
+    task_client: AsyncClient,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from app.core.database import AsyncSessionFactory
+    from app.modules.ragflow import tasks
+    from app.modules.ragflow.exceptions import RagflowTaskAlreadyRunningError
+    from app.modules.ragflow.models import SyncTask, SyncTaskLog
+    from app.modules.ragflow.repository import (  # noqa: TID251 - same-module test
+        RagflowTaskRepository,
+    )
+    from app.modules.ragflow.service import RagflowTaskService  # noqa: TID251 - same-module test
+
+    await _create_admin_token(task_client)
+    uploader_id = await _create_user(
+        email="failure-persistence-redelivery@company.com",
+        password="password123",
+    )
+    file_id = await _create_file(uploader_id=uploader_id, status_value="queued")
+    async with AsyncSessionFactory() as session:
+        task = SyncTask(
+            file_id=file_id,
+            task_type="ragflow_upload",
+            status="queued",
+            retry_count=0,
+            max_retry_count=3,
+        )
+        session.add(task)
+        await session.commit()
+        await session.refresh(task)
+        task_id = task.id
+
+    successful_claims = 0
+
+    async def claim_and_run(
+        claimed_task_id: UUID,
+        *,
+        execution_token: str,
+    ) -> None:
+        nonlocal successful_claims
+        async with AsyncSessionFactory() as session:
+            service = RagflowTaskService(
+                session=session,
+                repository=RagflowTaskRepository(session),
+            )
+            claimed = await service.claim_running(
+                claimed_task_id,
+                expected_task_types={"ragflow_upload"},
+                execution_token=execution_token,
+            )
+            if not claimed:
+                raise RagflowTaskAlreadyRunningError
+            successful_claims += 1
+            if successful_claims == 1:
+                raise tasks._ClaimedRagflowExecutionError("RagflowClientError")
+            await service.mark_succeeded(
+                claimed_task_id,
+                expected_lease_token=execution_token,
+            )
+
+    async def persistence_unavailable(
+        *_args: object,
+        **_kwargs: object,
+    ) -> bool:
+        raise ConnectionError
+
+    monkeypatch.setattr(tasks, "_run_ragflow_upload_task", claim_and_run)
+    original_mark_failed = tasks._mark_ragflow_upload_task_failed
+    monkeypatch.setattr(tasks, "_mark_ragflow_upload_task_failed", persistence_unavailable)
+
+    with pytest.raises(ConnectionError):
+        await tasks.run_ragflow_upload_task_async(str(task_id))
+
+    async with AsyncSessionFactory() as session:
+        persisted = await session.get(SyncTask, task_id)
+        assert persisted is not None
+        assert persisted.status == "running"
+        assert persisted.lease_token is not None
+
+    with pytest.raises(RagflowTaskAlreadyRunningError):
+        await tasks.run_ragflow_upload_task_async(str(task_id))
+
+    async with AsyncSessionFactory() as session:
+        persisted = await session.get(SyncTask, task_id)
+        assert persisted is not None
+        persisted.lease_heartbeat_at = datetime.now(UTC) - timedelta(hours=2)
+        await session.commit()
+
+    monkeypatch.setattr(tasks, "_mark_ragflow_upload_task_failed", original_mark_failed)
+    await tasks.run_ragflow_upload_task_async(str(task_id))
+
+    async with AsyncSessionFactory() as session:
+        persisted = await session.get(SyncTask, task_id)
+        log_result = await session.execute(
+            select(SyncTaskLog.message).where(SyncTaskLog.task_id == task_id)
+        )
+        messages = list(log_result.scalars())
+    assert persisted is not None
+    assert persisted.status == "succeeded"
+    assert persisted.lease_token is None
+    assert successful_claims == 2
+    assert "stale ragflow execution lease reclaimed" in messages
+
+
+async def test_manual_upload_retry_restarts_failed_existing_parse(
     task_client: AsyncClient,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -911,7 +2036,10 @@ async def test_ragflow_upload_worker_reuses_existing_document_on_retry(
         await session.commit()
 
     storage = _FakeReadableStorage(b"should not be read")
-    client = _FakeRagflowClient(document_id="existing-ragflow-doc", run_statuses=["DONE"])
+    client = _FakeRagflowClient(
+        document_id="existing-ragflow-doc",
+        run_statuses=["FAIL", "DONE"],
+    )
     monkeypatch.setattr(tasks, "build_document_storage", lambda _settings: storage)
 
     async def _fake_build_ragflow_client() -> object:
@@ -935,7 +2063,12 @@ async def test_ragflow_upload_worker_reuses_existing_document_on_retry(
     assert file.ragflow_parse_status == "DONE"
     assert storage.reads == []
     assert client.uploads == []
-    assert client.status_requests == [("ragflow-phase5", "existing-ragflow-doc")]
+    assert client.metadata_updates[0]["document_id"] == "existing-ragflow-doc"
+    assert client.parse_requests == [("ragflow-phase5", "existing-ragflow-doc")]
+    assert client.status_requests == [
+        ("ragflow-phase5", "existing-ragflow-doc"),
+        ("ragflow-phase5", "existing-ragflow-doc"),
+    ]
 
 
 async def test_ragflow_upload_worker_queues_status_check_for_nonterminal_status(
@@ -943,7 +2076,9 @@ async def test_ragflow_upload_worker_queues_status_check_for_nonterminal_status(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     from app.core.database import AsyncSessionFactory
+    from app.core.outbox import EventOutbox
     from app.modules.document.models import File
+    from app.modules.ragflow import events as ragflow_events
     from app.modules.ragflow import tasks
     from app.modules.ragflow.models import SyncTask
     from app.modules.ragflow.tasks import create_ragflow_upload_sync_task
@@ -993,13 +2128,20 @@ async def test_ragflow_upload_worker_queues_status_check_for_nonterminal_status(
         )
         status_check_task = status_check_result.scalar_one()
         file = await session.get(File, file_id)
+        event_result = await session.execute(
+            select(EventOutbox).where(
+                EventOutbox.event_type == ragflow_events.RAGFLOW_SYNC_TASK_SUCCEEDED
+            )
+        )
+        success_event = event_result.scalar_one_or_none()
         assert task is not None
         assert file is not None
 
     assert task.status == "succeeded"
     assert task.error_message is None
     assert status_check_task.status == "queued"
-    assert status_check_task.retry_count == 0
+    assert status_check_task.retry_count == 1
+    assert status_check_task.max_retry_count == 120
     assert file.status == "parsing"
     assert file.ragflow_document_id == "ragflow-doc-phase5"
     assert file.ragflow_parse_status == "RUNNING"
@@ -1007,6 +2149,86 @@ async def test_ragflow_upload_worker_queues_status_check_for_nonterminal_status(
     assert client.uploads != []
     assert client.parse_requests == [("ragflow-phase5", "ragflow-doc-phase5")]
     assert client.status_requests == [("ragflow-phase5", "ragflow-doc-phase5")]
+    assert success_event is None
+
+
+async def test_ragflow_status_polling_budget_exhaustion_fails_closed(
+    task_client: AsyncClient,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from app.core.database import AsyncSessionFactory
+    from app.modules.document.models import File
+    from app.modules.ragflow import tasks
+    from app.modules.ragflow.models import SyncTask
+    from app.modules.ragflow.service import (  # noqa: TID251 - same-module test
+        RAGFLOW_PARSE_POLL_EXHAUSTED_ERROR,
+    )
+
+    token = await _create_admin_token(task_client)
+    uploader_id = await _create_user(
+        email="status-poll-exhausted@company.com",
+        password="password123",
+    )
+    _, mapping_id = await _create_category_and_mapping(
+        task_client,
+        token,
+        ragflow_dataset_id="ragflow-poll-budget",
+        ragflow_dataset_name="轮询预算知识库",
+    )
+    file_id = await _create_file(
+        uploader_id=uploader_id,
+        status_value="parsing",
+        review_status="approved",
+        dataset_mapping_id=UUID(mapping_id),
+        ragflow_dataset_id="ragflow-poll-budget",
+        ragflow_document_id="poll-budget-doc",
+        ragflow_parse_status="RUNNING",
+    )
+    async with AsyncSessionFactory() as session:
+        task = SyncTask(
+            file_id=file_id,
+            task_type="ragflow_status_check",
+            status="queued",
+            retry_count=3,
+            max_retry_count=3,
+        )
+        session.add(task)
+        await session.commit()
+        await session.refresh(task)
+        task_id = task.id
+
+    storage = _FakeReadableStorage(b"must not be read")
+    client = _FakeRagflowClient(document_id="poll-budget-doc", run_statuses=["RUNNING"])
+    monkeypatch.setattr(tasks, "build_document_storage", lambda _settings: storage)
+
+    async def _fake_build_ragflow_client() -> object:
+        return client
+
+    monkeypatch.setattr(
+        tasks,
+        "build_ragflow_client_from_runtime_config",
+        _fake_build_ragflow_client,
+    )
+
+    await tasks.run_ragflow_upload_task_async(str(task_id))
+
+    async with AsyncSessionFactory() as session:
+        loaded_task = await session.get(SyncTask, task_id)
+        loaded_file = await session.get(File, file_id)
+        result = await session.execute(
+            select(SyncTask).where(
+                SyncTask.file_id == file_id,
+                SyncTask.task_type == "ragflow_status_check",
+            )
+        )
+        status_tasks = list(result.scalars())
+    assert loaded_task is not None
+    assert loaded_task.status == "failed"
+    assert loaded_task.error_message == RAGFLOW_PARSE_POLL_EXHAUSTED_ERROR
+    assert loaded_file is not None
+    assert loaded_file.status == "failed"
+    assert len(status_tasks) == 1
+    assert client.status_requests == [("ragflow-poll-budget", "poll-budget-doc")]
 
 
 async def test_ragflow_status_check_worker_marks_done_as_parsed(
@@ -1014,7 +2236,9 @@ async def test_ragflow_status_check_worker_marks_done_as_parsed(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     from app.core.database import AsyncSessionFactory
+    from app.core.outbox import EventOutbox
     from app.modules.document.models import File
+    from app.modules.ragflow import events as ragflow_events
     from app.modules.ragflow import tasks
     from app.modules.ragflow.models import SyncTask
 
@@ -1063,10 +2287,18 @@ async def test_ragflow_status_check_worker_marks_done_as_parsed(
     )
 
     await tasks.run_ragflow_upload_task_async(str(task_id))
+    await tasks.run_ragflow_upload_task_async(str(task_id))
 
     async with AsyncSessionFactory() as session:
         loaded_task = await session.get(SyncTask, task_id)
         loaded_file = await session.get(File, file_id)
+        event_result = await session.execute(
+            select(EventOutbox).where(
+                EventOutbox.event_type == ragflow_events.RAGFLOW_SYNC_TASK_SUCCEEDED,
+                EventOutbox.aggregate_id == str(task_id),
+            )
+        )
+        success_events = list(event_result.scalars())
         assert loaded_task is not None
         assert loaded_file is not None
 
@@ -1078,6 +2310,13 @@ async def test_ragflow_status_check_worker_marks_done_as_parsed(
     assert client.uploads == []
     assert client.parse_requests == []
     assert client.status_requests == [("ragflow-phase5", "existing-ragflow-doc")]
+    assert len(success_events) == 1
+    assert success_events[0].payload == {
+        "sync_task_id": str(task_id),
+        "file_id": str(file_id),
+        "task_type": "ragflow_status_check",
+        "status": "succeeded",
+    }
 
 
 async def test_ragflow_status_check_worker_marks_fail_as_failed(
@@ -1133,8 +2372,7 @@ async def test_ragflow_status_check_worker_marks_fail_as_failed(
         tasks, "build_ragflow_client_from_runtime_config", _fake_build_ragflow_client
     )
 
-    with pytest.raises(RuntimeError, match="RagflowParseFailedError"):
-        await tasks.run_ragflow_upload_task_async(str(task_id))
+    await tasks.run_ragflow_upload_task_async(str(task_id))
 
     async with AsyncSessionFactory() as session:
         loaded_task = await session.get(SyncTask, task_id)
@@ -1157,6 +2395,7 @@ async def test_duplicate_status_check_worker_message_does_not_reclaim_running_ta
     task_client: AsyncClient,
 ) -> None:
     from app.core.database import AsyncSessionFactory
+    from app.modules.ragflow.exceptions import RagflowTaskAlreadyRunningError
     from app.modules.ragflow.models import SyncTask
     from app.modules.ragflow.tasks import run_ragflow_upload_task_async
 
@@ -1177,6 +2416,7 @@ async def test_duplicate_status_check_worker_message_does_not_reclaim_running_ta
             file_id=file_id,
             task_type="ragflow_status_check",
             status="running",
+            started_at=datetime.now(UTC),
             retry_count=0,
             max_retry_count=3,
         )
@@ -1185,7 +2425,8 @@ async def test_duplicate_status_check_worker_message_does_not_reclaim_running_ta
         await session.refresh(task)
         task_id = task.id
 
-    await run_ragflow_upload_task_async(str(task_id))
+    with pytest.raises(RagflowTaskAlreadyRunningError):
+        await run_ragflow_upload_task_async(str(task_id))
 
     async with AsyncSessionFactory() as session:
         loaded_task = await session.get(SyncTask, task_id)
@@ -1193,6 +2434,79 @@ async def test_duplicate_status_check_worker_message_does_not_reclaim_running_ta
 
     assert loaded_task.status == "running"
     assert loaded_task.finished_at is None
+
+
+async def test_stale_status_check_lease_is_reclaimed_and_completed(
+    task_client: AsyncClient,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from app.core.database import AsyncSessionFactory
+    from app.modules.document.models import File
+    from app.modules.ragflow import tasks
+    from app.modules.ragflow.models import SyncTask
+    from app.modules.ragflow.service import (  # noqa: TID251 - same-module test
+        RAGFLOW_EXECUTION_LEASE_SECONDS,
+    )
+
+    token = await _create_admin_token(task_client)
+    uploader_id = await _create_user(
+        email="stale-status-check@company.com",
+        password="password123",
+    )
+    _, mapping_id = await _create_category_and_mapping(
+        task_client,
+        token,
+        ragflow_dataset_id="ragflow-stale-lease",
+        ragflow_dataset_name="过期租约知识库",
+    )
+    file_id = await _create_file(
+        uploader_id=uploader_id,
+        status_value="parsing",
+        review_status="approved",
+        dataset_mapping_id=UUID(mapping_id),
+        ragflow_dataset_id="ragflow-stale-lease",
+        ragflow_document_id="stale-lease-doc",
+        ragflow_parse_status="RUNNING",
+    )
+    async with AsyncSessionFactory() as session:
+        task = SyncTask(
+            file_id=file_id,
+            task_type="ragflow_status_check",
+            status="running",
+            started_at=datetime.now(UTC)
+            - timedelta(seconds=RAGFLOW_EXECUTION_LEASE_SECONDS + 1),
+            retry_count=1,
+            max_retry_count=3,
+        )
+        session.add(task)
+        await session.commit()
+        await session.refresh(task)
+        task_id = task.id
+
+    storage = _FakeReadableStorage(b"must not be read")
+    client = _FakeRagflowClient(document_id="stale-lease-doc", run_statuses=["DONE"])
+    monkeypatch.setattr(tasks, "build_document_storage", lambda _settings: storage)
+
+    async def _fake_build_ragflow_client() -> object:
+        return client
+
+    monkeypatch.setattr(
+        tasks,
+        "build_ragflow_client_from_runtime_config",
+        _fake_build_ragflow_client,
+    )
+
+    await tasks.run_ragflow_upload_task_async(str(task_id))
+
+    async with AsyncSessionFactory() as session:
+        loaded_task = await session.get(SyncTask, task_id)
+        loaded_file = await session.get(File, file_id)
+    assert loaded_task is not None
+    assert loaded_task.status == "succeeded"
+    assert loaded_file is not None
+    assert loaded_file.status == "parsed"
+    assert storage.reads == []
+    assert client.status_requests == [("ragflow-stale-lease", "stale-lease-doc")]
 
 
 async def test_ragflow_upload_worker_starts_parse_for_existing_unstarted_document(
@@ -1288,7 +2602,7 @@ async def test_ragflow_upload_worker_requires_approved_file_before_external_call
     file_id = await _create_file(
         uploader_id=uploader_id,
         status_value="queued",
-        review_status="in_review",
+        review_status="pending",
         dataset_mapping_id=UUID(mapping_id),
         ragflow_dataset_id="ragflow-phase5",
     )
@@ -1307,8 +2621,7 @@ async def test_ragflow_upload_worker_requires_approved_file_before_external_call
         tasks, "build_ragflow_client_from_runtime_config", _fake_build_ragflow_client
     )
 
-    with pytest.raises(RuntimeError, match="RagflowSyncPreconditionError"):
-        await tasks.run_ragflow_upload_task_async(str(task_id))
+    await tasks.run_ragflow_upload_task_async(str(task_id))
 
     async with AsyncSessionFactory() as session:
         result = await session.execute(select(SyncTask).where(SyncTask.id == task_id))
@@ -1379,8 +2692,7 @@ async def test_ragflow_upload_worker_blocks_critical_sensitive_file_before_exter
         tasks, "build_ragflow_client_from_runtime_config", _fake_build_ragflow_client
     )
 
-    with pytest.raises(RuntimeError, match="RagflowSyncPreconditionError"):
-        await tasks.run_ragflow_upload_task_async(str(task_id))
+    await tasks.run_ragflow_upload_task_async(str(task_id))
 
     async with AsyncSessionFactory() as session:
         result = await session.execute(select(SyncTask).where(SyncTask.id == task_id))
@@ -1394,7 +2706,7 @@ async def test_ragflow_upload_worker_blocks_critical_sensitive_file_before_exter
     assert client.parse_requests == []
 
 
-async def test_ragflow_upload_worker_allows_critical_file_when_block_config_disabled(
+async def test_ragflow_upload_worker_blocks_critical_even_when_config_disabled(
     task_client: AsyncClient,
     monkeypatch: pytest.MonkeyPatch,
     set_system_config: Callable[[str, object], Awaitable[None]],
@@ -1441,8 +2753,7 @@ async def test_ragflow_upload_worker_allows_critical_file_when_block_config_disa
         task_id = await create_ragflow_upload_sync_task(session=session, file_id=file_id)
         await session.commit()
 
-    # 管理员显式关闭 critical 兜底阻断后, action=flag 的 critical 文件允许同步。
-    # action=block_sync 不受此开关影响, 始终阻断。
+    # critical 是不可配置绕过的安全红线; 保留旧配置行也不能放行.
     await set_system_config("security.block_critical_sensitive_sync", False)
 
     storage = _FakeReadableStorage(b"critical but allowed body")
@@ -1462,9 +2773,10 @@ async def test_ragflow_upload_worker_allows_critical_file_when_block_config_disa
         result = await session.execute(select(SyncTask).where(SyncTask.id == task_id))
         task = result.scalar_one()
 
-    assert task.status == "succeeded"
-    assert len(client.uploads) == 1
-    assert client.uploads[0]["dataset_id"] == "ragflow-phase6-critical-allowed"
+    assert task.status == "failed"
+    assert task.error_message == "RagflowSyncPreconditionError"
+    assert storage.reads == []
+    assert client.uploads == []
 
 
 async def test_ragflow_upload_worker_enforces_dataset_allowlist(
@@ -1512,8 +2824,7 @@ async def test_ragflow_upload_worker_enforces_dataset_allowlist(
     monkeypatch.setenv("RAGFLOW_ALLOWED_DATASET_IDS", "ragflow-phase5-allowed")
     get_settings.cache_clear()
 
-    with pytest.raises(RuntimeError, match="RagflowSyncPreconditionError"):
-        await tasks.run_ragflow_upload_task_async(str(task_id))
+    await tasks.run_ragflow_upload_task_async(str(task_id))
     get_settings.cache_clear()
 
     async with AsyncSessionFactory() as session:
@@ -1573,8 +2884,7 @@ async def test_ragflow_upload_worker_requires_allowlist_for_runtime_api_key(
         tasks, "build_ragflow_client_from_runtime_config", _fake_build_ragflow_client
     )
 
-    with pytest.raises(RuntimeError, match="RagflowSyncPreconditionError"):
-        await tasks.run_ragflow_upload_task_async(str(task_id))
+    await tasks.run_ragflow_upload_task_async(str(task_id))
 
     async with AsyncSessionFactory() as session:
         result = await session.execute(select(SyncTask).where(SyncTask.id == task_id))
@@ -1590,6 +2900,7 @@ async def test_duplicate_running_worker_message_does_not_complete_task(
     task_client: AsyncClient,
 ) -> None:
     from app.core.database import AsyncSessionFactory
+    from app.modules.ragflow.exceptions import RagflowTaskAlreadyRunningError
     from app.modules.ragflow.models import SyncTask
     from app.modules.ragflow.tasks import run_ragflow_upload_task_async
 
@@ -1604,6 +2915,7 @@ async def test_duplicate_running_worker_message_does_not_complete_task(
             file_id=file_id,
             task_type="ragflow_upload",
             status="running",
+            started_at=datetime.now(UTC),
             retry_count=0,
             max_retry_count=3,
         )
@@ -1612,7 +2924,8 @@ async def test_duplicate_running_worker_message_does_not_complete_task(
         await session.refresh(task)
         task_id = task.id
 
-    await run_ragflow_upload_task_async(str(task_id))
+    with pytest.raises(RagflowTaskAlreadyRunningError):
+        await run_ragflow_upload_task_async(str(task_id))
 
     async with AsyncSessionFactory() as session:
         result = await session.execute(select(SyncTask).where(SyncTask.id == task_id))
@@ -1638,22 +2951,128 @@ async def test_ragflow_upload_worker_marks_task_failed_on_error(
         task_id = await create_ragflow_upload_sync_task(session=session, file_id=file_id)
         await session.commit()
 
-    async def fail_upload(_sync_task_id: UUID) -> None:
+    async def fail_upload(
+        sync_task_id: UUID,
+        *,
+        execution_token: str,
+    ) -> None:
+        async with AsyncSessionFactory() as session:
+            running_task = await session.get(SyncTask, sync_task_id)
+            assert running_task is not None
+            running_task.status = "running"
+            running_task.lease_token = execution_token
+            running_task.started_at = datetime.now(UTC)
+            await session.commit()
         raise RuntimeError("credential-value-should-not-be-stored")
 
     monkeypatch.setattr(tasks, "_run_ragflow_upload_task", fail_upload)
 
-    with pytest.raises(RuntimeError, match="RuntimeError") as error:
-        await tasks.run_ragflow_upload_task_async(str(task_id))
+    await tasks.run_ragflow_upload_task_async(str(task_id))
 
     async with AsyncSessionFactory() as session:
         result = await session.execute(select(SyncTask).where(SyncTask.id == task_id))
         task = result.scalar_one()
 
-    assert "credential-value" not in str(error.value)
     assert task.status == "failed"
     assert task.error_message == "RuntimeError"
     assert "credential-value" not in (task.error_message or "")
+
+
+async def test_ragflow_worker_propagates_failure_when_domain_state_cannot_persist(
+    task_client: AsyncClient,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from app.core.database import AsyncSessionFactory
+    from app.modules.ragflow import tasks
+    from app.modules.ragflow.tasks import create_ragflow_upload_sync_task
+
+    await _create_admin_token(task_client)
+    uploader_id = await _create_user(
+        email="phase4-unpersisted-failure@company.com",
+        password="password123",
+    )
+    file_id = await _create_file(uploader_id=uploader_id)
+    async with AsyncSessionFactory() as session:
+        task_id = await create_ragflow_upload_sync_task(session=session, file_id=file_id)
+        await session.commit()
+
+    async def fail_upload(
+        _sync_task_id: UUID,
+        *,
+        execution_token: str,
+    ) -> None:
+        _ = execution_token
+        raise RuntimeError("remote failure")
+
+    async def fail_persistence(
+        _sync_task_id: UUID,
+        _error_type: str,
+        *,
+        expected_lease_token: str | None = None,
+        was_claimed: bool = False,
+    ) -> bool:
+        _ = (expected_lease_token, was_claimed)
+        raise OSError("database unavailable")
+
+    monkeypatch.setattr(tasks, "_run_ragflow_upload_task", fail_upload)
+    monkeypatch.setattr(tasks, "_mark_ragflow_upload_task_failed", fail_persistence)
+
+    with pytest.raises(OSError, match="database unavailable"):
+        await tasks.run_ragflow_upload_task_async(str(task_id))
+
+
+@pytest.mark.parametrize("replacement_status", ["queued", "running"])
+async def test_claimed_stale_delivery_is_acked_after_new_execution_takes_ownership(
+    task_client: AsyncClient,
+    monkeypatch: pytest.MonkeyPatch,
+    replacement_status: str,
+) -> None:
+    from app.core.database import AsyncSessionFactory
+    from app.modules.document.models import File
+    from app.modules.ragflow import tasks
+    from app.modules.ragflow.models import SyncTask
+    from app.modules.ragflow.tasks import create_ragflow_upload_sync_task
+
+    await _create_admin_token(task_client)
+    uploader_id = await _create_user(
+        email=f"stale-{replacement_status}@company.com",
+        password="password123",
+    )
+    file_id = await _create_file(uploader_id=uploader_id)
+    async with AsyncSessionFactory() as session:
+        task_id = await create_ragflow_upload_sync_task(session=session, file_id=file_id)
+        await session.commit()
+
+    async def stale_claimed_execution(
+        sync_task_id: UUID,
+        *,
+        execution_token: str,
+    ) -> None:
+        async with AsyncSessionFactory() as session:
+            task = await session.get(SyncTask, sync_task_id)
+            assert task is not None
+            task.status = replacement_status
+            task.lease_token = "new-execution" if replacement_status == "running" else None
+            task.started_at = datetime.now(UTC) if replacement_status == "running" else None
+            await session.commit()
+        _ = execution_token
+        raise tasks._ClaimedRagflowExecutionError("RuntimeError")
+
+    monkeypatch.setattr(tasks, "_run_ragflow_upload_task", stale_claimed_execution)
+
+    await tasks.run_ragflow_upload_task_async(str(task_id))
+
+    async with AsyncSessionFactory() as session:
+        task = await session.get(SyncTask, task_id)
+        file = await session.get(File, file_id)
+        assert task is not None
+        assert file is not None
+    assert task.status == replacement_status
+    assert task.error_message is None
+    assert task.lease_token == (
+        "new-execution" if replacement_status == "running" else None
+    )
+    assert file.ragflow_error_message is None
 
 
 async def test_stale_worker_message_does_not_revive_failed_task(

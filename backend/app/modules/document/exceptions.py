@@ -70,11 +70,46 @@ def permission_denied() -> DocumentError:
     )
 
 
+def department_assignment_required() -> DocumentError:
+    return DocumentError(
+        ErrorCode.DEPARTMENT_ASSIGNMENT_REQUIRED,
+        "department assignment is required",
+        status.HTTP_403_FORBIDDEN,
+    )
+
+
+def upload_disabled() -> DocumentError:
+    return DocumentError(
+        ErrorCode.UPLOAD_DISABLED,
+        "file upload is disabled",
+        status.HTTP_403_FORBIDDEN,
+    )
+
+
 def invalid_state() -> DocumentError:
     return DocumentError(
         ErrorCode.VALIDATION_ERROR,
         "invalid file status transition",
         status.HTTP_400_BAD_REQUEST,
+    )
+
+
+def review_in_progress() -> DocumentError:
+    return DocumentError(
+        ErrorCode.VALIDATION_ERROR,
+        "file cannot be deleted or archived while review is pending",
+        status.HTTP_409_CONFLICT,
+    )
+
+
+def ragflow_reconciliation_pending() -> DocumentError:
+    return DocumentError(
+        ErrorCode.VALIDATION_ERROR,
+        (
+            "RAGFlow upload outcome is still being reconciled; "
+            "retry after reconciliation completes"
+        ),
+        status.HTTP_409_CONFLICT,
     )
 
 

@@ -3,6 +3,7 @@ from __future__ import annotations
 import os
 from collections.abc import AsyncGenerator, Awaitable, Callable
 from dataclasses import dataclass, field
+from datetime import UTC, datetime, timedelta
 from importlib import import_module
 from uuid import UUID, uuid4
 
@@ -14,6 +15,7 @@ from sqlalchemy import select
 pytestmark = pytest.mark.asyncio
 
 SetSystemConfig = Callable[[str, object], Awaitable[None]]
+UPLOAD_DRAFT_FORM = {"submit_after_upload": "false"}
 
 
 @dataclass
@@ -125,19 +127,35 @@ async def lifecycle_client() -> AsyncGenerator[tuple[AsyncClient, FakeDocumentSt
 async def _create_user(*, email: str, password: str, role: str = "employee") -> UUID:
     from app.core.database import AsyncSessionFactory
     from app.core.security import hash_password
+    from app.modules.department.models import Department
     from app.modules.user.models import User
 
     normalized_email = email.lower()
-    user = User(
-        name=email.split("@", 1)[0],
-        email=normalized_email,
-        email_domain=normalized_email.rsplit("@", 1)[1],
-        password_hash=hash_password(password),
-        role=role,
-        status="active",
-        email_verified=True,
-    )
     async with AsyncSessionFactory() as session:
+        department = (
+            await session.execute(
+                select(Department).where(Department.code == "document-lifecycle")
+            )
+        ).scalar_one_or_none()
+        if department is None:
+            department = Department(
+                name="文档生命周期测试部",
+                code="document-lifecycle",
+                status="active",
+            )
+            session.add(department)
+            await session.flush()
+        user = User(
+            name=email.split("@", 1)[0],
+            email=normalized_email,
+            email_domain=normalized_email.rsplit("@", 1)[1],
+            password_hash=hash_password(password),
+            department_id=department.id,
+            department=department.name,
+            role=role,
+            status="active",
+            email_verified=True,
+        )
         session.add(user)
         await session.commit()
         await session.refresh(user)
@@ -157,13 +175,16 @@ async def _create_file_row(
     size: int = 1024,
     ragflow_document_id: str | None = None,
     ragflow_dataset_id: str | None = None,
+    ragflow_parse_status: str | None = None,
     ai_enabled: bool = True,
 ) -> UUID:
     from app.core.database import AsyncSessionFactory
     from app.modules.document.models import File
 
+    submitted_at = datetime.now(UTC) if status == "pending_review" else None
     file = File(
         original_name="lifecycle.txt",
+        title="lifecycle.txt",
         stored_name="file-lifecycle.txt",
         extension="txt",
         mime_type="text/plain",
@@ -179,9 +200,14 @@ async def _create_file_row(
         tags=[],
         status=status,
         review_status="pending",
+        submitted_at=submitted_at,
+        review_due_at=(
+            submitted_at + timedelta(hours=24) if submitted_at is not None else None
+        ),
         ai_analysis_enabled_at_upload=ai_enabled,
         ragflow_document_id=ragflow_document_id,
         ragflow_dataset_id=ragflow_dataset_id,
+        ragflow_parse_status=ragflow_parse_status,
     )
     async with AsyncSessionFactory() as session:
         session.add(file)
@@ -225,6 +251,7 @@ async def _upload_txt(client: AsyncClient, *, token: str, filename: str, size: i
         "/api/files/upload",
         headers={"Authorization": f"Bearer {token}"},
         files={"file": (filename, b"a" * size, "text/plain")},
+        data=UPLOAD_DRAFT_FORM,
     )
     assert response.status_code == 201
     return str(response.json()["data"]["id"])
@@ -380,6 +407,55 @@ async def test_delete_remote_is_false_when_file_never_synced(
     payloads = await _outbox_payloads("document.file.deleted")
     assert payloads[0]["delete_remote"] is False
     assert payloads[0]["ragflow_document_id"] is None
+
+
+@pytest.mark.parametrize("operation", ["delete", "archive"])
+async def test_unknown_remote_upload_outcome_blocks_destructive_file_action(
+    lifecycle_client: tuple[AsyncClient, FakeDocumentStorage],
+    operation: str,
+) -> None:
+    client, _storage = lifecycle_client
+    owner_id = await _create_user(
+        email=f"unknown-outcome-owner-{operation}@company.com",
+        password="password123",
+    )
+    await _create_user(
+        email=f"unknown-outcome-admin-{operation}@company.com",
+        password="password123",
+        role="system_admin",
+    )
+    admin_token = await _login(
+        client,
+        email=f"unknown-outcome-admin-{operation}@company.com",
+        password="password123",
+    )
+    file_id = await _create_file_row(
+        uploader_id=owner_id,
+        status="failed",
+        ragflow_document_id=None,
+        ragflow_dataset_id="rf-unknown-outcome",
+        ragflow_parse_status="UPLOADING",
+    )
+
+    if operation == "delete":
+        response = await client.delete(
+            f"/api/files/{file_id}",
+            headers={"Authorization": f"Bearer {admin_token}"},
+        )
+    else:
+        response = await client.post(
+            f"/api/admin/files/{file_id}/archive",
+            headers={"Authorization": f"Bearer {admin_token}"},
+        )
+
+    assert response.status_code == 409
+    assert response.json()["error_code"] == "VALIDATION_ERROR"
+    assert "reconciliation completes" in response.json()["message"]
+    assert await _file_status(file_id) == "failed"
+    assert await _outbox_payloads("document.file.deleted") == []
+    assert await _outbox_payloads("document.file.archived") == []
+    assert await _audit_logs("file.delete") == []
+    assert await _audit_logs("file.archive") == []
 
 
 async def test_delete_rejects_mid_pipeline_status(
@@ -559,6 +635,7 @@ async def test_upload_rejected_when_quota_exceeded_with_usage_details(
         "/api/files/upload",
         headers={"Authorization": f"Bearer {token}"},
         files={"file": ("big.txt", b"a" * 512000, "text/plain")},
+        data=UPLOAD_DRAFT_FORM,
     )
 
     assert response.status_code == 400
@@ -584,6 +661,7 @@ async def test_deleted_files_do_not_count_toward_quota(
         "/api/files/upload",
         headers={"Authorization": f"Bearer {token}"},
         files={"file": ("ok.txt", b"a" * 512000, "text/plain")},
+        data=UPLOAD_DRAFT_FORM,
     )
 
     assert response.status_code == 201
@@ -603,6 +681,7 @@ async def test_cleanup_failed_deleted_files_do_not_count_toward_quota(
         "/api/files/upload",
         headers={"Authorization": f"Bearer {token}"},
         files={"file": ("ok.txt", b"a" * 512000, "text/plain")},
+        data=UPLOAD_DRAFT_FORM,
     )
 
     assert response.status_code == 201
@@ -622,6 +701,7 @@ async def test_quota_zero_means_unlimited(
         "/api/files/upload",
         headers={"Authorization": f"Bearer {token}"},
         files={"file": ("free.txt", b"a" * 512000, "text/plain")},
+        data=UPLOAD_DRAFT_FORM,
     )
 
     assert response.status_code == 201
@@ -848,7 +928,7 @@ def _disabled_ai_settings() -> object:
     )
 
 
-async def test_precondition_failure_marks_stuck_intermediate_file_failed(
+async def test_hard_disabled_ai_recovers_stuck_intermediate_file_to_uploaded(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     from app.core.database import AsyncSessionFactory
@@ -863,7 +943,7 @@ async def test_precondition_failure_marks_stuck_intermediate_file_failed(
 
     await run_ai_analyze_file_task_async(str(file_id))
 
-    assert await _file_status(file_id) == "analysis_failed"
+    assert await _file_status(file_id) == "uploaded"
     async with AsyncSessionFactory() as session:
         result = await session.execute(
             select(DocumentAnalysis).where(DocumentAnalysis.file_id == file_id)
@@ -871,7 +951,7 @@ async def test_precondition_failure_marks_stuck_intermediate_file_failed(
         analysis = result.scalar_one()
     assert analysis.status == "failed"
     assert analysis.error_message is not None
-    assert "前置条件失效" in analysis.error_message
+    assert analysis.error_message == "AI analysis disabled by environment"
 
 
 async def test_precondition_failure_keeps_non_intermediate_file_untouched(

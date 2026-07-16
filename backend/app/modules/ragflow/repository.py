@@ -34,6 +34,7 @@ FILES = Table(
     Column("extension", String(20), nullable=False),
     Column("mime_type", String(120), nullable=False),
     Column("size", BigInteger, nullable=False),
+    Column("hash", String(64), nullable=False),
     Column("bucket", String(100), nullable=False),
     Column("object_key", String(512), nullable=False),
     Column("uploader_id", UUID(as_uuid=True), nullable=False),
@@ -69,6 +70,7 @@ DATASET_MAPPINGS = Table(
     "dataset_mappings",
     MetaData(),
     Column("id", UUID(as_uuid=True), primary_key=True),
+    Column("category_id", UUID(as_uuid=True), nullable=False),
     Column("ragflow_dataset_id", String(120), nullable=False),
     Column("enabled", Boolean, nullable=False),
 )
@@ -80,6 +82,17 @@ DOCUMENT_ANALYSIS = Table(
     Column("status", String(30), nullable=False),
     Column("sensitive_risk_level", String(20), nullable=False),
     Column("sensitive_hits", JSONB, nullable=False),
+)
+
+AUDIT_LOGS = Table(
+    "audit_logs",
+    MetaData(),
+    Column("id", UUID(as_uuid=True), primary_key=True),
+    Column("actor_id", UUID(as_uuid=True), nullable=False),
+    Column("action", String(120), nullable=False),
+    Column("target_type", String(80), nullable=False),
+    Column("target_id", UUID(as_uuid=True), nullable=False),
+    Column("created_at", DateTime(timezone=True), nullable=False),
 )
 
 AI_FEATURE_CONFIGS = Table(
@@ -137,9 +150,31 @@ class RagflowTaskRepository:
 
     async def get_task_for_update(self, task_id: uuid.UUID) -> SyncTask | None:
         result = await self._session.execute(
-            select(SyncTask).where(SyncTask.id == task_id).with_for_update()
+            select(SyncTask)
+            .where(SyncTask.id == task_id)
+            .with_for_update()
+            .execution_options(populate_existing=True)
         )
         return result.scalar_one_or_none()
+
+    async def heartbeat_task(
+        self,
+        *,
+        task_id: uuid.UUID,
+        execution_token: str,
+        heartbeat_at: datetime,
+    ) -> bool:
+        result = await self._session.execute(
+            update(SyncTask)
+            .where(
+                SyncTask.id == task_id,
+                SyncTask.status == "running",
+                SyncTask.lease_token == execution_token,
+            )
+            .values(lease_heartbeat_at=heartbeat_at, updated_at=func.now())
+            .returning(SyncTask.id)
+        )
+        return result.scalar_one_or_none() is not None
 
     async def add_log(self, *, task_id: uuid.UUID, status: str, message: str) -> SyncTaskLog:
         log = SyncTaskLog(task_id=task_id, status=status, message=message)
@@ -169,7 +204,11 @@ class RagflowTaskRepository:
         file_id: uuid.UUID,
     ) -> RagflowSyncFileRecord | None:
         result = await self._session.execute(
-            select(*FILE_COLUMNS, *self._department_lookup_columns())
+            select(
+                *FILE_COLUMNS,
+                *self._department_lookup_columns(),
+                *self._metadata_lookup_columns(),
+            )
             .where(FILES.c.id == file_id)
             .with_for_update()
         )
@@ -185,6 +224,9 @@ class RagflowTaskRepository:
             .where(FILES.c.id == file.id)
             .values(
                 status=file.status,
+                category_id=file.category_id,
+                dataset_mapping_id=file.dataset_mapping_id,
+                ragflow_dataset_id=file.ragflow_dataset_id,
                 ragflow_document_id=file.ragflow_document_id,
                 ragflow_parse_status=file.ragflow_parse_status,
                 ragflow_error_message=file.ragflow_error_message,
@@ -198,7 +240,11 @@ class RagflowTaskRepository:
         return updated_file
 
     def _file_select(self) -> Select[tuple[Any, ...]]:
-        return select(*FILE_COLUMNS, *self._department_lookup_columns())
+        return select(
+            *FILE_COLUMNS,
+            *self._department_lookup_columns(),
+            *self._metadata_lookup_columns(),
+        )
 
     def _department_lookup_columns(self) -> tuple[Any, Any]:
         return (
@@ -212,6 +258,33 @@ class RagflowTaskRepository:
             .label("department_code"),
         )
 
+    def _metadata_lookup_columns(self) -> tuple[Any, Any, Any]:
+        approval_predicates = (
+            AUDIT_LOGS.c.target_type == "file",
+            AUDIT_LOGS.c.target_id == FILES.c.id,
+            AUDIT_LOGS.c.action == "file.approve",
+        )
+        approval_order = (AUDIT_LOGS.c.created_at.desc(), AUDIT_LOGS.c.id.desc())
+        return (
+            select(AUDIT_LOGS.c.actor_id)
+            .where(*approval_predicates)
+            .order_by(*approval_order)
+            .limit(1)
+            .scalar_subquery()
+            .label("reviewer_id"),
+            select(AUDIT_LOGS.c.created_at)
+            .where(*approval_predicates)
+            .order_by(*approval_order)
+            .limit(1)
+            .scalar_subquery()
+            .label("reviewed_at"),
+            select(DOCUMENT_ANALYSIS.c.sensitive_risk_level)
+            .where(DOCUMENT_ANALYSIS.c.file_id == FILES.c.id)
+            .limit(1)
+            .scalar_subquery()
+            .label("metadata_sensitive_risk_level"),
+        )
+
     async def get_dataset_mapping(
         self,
         mapping_id: uuid.UUID,
@@ -219,6 +292,7 @@ class RagflowTaskRepository:
         result = await self._session.execute(
             select(
                 DATASET_MAPPINGS.c.id,
+                DATASET_MAPPINGS.c.category_id,
                 DATASET_MAPPINGS.c.ragflow_dataset_id,
                 DATASET_MAPPINGS.c.enabled,
             ).where(DATASET_MAPPINGS.c.id == mapping_id)
@@ -228,6 +302,31 @@ class RagflowTaskRepository:
             return None
         return RagflowDatasetMappingRecord(
             id=cast(uuid.UUID, row["id"]),
+            category_id=cast(uuid.UUID, row["category_id"]),
+            ragflow_dataset_id=cast(str, row["ragflow_dataset_id"]),
+            enabled=cast(bool, row["enabled"]),
+        )
+
+    async def get_dataset_mapping_for_update(
+        self,
+        mapping_id: uuid.UUID,
+    ) -> RagflowDatasetMappingRecord | None:
+        result = await self._session.execute(
+            select(
+                DATASET_MAPPINGS.c.id,
+                DATASET_MAPPINGS.c.category_id,
+                DATASET_MAPPINGS.c.ragflow_dataset_id,
+                DATASET_MAPPINGS.c.enabled,
+            )
+            .where(DATASET_MAPPINGS.c.id == mapping_id)
+            .with_for_update(of=DATASET_MAPPINGS)
+        )
+        row = result.mappings().one_or_none()
+        if row is None:
+            return None
+        return RagflowDatasetMappingRecord(
+            id=cast(uuid.UUID, row["id"]),
+            category_id=cast(uuid.UUID, row["category_id"]),
             ragflow_dataset_id=cast(str, row["ragflow_dataset_id"]),
             enabled=cast(bool, row["enabled"]),
         )
@@ -272,6 +371,7 @@ def file_record_from_row(row: RowMapping) -> RagflowSyncFileRecord:
         extension=cast(str, row["extension"]),
         mime_type=cast(str, row["mime_type"]),
         size=cast(int, row["size"]),
+        content_hash=cast(str, row["hash"]),
         bucket=cast(str, row["bucket"]),
         object_key=cast(str, row["object_key"]),
         uploader_id=cast(uuid.UUID, row["uploader_id"]),
@@ -286,6 +386,13 @@ def file_record_from_row(row: RowMapping) -> RagflowSyncFileRecord:
         tags=cast(list[str], row["tags"]),
         status=cast(str, row["status"]),
         review_status=cast(str, row["review_status"]),
+        reviewer_id=cast(uuid.UUID | None, row.get("reviewer_id")),
+        reviewed_at=cast(datetime | None, row.get("reviewed_at")),
+        sensitive_risk_level=cast(
+            str | None,
+            row.get("metadata_sensitive_risk_level"),
+        )
+        or "none",
         ragflow_dataset_id=cast(str | None, row["ragflow_dataset_id"]),
         ragflow_document_id=cast(str | None, row["ragflow_document_id"]),
         ragflow_parse_status=cast(str | None, row["ragflow_parse_status"]),
