@@ -71,6 +71,12 @@ beforeAll(() => {
       dispatchEvent: vi.fn(),
     })),
   });
+  Object.defineProperty(window, "getComputedStyle", {
+    writable: true,
+    value: vi.fn().mockImplementation(() => ({
+      getPropertyValue: () => "",
+    })),
+  });
 });
 
 function renderWithProviders(node: ReactNode) {
