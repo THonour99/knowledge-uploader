@@ -1,0 +1,79 @@
+services:
+  rabbitmq:
+    command:
+      - sh
+      - -ec
+      - rabbitmq-plugins enable --offline rabbitmq_prometheus && exec docker-entrypoint.sh rabbitmq-server
+
+  minio:
+    environment:
+      MINIO_PROMETHEUS_AUTH_TYPE: public
+
+  prometheus:
+    image: prom/prometheus:v3.12.0
+    command:
+      - --config.file=/etc/prometheus/prometheus.yml
+      - --storage.tsdb.path=/prometheus
+      - --storage.tsdb.retention.time=30d
+      - --web.enable-lifecycle
+    ports:
+      - "127.0.0.1:${PROMETHEUS_HOST_PORT:-19090}:9090"
+    volumes:
+      - ./ops/observability/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - ./ops/observability/alerts.yml:/etc/prometheus/alerts.yml:ro
+      - prometheus-data:/prometheus
+    depends_on:
+      backend-api:
+        condition: service_healthy
+      outbox-dispatcher:
+        condition: service_started
+      backup-metrics:
+        condition: service_started
+      alertmanager:
+        condition: service_started
+    networks:
+      - knowledge-uploader
+    restart: unless-stopped
+
+  alertmanager:
+    image: quay.io/prometheus/alertmanager:v0.28.1
+    command:
+      - --config.file=/etc/alertmanager/alertmanager.yml
+      - --storage.path=/alertmanager
+    volumes:
+      - ${ALERTMANAGER_CONFIG_FILE:-./ops/observability/alertmanager.example.yml}:/etc/alertmanager/alertmanager.yml:ro
+      - alertmanager-data:/alertmanager
+    networks:
+      - knowledge-uploader
+    restart: unless-stopped
+
+  backup-metrics:
+    image: quay.io/prometheus/node-exporter:v1.11.1
+    command:
+      - --collector.disable-defaults
+      - --collector.textfile
+      - --collector.textfile.directory=/var/lib/node_exporter/textfile
+      - --web.listen-address=:9100
+    volumes:
+      - backup-metrics:/var/lib/node_exporter/textfile:ro
+    networks:
+      - knowledge-uploader
+    restart: unless-stopped
+
+  host-node-exporter:
+    image: quay.io/prometheus/node-exporter:v1.11.1
+    command:
+      - --path.rootfs=/host
+      - --collector.filesystem.mount-points-exclude=^/(dev|proc|sys|run/credentials/.+|var/lib/docker/.+)($$|/)
+      - --web.listen-address=:9100
+    pid: host
+    volumes:
+      - /:/host:ro,rslave
+    networks:
+      - knowledge-uploader
+    restart: unless-stopped
+
+volumes:
+  prometheus-data:
+  backup-metrics:
+  alertmanager-data:

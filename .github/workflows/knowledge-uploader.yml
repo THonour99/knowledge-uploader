@@ -7,9 +7,17 @@ on:
   pull_request:
   workflow_dispatch:
 
+permissions:
+  contents: read
+
 jobs:
   lint-test-arm64:
     runs-on: ubuntu-24.04
+    env:
+      PYTHON_RELEASE_IMAGE: python:3.11-slim-bookworm@sha256:b18992999dbe963a45a8a4da40ac2b1975be1a776d939d098c647482bcad5cba
+      NODE_RELEASE_IMAGE: node:20-alpine@sha256:fb4cd12c85ee03686f6af5362a0b0d56d50c58a04632e6c0fb8363f609372293
+      NGINX_RELEASE_IMAGE: nginx:1.25-alpine@sha256:516475cc129da42866742567714ddc681e5eed7b9ee0b9e9c015e464b4221a00
+      PROMETHEUS_VALIDATOR_IMAGE: prom/prometheus:v3.12.0@sha256:69f5241418838263316593f7274a304b095c40bcf22e57272865da91bd60a8ac
     services:
       postgres:
         image: postgres:16-alpine
@@ -36,17 +44,20 @@ jobs:
     steps:
       - name: Checkout
         if: ${{ !env.ACT }}
-        uses: actions/checkout@v4
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
 
       - name: Set up Python
         if: ${{ !env.ACT }}
-        uses: actions/setup-python@v5
+        uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5.6.0
         with:
           python-version: "3.11"
 
       - name: Set up Node
         if: ${{ !env.ACT }}
-        uses: actions/setup-node@v4
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
         with:
           node-version: "20"
           cache: npm
@@ -69,7 +80,18 @@ jobs:
           docker tag docker.m.daocloud.io/library/node:20-alpine node:20-alpine
 
       - name: Check Docker Compose syntax
-        run: docker compose config
+        run: |
+          docker compose config --quiet
+          BACKEND_IMAGE=knowledge-uploader-backend:contract \
+          FRONTEND_IMAGE=knowledge-uploader-frontend:contract \
+          E2E_CERT_DIR=/tmp/knowledge-uploader-e2e-certs \
+          E2E_RAGFLOW_HOST_PORT=29380 \
+          E2E_SMTP_STATE_HOST_PORT=28025 \
+          RAGFLOW_API_KEY=sk-contract \
+          RAGFLOW_ALLOWED_DATASET_IDS=11111111-1111-1111-1111-111111111111 \
+          E2E_PROBE_TOKEN=contract-probe \
+          MINIO_SECURE=true \
+          docker compose -f docker-compose.yml -f docker-compose.e2e.yml config --quiet
 
       - name: Check ARM64 Python dependency allowlist
         run: |
@@ -78,6 +100,18 @@ jobs:
           else
             echo "Skipping ARM64 dependency check until backend requirements are created."
           fi
+
+      - name: Check runtime configuration consumers
+        run: python scripts/check_runtime_config_consumers.py
+
+      - name: Check protected release contract
+        run: python scripts/check_protected_release.py --contract-only
+
+      - name: Check Celery queue contract
+        run: python scripts/check_celery_queue_contract.py
+
+      - name: Test Prometheus alert rules
+        run: docker run --rm --entrypoint /bin/promtool -v "$PWD/ops/observability:/work:ro" "$PROMETHEUS_VALIDATOR_IMAGE" test rules /work/alerts.test.yml
 
       - name: Backend lint and tests
         env:
@@ -89,14 +123,15 @@ jobs:
             python -m pip install -r backend/requirements.txt -r backend/requirements-dev.txt
           fi
           if [ -d backend/app ]; then
-            python -m compileall backend/app
-            python -m ruff check backend/app scripts tasks.py
+            python -m compileall backend/app backend/scripts
+            python -m ruff check backend/app backend/scripts scripts tasks.py ops/tests
             python scripts/check_module_boundaries.py
             (cd backend && python -m mypy app)
           fi
           if [ -d backend/app/tests ]; then
             python -m pytest backend/app/tests --ignore=backend/app/tests/red_team
           fi
+          python -m pytest ops/tests
 
       - name: Red-team adversarial gate
         env:
@@ -118,23 +153,30 @@ jobs:
             echo "Skipping frontend checks until frontend/package.json is created."
           fi
 
+      - name: Set up QEMU for cross-architecture smoke tests
+        if: ${{ !env.ACT }}
+        uses: docker/setup-qemu-action@29109295f81e9208d7d86ff1c6c12d2833863392 # v3.6.0
+        with:
+          platforms: arm64
+
       - name: Set up Docker Buildx
         if: ${{ !env.ACT }}
-        uses: docker/setup-buildx-action@v3
+        uses: docker/setup-buildx-action@e468171a9de216ec08956ac3ada2f0791b6bd435 # v3.11.1
 
       - name: Build backend linux/amd64 image
         run: |
           if [ -f backend/Dockerfile ]; then
-            docker buildx build --platform linux/amd64 -f backend/Dockerfile backend --load
+            docker buildx build --platform linux/amd64 --target runtime --build-arg PYTHON_IMAGE="${PYTHON_RELEASE_IMAGE}" --build-arg VCS_REF="${{ github.sha }}" -t knowledge-uploader-backend:ci-amd64 -f backend/Dockerfile backend --load
           else
             echo "Skipping backend image build until backend/Dockerfile is created."
           fi
 
-      - name: Build backend linux/arm64 image
+      - name: Build backend linux/arm64 image with QEMU
         if: ${{ !env.ACT }}
         run: |
           if [ -f backend/Dockerfile ]; then
-            docker buildx build --platform linux/arm64 -f backend/Dockerfile backend
+            docker buildx build --platform linux/arm64 --target runtime --build-arg PYTHON_IMAGE="${PYTHON_RELEASE_IMAGE}" --build-arg VCS_REF="${{ github.sha }}" -t knowledge-uploader-backend:ci-arm64 -f backend/Dockerfile backend --load
+            docker run --rm --platform linux/arm64 knowledge-uploader-backend:ci-arm64 python -c "import platform, asyncpg, cryptography, prometheus_client, tiktoken; assert platform.machine() in {'aarch64', 'arm64'}, platform.machine()"
           else
             echo "Skipping backend image build until backend/Dockerfile is created."
           fi
@@ -142,14 +184,138 @@ jobs:
       - name: Build frontend linux/amd64 image
         run: |
           if [ -f frontend/Dockerfile ]; then
-            docker buildx build --platform linux/amd64 -f frontend/Dockerfile frontend --load
+            docker buildx build --platform linux/amd64 --build-arg NODE_IMAGE="${NODE_RELEASE_IMAGE}" --build-arg NGINX_IMAGE="${NGINX_RELEASE_IMAGE}" --build-arg VCS_REF="${{ github.sha }}" -t knowledge-uploader-frontend:ci-amd64 -f frontend/Dockerfile frontend --load
           else
             echo "Skipping frontend image build until frontend/Dockerfile is created."
           fi
 
+      - name: Build frontend linux/arm64 image with QEMU
+        if: ${{ !env.ACT }}
+        run: |
+          if [ -f frontend/Dockerfile ]; then
+            docker buildx build --platform linux/arm64 --build-arg NODE_IMAGE="${NODE_RELEASE_IMAGE}" --build-arg NGINX_IMAGE="${NGINX_RELEASE_IMAGE}" --build-arg VCS_REF="${{ github.sha }}" -t knowledge-uploader-frontend:ci-arm64 -f frontend/Dockerfile frontend --load
+            docker run --rm --platform linux/arm64 knowledge-uploader-frontend:ci-arm64 nginx -t
+          else
+            echo "Skipping frontend image build until frontend/Dockerfile is created."
+          fi
+
+  build-release-oci:
+    name: Build immutable multi-platform OCI release artifact
+    if: ${{ github.event_name == 'push' && github.ref == 'refs/heads/main' }}
+    needs: lint-test-arm64
+    runs-on: ubuntu-24.04
+    timeout-minutes: 90
+    permissions:
+      contents: read
+    env:
+      PYTHON_RELEASE_IMAGE: python:3.11-slim-bookworm@sha256:b18992999dbe963a45a8a4da40ac2b1975be1a776d939d098c647482bcad5cba
+      NODE_RELEASE_IMAGE: node:20-alpine@sha256:fb4cd12c85ee03686f6af5362a0b0d56d50c58a04632e6c0fb8363f609372293
+      NGINX_RELEASE_IMAGE: nginx:1.25-alpine@sha256:516475cc129da42866742567714ddc681e5eed7b9ee0b9e9c015e464b4221a00
+    steps:
+      - name: Checkout exact successful source revision
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+
+      - name: Set up QEMU for release platforms
+        uses: docker/setup-qemu-action@29109295f81e9208d7d86ff1c6c12d2833863392 # v3.6.0
+        with:
+          platforms: amd64,arm64
+
+      - name: Set up Docker Buildx for one release build
+        uses: docker/setup-buildx-action@e468171a9de216ec08956ac3ada2f0791b6bd435 # v3.11.1
+
+      - name: Build backend OCI layout once with SBOM and provenance
+        run: |
+          mkdir -p release-oci
+          docker buildx build \
+            --platform linux/amd64,linux/arm64 \
+            --target runtime \
+            --build-arg VCS_REF="${GITHUB_SHA}" \
+            --build-arg PYTHON_IMAGE="${PYTHON_RELEASE_IMAGE}" \
+            --tag "knowledge-uploader-backend:release-${GITHUB_SHA}" \
+            --provenance=mode=max \
+            --sbom=true \
+            --output type=oci,dest=release-oci/backend.oci.tar \
+            --file backend/Dockerfile \
+            backend
+
+      - name: Build frontend OCI layout once with SBOM and provenance
+        run: |
+          docker buildx build \
+            --platform linux/amd64,linux/arm64 \
+            --target runtime \
+            --build-arg VCS_REF="${GITHUB_SHA}" \
+            --build-arg NODE_IMAGE="${NODE_RELEASE_IMAGE}" \
+            --build-arg NGINX_IMAGE="${NGINX_RELEASE_IMAGE}" \
+            --tag "knowledge-uploader-frontend:release-${GITHUB_SHA}" \
+            --provenance=mode=max \
+            --sbom=true \
+            --output type=oci,dest=release-oci/frontend.oci.tar \
+            --file frontend/Dockerfile \
+            frontend
+
+      - name: Seal OCI indexes, platform manifests and source inputs
+        run: |
+          python scripts/release_oci.py create \
+            --repository "${GITHUB_REPOSITORY}" \
+            --git-sha "${GITHUB_SHA}" \
+            --git-ref "${GITHUB_REF}" \
+            --workflow-run-id "${GITHUB_RUN_ID}" \
+            --workflow-run-attempt "${GITHUB_RUN_ATTEMPT}" \
+            --backend-archive release-oci/backend.oci.tar \
+            --frontend-archive release-oci/frontend.oci.tar \
+            --source-input backend/Dockerfile \
+            --source-input backend/requirements.txt \
+            --source-input frontend/Dockerfile \
+            --source-input frontend/package-lock.json \
+            --repository-root "${GITHUB_WORKSPACE}" \
+            --output-dir release-oci
+          python scripts/release_oci.py verify \
+            --bundle-dir release-oci \
+            --repository "${GITHUB_REPOSITORY}" \
+            --git-sha "${GITHUB_SHA}" \
+            --workflow-run-id "${GITHUB_RUN_ID}" \
+            --workflow-run-attempt "${GITHUB_RUN_ATTEMPT}" \
+            --require-archives
+
+      - name: Upload immutable OCI bundle
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: release-oci-bundle-${{ github.sha }}-${{ github.run_id }}-${{ github.run_attempt }}
+          path: |
+            release-oci/backend.oci.tar
+            release-oci/frontend.oci.tar
+            release-oci/release-oci-provenance.json
+            release-oci/release-oci-provenance.sha256
+          if-no-files-found: error
+          retention-days: 2
+          compression-level: 0
+          overwrite: false
+          include-hidden-files: false
+
+      - name: Upload immutable provenance summary
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: release-oci-provenance-${{ github.sha }}-${{ github.run_id }}-${{ github.run_attempt }}
+          path: |
+            release-oci/release-oci-provenance.json
+            release-oci/release-oci-provenance.sha256
+          if-no-files-found: error
+          retention-days: 2
+          compression-level: 0
+          overwrite: false
+          include-hidden-files: false
+
   local-act:
     if: ${{ github.actor == 'nektos/act' }}
     runs-on: ubuntu-24.04
+    env:
+      PYTHON_RELEASE_IMAGE: python:3.11-slim-bookworm@sha256:b18992999dbe963a45a8a4da40ac2b1975be1a776d939d098c647482bcad5cba
+      NODE_RELEASE_IMAGE: node:20-alpine@sha256:fb4cd12c85ee03686f6af5362a0b0d56d50c58a04632e6c0fb8363f609372293
+      NGINX_RELEASE_IMAGE: nginx:1.25-alpine@sha256:516475cc129da42866742567714ddc681e5eed7b9ee0b9e9c015e464b4221a00
+      PROMETHEUS_VALIDATOR_IMAGE: prom/prometheus:v3.12.0@sha256:69f5241418838263316593f7274a304b095c40bcf22e57272865da91bd60a8ac
     defaults:
       run:
         working-directory: ${{ github.workspace }}
@@ -171,10 +337,33 @@ jobs:
           docker tag docker.m.daocloud.io/library/node:20-alpine node:20-alpine
 
       - name: Check Docker Compose syntax
-        run: docker compose config
+        run: |
+          docker compose config --quiet
+          BACKEND_IMAGE=knowledge-uploader-backend:contract \
+          FRONTEND_IMAGE=knowledge-uploader-frontend:contract \
+          E2E_CERT_DIR=/tmp/knowledge-uploader-e2e-certs \
+          E2E_RAGFLOW_HOST_PORT=29380 \
+          E2E_SMTP_STATE_HOST_PORT=28025 \
+          RAGFLOW_API_KEY=sk-contract \
+          RAGFLOW_ALLOWED_DATASET_IDS=11111111-1111-1111-1111-111111111111 \
+          E2E_PROBE_TOKEN=contract-probe \
+          MINIO_SECURE=true \
+          docker compose -f docker-compose.yml -f docker-compose.e2e.yml config --quiet
 
       - name: Check ARM64 Python dependency allowlist
         run: python scripts/check_arm64_wheels.py backend/requirements.txt backend/requirements-dev.txt
+
+      - name: Check runtime configuration consumers
+        run: python scripts/check_runtime_config_consumers.py
+
+      - name: Check protected release contract
+        run: python scripts/check_protected_release.py --contract-only
+
+      - name: Check Celery queue contract
+        run: python scripts/check_celery_queue_contract.py
+
+      - name: Test Prometheus alert rules
+        run: docker run --rm --entrypoint /bin/promtool -v "$PWD/ops/observability:/work:ro" "$PROMETHEUS_VALIDATOR_IMAGE" test rules /work/alerts.test.yml
 
       - name: Backend lint and tests
         run: |
@@ -182,11 +371,12 @@ jobs:
           . "$RUNNER_TEMP/knowledge-uploader-ci-venv/bin/activate"
           python -m pip install --upgrade pip
           python -m pip install -r backend/requirements.txt -r backend/requirements-dev.txt
-          python -m compileall backend/app
-          python -m ruff check backend/app scripts tasks.py
+          python -m compileall backend/app backend/scripts
+          python -m ruff check backend/app backend/scripts scripts tasks.py ops/tests
           python scripts/check_module_boundaries.py
           (cd backend && python -m mypy app)
           python -m pytest backend/app/tests
+          python -m pytest ops/tests
 
       - name: Frontend lint and tests
         run: |
@@ -196,7 +386,7 @@ jobs:
           npm run build --prefix frontend
 
       - name: Build backend linux/amd64 image
-        run: docker buildx build --platform linux/amd64 -f backend/Dockerfile backend --load
+        run: docker buildx build --platform linux/amd64 --target runtime --build-arg PYTHON_IMAGE="${PYTHON_RELEASE_IMAGE}" --build-arg VCS_REF="${{ github.sha }}" -f backend/Dockerfile backend --load
 
       - name: Build frontend linux/amd64 image
-        run: docker buildx build --platform linux/amd64 -f frontend/Dockerfile frontend --load
+        run: docker buildx build --platform linux/amd64 --build-arg NODE_IMAGE="${NODE_RELEASE_IMAGE}" --build-arg NGINX_IMAGE="${NGINX_RELEASE_IMAGE}" --build-arg VCS_REF="${{ github.sha }}" -f frontend/Dockerfile frontend --load

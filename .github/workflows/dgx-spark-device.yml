@@ -1,0 +1,142 @@
+name: DGX Spark physical device gate
+
+on:
+  workflow_dispatch:
+    inputs:
+      main_ci_run_id:
+        description: Successful main CI run that built the immutable OCI artifact
+        required: true
+        type: string
+      main_ci_run_attempt:
+        description: Exact attempt number of the successful main CI run
+        required: true
+        type: string
+
+permissions:
+  contents: read
+  actions: read
+
+jobs:
+  physical-arm64-validation:
+    runs-on:
+      - self-hosted
+      - Linux
+      - ARM64
+      - dgx-spark
+    timeout-minutes: 90
+    environment:
+      name: staging
+    env:
+      BACKEND_E2E_IMAGE: knowledge-uploader-backend:dgx-${{ github.sha }}-${{ github.run_id }}
+      FRONTEND_E2E_IMAGE: knowledge-uploader-frontend:dgx-${{ github.sha }}-${{ github.run_id }}
+      MAIN_CI_RUN_ID: ${{ inputs.main_ci_run_id }}
+      MAIN_CI_RUN_ATTEMPT: ${{ inputs.main_ci_run_attempt }}
+    steps:
+      - name: Checkout exact protected revision
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+
+      - name: Verify protected ref and successful main CI provenance
+        id: release-trust
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          mkdir -p artifacts/trust
+          python scripts/release_workflow_trust.py fetch \
+            --repository "${GITHUB_REPOSITORY}" \
+            --git-sha "${GITHUB_SHA}" \
+            --ref "${GITHUB_REF}" \
+            --ref-protected "${{ github.ref_protected }}" \
+            --current-role dgx \
+            --current-run-id "${GITHUB_RUN_ID}" \
+            --current-run-attempt "${GITHUB_RUN_ATTEMPT}" \
+            --current-workflow .github/workflows/dgx-spark-device.yml \
+            --main-run-id "${MAIN_CI_RUN_ID}" \
+            --main-run-attempt "${MAIN_CI_RUN_ATTEMPT}" \
+            --github-output "${GITHUB_OUTPUT}" \
+            --output artifacts/trust/release-workflow-trust.json
+
+      - name: Download exact main CI OCI artifact
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          artifact-ids: ${{ steps.release-trust.outputs.main_bundle_artifact_id }}
+          path: artifacts/release-oci
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          run-id: ${{ inputs.main_ci_run_id }}
+
+      - name: Verify and load the original ARM64 OCI manifests
+        run: |
+          python scripts/release_oci.py load-arm64 \
+            --bundle-dir artifacts/release-oci \
+            --repository "${GITHUB_REPOSITORY}" \
+            --git-sha "${GITHUB_SHA}" \
+            --workflow-run-id "${MAIN_CI_RUN_ID}" \
+            --workflow-run-attempt "${MAIN_CI_RUN_ATTEMPT}" \
+            --backend-tag "${BACKEND_E2E_IMAGE}" \
+            --frontend-tag "${FRONTEND_E2E_IMAGE}"
+
+      - name: Verify Compose contracts
+        run: |
+          docker compose config --quiet
+          docker compose -f docker-compose.yml -f docker-compose.observability.yml config --quiet
+
+      - name: Run isolated full Compose and business E2E
+        run: |
+          python scripts/run_infrastructure_e2e.py \
+            --backend-image "${BACKEND_E2E_IMAGE}" \
+            --frontend-image "${FRONTEND_E2E_IMAGE}" \
+            --git-sha "${GITHUB_SHA}" \
+            --environment staging \
+            --evidence-dir artifacts
+
+      - name: Verify physical host and release images
+        run: |
+          python scripts/verify_dgx_spark.py \
+            --backend-image "${BACKEND_E2E_IMAGE}" \
+            --frontend-image "${FRONTEND_E2E_IMAGE}" \
+            --proof artifacts/dgx-spark-evidence.json \
+            --git-sha "${GITHUB_SHA}" \
+            --environment staging \
+            --compose-e2e-evidence artifacts/infrastructure-e2e.json
+
+      - name: Bind physical runtime evidence to original OCI digests
+        run: |
+          python scripts/release_oci.py bind-dgx \
+            --bundle-dir artifacts/release-oci \
+            --infrastructure-evidence artifacts/infrastructure-e2e.json \
+            --dgx-evidence artifacts/dgx-spark-evidence.json \
+            --workflow-trust artifacts/trust/release-workflow-trust.json \
+            --output artifacts/dgx-oci-consumption.json \
+            --repository "${GITHUB_REPOSITORY}" \
+            --git-sha "${GITHUB_SHA}" \
+            --environment staging \
+            --main-run-id "${MAIN_CI_RUN_ID}" \
+            --main-run-attempt "${MAIN_CI_RUN_ATTEMPT}" \
+            --dgx-run-id "${GITHUB_RUN_ID}" \
+            --dgx-run-attempt "${GITHUB_RUN_ATTEMPT}"
+
+      - name: Upload immutable device evidence
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: dgx-spark-evidence-${{ github.sha }}-${{ github.run_id }}-${{ github.run_attempt }}
+          path: |
+            artifacts/infrastructure-e2e.json
+            artifacts/rabbitmq-dlq-replay.json
+            artifacts/dgx-spark-evidence.json
+            artifacts/dgx-oci-consumption.json
+            artifacts/release-oci/release-oci-provenance.json
+            artifacts/release-oci/release-oci-provenance.sha256
+            artifacts/trust/release-workflow-trust.json
+            artifacts/trust/release-workflow-trust.json.sha256
+          if-no-files-found: error
+          retention-days: 2
+          compression-level: 0
+          overwrite: false
+          include-hidden-files: false
+
+      - name: Cleanup isolated E2E image aliases
+        if: always()
+        run: docker image rm --force "${BACKEND_E2E_IMAGE}" "${FRONTEND_E2E_IMAGE}"

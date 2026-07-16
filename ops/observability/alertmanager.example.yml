@@ -1,0 +1,13 @@
+route:
+  receiver: local-blackhole
+  group_by:
+    - alertname
+  group_wait: 30s
+  group_interval: 5m
+  repeat_interval: 4h
+
+receivers:
+  - name: local-blackhole
+
+# Protected environments must mount a separately managed config with a real receiver and prove a
+# firing/resolved notification. scripts/check_protected_release.py rejects this example config.

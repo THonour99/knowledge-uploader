@@ -1,0 +1,122 @@
+name: knowledge-uploader-e2e
+
+x-e2e-tls-environment: &e2e-tls-environment
+  SSL_CERT_FILE: /e2e-certs/ca.crt
+
+x-e2e-backend-volumes: &e2e-backend-volumes
+  - "${E2E_CERT_DIR:?E2E_CERT_DIR is required}/ca.crt:/e2e-certs/ca.crt:ro"
+
+services:
+  nginx:
+    ports: !override
+      - "127.0.0.1:${NGINX_HTTP_PORT:-28080}:80"
+
+  mock-ragflow:
+    image: "${BACKEND_IMAGE:?BACKEND_IMAGE is required}"
+    command:
+      - python
+      - /e2e/mock_ragflow.py
+    environment:
+      E2E_RAGFLOW_API_KEY: "${RAGFLOW_API_KEY:?RAGFLOW_API_KEY is required}"
+      E2E_RAGFLOW_DATASET_ID: "${RAGFLOW_ALLOWED_DATASET_IDS:?RAGFLOW_ALLOWED_DATASET_IDS is required}"
+      E2E_PROBE_TOKEN: "${E2E_PROBE_TOKEN:?E2E_PROBE_TOKEN is required}"
+    volumes:
+      - ./ops/e2e/mock_ragflow.py:/e2e/mock_ragflow.py:ro
+    ports:
+      - "127.0.0.1:${E2E_RAGFLOW_HOST_PORT:?E2E_RAGFLOW_HOST_PORT is required}:9380"
+    networks:
+      - knowledge-uploader
+    restart: "no"
+    healthcheck:
+      test:
+        - CMD
+        - python
+        - -c
+        - "import urllib.request; urllib.request.urlopen('http://127.0.0.1:9380/health', timeout=3).read()"
+      interval: 5s
+      timeout: 5s
+      retries: 12
+      start_period: 3s
+
+  mock-smtp:
+    image: "${BACKEND_IMAGE:?BACKEND_IMAGE is required}"
+    command:
+      - python
+      - /e2e/mock_smtp.py
+    environment:
+      E2E_PROBE_TOKEN: "${E2E_PROBE_TOKEN:?E2E_PROBE_TOKEN is required}"
+    volumes:
+      - ./ops/e2e/mock_smtp.py:/e2e/mock_smtp.py:ro
+    ports:
+      - "127.0.0.1:${E2E_SMTP_STATE_HOST_PORT:?E2E_SMTP_STATE_HOST_PORT is required}:8080"
+    networks:
+      - knowledge-uploader
+    restart: "no"
+    healthcheck:
+      test:
+        - CMD
+        - python
+        - -c
+        - "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8080/health', timeout=3).read()"
+      interval: 5s
+      timeout: 5s
+      retries: 12
+      start_period: 3s
+
+  minio:
+    volumes:
+      - "${E2E_CERT_DIR:?E2E_CERT_DIR is required}/minio.crt:/root/.minio/certs/public.crt:ro"
+      - "${E2E_CERT_DIR:?E2E_CERT_DIR is required}/minio.key:/root/.minio/certs/private.key:ro"
+    healthcheck:
+      test:
+        - CMD-SHELL
+        - "curl --fail --silent --show-error --insecure https://127.0.0.1:9000/minio/health/live >/dev/null"
+      interval: 5s
+      timeout: 5s
+      retries: 20
+      start_period: 5s
+
+  backend-api:
+    environment: *e2e-tls-environment
+    volumes: *e2e-backend-volumes
+    depends_on:
+      mock-ragflow:
+        condition: service_healthy
+
+  rabbitmq-topology:
+    environment: *e2e-tls-environment
+    volumes: *e2e-backend-volumes
+
+  outbox-dispatcher:
+    environment: *e2e-tls-environment
+    volumes: *e2e-backend-volumes
+
+  operational-metrics:
+    environment: *e2e-tls-environment
+    volumes: *e2e-backend-volumes
+
+  worker-document:
+    environment: *e2e-tls-environment
+    volumes: *e2e-backend-volumes
+
+  worker-ai:
+    environment: *e2e-tls-environment
+    volumes: *e2e-backend-volumes
+
+  worker-ragflow:
+    environment: *e2e-tls-environment
+    volumes: *e2e-backend-volumes
+    depends_on:
+      mock-ragflow:
+        condition: service_healthy
+
+  worker-notification:
+    environment: *e2e-tls-environment
+    volumes: *e2e-backend-volumes
+    depends_on:
+      mock-smtp:
+        condition: service_healthy
+
+  scheduler:
+    environment: *e2e-tls-environment
+    volumes: *e2e-backend-volumes

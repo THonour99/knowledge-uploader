@@ -2,6 +2,10 @@
 
 from __future__ import annotations
 
+import os
+import subprocess
+import sys
+
 from invoke.context import Context
 from invoke.tasks import task
 
@@ -130,5 +134,51 @@ def review(c: Context) -> None:
 
 
 @task(pre=[check, check_arm64])
-def ship(c: Context) -> None:
-    """发布前事实层门禁: check + check-arm64。含 agent 的四方门走 /ship-gate skill。"""
+def ship(
+    c: Context,
+    evidence_dir: str = "",
+    alertmanager_config: str = "",
+    git_sha: str = "",
+    environment: str = "",
+    backend_api_host: str = "",
+) -> None:
+    """发布门禁: 本地检查、ARM64 依赖与完整外部证据校验。"""
+    del c
+    resolved = {
+        "evidence_dir": evidence_dir or os.getenv("PROTECTED_EVIDENCE_DIR", ""),
+        "alertmanager_config": alertmanager_config
+        or os.getenv("PROTECTED_ALERTMANAGER_CONFIG", ""),
+        "git_sha": git_sha or os.getenv("RELEASE_GIT_SHA", os.getenv("GITHUB_SHA", "")),
+        "environment": environment or os.getenv("RELEASE_ENVIRONMENT", ""),
+        "backend_api_host": backend_api_host or os.getenv("BACKEND_API_HOST", "127.0.0.1"),
+    }
+    missing = [
+        name
+        for name in ("evidence_dir", "alertmanager_config", "git_sha", "environment")
+        if not resolved[name]
+    ]
+    if missing:
+        joined = ", ".join(missing)
+        raise ValueError(
+            "invoke ship requires protected release inputs: "
+            f"{joined}; pass task options or PROTECTED_*/RELEASE_* environment variables"
+        )
+    if resolved["environment"] not in {"staging", "production"}:
+        raise ValueError("environment must be staging or production")
+    subprocess.run(
+        [
+            sys.executable,
+            "scripts/check_protected_release.py",
+            "--evidence-dir",
+            resolved["evidence_dir"],
+            "--alertmanager-config",
+            resolved["alertmanager_config"],
+            "--backend-api-host",
+            resolved["backend_api_host"],
+            "--git-sha",
+            resolved["git_sha"],
+            "--environment",
+            resolved["environment"],
+        ],
+        check=True,
+    )

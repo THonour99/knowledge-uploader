@@ -1,0 +1,245 @@
+name: Protected release evidence gate
+
+on:
+  workflow_dispatch:
+    inputs:
+      environment:
+        description: Protected environment represented by every evidence file
+        required: true
+        type: choice
+        options:
+          - staging
+          - production
+        default: staging
+      main_ci_run_id:
+        description: Successful main CI run that built the immutable OCI artifact
+        required: true
+        type: string
+      main_ci_run_attempt:
+        description: Exact attempt number of the successful main CI run
+        required: true
+        type: string
+      dgx_run_id:
+        description: Successful DGX Spark device workflow run ID for this exact commit
+        required: true
+        type: string
+      dgx_run_attempt:
+        description: Exact attempt number of the successful DGX Spark device run
+        required: true
+        type: string
+      external_evidence_run_id:
+        description: Workflow run ID containing DR, email, Alertmanager and promtool evidence
+        required: true
+        type: string
+      external_evidence_run_attempt:
+        description: Exact attempt number of the successful external evidence run
+        required: true
+        type: string
+
+permissions:
+  contents: read
+  actions: read
+
+jobs:
+  verify-protected-release:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    environment:
+      name: ${{ inputs.environment }}
+    env:
+      APP_ENV: ${{ inputs.environment }}
+      BACKEND_API_HOST: 127.0.0.1
+      REQUIRE_EMAIL_VERIFICATION: "true"
+      SMTP_HOST: ${{ secrets.PROTECTED_SMTP_HOST }}
+      SMTP_FROM: ${{ secrets.PROTECTED_SMTP_FROM }}
+      RELEASE_ENVIRONMENT: ${{ inputs.environment }}
+      MAIN_CI_RUN_ID: ${{ inputs.main_ci_run_id }}
+      MAIN_CI_RUN_ATTEMPT: ${{ inputs.main_ci_run_attempt }}
+      DGX_RUN_ID: ${{ inputs.dgx_run_id }}
+      DGX_RUN_ATTEMPT: ${{ inputs.dgx_run_attempt }}
+      EXTERNAL_RUN_ID: ${{ inputs.external_evidence_run_id }}
+      EXTERNAL_RUN_ATTEMPT: ${{ inputs.external_evidence_run_attempt }}
+    steps:
+      - name: Checkout exact protected release revision
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+
+      - name: Set up Python
+        uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5.6.0
+        with:
+          python-version: "3.11"
+
+      - name: Install gate parser dependency
+        run: |
+          python -m pip install --require-hashes --only-binary=:all: -r ops/requirements-protected-evidence.txt
+
+      - name: Verify protected ref and all workflow run provenance
+        id: release-trust
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          mkdir -p evidence/protected-trust
+          python scripts/release_workflow_trust.py fetch \
+            --repository "${GITHUB_REPOSITORY}" \
+            --git-sha "${GITHUB_SHA}" \
+            --ref "${GITHUB_REF}" \
+            --ref-protected "${{ github.ref_protected }}" \
+            --current-role protected_release \
+            --current-run-id "${GITHUB_RUN_ID}" \
+            --current-run-attempt "${GITHUB_RUN_ATTEMPT}" \
+            --current-workflow .github/workflows/protected-release.yml \
+            --main-run-id "${MAIN_CI_RUN_ID}" \
+            --main-run-attempt "${MAIN_CI_RUN_ATTEMPT}" \
+            --evidence-run "dgx:${DGX_RUN_ID}:${DGX_RUN_ATTEMPT}:.github/workflows/dgx-spark-device.yml" \
+            --evidence-run "external:${EXTERNAL_RUN_ID}:${EXTERNAL_RUN_ATTEMPT}:.github/workflows/protected-external-evidence.yml" \
+            --github-output "${GITHUB_OUTPUT}" \
+            --output evidence/protected-trust/release-workflow-trust.json
+
+      - name: Download main CI provenance summary
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          artifact-ids: ${{ steps.release-trust.outputs.main_provenance_artifact_id }}
+          path: evidence/main-provenance
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          run-id: ${{ inputs.main_ci_run_id }}
+
+      - name: Download DGX-bound infrastructure evidence
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          artifact-ids: ${{ steps.release-trust.outputs.dgx_artifact_id }}
+          path: evidence/dgx
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          run-id: ${{ inputs.dgx_run_id }}
+
+      - name: Download independent external evidence
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          artifact-ids: ${{ steps.release-trust.outputs.external_artifact_id }}
+          path: evidence/external
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          run-id: ${{ inputs.external_evidence_run_id }}
+
+      - name: Verify main and DGX provenance copies
+        run: |
+          python scripts/release_oci.py verify \
+            --bundle-dir evidence/main-provenance \
+            --repository "${GITHUB_REPOSITORY}" \
+            --git-sha "${GITHUB_SHA}" \
+            --workflow-run-id "${MAIN_CI_RUN_ID}" \
+            --workflow-run-attempt "${MAIN_CI_RUN_ATTEMPT}"
+          python scripts/release_workflow_trust.py verify \
+            --summary evidence/dgx/trust/release-workflow-trust.json \
+            --repository "${GITHUB_REPOSITORY}" \
+            --git-sha "${GITHUB_SHA}" \
+            --current-role dgx
+
+      - name: Assemble non-overlapping digest-bound evidence bundle
+        run: |
+          python - <<'PY'
+          import shutil
+          from pathlib import Path
+
+          dgx_required = {
+              "rabbitmq-dlq-replay.json",
+              "infrastructure-e2e.json",
+              "dgx-spark-evidence.json",
+              "dgx-oci-consumption.json",
+          }
+          external_required = {
+              "alertmanager-notification.json",
+              "alertmanager.yml",
+              "dr-release.json",
+              "email-delivery.json",
+              "promtool.json",
+          }
+
+          def validate(root: Path, required: set[str], forbidden: set[str]) -> None:
+              missing = sorted(
+                  name
+                  for name in required
+                  if not (root / name).is_file() or (root / name).is_symlink()
+              )
+              collisions = sorted(name for name in forbidden if (root / name).exists())
+              if missing:
+                  raise SystemExit(
+                      f"missing or unsafe evidence in {root}: " + ", ".join(missing)
+                  )
+              if collisions:
+                  raise SystemExit(
+                      f"cross-bundle evidence collision in {root}: " + ", ".join(collisions)
+                  )
+
+          dgx_root = Path("evidence/dgx")
+          external_root = Path("evidence/external")
+          main_provenance = Path("evidence/main-provenance")
+          dgx_provenance = dgx_root / "release-oci"
+          protected_trust = Path("evidence/protected-trust")
+          validate(dgx_root, dgx_required, external_required)
+          validate(external_root, external_required, dgx_required)
+          for name in ("release-oci-provenance.json", "release-oci-provenance.sha256"):
+              main_path = main_provenance / name
+              dgx_path = dgx_provenance / name
+              if (
+                  not main_path.is_file()
+                  or main_path.is_symlink()
+                  or not dgx_path.is_file()
+                  or dgx_path.is_symlink()
+                  or main_path.read_bytes() != dgx_path.read_bytes()
+              ):
+                  raise SystemExit(f"main/DGX provenance mismatch: {name}")
+          for name in ("release-workflow-trust.json", "release-workflow-trust.json.sha256"):
+              path = protected_trust / name
+              if not path.is_file() or path.is_symlink():
+                  raise SystemExit(f"protected workflow trust is missing or unsafe: {name}")
+
+          output = Path("artifacts")
+          if output.exists():
+              shutil.rmtree(output)
+          output.mkdir()
+          for name in sorted(dgx_required):
+              shutil.copyfile(dgx_root / name, output / name)
+          for name in sorted(external_required):
+              shutil.copyfile(external_root / name, output / name)
+          for name in ("release-oci-provenance.json", "release-oci-provenance.sha256"):
+              shutil.copyfile(main_provenance / name, output / name)
+          for name in ("release-workflow-trust.json", "release-workflow-trust.json.sha256"):
+              shutil.copyfile(protected_trust / name, output / name)
+          PY
+
+      - name: Run full protected release checker
+        run: |
+          python scripts/check_protected_release.py \
+            --evidence-dir artifacts \
+            --alertmanager-config artifacts/alertmanager.yml \
+            --backend-api-host 127.0.0.1 \
+            --git-sha "${GITHUB_SHA}" \
+            --environment "${RELEASE_ENVIRONMENT}"
+
+      - name: Issue short-lived digest-bound deployment authorization
+        run: |
+          python scripts/release_workflow_trust.py verify \
+            --summary artifacts/release-workflow-trust.json \
+            --repository "${GITHUB_REPOSITORY}" \
+            --git-sha "${GITHUB_SHA}" \
+            --current-role protected_release
+          python scripts/release_oci.py authorize \
+            --evidence-dir artifacts \
+            --dgx-binding artifacts/dgx-oci-consumption.json \
+            --workflow-trust artifacts/release-workflow-trust.json \
+            --output artifacts/release-authorization.json \
+            --repository "${GITHUB_REPOSITORY}" \
+            --git-sha "${GITHUB_SHA}" \
+            --environment "${RELEASE_ENVIRONMENT}"
+
+      - name: Preserve the validated evidence and authorization bundle
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: protected-release-validated-${{ github.sha }}-${{ inputs.environment }}-${{ github.run_id }}-${{ github.run_attempt }}
+          path: artifacts
+          if-no-files-found: error
+          retention-days: 90
+          compression-level: 0
+          overwrite: false
+          include-hidden-files: false

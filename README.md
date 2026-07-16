@@ -204,6 +204,7 @@ invoke build-arm64 --version=0.1.0
 - [权威文档索引](需求文档/README.md)：PRD、唯一状态机/API、架构、前后端、AI/RAGFlow、部署和真实阶段。
 - [角色工作台 IA](docs/product/IA_ROLE_WORKBENCH.md)：员工、部门管理员、系统管理员与移动端信息架构。
 - [运行时配置契约](docs/product/CONFIG_CONTRACT.md)：逐项消费者、默认值、敏感性、生效方式与死配置处置。
+- [保护发布证据门禁](ops/runbooks/protected-release.md)：DGX 实机、外部运维证据、手动 workflow 与 `invoke ship` 的闭环。
 - [产品与上线验收矩阵](docs/product/ACCEPTANCE_MATRIX.md)：P0/P1/P2、真实基础设施、ARM64 与备份恢复门禁。
 - [视觉设计](docs/design/design.md)：Emerald/Stone token 迁移、两类工作台和响应式规范。
 - `docs/api.md` / `docs/deployment.md`：当前实现快照；与权威目标冲突时以 `需求文档/` 为准，并在验收矩阵跟踪差距。

@@ -1,0 +1,450 @@
+groups:
+  - name: knowledge-uploader-availability
+    rules:
+      - alert: KnowledgeUploaderApiDown
+        expr: |
+          up{job="knowledge-uploader-api"} == 0
+          or absent(up{job="knowledge-uploader-api"})
+        for: 2m
+        labels:
+          severity: critical
+        annotations:
+          summary: Knowledge Uploader API cannot be scraped
+          runbook: ops/runbooks/observability.md#knowledgeuploaderapidown
+
+      - alert: KnowledgeUploaderHttp5xxRateHigh
+        expr: |
+          (
+            sum(rate(knowledge_uploader_http_requests_total{status_class="5xx"}[5m]))
+            /
+            clamp_min(sum(rate(knowledge_uploader_http_requests_total[5m])), 0.001)
+          ) > 0.05
+        for: 10m
+        labels:
+          severity: warning
+        annotations:
+          summary: HTTP 5xx ratio is above 5 percent
+          runbook: ops/runbooks/observability.md#knowledgeuploaderhttp5xxratehigh
+
+      - alert: KnowledgeUploaderCriticalSyncInvariantViolated
+        expr: |
+          increase(
+            knowledge_uploader_config_invariant_violations_total{
+              config_key="security.block_critical_sensitive_sync"
+            }[5m]
+          ) > 0
+        for: 1m
+        labels:
+          severity: critical
+        annotations:
+          summary: A stored config attempted to disable the critical sync block
+          runbook: ops/runbooks/observability.md#knowledgeuploadercriticalsyncinvariantviolated
+
+      - alert: KnowledgeUploaderReadyConsecutiveFailures
+        expr: knowledge_uploader_system_ready_consecutive_failures >= 3
+        for: 1m
+        labels:
+          severity: critical
+        annotations:
+          summary: API readiness has failed at least three consecutive probes
+          runbook: ops/runbooks/observability.md#knowledgeuploaderreadyconsecutivefailures
+
+      - alert: KnowledgeUploaderOperationalCollectorStale
+        expr: |
+          absent(knowledge_uploader_operational_collector_last_success_timestamp_seconds)
+          or
+          (
+            time()
+            - knowledge_uploader_operational_collector_last_success_timestamp_seconds
+            > 120
+          )
+        for: 2m
+        labels:
+          severity: critical
+        annotations:
+          summary: Operational database metrics have not refreshed for two minutes
+          runbook: ops/runbooks/observability.md#knowledgeuploaderoperationalcollectorstale
+
+      - alert: KnowledgeUploaderOperationalCollectorTimestampInFuture
+        expr: |
+          knowledge_uploader_operational_collector_last_success_timestamp_seconds
+          > time() + 300
+        for: 2m
+        labels:
+          severity: critical
+        annotations:
+          summary: Operational collector timestamp is more than five minutes in the future
+          runbook: ops/runbooks/observability.md#knowledgeuploaderoperationalcollectorstale
+
+  - name: knowledge-uploader-async-pipeline
+    rules:
+      - alert: KnowledgeUploaderOutboxDispatcherDown
+        expr: |
+          up{job="knowledge-uploader-outbox"} == 0
+          or absent(up{job="knowledge-uploader-outbox"})
+        for: 2m
+        labels:
+          severity: critical
+        annotations:
+          summary: Outbox dispatcher metrics endpoint is offline
+          runbook: ops/runbooks/observability.md#knowledgeuploaderoutboxdispatcherdown
+
+      - alert: KnowledgeUploaderOperationalCollectorDown
+        expr: |
+          up{job="knowledge-uploader-operations"} == 0
+          or absent(up{job="knowledge-uploader-operations"})
+        for: 2m
+        labels:
+          severity: critical
+        annotations:
+          summary: Operational metrics collector is offline
+          runbook: ops/runbooks/observability.md#knowledgeuploaderoperationalcollectordown
+
+      - alert: KnowledgeUploaderOutboxBacklog
+        expr: knowledge_uploader_outbox_pending > 100
+        for: 10m
+        labels:
+          severity: warning
+        annotations:
+          summary: More than 100 outbox events are waiting
+          runbook: ops/runbooks/observability.md#knowledgeuploaderoutboxbacklog
+
+      - alert: KnowledgeUploaderOutboxOldestTooOld
+        expr: knowledge_uploader_outbox_oldest_seconds > 300
+        for: 5m
+        labels:
+          severity: critical
+        annotations:
+          summary: Oldest deliverable outbox event is over five minutes old
+          runbook: ops/runbooks/observability.md#knowledgeuploaderoutboxoldesttooold
+
+      - alert: KnowledgeUploaderDeadLetterPresent
+        expr: knowledge_uploader_outbox_dead_letters{status="pending"} > 0
+        for: 1m
+        labels:
+          severity: critical
+        annotations:
+          summary: Outbox dead letters require an explicit replay decision
+          runbook: ops/runbooks/observability.md#knowledgeuploaderdeadletterpresent
+
+      - alert: KnowledgeUploaderOutboxFailureRateHigh
+        expr: |
+          (
+            sum(rate(knowledge_uploader_outbox_publish_total{result="failure"}[5m]))
+            /
+            clamp_min(sum(rate(knowledge_uploader_outbox_publish_total[5m])), 0.001)
+          ) > 0.10
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: Outbox delivery failure ratio is above 10 percent
+          runbook: ops/runbooks/observability.md#knowledgeuploaderoutboxfailureratehigh
+
+      - alert: KnowledgeUploaderRabbitQueueDepthHigh
+        expr: |
+          sum by (queue) (
+            rabbitmq_detailed_queue_messages_ready{
+              queue=~"document_queue|ai_queue|ragflow_queue|notification_queue"
+            }
+          ) > 1000
+        for: 10m
+        labels:
+          severity: warning
+        annotations:
+          summary: RabbitMQ ready queue depth is above 1000
+          runbook: ops/runbooks/observability.md#knowledgeuploaderrabbitqueuedepthhigh
+
+      - alert: KnowledgeUploaderRabbitTaskDeadLetterPresent
+        expr: |
+          sum by (queue) (
+            rabbitmq_detailed_queue_messages_ready{
+              queue=~"document_queue.dlq|ai_queue.dlq|ragflow_queue.dlq|notification_queue.dlq"
+            }
+          ) > 0
+        for: 1m
+        labels:
+          severity: critical
+        annotations:
+          summary: A Celery task dead-letter queue requires an audited replay decision
+          runbook: ops/runbooks/observability.md#knowledgeuploaderrabbittaskdeadletterpresent
+
+      - alert: KnowledgeUploaderDocumentWorkerOffline
+        expr: |
+          rabbitmq_detailed_queue_consumers{queue="document_queue"} == 0
+          or absent(rabbitmq_detailed_queue_consumers{queue="document_queue"})
+        for: 2m
+        labels:
+          severity: critical
+        annotations:
+          summary: Document queue has no active consumer
+          runbook: ops/runbooks/observability.md#knowledgeuploaderworkeroffline
+
+      - alert: KnowledgeUploaderAiWorkerOffline
+        expr: |
+          rabbitmq_detailed_queue_consumers{queue="ai_queue"} == 0
+          or absent(rabbitmq_detailed_queue_consumers{queue="ai_queue"})
+        for: 2m
+        labels:
+          severity: critical
+        annotations:
+          summary: AI queue has no active consumer
+          runbook: ops/runbooks/observability.md#knowledgeuploaderworkeroffline
+
+      - alert: KnowledgeUploaderRagflowWorkerOffline
+        expr: |
+          rabbitmq_detailed_queue_consumers{queue="ragflow_queue"} == 0
+          or absent(rabbitmq_detailed_queue_consumers{queue="ragflow_queue"})
+        for: 2m
+        labels:
+          severity: critical
+        annotations:
+          summary: RAGFlow queue has no active consumer
+          runbook: ops/runbooks/observability.md#knowledgeuploaderworkeroffline
+
+      - alert: KnowledgeUploaderNotificationWorkerOffline
+        expr: |
+          rabbitmq_detailed_queue_consumers{queue="notification_queue"} == 0
+          or absent(rabbitmq_detailed_queue_consumers{queue="notification_queue"})
+        for: 2m
+        labels:
+          severity: critical
+        annotations:
+          summary: Notification queue has no active consumer
+          runbook: ops/runbooks/observability.md#knowledgeuploaderworkeroffline
+
+      - alert: KnowledgeUploaderEmailDeliveryMetricsMissing
+        expr: absent(knowledge_uploader_email_delivery_persisted_total)
+        for: 2m
+        labels:
+          severity: critical
+        annotations:
+          summary: Persisted email delivery result metrics are unavailable
+          runbook: ops/runbooks/observability.md#knowledgeuploaderemaildeliveryfailure
+
+      - alert: KnowledgeUploaderEmailMetricsCollectorUnavailable
+        expr: |
+          absent(
+            knowledge_uploader_operational_collector_component_last_success_timestamp_seconds{
+              component="email_redis"
+            }
+          )
+          or
+          (
+            time()
+            - knowledge_uploader_operational_collector_component_last_success_timestamp_seconds{
+              component="email_redis"
+            }
+            > 120
+          )
+          or
+          increase(
+            knowledge_uploader_operational_collector_component_errors_total{
+              component="email_redis"
+            }[5m]
+          ) > 0
+        for: 1m
+        labels:
+          severity: critical
+        annotations:
+          summary: Redis-backed email delivery metrics are missing, stale, or failing
+          runbook: ops/runbooks/observability.md#knowledgeuploaderemailmetricscollectorunavailable
+
+      - alert: KnowledgeUploaderEmailDeliveryFailure
+        expr: |
+          max(
+            knowledge_uploader_email_delivery_last_result_timestamp_seconds{
+              result=~"publish_failure|failure|configuration_failure|expired|invalid_envelope"
+            }
+          ) > time() - 900
+          and
+          max(
+            knowledge_uploader_email_delivery_last_result_timestamp_seconds{
+              result=~"publish_failure|failure|configuration_failure|expired|invalid_envelope"
+            }
+          ) <= time() + 300
+        for: 1m
+        labels:
+          severity: critical
+        annotations:
+          summary: An email publish or delivery attempt failed or expired in the last 15 minutes
+          runbook: ops/runbooks/observability.md#knowledgeuploaderemaildeliveryfailure
+
+      - alert: KnowledgeUploaderEmailDeliveryTimestampInFuture
+        expr: |
+          max(knowledge_uploader_email_delivery_last_result_timestamp_seconds)
+          > time() + 300
+        for: 2m
+        labels:
+          severity: critical
+        annotations:
+          summary: Email delivery result timestamp is more than five minutes in the future
+          runbook: ops/runbooks/observability.md#knowledgeuploaderemaildeliveryfailure
+
+      - alert: KnowledgeUploaderReviewSlaOverdue
+        expr: knowledge_uploader_review_overdue > 0
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: One or more persisted review deadlines are overdue
+          runbook: ops/runbooks/observability.md#knowledgeuploaderreviewslaoverdue
+
+      - alert: KnowledgeUploaderRagflowSyncFailureRateHigh
+        expr: |
+          (
+            knowledge_uploader_ragflow_sync_outcomes_window{result="failure"}
+            /
+            clamp_min(
+              sum(knowledge_uploader_ragflow_sync_outcomes_window{
+                result=~"success|failure"
+              }),
+              1
+            )
+          ) > 0.10
+          and
+          sum(knowledge_uploader_ragflow_sync_outcomes_window{
+            result=~"success|failure"
+          }) >= 5
+        for: 5m
+        labels:
+          severity: critical
+        annotations:
+          summary: RAGFlow sync failure ratio exceeds 10 percent in the 15 minute window
+          runbook: ops/runbooks/observability.md#knowledgeuploaderragflowsyncfailureratehigh
+
+  - name: knowledge-uploader-data-protection
+    rules:
+      - alert: KnowledgeUploaderLinuxHostMetricsDown
+        expr: |
+          up{job="linux-host"} == 0
+          or absent(up{job="linux-host"})
+        for: 2m
+        labels:
+          severity: critical
+        annotations:
+          summary: Linux host physical filesystem metrics are unavailable
+          runbook: ops/runbooks/observability.md#knowledgeuploaderlinuxhostmetricsdown
+
+      - alert: KnowledgeUploaderLinuxHostCapacityLow
+        expr: |
+          (
+            node_filesystem_avail_bytes{
+              job="linux-host",
+              fstype=~"ext4|xfs|btrfs|zfs"
+            }
+            /
+            clamp_min(
+              node_filesystem_size_bytes{
+                job="linux-host",
+                fstype=~"ext4|xfs|btrfs|zfs"
+              },
+              1
+            )
+          ) < 0.15
+          and on(instance, device, mountpoint)
+          node_filesystem_readonly{job="linux-host"} == 0
+        for: 10m
+        labels:
+          severity: critical
+        annotations:
+          summary: A writable Linux host filesystem has less than 15 percent free capacity
+          runbook: ops/runbooks/observability.md#knowledgeuploaderlinuxhostcapacitylow
+
+      - alert: KnowledgeUploaderMinioMetricsDown
+        expr: |
+          up{job="minio"} == 0
+          or absent(up{job="minio"})
+        for: 2m
+        labels:
+          severity: critical
+        annotations:
+          summary: MinIO physical capacity metrics are unavailable
+          runbook: ops/runbooks/observability.md#knowledgeuploaderminiocapacitylow
+
+      - alert: KnowledgeUploaderMinioCapacityLow
+        expr: |
+          (
+            sum(minio_cluster_capacity_usable_free_bytes)
+            /
+            clamp_min(sum(minio_cluster_capacity_usable_total_bytes), 1)
+          ) < 0.15
+        for: 10m
+        labels:
+          severity: critical
+        annotations:
+          summary: MinIO usable physical capacity is below 15 percent
+          runbook: ops/runbooks/observability.md#knowledgeuploaderminiocapacitylow
+      - alert: KnowledgeUploaderBackupMissing
+        expr: absent(knowledge_uploader_backup_last_success_timestamp_seconds)
+        for: 15m
+        labels:
+          severity: critical
+        annotations:
+          summary: No successful backup timestamp is available
+          runbook: ops/runbooks/backup-restore.md#backup-staleness-alert
+
+      - alert: KnowledgeUploaderBackupLastAttemptFailed
+        expr: knowledge_uploader_backup_last_attempt_success == 0
+        for: 2m
+        labels:
+          severity: critical
+        annotations:
+          summary: The latest backup attempt did not complete validation
+          runbook: ops/runbooks/backup-restore.md#backup-staleness-alert
+
+      - alert: KnowledgeUploaderBackupStale
+        expr: |
+          time() - knowledge_uploader_backup_last_success_timestamp_seconds > 86400
+        for: 15m
+        labels:
+          severity: critical
+        annotations:
+          summary: Last validated backup is older than 24 hours
+          runbook: ops/runbooks/backup-restore.md#backup-staleness-alert
+
+      - alert: KnowledgeUploaderBackupTimestampInFuture
+        expr: knowledge_uploader_backup_last_success_timestamp_seconds > time() + 300
+        for: 2m
+        labels:
+          severity: critical
+        annotations:
+          summary: Last validated backup timestamp is more than five minutes in the future
+          runbook: ops/runbooks/backup-restore.md#backup-staleness-alert
+
+      - alert: KnowledgeUploaderRestoreDrillMissing
+        expr: absent(knowledge_uploader_restore_drill_last_success_timestamp_seconds)
+        for: 15m
+        labels:
+          severity: warning
+        annotations:
+          summary: No validated restore drill timestamp is available
+          runbook: ops/runbooks/backup-restore.md#disaster-recovery-release-status
+
+      - alert: KnowledgeUploaderRestoreDrillStale
+        expr: |
+          time() - knowledge_uploader_restore_drill_last_success_timestamp_seconds > 7776000
+        for: 15m
+        labels:
+          severity: critical
+        annotations:
+          summary: Last validated restore drill is older than 90 days
+          runbook: ops/runbooks/backup-restore.md#disaster-recovery-release-status
+
+      - alert: KnowledgeUploaderRestoreDrillTimestampInFuture
+        expr: knowledge_uploader_restore_drill_last_success_timestamp_seconds > time() + 300
+        for: 2m
+        labels:
+          severity: critical
+        annotations:
+          summary: Restore drill timestamp is more than five minutes in the future
+          runbook: ops/runbooks/backup-restore.md#disaster-recovery-release-status
+
+      - alert: KnowledgeUploaderLogicalRestoreValidationLastAttemptFailed
+        expr: knowledge_uploader_logical_restore_validation_last_attempt_success == 0
+        for: 2m
+        labels:
+          severity: warning
+        annotations:
+          summary: The latest logical database/object restore validation failed
+          runbook: ops/runbooks/backup-restore.md#disaster-recovery-release-status

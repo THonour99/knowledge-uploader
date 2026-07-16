@@ -70,13 +70,27 @@ Copy-Item docker-compose.override.yml.example docker-compose.override.yml
 | MinIO | `MINIO_ENDPOINT`, `MINIO_ACCESS_KEY`, `MINIO_SECRET_KEY`, `MINIO_BUCKET`, `MINIO_SECURE` |
 | 上传 | `UPLOAD_MAX_FILE_SIZE_BYTES`, `UPLOAD_RATE_LIMIT_PER_MINUTE`, `UPLOAD_ALLOWED_EXTENSIONS`, `UPLOAD_ALLOWED_MIME_TYPES` |
 | 认证 | `ALLOWED_EMAIL_DOMAINS`, `LOGIN_MAX_FAILED_ATTEMPTS`, `LOGIN_LOCK_MINUTES`, `AUTH_*_RATE_LIMIT_PER_HOUR` |
-| RAGFlow | `RAGFLOW_BASE_URL`, `RAGFLOW_API_KEY`, `RAGFLOW_ALLOWED_DATASET_IDS` |
+| RAGFlow | `RAGFLOW_BASE_URL`, `RAGFLOW_ALLOWED_BASE_URLS`, `RAGFLOW_API_KEY`, `RAGFLOW_ALLOWED_DATASET_IDS` |
 | AI | `AI_ANALYSIS_ENABLED`, `ALLOW_EXTERNAL_LLM`, `LLM_PROVIDER`, `LLM_BASE_URL`, `LLM_API_KEY`, `LLM_MODEL` |
 | SMTP | `SMTP_HOST`, `SMTP_PORT`, `SMTP_USER`, `SMTP_PASSWORD`, `SMTP_FROM`, `SMTP_TLS` |
+| 指标 | `OUTBOX_METRICS_PORT`, `OPERATIONAL_METRICS_PORT`, `OPERATIONAL_METRICS_INTERVAL_SECONDS` |
 
 `APP_ENV=production`、`prod` 或 `staging` 时，启动校验会拒绝占位 `JWT_SECRET`、默认 `ENCRYPTION_KEY`、默认数据库 / RabbitMQ / Redis / MinIO 凭据和 `MINIO_SECURE=false`。
 
 如果 `APP_ENV` 漏配但 `APP_BASE_URL` 已经是非本机地址（例如 `https://knowledge.company.com` 或内网生产 IP），同样按受保护环境执行密钥校验，防止生产或 staging 误用 development 默认值。
+
+### 指标采集参数
+
+| 变量 | 默认值 | 有效范围 | 约束 |
+|---|---:|---:|---|
+| `OUTBOX_METRICS_PORT` | `9101` | `1..65535` | outbox-dispatcher 容器私网监听端口 |
+| `OPERATIONAL_METRICS_PORT` | `9102` | `1..65535` | operational-metrics 容器私网监听端口 |
+| `OPERATIONAL_METRICS_INTERVAL_SECONDS` | `30` | `5..3600` | 数据库、对象存储和邮件投递聚合采样周期 |
+
+`docker-compose.observability.yml` 的 Prometheus target 默认固定为
+`outbox-dispatcher:9101` 和 `operational-metrics:9102`。修改任一监听端口时必须在同一次
+发布中同步修改 target 并运行 Prometheus 规则测试；否则采集目标会 Down。两个端口只能在
+Compose 私网内访问，不得发布到公网或绕过 Nginx 暴露。
 
 ## RAGFlow
 
@@ -222,6 +236,24 @@ docker compose -f docker-compose.yml -f docker-compose.arm64.yml build
 - 新增 Python 依赖前必须通过 ARM64 wheel 检查。
 - 禁用 `psycopg2*`、`python-magic*`、`mysqlclient`、`pycrypto`、`m2crypto`。
 - 路径处理使用 `pathlib.Path`，文件读写显式 `encoding="utf-8"`。
+
+原生构建通过不等于实机上线通过。候选版本必须依次执行 DGX 实机、独立外部运维证据收集和
+保护发布 workflow；镜像隔离、证据文件归属、GitHub Environment 审批及本地
+`invoke ship` 用法见
+[保护发布证据门禁](../ops/runbooks/protected-release.md)。没有最终 validated artifact
+时，不得把阶段 9 或 ARM64/灾备验收项改为完成。
+
+候选镜像采用 build-once OCI artifact：只允许主 CI 在默认分支测试成功后构建；DGX 与部署
+下载同一 artifact id/digest，并复验 OCI index、平台 manifest/config、SBOM、provenance、
+base image 和 lockfile checksum。DGX/部署端禁止 `docker build`，相同 Git SHA、Docker image
+ID 或本地 tag 不能替代制品 digest。protected gate 生成的 30 分钟 deployment authorization
+只是一份 fail-closed 交接契约；仓库尚无获授权的生产部署 workflow 或真实 registry 证据，
+因此发布、DGX 与部署状态仍按验收矩阵保留待执行。
+
+CI 的 Python、Node、Nginx base 与 Prometheus/Alertmanager 校验器均使用官方多架构
+manifest-list digest；tag 只保留作可读版本说明。外部证据同时携带并由最终 gate 比对校验器
+完整 digest、实际 image ID、Linux OS 和 runner Docker 架构，任何 tag 回退、平台子 digest、
+架构错配或校验前后镜像身份变化都会阻断发布。
 
 ## 扩容
 

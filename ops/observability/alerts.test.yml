@@ -1,0 +1,165 @@
+rule_files:
+  - alerts.yml
+
+evaluation_interval: 1m
+
+tests:
+  - interval: 1m
+    input_series: []
+    alert_rule_test:
+      - eval_time: 3m
+        alertname: KnowledgeUploaderApiDown
+        exp_alerts:
+          - exp_labels:
+              job: knowledge-uploader-api
+              severity: critical
+            exp_annotations:
+              summary: Knowledge Uploader API cannot be scraped
+              runbook: ops/runbooks/observability.md#knowledgeuploaderapidown
+      - eval_time: 3m
+        alertname: KnowledgeUploaderOutboxDispatcherDown
+        exp_alerts:
+          - exp_labels:
+              job: knowledge-uploader-outbox
+              severity: critical
+            exp_annotations:
+              summary: Outbox dispatcher metrics endpoint is offline
+              runbook: ops/runbooks/observability.md#knowledgeuploaderoutboxdispatcherdown
+      - eval_time: 3m
+        alertname: KnowledgeUploaderOperationalCollectorDown
+        exp_alerts:
+          - exp_labels:
+              job: knowledge-uploader-operations
+              severity: critical
+            exp_annotations:
+              summary: Operational metrics collector is offline
+              runbook: ops/runbooks/observability.md#knowledgeuploaderoperationalcollectordown
+      - eval_time: 3m
+        alertname: KnowledgeUploaderLinuxHostMetricsDown
+        exp_alerts:
+          - exp_labels:
+              job: linux-host
+              severity: critical
+            exp_annotations:
+              summary: Linux host physical filesystem metrics are unavailable
+              runbook: ops/runbooks/observability.md#knowledgeuploaderlinuxhostmetricsdown
+      - eval_time: 3m
+        alertname: KnowledgeUploaderMinioMetricsDown
+        exp_alerts:
+          - exp_labels:
+              job: minio
+              severity: critical
+            exp_annotations:
+              summary: MinIO physical capacity metrics are unavailable
+              runbook: ops/runbooks/observability.md#knowledgeuploaderminiocapacitylow
+      - eval_time: 3m
+        alertname: KnowledgeUploaderEmailDeliveryMetricsMissing
+        exp_alerts:
+          - exp_labels:
+              severity: critical
+            exp_annotations:
+              summary: Persisted email delivery result metrics are unavailable
+              runbook: ops/runbooks/observability.md#knowledgeuploaderemaildeliveryfailure
+      - eval_time: 3m
+        alertname: KnowledgeUploaderEmailMetricsCollectorUnavailable
+        exp_alerts:
+          - exp_labels:
+              component: email_redis
+              severity: critical
+            exp_annotations:
+              summary: Redis-backed email delivery metrics are missing, stale, or failing
+              runbook: ops/runbooks/observability.md#knowledgeuploaderemailmetricscollectorunavailable
+
+  - interval: 1m
+    input_series:
+      - series: knowledge_uploader_backup_last_success_timestamp_seconds
+        values: 10000x10
+      - series: knowledge_uploader_restore_drill_last_success_timestamp_seconds
+        values: 10000x10
+      - series: knowledge_uploader_operational_collector_last_success_timestamp_seconds
+        values: 10000x10
+      - series: knowledge_uploader_email_delivery_last_result_timestamp_seconds{result="failure"}
+        values: 10000x10
+    alert_rule_test:
+      - eval_time: 4m
+        alertname: KnowledgeUploaderBackupTimestampInFuture
+        exp_alerts:
+          - exp_labels:
+              severity: critical
+            exp_annotations:
+              summary: Last validated backup timestamp is more than five minutes in the future
+              runbook: ops/runbooks/backup-restore.md#backup-staleness-alert
+      - eval_time: 4m
+        alertname: KnowledgeUploaderRestoreDrillTimestampInFuture
+        exp_alerts:
+          - exp_labels:
+              severity: critical
+            exp_annotations:
+              summary: Restore drill timestamp is more than five minutes in the future
+              runbook: ops/runbooks/backup-restore.md#disaster-recovery-release-status
+      - eval_time: 4m
+        alertname: KnowledgeUploaderOperationalCollectorTimestampInFuture
+        exp_alerts:
+          - exp_labels:
+              severity: critical
+            exp_annotations:
+              summary: Operational collector timestamp is more than five minutes in the future
+              runbook: ops/runbooks/observability.md#knowledgeuploaderoperationalcollectorstale
+      - eval_time: 4m
+        alertname: KnowledgeUploaderEmailDeliveryTimestampInFuture
+        exp_alerts:
+          - exp_labels:
+              severity: critical
+            exp_annotations:
+              summary: Email delivery result timestamp is more than five minutes in the future
+              runbook: ops/runbooks/observability.md#knowledgeuploaderemaildeliveryfailure
+
+  - interval: 1m
+    input_series:
+      - series: knowledge_uploader_email_delivery_last_result_timestamp_seconds{result="publish_failure"}
+        values: 60x5
+    alert_rule_test:
+      - eval_time: 2m
+        alertname: KnowledgeUploaderEmailDeliveryFailure
+        exp_alerts:
+          - exp_labels:
+              severity: critical
+            exp_annotations:
+              summary: An email publish or delivery attempt failed or expired in the last 15 minutes
+              runbook: ops/runbooks/observability.md#knowledgeuploaderemaildeliveryfailure
+
+  - interval: 1m
+    input_series:
+      - series: knowledge_uploader_email_delivery_persisted_total{result="success"}
+        values: 1x6
+      - series: knowledge_uploader_operational_collector_component_last_success_timestamp_seconds{component="email_redis"}
+        values: 1x6
+      - series: knowledge_uploader_operational_collector_component_errors_total{component="email_redis"}
+        values: 0x6
+    alert_rule_test:
+      - eval_time: 4m
+        alertname: KnowledgeUploaderEmailMetricsCollectorUnavailable
+        exp_alerts:
+          - exp_labels:
+              component: email_redis
+              severity: critical
+            exp_annotations:
+              summary: Redis-backed email delivery metrics are missing, stale, or failing
+              runbook: ops/runbooks/observability.md#knowledgeuploaderemailmetricscollectorunavailable
+
+  - interval: 1m
+    input_series:
+      - series: knowledge_uploader_operational_collector_component_last_success_timestamp_seconds{component="email_redis"}
+        values: 0 60 120 180 240 300
+      - series: knowledge_uploader_operational_collector_component_errors_total{component="email_redis"}
+        values: 0 0 1 2 3 4
+    alert_rule_test:
+      - eval_time: 4m
+        alertname: KnowledgeUploaderEmailMetricsCollectorUnavailable
+        exp_alerts:
+          - exp_labels:
+              component: email_redis
+              severity: critical
+            exp_annotations:
+              summary: Redis-backed email delivery metrics are missing, stale, or failing
+              runbook: ops/runbooks/observability.md#knowledgeuploaderemailmetricscollectorunavailable
