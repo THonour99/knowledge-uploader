@@ -144,6 +144,22 @@ export interface NotificationListQuery {
 
 export interface FileAnalysis {
   status: string;
+  engine_type?: "rule" | "llm" | "hybrid";
+  provider_name?: string | null;
+  model_name?: string | null;
+  prompt_template_key?: string | null;
+  prompt_version?: number | null;
+  input_char_count?: number | null;
+  input_sha256?: string | null;
+  category_count?: number | null;
+  input_truncated?: boolean | null;
+  attempt_number?: number;
+  prompt_tokens?: number;
+  completion_tokens?: number;
+  latency_ms?: number;
+  failure_category?: string | null;
+  estimated_cost_microunits?: number | string;
+  cost_currency?: string;
   summary: string | null;
   sensitive_risk_level: string;
   quality_score: number | null;
@@ -290,6 +306,10 @@ export interface DatasetMappingPayload {
 
 export interface AiGlobalConfig {
   ai_analysis_enabled: boolean;
+  ai_analysis_environment_enabled: boolean;
+  ai_analysis_db_enabled: boolean;
+  allow_external_llm_environment_enabled: boolean;
+  allow_external_llm_db_enabled: boolean;
   allow_external_llm: boolean;
   allow_sync_when_analysis_failed: boolean;
 }
@@ -307,8 +327,6 @@ export interface AiProviderConfig {
   provider_type: string;
   base_url?: string | null;
   chat_model?: string | null;
-  embedding_model?: string | null;
-  vision_model?: string | null;
   is_internal: boolean;
   enabled: boolean;
   priority: number;
@@ -318,6 +336,9 @@ export interface AiProviderConfig {
   max_output_tokens?: number | null;
   temperature: number;
   top_p?: number | null;
+  input_price_microunits_per_million_tokens?: number;
+  output_price_microunits_per_million_tokens?: number;
+  pricing_currency?: string;
   has_api_key: boolean;
   api_key_masked?: string | null;
   last_test_status?: string | null;
@@ -334,8 +355,6 @@ export interface AiProviderPayload {
   api_key?: string | null;
   clear_api_key?: boolean;
   chat_model?: string | null;
-  embedding_model?: string | null;
-  vision_model?: string | null;
   is_internal: boolean;
   enabled: boolean;
   priority: number;
@@ -345,6 +364,9 @@ export interface AiProviderPayload {
   max_output_tokens?: number | null;
   temperature: number;
   top_p?: number | null;
+  input_price_microunits_per_million_tokens: number;
+  output_price_microunits_per_million_tokens: number;
+  pricing_currency: string;
 }
 
 export interface AiPromptTemplate {

@@ -6,6 +6,7 @@ from datetime import datetime
 from typing import cast
 
 from sqlalchemy import (
+    BigInteger,
     Boolean,
     Column,
     DateTime,
@@ -39,6 +40,22 @@ DOCUMENT_ANALYSIS = Table(
     Column("id", UUID(as_uuid=True), primary_key=True),
     Column("file_id", UUID(as_uuid=True), nullable=False),
     Column("status", String(20), nullable=False),
+    Column("engine_type", String(20), nullable=False),
+    Column("provider_name", String(120)),
+    Column("model_name", String(120)),
+    Column("prompt_template_key", String(80)),
+    Column("prompt_version", Integer),
+    Column("input_char_count", Integer),
+    Column("input_sha256", String(64)),
+    Column("category_count", Integer),
+    Column("input_truncated", Boolean),
+    Column("attempt_number", Integer, nullable=False),
+    Column("prompt_tokens", Integer, nullable=False),
+    Column("completion_tokens", Integer, nullable=False),
+    Column("latency_ms", Integer, nullable=False),
+    Column("failure_category", String(40)),
+    Column("estimated_cost_microunits", BigInteger, nullable=False),
+    Column("cost_currency", String(3), nullable=False),
     Column("summary", Text),
     Column("sensitive_risk_level", String(20), nullable=False),
     Column("extracted_text", Text),
@@ -83,6 +100,22 @@ def _escape_like(value: str) -> str:
 @dataclass(frozen=True)
 class DocumentAnalysisRecord:
     status: str
+    engine_type: str
+    provider_name: str | None
+    model_name: str | None
+    prompt_template_key: str | None
+    prompt_version: int | None
+    input_char_count: int | None
+    input_sha256: str | None
+    category_count: int | None
+    input_truncated: bool | None
+    attempt_number: int
+    prompt_tokens: int
+    completion_tokens: int
+    latency_ms: int
+    failure_category: str | None
+    estimated_cost_microunits: int
+    cost_currency: str
     summary: str | None
     sensitive_risk_level: str
     extracted_text: str | None
@@ -254,6 +287,22 @@ class DocumentRepository:
         result = await self._session.execute(
             select(
                 DOCUMENT_ANALYSIS.c.status,
+                DOCUMENT_ANALYSIS.c.engine_type,
+                DOCUMENT_ANALYSIS.c.provider_name,
+                DOCUMENT_ANALYSIS.c.model_name,
+                DOCUMENT_ANALYSIS.c.prompt_template_key,
+                DOCUMENT_ANALYSIS.c.prompt_version,
+                DOCUMENT_ANALYSIS.c.input_char_count,
+                DOCUMENT_ANALYSIS.c.input_sha256,
+                DOCUMENT_ANALYSIS.c.category_count,
+                DOCUMENT_ANALYSIS.c.input_truncated,
+                DOCUMENT_ANALYSIS.c.attempt_number,
+                DOCUMENT_ANALYSIS.c.prompt_tokens,
+                DOCUMENT_ANALYSIS.c.completion_tokens,
+                DOCUMENT_ANALYSIS.c.latency_ms,
+                DOCUMENT_ANALYSIS.c.failure_category,
+                DOCUMENT_ANALYSIS.c.estimated_cost_microunits,
+                DOCUMENT_ANALYSIS.c.cost_currency,
                 DOCUMENT_ANALYSIS.c.summary,
                 DOCUMENT_ANALYSIS.c.sensitive_risk_level,
                 DOCUMENT_ANALYSIS.c.extracted_text,
@@ -270,6 +319,22 @@ class DocumentRepository:
             return None
         return DocumentAnalysisRecord(
             status=cast(str, row["status"]),
+            engine_type=cast(str, row["engine_type"]),
+            provider_name=cast(str | None, row["provider_name"]),
+            model_name=cast(str | None, row["model_name"]),
+            prompt_template_key=cast(str | None, row["prompt_template_key"]),
+            prompt_version=cast(int | None, row["prompt_version"]),
+            input_char_count=cast(int | None, row["input_char_count"]),
+            input_sha256=cast(str | None, row["input_sha256"]),
+            category_count=cast(int | None, row["category_count"]),
+            input_truncated=cast(bool | None, row["input_truncated"]),
+            attempt_number=cast(int, row["attempt_number"]),
+            prompt_tokens=cast(int, row["prompt_tokens"]),
+            completion_tokens=cast(int, row["completion_tokens"]),
+            latency_ms=cast(int, row["latency_ms"]),
+            failure_category=cast(str | None, row["failure_category"]),
+            estimated_cost_microunits=cast(int, row["estimated_cost_microunits"]),
+            cost_currency=cast(str, row["cost_currency"]),
             summary=cast(str | None, row["summary"]),
             sensitive_risk_level=cast(str, row["sensitive_risk_level"]),
             extracted_text=cast(str | None, row["extracted_text"]),

@@ -18,6 +18,12 @@ REVIEW_FILE_SUBMITTED = "review.file.submitted"
 class AiAnalysisFailureCode(StrEnum):
     PROVIDER_UNAVAILABLE = "provider_unavailable"
     TIMEOUT = "timeout"
+    CONNECTION_ERROR = "connection_error"
+    RATE_LIMITED = "rate_limited"
+    AUTHENTICATION_FAILED = "authentication_failed"
+    REQUEST_REJECTED = "request_rejected"
+    INVALID_RESPONSE = "invalid_response"
+    CONFIGURATION_ERROR = "configuration_error"
     INVALID_OUTPUT = "invalid_output"
     INTERNAL = "internal"
 

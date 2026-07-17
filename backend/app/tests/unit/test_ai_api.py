@@ -64,6 +64,7 @@ async def ai_client() -> AsyncGenerator[AsyncClient, None]:
         llm_api_key="sk-test-secret",
         llm_model="test-model",
         allow_external_llm=True,
+        llm_allowed_base_urls="https://llm.example.test/v1,https://8.8.8.8/v1",
     )
 
     async def override_session() -> AsyncGenerator[AsyncSession, None]:
@@ -118,6 +119,11 @@ async def test_system_admin_reads_ai_config_without_secret_echo(ai_client: Async
     assert response.status_code == 200
     data = response.json()["data"]
     assert data["global"]["ai_analysis_enabled"] is True
+    assert data["global"]["ai_analysis_environment_enabled"] is True
+    assert data["global"]["ai_analysis_db_enabled"] is True
+    assert data["global"]["allow_external_llm"] is True
+    assert data["global"]["allow_external_llm_environment_enabled"] is True
+    assert data["global"]["allow_external_llm_db_enabled"] is True
     assert {feature["key"] for feature in data["features"]} >= {
         "summary",
         "auto_category",
@@ -127,6 +133,7 @@ async def test_system_admin_reads_ai_config_without_secret_echo(ai_client: Async
         "quality_score",
         "similarity_detection",
     }
+    assert all(feature["key"] != "ocr" for feature in data["features"])
     assert data["providers"][0]["has_api_key"] is True
     assert data["providers"][0]["api_key_masked"] == "sk-****cret"
     assert data["prompt_templates"][0]["prompt_text"]
@@ -348,6 +355,9 @@ async def test_provider_key_is_encrypted_and_masked(ai_client: AsyncClient) -> N
             "provider_type": "mock",
             "api_key": "sk-live-secret",
             "chat_model": "mock-chat",
+            "input_price_microunits_per_million_tokens": 5_000_000,
+            "output_price_microunits_per_million_tokens": 10_000_000,
+            "pricing_currency": "CNY",
         },
     )
 
@@ -356,24 +366,110 @@ async def test_provider_key_is_encrypted_and_masked(ai_client: AsyncClient) -> N
     assert provider_data["has_api_key"] is True
     assert provider_data["api_key_masked"] == "sk-****cret"
     assert "sk-live-secret" not in response.text
+    assert provider_data["input_price_microunits_per_million_tokens"] == 5_000_000
+    assert provider_data["output_price_microunits_per_million_tokens"] == 10_000_000
+    assert provider_data["pricing_currency"] == "CNY"
+    async with AsyncSessionFactory() as session:
+        stored_provider = await session.get(AiProvider, UUID(provider_data["id"]))
+        assert stored_provider is not None
+        assert stored_provider.api_key_encrypted != "sk-live-secret"
+        assert (
+            decrypt_api_key(
+                stored_provider.api_key_encrypted or "",
+                "RZ1Sw_27VrN9c5Cfsq01qiwViwT6y7jDCuXYn7tgGJY=",
+            )
+            == "sk-live-secret"
+        )
+
+    rotated_secret = "sk-rotated-secret"
+    safe_base_url = "https://llm.example.test/v1"
+    update_response = await ai_client.patch(
+        f"/api/admin/ai/providers/{provider_data['id']}",
+        headers={"Authorization": f"Bearer {token}"},
+        json={"base_url": safe_base_url, "api_key": rotated_secret},
+    )
+    assert update_response.status_code == 200
+    clear_response = await ai_client.patch(
+        f"/api/admin/ai/providers/{provider_data['id']}",
+        headers={"Authorization": f"Bearer {token}"},
+        json={"clear_api_key": True},
+    )
+    assert clear_response.status_code == 200
 
     async with AsyncSessionFactory() as session:
         provider = await session.get(AiProvider, UUID(provider_data["id"]))
         assert provider is not None
-        assert provider.api_key_encrypted != "sk-live-secret"
-        assert (
-            decrypt_api_key(
-                provider.api_key_encrypted or "", "RZ1Sw_27VrN9c5Cfsq01qiwViwT6y7jDCuXYn7tgGJY="
-            )
-            == "sk-live-secret"
-        )
+        assert provider.api_key_encrypted is None
         result = await session.execute(
             select(AuditLog).where(AuditLog.action == "ai.provider.create")
         )
         audit_log = result.scalar_one()
         audit_metadata = str(audit_log.metadata_json)
         assert "sk-live-secret" not in audit_metadata
-        assert "api_key" not in audit_metadata
+        assert "api_key_encrypted" not in audit_metadata
+
+        assert "'pricing_currency': 'CNY'" in audit_metadata
+        assert "'input_price_microunits_per_million_tokens': 5000000" in audit_metadata
+        assert "'output_price_microunits_per_million_tokens': 10000000" in audit_metadata
+        assert "pricing_currency" in audit_log.metadata_json["changed_fields"]
+        assert (
+            "input_price_microunits_per_million_tokens" in audit_log.metadata_json["changed_fields"]
+        )
+        assert (
+            "output_price_microunits_per_million_tokens"
+            in audit_log.metadata_json["changed_fields"]
+        )
+        assert "api_key_rotated" in audit_log.metadata_json["changed_fields"]
+        update_result = await session.execute(
+            select(AuditLog).where(AuditLog.action == "ai.provider.update")
+        )
+        update_metadata = [log.metadata_json for log in update_result.scalars()]
+        changed_field_sets = [set(metadata["changed_fields"]) for metadata in update_metadata]
+        assert any({"base_url", "api_key_rotated"} <= fields for fields in changed_field_sets)
+        assert any("api_key_cleared" in fields for fields in changed_field_sets)
+        update_audit_text = str(update_metadata)
+        assert rotated_secret not in update_audit_text
+        assert safe_base_url not in update_audit_text
+
+
+async def test_short_provider_key_is_never_returned_or_audited(
+    ai_client: AsyncClient,
+) -> None:
+    from sqlalchemy import select
+
+    from app.core.database import AsyncSessionFactory
+    from app.modules.audit.models import AuditLog
+
+    await _create_user(email="short-key@company.com", password="password123", role="system_admin")
+    token = await _login(ai_client, email="short-key@company.com", password="password123")
+    raw_secret = "abcde"
+
+    response = await ai_client.post(
+        "/api/admin/ai/providers",
+        headers={"Authorization": f"Bearer {token}"},
+        json={
+            "name": "短密钥供应商",
+            "provider_type": "mock",
+            "api_key": raw_secret,
+            "chat_model": "mock-chat",
+        },
+    )
+
+    assert response.status_code == 201
+    provider_data = response.json()["data"]
+    assert provider_data["api_key_masked"] == "****"
+    assert raw_secret not in response.text
+
+    async with AsyncSessionFactory() as session:
+        result = await session.execute(
+            select(AuditLog).where(
+                AuditLog.action == "ai.provider.create",
+                AuditLog.target_id == UUID(provider_data["id"]),
+            )
+        )
+        audit_log = result.scalar_one()
+        assert raw_secret not in str(audit_log.metadata_json)
+        assert "api_key_rotated" in audit_log.metadata_json["changed_fields"]
 
 
 async def test_update_feature_writes_audit_log(ai_client: AsyncClient) -> None:
@@ -449,7 +545,7 @@ async def test_provider_connection_blocks_external_url_when_feature_disabled(
         json={
             "name": "疑似本地域名绕过",
             "provider_type": "openai_compatible",
-            "base_url": "http://localhost.evil.example/v1",
+            "base_url": "https://8.8.8.8/v1",
             "chat_model": "gpt-test",
             "enabled": True,
         },
@@ -464,4 +560,179 @@ async def test_provider_connection_blocks_external_url_when_feature_disabled(
 
     assert response.status_code == 200
     assert response.json()["data"]["status"] == "failed"
-    assert response.json()["data"]["message"] == "external model provider is disabled"
+    assert response.json()["data"]["message"] == "request_rejected"
+
+
+async def test_document_analysis_prompt_contract_fails_fast(ai_client: AsyncClient) -> None:
+    await _create_user(
+        email="prompt-contract@company.com", password="password123", role="system_admin"
+    )
+    token = await _login(
+        ai_client,
+        email="prompt-contract@company.com",
+        password="password123",
+    )
+    headers = {"Authorization": f"Bearer {token}"}
+    config_response = await ai_client.get("/api/admin/ai/config", headers=headers)
+    template = next(
+        item
+        for item in config_response.json()["data"]["prompt_templates"]
+        if item["template_key"] == "document_analysis"
+    )
+
+    variables_response = await ai_client.patch(
+        f"/api/admin/ai/prompt-templates/{template['id']}",
+        headers=headers,
+        json={"variables": ["text"]},
+    )
+    interpolation_response = await ai_client.patch(
+        f"/api/admin/ai/prompt-templates/{template['id']}",
+        headers=headers,
+        json={"prompt_text": "分析 {text}", "variables": []},
+    )
+    valid_response = await ai_client.patch(
+        f"/api/admin/ai/prompt-templates/{template['id']}",
+        headers=headers,
+        json={"prompt_text": "按严格 JSON 契约分析输入。", "variables": []},
+    )
+
+    assert variables_response.status_code == 400
+    assert interpolation_response.status_code == 400
+    assert valid_response.status_code == 200
+    assert valid_response.json()["data"]["variables"] == []
+
+
+async def test_provider_base_url_rejects_credentials_and_unsafe_components(
+    ai_client: AsyncClient,
+) -> None:
+    await _create_user(email="url-admin@company.com", password="password123", role="system_admin")
+    token = await _login(ai_client, email="url-admin@company.com", password="password123")
+    headers = {"Authorization": f"Bearer {token}"}
+    invalid_urls = (
+        "https://user:pass@llm.example.test/v1",
+        "https://llm.example.test/v1?api_key=secret-query-token",
+        "https://llm.example.test/v1#secret-fragment",
+        "ftp://llm.example.test/v1",
+        "https:///missing-host",
+    )
+    for index, base_url in enumerate(invalid_urls):
+        response = await ai_client.post(
+            "/api/admin/ai/providers",
+            headers=headers,
+            json={
+                "name": f"invalid-url-{index}",
+                "provider_type": "openai_compatible",
+                "base_url": base_url,
+                "chat_model": "test-model",
+            },
+        )
+        assert response.status_code == 400
+        assert "user:pass" not in response.text
+        assert "secret-query-token" not in response.text
+
+    safe_url = "https://llm.example.test/v1"
+    created = await ai_client.post(
+        "/api/admin/ai/providers",
+        headers=headers,
+        json={
+            "name": "safe-url",
+            "provider_type": "mock",
+            "base_url": safe_url,
+            "chat_model": "mock-analysis-v1",
+        },
+    )
+    assert created.status_code == 201
+    provider_id = created.json()["data"]["id"]
+    bad_update = await ai_client.patch(
+        f"/api/admin/ai/providers/{provider_id}",
+        headers=headers,
+        json={"base_url": "https://user:pass@llm.example.test/v1"},
+    )
+    assert bad_update.status_code == 400
+    assert "user:pass" not in bad_update.text
+
+
+async def test_provider_runtime_limits_reject_dead_configuration(ai_client: AsyncClient) -> None:
+    await _create_user(
+        email="limits-admin@company.com", password="password123", role="system_admin"
+    )
+    token = await _login(ai_client, email="limits-admin@company.com", password="password123")
+    headers = {"Authorization": f"Bearer {token}"}
+    for field_name, value in (
+        ("timeout_seconds", 241),
+        ("max_retry_count", 11),
+        ("max_output_tokens", 4_097),
+    ):
+        response = await ai_client.post(
+            "/api/admin/ai/providers",
+            headers=headers,
+            json={
+                "name": f"invalid-{field_name}",
+                "provider_type": "mock",
+                field_name: value,
+            },
+        )
+        assert response.status_code == 422
+
+    created = await ai_client.post(
+        "/api/admin/ai/providers",
+        headers=headers,
+        json={
+            "name": "valid-runtime-limits",
+            "provider_type": "mock",
+            "chat_model": "mock-analysis-v1",
+            "max_retry_count": 2,
+            "max_output_tokens": 4_096,
+        },
+    )
+    assert created.status_code == 201
+    provider_id = created.json()["data"]["id"]
+    for field_name, value in (
+        ("timeout_seconds", 241),
+        ("max_retry_count", 11),
+        ("max_output_tokens", 4_097),
+    ):
+        response = await ai_client.patch(
+            f"/api/admin/ai/providers/{provider_id}", headers=headers, json={field_name: value}
+        )
+    config = await ai_client.get("/api/admin/ai/config", headers=headers)
+    provider = next(
+        item for item in config.json()["data"]["providers"] if item["id"] == provider_id
+    )
+    assert provider["max_retry_count"] == 2
+    assert provider["max_output_tokens"] == 4_096
+    assert provider["timeout_seconds"] == 60
+
+
+async def test_enabled_provider_requires_chat_model(ai_client: AsyncClient) -> None:
+    await _create_user(
+        email="model-required@company.com",
+        password="password123",
+        role="system_admin",
+    )
+    token = await _login(
+        ai_client,
+        email="model-required@company.com",
+        password="password123",
+    )
+    headers = {"Authorization": f"Bearer {token}"}
+
+    rejected_create = await ai_client.post(
+        "/api/admin/ai/providers",
+        headers=headers,
+        json={"name": "missing-model", "provider_type": "mock", "enabled": True},
+    )
+    assert rejected_create.status_code == 400
+
+    disabled_create = await ai_client.post(
+        "/api/admin/ai/providers",
+        headers=headers,
+        json={"name": "disabled-without-model", "provider_type": "mock", "enabled": False},
+    )
+    assert disabled_create.status_code == 201
+    rejected_enable = await ai_client.patch(
+        f"/api/admin/ai/providers/{disabled_create.json()['data']['id']}",
+        headers=headers,
+        json={"enabled": True},
+    )
+    assert rejected_enable.status_code == 400

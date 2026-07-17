@@ -35,6 +35,7 @@ import dayjs from "dayjs";
 
 import {
   type AiConfigResponse,
+  type AiGlobalConfig,
   type AiFeatureConfig,
   type AiPromptTemplate,
   type AiProviderConfig,
@@ -64,6 +65,16 @@ import { PageContainer } from "../../layouts/PageContainer";
 import "./styles.css";
 
 const aiConfigQueryKey = ["ai-config"] as const;
+
+export const AI_PROVIDER_RUNTIME_LIMITS = {
+  priority: 2_147_483_647,
+  timeout_seconds: 240,
+  max_retry_count: 10,
+  max_input_tokens: 1_000_000_000,
+  max_output_tokens: 4_096,
+  temperature: 2,
+  top_p: 1,
+} as const;
 
 const globalSwitches = [
   {
@@ -132,7 +143,6 @@ const providerTypeOptions = [
 const providerTypesWithoutEndpoint = new Set(["mock", "disabled"]);
 
 type ProviderFormMode = "create" | "edit";
-type ProviderModelKind = "chat" | "embedding" | "vision";
 
 type ProviderModalState = {
   mode: ProviderFormMode;
@@ -149,11 +159,7 @@ type SensitiveRuleModalState = {
   rule?: AiSensitiveRule;
 };
 
-type AiProviderFormValues = Omit<
-  AiProviderPayload,
-  "chat_model" | "embedding_model" | "vision_model"
-> & {
-  model_kind: ProviderModelKind;
+type AiProviderFormValues = Omit<AiProviderPayload, "chat_model"> & {
   model_name: string;
 };
 
@@ -176,31 +182,12 @@ interface AiSensitiveRuleFormValues {
   enabled: boolean;
 }
 
-const providerModelKindLabels: Record<ProviderModelKind, string> = {
-  chat: "对话",
-  embedding: "向量",
-  vision: "视觉",
-};
-
-const providerModelKindOptions = [
-  { label: "对话模型", value: "chat" },
-  { label: "向量模型", value: "embedding" },
-  { label: "视觉模型", value: "vision" },
-];
-
-const providerModelNamePlaceholders: Record<ProviderModelKind, string> = {
-  chat: "gpt-4o-mini / deepseek-chat / qwen-plus",
-  embedding: "text-embedding-3-small",
-  vision: "gpt-4o-mini",
-};
-
 const providerDefaultValues: AiProviderFormValues = {
   name: "",
   provider_type: "openai_compatible",
   base_url: "",
   api_key: "",
   clear_api_key: false,
-  model_kind: "chat",
   model_name: "",
   is_internal: false,
   enabled: true,
@@ -211,6 +198,9 @@ const providerDefaultValues: AiProviderFormValues = {
   max_output_tokens: null,
   temperature: 0.2,
   top_p: null,
+  input_price_microunits_per_million_tokens: 0,
+  output_price_microunits_per_million_tokens: 0,
+  pricing_currency: "USD",
 };
 
 const promptDefaultValues: AiPromptTemplateFormValues = {
@@ -266,44 +256,15 @@ function optionalNumber(value?: number | null): number | null {
   return typeof value === "number" ? value : null;
 }
 
-function providerModelKind(provider?: AiProviderConfig): ProviderModelKind {
-  if (!provider) {
-    return "chat";
-  }
-  if (provider.embedding_model && !provider.chat_model && !provider.vision_model) {
-    return "embedding";
-  }
-  if (provider.vision_model && !provider.chat_model && !provider.embedding_model) {
-    return "vision";
-  }
-  return "chat";
+const PRICE_MICROUNIT_SCALE = 1_000_000;
+
+function priceFromMicrounits(value?: number | null): number {
+  return (value ?? 0) / PRICE_MICROUNIT_SCALE;
 }
 
-function providerModelName(
-  provider: AiProviderConfig | undefined,
-  modelKind: ProviderModelKind,
-): string {
-  if (!provider) {
-    return "";
-  }
-  if (modelKind === "embedding") {
-    return provider.embedding_model ?? "";
-  }
-  if (modelKind === "vision") {
-    return provider.vision_model ?? "";
-  }
-  return provider.chat_model ?? "";
-}
-
-function providerModelInfo(provider: AiProviderConfig): {
-  label: string;
-  modelName: string;
-} {
-  const modelKind = providerModelKind(provider);
-  return {
-    label: providerModelKindLabels[modelKind],
-    modelName: providerModelName(provider, modelKind),
-  };
+function priceToMicrounits(value?: number | null): number {
+  const price = typeof value === "number" && Number.isFinite(value) ? value : 0;
+  return Math.round(price * PRICE_MICROUNIT_SCALE);
 }
 
 function isPrivateIPv4(hostname: string): boolean {
@@ -360,15 +321,13 @@ function providerFormValues(provider?: AiProviderConfig): AiProviderFormValues {
     return { ...providerDefaultValues };
   }
 
-  const modelKind = providerModelKind(provider);
   return {
     name: provider.name,
     provider_type: provider.provider_type,
     base_url: provider.base_url ?? "",
     api_key: "",
     clear_api_key: false,
-    model_kind: modelKind,
-    model_name: providerModelName(provider, modelKind),
+    model_name: provider.chat_model ?? "",
     is_internal: provider.is_internal,
     enabled: provider.enabled,
     priority: provider.priority,
@@ -378,6 +337,13 @@ function providerFormValues(provider?: AiProviderConfig): AiProviderFormValues {
     max_output_tokens: provider.max_output_tokens ?? null,
     temperature: provider.temperature,
     top_p: provider.top_p ?? null,
+    input_price_microunits_per_million_tokens: priceFromMicrounits(
+      provider.input_price_microunits_per_million_tokens,
+    ),
+    output_price_microunits_per_million_tokens: priceFromMicrounits(
+      provider.output_price_microunits_per_million_tokens,
+    ),
+    pricing_currency: provider.pricing_currency ?? "USD",
   };
 }
 
@@ -389,9 +355,7 @@ function providerPayloadFromValues(values: AiProviderFormValues): AiProviderPayl
     provider_type: values.provider_type,
     base_url: optionalText(values.base_url),
     clear_api_key: Boolean(values.clear_api_key),
-    chat_model: values.model_kind === "chat" ? modelName : null,
-    embedding_model: values.model_kind === "embedding" ? modelName : null,
-    vision_model: values.model_kind === "vision" ? modelName : null,
+    chat_model: modelName,
     is_internal: Boolean(values.is_internal),
     enabled: Boolean(values.enabled),
     priority: values.priority,
@@ -401,6 +365,13 @@ function providerPayloadFromValues(values: AiProviderFormValues): AiProviderPayl
     max_output_tokens: optionalNumber(values.max_output_tokens),
     temperature: values.temperature,
     top_p: optionalNumber(values.top_p),
+    input_price_microunits_per_million_tokens: priceToMicrounits(
+      values.input_price_microunits_per_million_tokens,
+    ),
+    output_price_microunits_per_million_tokens: priceToMicrounits(
+      values.output_price_microunits_per_million_tokens,
+    ),
+    pricing_currency: values.pricing_currency.trim().toUpperCase(),
   };
 
   if (apiKey) {
@@ -472,7 +443,6 @@ function countEnabled(items: Array<{ enabled: boolean }>): number {
   return items.filter((item) => item.enabled).length;
 }
 
-
 function AiOverview({ config }: { config: AiConfigResponse }) {
   const enabledProviders = countEnabled(config.providers);
   const testedProviders = config.providers.filter(
@@ -520,16 +490,20 @@ function GlobalSwitchCard({
   title,
   description,
   checked,
+  effectiveChecked = checked,
   checkedText,
   uncheckedText,
+  disabled,
   loading,
   onChange,
 }: {
   title: string;
   description: string;
   checked: boolean;
+  effectiveChecked?: boolean;
   checkedText: string;
   uncheckedText: string;
+  disabled?: boolean;
   loading?: boolean;
   onChange: (enabled: boolean) => void;
 }) {
@@ -542,12 +516,12 @@ function GlobalSwitchCard({
         <span className="ai-config-switch-card__copy">
           <Typography.Text strong>{title}</Typography.Text>
           <Typography.Text type="secondary">{description}</Typography.Text>
-          <StatusTag kind="dataset" value={checked ? "enabled" : "disabled"} />
+          <StatusTag kind="dataset" value={effectiveChecked ? "enabled" : "disabled"} />
         </span>
-        <Switch checked={checked} loading={loading} onChange={onChange} />
+        <Switch checked={checked} disabled={disabled} loading={loading} onChange={onChange} />
       </Space>
       <Typography.Text type="secondary" className="ai-config-switch-card__state">
-        {checked ? checkedText : uncheckedText}
+        {effectiveChecked ? checkedText : uncheckedText}
       </Typography.Text>
     </Card>
   );
@@ -560,7 +534,7 @@ function FeaturesPanel({
   togglingKey,
 }: {
   features: AiFeatureConfig[];
-  global: Record<(typeof globalSwitches)[number]["key"], boolean>;
+  global: AiGlobalConfig;
   onFeatureToggle: (featureKey: string, enabled: boolean) => void;
   togglingKey?: string;
 }) {
@@ -568,18 +542,44 @@ function FeaturesPanel({
     <div className="ai-config-panel-stack">
       <Card className="document-panel" title="全局 AI 设置">
         <div className="ai-config-global-grid">
-          {globalSwitches.map((item) => (
-            <GlobalSwitchCard
-              key={item.key}
-              title={item.title}
-              description={item.description}
-              checked={global[item.key]}
-              checkedText={item.checkedText}
-              uncheckedText={item.uncheckedText}
-              loading={togglingKey === item.featureKey}
-              onChange={(enabled) => onFeatureToggle(item.featureKey, enabled)}
-            />
-          ))}
+          {globalSwitches.map((item) => {
+            const isAiAnalysisGate = item.key === "ai_analysis_enabled";
+            const isExternalGate = item.key === "allow_external_llm";
+            let checked = global[item.key];
+            let effectiveChecked = checked;
+            let environmentBlocked = false;
+
+            if (isAiAnalysisGate) {
+              checked = global.ai_analysis_db_enabled;
+              effectiveChecked = global.ai_analysis_enabled;
+              environmentBlocked = !global.ai_analysis_environment_enabled;
+            } else if (isExternalGate) {
+              checked = global.allow_external_llm_db_enabled;
+              effectiveChecked = global.allow_external_llm;
+              environmentBlocked = !global.allow_external_llm_environment_enabled;
+            }
+
+            const description =
+              isAiAnalysisGate || isExternalGate
+                ? `${item.description} 当前生效状态：${effectiveChecked ? "允许" : "禁止"}。${
+                    environmentBlocked ? " 环境硬门禁已关闭，需先由运维启用。" : ""
+                  }`
+                : item.description;
+            return (
+              <GlobalSwitchCard
+                key={item.key}
+                title={item.title}
+                description={description}
+                checked={checked}
+                effectiveChecked={effectiveChecked}
+                disabled={environmentBlocked}
+                checkedText={item.checkedText}
+                uncheckedText={item.uncheckedText}
+                loading={togglingKey === item.featureKey}
+                onChange={(enabled) => onFeatureToggle(item.featureKey, enabled)}
+              />
+            );
+          })}
         </div>
       </Card>
 
@@ -631,7 +631,6 @@ function ProviderFormModal({
 }) {
   const [form] = Form.useForm<AiProviderFormValues>();
   const selectedType = Form.useWatch("provider_type", form);
-  const selectedModelKind = Form.useWatch("model_kind", form) ?? "chat";
   const clearApiKey = Form.useWatch("clear_api_key", form);
   const requiresEndpoint = !providerTypesWithoutEndpoint.has(selectedType ?? "openai_compatible");
 
@@ -658,7 +657,7 @@ function ProviderFormModal({
         className="ai-provider-form-alert"
         type="info"
         showIcon
-        message="Base URL 填 OpenAI 协议根地址；当前配置只对应一种模型用途。"
+        message="Base URL 填 OpenAI 协议根地址；此处仅配置文档分析使用的对话模型。"
       />
       <Form<AiProviderFormValues>
         form={form}
@@ -713,13 +712,6 @@ function ProviderFormModal({
             <Switch disabled={mode === "create"} />
           </Form.Item>
           <Form.Item
-            label="模型用途"
-            name="model_kind"
-            rules={[{ required: true, message: "请选择模型用途" }]}
-          >
-            <Select options={providerModelKindOptions} />
-          </Form.Item>
-          <Form.Item
             label="模型名称"
             name="model_name"
             rules={
@@ -728,44 +720,114 @@ function ProviderFormModal({
                 : []
             }
           >
-            <Input placeholder={providerModelNamePlaceholders[selectedModelKind]} />
+            <Input placeholder="gpt-4o-mini / deepseek-chat / qwen-plus" />
           </Form.Item>
           <Form.Item
             label="优先级"
             name="priority"
             rules={[{ required: true, message: "请输入优先级" }]}
           >
-            <InputNumber min={0} precision={0} className="ai-provider-form-number" />
+            <InputNumber
+              min={0}
+              max={AI_PROVIDER_RUNTIME_LIMITS.priority}
+              precision={0}
+              className="ai-provider-form-number"
+            />
           </Form.Item>
           <Form.Item
             label="超时秒数"
             name="timeout_seconds"
             rules={[{ required: true, message: "请输入超时秒数" }]}
           >
-            <InputNumber min={1} precision={0} className="ai-provider-form-number" />
+            <InputNumber
+              min={1}
+              max={AI_PROVIDER_RUNTIME_LIMITS.timeout_seconds}
+              precision={0}
+              className="ai-provider-form-number"
+            />
           </Form.Item>
           <Form.Item
             label="最大重试"
             name="max_retry_count"
             rules={[{ required: true, message: "请输入最大重试次数" }]}
           >
-            <InputNumber min={0} precision={0} className="ai-provider-form-number" />
+            <InputNumber
+              min={0}
+              max={AI_PROVIDER_RUNTIME_LIMITS.max_retry_count}
+              precision={0}
+              className="ai-provider-form-number"
+            />
           </Form.Item>
           <Form.Item label="输入 Token 上限" name="max_input_tokens">
-            <InputNumber min={1} precision={0} className="ai-provider-form-number" />
+            <InputNumber
+              min={1}
+              max={AI_PROVIDER_RUNTIME_LIMITS.max_input_tokens}
+              precision={0}
+              className="ai-provider-form-number"
+            />
           </Form.Item>
           <Form.Item label="输出 Token 上限" name="max_output_tokens">
-            <InputNumber min={1} precision={0} className="ai-provider-form-number" />
+            <InputNumber
+              min={1}
+              max={AI_PROVIDER_RUNTIME_LIMITS.max_output_tokens}
+              precision={0}
+              className="ai-provider-form-number"
+            />
           </Form.Item>
           <Form.Item
             label="Temperature"
             name="temperature"
             rules={[{ required: true, message: "请输入 Temperature" }]}
           >
-            <InputNumber min={0} max={2} step={0.1} className="ai-provider-form-number" />
+            <InputNumber
+              min={0}
+              max={AI_PROVIDER_RUNTIME_LIMITS.temperature}
+              step={0.1}
+              className="ai-provider-form-number"
+            />
           </Form.Item>
           <Form.Item label="Top P" name="top_p">
-            <InputNumber min={0} max={1} step={0.05} className="ai-provider-form-number" />
+            <InputNumber
+              min={0}
+              max={AI_PROVIDER_RUNTIME_LIMITS.top_p}
+              step={0.05}
+              className="ai-provider-form-number"
+            />
+          </Form.Item>
+          <Form.Item
+            label="输入价格（货币/百万 Token）"
+            name="input_price_microunits_per_million_tokens"
+            extra="例如 USD 5.00；服务端以微货币单位整数保存"
+            rules={[{ required: true, message: "请输入输入价格" }]}
+          >
+            <InputNumber
+              min={0}
+              max={1_000_000}
+              precision={6}
+              className="ai-provider-form-number"
+            />
+          </Form.Item>
+          <Form.Item
+            label="输出价格（货币/百万 Token）"
+            name="output_price_microunits_per_million_tokens"
+            rules={[{ required: true, message: "请输入输出价格" }]}
+          >
+            <InputNumber
+              min={0}
+              max={1_000_000}
+              precision={6}
+              className="ai-provider-form-number"
+            />
+          </Form.Item>
+          <Form.Item
+            label="计价币种"
+            name="pricing_currency"
+            rules={[
+              { required: true, message: "请输入三位币种代码" },
+              { pattern: /^[A-Za-z]{3}$/, message: "请输入 USD、CNY 等三位代码" },
+            ]}
+          >
+            <Input maxLength={3} placeholder="USD" />
           </Form.Item>
           <Form.Item label="内部服务" name="is_internal" valuePropName="checked">
             <Switch />
@@ -1101,19 +1163,18 @@ function ProvidersPanel({
       ),
     },
     {
-      title: "用途/模型",
+      title: "文档分析模型",
       key: "models",
       width: 220,
       render: (_, record) => {
-        const modelInfo = providerModelInfo(record);
-        const modelName = modelInfo.modelName || "-";
+        const modelName = record.chat_model || "-";
         return (
           <span className="ai-config-models-cell">
             <Typography.Text className="single-line-text" title={modelName}>
-              {modelInfo.label}：{modelName}
+              {modelName}
             </Typography.Text>
-            <Typography.Text type="secondary" className="single-line-text" title={modelInfo.label}>
-              模型用途：{modelInfo.label}
+            <Typography.Text type="secondary" className="single-line-text" title="对话模型">
+              对话模型
             </Typography.Text>
           </span>
         );

@@ -75,6 +75,22 @@ const baseFile: KnowledgeFile = {
   category_name: "制度文档",
   analysis: {
     status: "succeeded",
+    engine_type: "hybrid",
+    provider_name: "内部模型",
+    model_name: "qwen-analysis",
+    prompt_template_key: "document_analysis",
+    prompt_version: 3,
+    input_char_count: 2048,
+    input_sha256: "a".repeat(64),
+    category_count: 8,
+    input_truncated: true,
+    attempt_number: 2,
+    prompt_tokens: 512,
+    completion_tokens: 128,
+    latency_ms: 780,
+    failure_category: null,
+    estimated_cost_microunits: 2_500_000,
+    cost_currency: "CNY",
     summary: "这是一份员工手册的摘要。",
     sensitive_risk_level: "medium",
     quality_score: null,
@@ -499,7 +515,64 @@ describe("FileDetailPage", () => {
     expect(screen.getByText("中风险")).toBeInTheDocument();
 
     fireEvent.click(screen.getByText("提取文本预览"));
+    expect(screen.getByText("规则 + LLM")).toBeInTheDocument();
+    expect(screen.getByText("内部模型 / qwen-analysis")).toBeInTheDocument();
+    expect(screen.getByText("document_analysis v3")).toBeInTheDocument();
+    expect(screen.getByText("512 / 128")).toBeInTheDocument();
+    expect(screen.getByText("780 ms")).toBeInTheDocument();
+    expect(screen.getByText("CNY 2.500000")).toBeInTheDocument();
+    expect(screen.queryByText(/prompt body|vendor body/i)).not.toBeInTheDocument();
     expect(await screen.findByText("员工手册提取文本前五百字……")).toBeInTheDocument();
+  });
+
+  it("renders rule-only provenance without fake model metrics", async () => {
+    vi.mocked(getDocument).mockResolvedValue({
+      ...baseFile,
+      analysis: {
+        ...baseFile.analysis!,
+        engine_type: "rule",
+        provider_name: null,
+        model_name: null,
+        prompt_template_key: null,
+        prompt_version: null,
+        input_char_count: null,
+        input_sha256: null,
+        category_count: null,
+        input_truncated: null,
+        prompt_tokens: 0,
+        completion_tokens: 0,
+        latency_ms: 0,
+        estimated_cost_microunits: 0,
+        cost_currency: "CNY",
+      },
+    });
+
+    renderFileDetail();
+
+    expect((await screen.findAllByText("AI 分析")).length).toBeGreaterThan(0);
+    fireEvent.click(screen.getByText("提取文本预览"));
+
+    expect(screen.getByText("确定性规则")).toBeInTheDocument();
+    expect(screen.getAllByText("未调用模型")).toHaveLength(5);
+  });
+
+  it("formats a large LLM cost without precision loss", async () => {
+    vi.mocked(getDocument).mockResolvedValue({
+      ...baseFile,
+      analysis: {
+        ...baseFile.analysis!,
+        engine_type: "hybrid",
+        estimated_cost_microunits: "9007199254740993123456",
+        cost_currency: "CNY",
+      },
+    });
+
+    renderFileDetail();
+
+    expect((await screen.findAllByText("AI 分析")).length).toBeGreaterThan(0);
+    fireEvent.click(screen.getByText("提取文本预览"));
+
+    expect(screen.getByText("CNY 9007199254740993.123456")).toBeInTheDocument();
   });
 
   it("renders advanced analysis quality, similarity, table and expiry fields when present", async () => {
@@ -559,6 +632,11 @@ describe("FileDetailPage", () => {
       ...baseFile,
       analysis: {
         status: "failed",
+        engine_type: "llm",
+        failure_category: "timeout",
+        prompt_tokens: 0,
+        completion_tokens: 0,
+        estimated_cost_microunits: 0,
         summary: null,
         sensitive_risk_level: "none",
         quality_score: null,
@@ -572,6 +650,8 @@ describe("FileDetailPage", () => {
 
     expect(await screen.findByText("AI 分析失败")).toBeInTheDocument();
     expect(screen.getByText("模型调用超时")).toBeInTheDocument();
+    expect(screen.getByText("供应商未返回用量")).toBeInTheDocument();
+    expect(screen.getByText("成本不可估算")).toBeInTheDocument();
   });
 
   it("shows sync error alert inside the sync card", async () => {

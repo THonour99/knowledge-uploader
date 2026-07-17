@@ -3,7 +3,7 @@ from __future__ import annotations
 import asyncio
 import uuid
 from importlib import import_module
-from typing import NoReturn
+from typing import Literal, NoReturn
 
 import structlog
 from celery import Task
@@ -24,17 +24,29 @@ from .repository import AiRepository  # noqa: TID251 - same-module repository de
 from .service import (  # noqa: TID251 - same-module service dependency
     AiAnalysisService,
     AiObjectStorage,
+    provider_failure_message,
 )
 
 import_module("app.db.models")
 
 logger = structlog.get_logger(__name__)
 
+RetryCounterKey = Literal[
+    "storage_retries", "provider_retries", "lease_retries", "infrastructure_retries"
+]
 STORAGE_RETRY_MAX_RETRIES = 3
 STORAGE_RETRY_BASE_COUNTDOWN_SECONDS = 30
 ANALYSIS_REDELIVERY_MAX_RETRIES = 10
 ANALYSIS_REDELIVERY_MAX_COUNTDOWN_SECONDS = 120
 STORAGE_RETRY_EXHAUSTED_MESSAGE = f"存储暂不可用。已重试 {STORAGE_RETRY_MAX_RETRIES} 次"
+PROVIDER_RETRY_MAX_RETRIES = 10
+INFRASTRUCTURE_RETRY_MAX_RETRIES = 10
+ANALYSIS_TOTAL_MAX_RETRIES = (
+    STORAGE_RETRY_MAX_RETRIES
+    + ANALYSIS_REDELIVERY_MAX_RETRIES
+    + PROVIDER_RETRY_MAX_RETRIES
+    + INFRASTRUCTURE_RETRY_MAX_RETRIES
+)
 ANALYSIS_SOFT_TIME_LIMIT_SECONDS = 600
 ANALYSIS_TIME_LIMIT_SECONDS = 660
 ANALYSIS_TIMEOUT_MESSAGE = f"分析超时({ANALYSIS_SOFT_TIME_LIMIT_SECONDS}s)"
@@ -52,25 +64,32 @@ def _retry_or_dead_letter(
     task: Task,
     error: BaseException,
     *,
+    budget_key: RetryCounterKey,
+    budget_retries: int,
+    budget_limit: int,
+    retry_state: dict[RetryCounterKey, int],
     max_countdown: int = ANALYSIS_REDELIVERY_MAX_COUNTDOWN_SECONDS,
 ) -> NoReturn:
-    """Retry infrastructure failures, then route the original message to the AI DLQ."""
-    retries = int(task.request.retries or 0)
+    """Retry one failure class without consuming another class's retry budget."""
+    safe_budget_retries = max(0, int(budget_retries))
+    total_retries = max(0, int(task.request.retries or 0))
     countdown = min(
-        (2**retries) * STORAGE_RETRY_BASE_COUNTDOWN_SECONDS,
+        (2 ** min(safe_budget_retries, 10)) * STORAGE_RETRY_BASE_COUNTDOWN_SECONDS,
         max_countdown,
     )
     error_type = type(error).__name__
-    max_retries = task.max_retries
-    if max_retries is not None and retries >= max_retries:
+    if safe_budget_retries >= budget_limit or total_retries >= ANALYSIS_TOTAL_MAX_RETRIES:
         raise Reject(reason=error_type, requeue=False) from None
+    next_retry_state = dict(retry_state)
+    next_retry_state[budget_key] = safe_budget_retries + 1
     try:
-        # Only persist the exception type in Celery retry metadata. Database and
-        # provider errors may contain credentials, object keys, or document text.
-        raise task.retry(exc=RuntimeError(error_type), countdown=countdown)
+        # Retry metadata contains only sanitized exception type and bounded counters.
+        raise task.retry(
+            exc=RuntimeError(error_type),
+            countdown=countdown,
+            kwargs=next_retry_state,
+        )
     except MaxRetriesExceededError:
-        # acks_late plus Reject(requeue=False) sends the original sanitized Celery
-        # message through ai_queue's configured dead-letter exchange.
         raise Reject(reason=error_type, requeue=False) from None
 
 
@@ -81,6 +100,8 @@ def _mark_analysis_failed_or_retry(
     error_message: str,
     error_code: events.AiAnalysisFailureCode,
     delivery_token: str,
+    retry_state: dict[RetryCounterKey, int],
+    infrastructure_retries: int,
     require_retry_wait: bool = False,
 ) -> str:
     """ACK only after the terminal analysis failure is durably committed."""
@@ -97,13 +118,35 @@ def _mark_analysis_failed_or_retry(
             "ai_analysis_failure_persistence_failed",
             file_id=file_id,
             error_type=type(exc).__name__,
-            retries=int(task.request.retries or 0),
+            infrastructure_retries=infrastructure_retries,
+            total_retries=int(task.request.retries or 0),
         )
-        _retry_or_dead_letter(task, exc)
+        _retry_or_dead_letter(
+            task,
+            exc,
+            budget_key="infrastructure_retries",
+            budget_retries=infrastructure_retries,
+            budget_limit=INFRASTRUCTURE_RETRY_MAX_RETRIES,
+            retry_state=retry_state,
+        )
 
 
-def _analyze_with_retry(task: Task, file_id: str) -> str:
-    """任务壳层编排: 瞬态错误指数退避重试、软超时与重试耗尽落 analysis_failed。"""
+def _analyze_with_retry(
+    task: Task,
+    file_id: str,
+    *,
+    storage_retries: int = 0,
+    provider_retries: int = 0,
+    lease_retries: int = 0,
+    infrastructure_retries: int = 0,
+) -> str:
+    """编排独立的存储、模型、租约和基础设施重试预算。"""
+    retry_state: dict[RetryCounterKey, int] = {
+        "storage_retries": max(0, int(storage_retries)),
+        "provider_retries": max(0, int(provider_retries)),
+        "lease_retries": max(0, int(lease_retries)),
+        "infrastructure_retries": max(0, int(infrastructure_retries)),
+    }
     request_id = getattr(task.request, "id", None)
     delivery_token = str(request_id or uuid.uuid4().hex)[:64]
     try:
@@ -116,39 +159,88 @@ def _analyze_with_retry(task: Task, file_id: str) -> str:
             error_message=ANALYSIS_TIMEOUT_MESSAGE,
             error_code=events.AiAnalysisFailureCode.TIMEOUT,
             delivery_token=delivery_token,
+            retry_state=retry_state,
+            infrastructure_retries=retry_state["infrastructure_retries"],
         )
     except AiAnalysisAlreadyRunningError as exc:
+        retries = retry_state["lease_retries"]
         logger.info(
             "ai_analysis_redelivery_waiting_for_active_lease",
             file_id=file_id,
-            retries=int(task.request.retries or 0),
+            lease_retries=retries,
+            total_retries=int(task.request.retries or 0),
         )
-        _retry_or_dead_letter(task, exc)
+        _retry_or_dead_letter(
+            task,
+            exc,
+            budget_key="lease_retries",
+            budget_retries=retries,
+            budget_limit=ANALYSIS_REDELIVERY_MAX_RETRIES,
+            retry_state=retry_state,
+        )
     except AiAnalysisTransientError as exc:
-        retries = int(task.request.retries or 0)
-        if retries >= STORAGE_RETRY_MAX_RETRIES:
+        is_storage_failure = exc.retry_budget == "storage"
+        budget_key: RetryCounterKey = (
+            "storage_retries" if is_storage_failure else "provider_retries"
+        )
+        retries = retry_state[budget_key]
+        budget_ceiling = (
+            STORAGE_RETRY_MAX_RETRIES if is_storage_failure else PROVIDER_RETRY_MAX_RETRIES
+        )
+        retry_limit = min(exc.max_retries, budget_ceiling)
+        if retries >= retry_limit:
+            failure_code = (
+                events.AiAnalysisFailureCode.PROVIDER_UNAVAILABLE
+                if is_storage_failure
+                else events.normalize_analysis_failure_code(exc.failure_category)
+            )
             logger.error(
-                "ai_analysis_storage_retry_exhausted",
+                "ai_analysis_transient_retry_exhausted",
                 file_id=file_id,
-                retries=retries,
+                retry_budget=exc.retry_budget,
+                budget_retries=retries,
+                total_retries=int(task.request.retries or 0),
+                failure_category=exc.failure_category,
             )
             return _mark_analysis_failed_or_retry(
                 task,
                 file_id,
-                error_message=STORAGE_RETRY_EXHAUSTED_MESSAGE,
-                error_code=events.AiAnalysisFailureCode.PROVIDER_UNAVAILABLE,
+                error_message=(
+                    STORAGE_RETRY_EXHAUSTED_MESSAGE
+                    if is_storage_failure
+                    else provider_failure_message(exc.failure_category)
+                ),
+                error_code=failure_code,
                 delivery_token=delivery_token,
+                retry_state=retry_state,
+                infrastructure_retries=retry_state["infrastructure_retries"],
                 require_retry_wait=True,
             )
-        _retry_or_dead_letter(task, exc)
+        _retry_or_dead_letter(
+            task,
+            exc,
+            budget_key=budget_key,
+            budget_retries=retries,
+            budget_limit=retry_limit,
+            retry_state=retry_state,
+        )
     except Exception as exc:
+        retries = retry_state["infrastructure_retries"]
         logger.error(
             "ai_analysis_infrastructure_failure",
             file_id=file_id,
             error_type=type(exc).__name__,
-            retries=int(task.request.retries or 0),
+            infrastructure_retries=retries,
+            total_retries=int(task.request.retries or 0),
         )
-        _retry_or_dead_letter(task, exc)
+        _retry_or_dead_letter(
+            task,
+            exc,
+            budget_key="infrastructure_retries",
+            budget_retries=retries,
+            budget_limit=INFRASTRUCTURE_RETRY_MAX_RETRIES,
+            retry_state=retry_state,
+        )
 
 
 @celery_app.task(  # type: ignore[misc]
@@ -157,12 +249,27 @@ def _analyze_with_retry(task: Task, file_id: str) -> str:
     acks_late=True,
     acks_on_failure_or_timeout=False,
     reject_on_worker_lost=True,
-    max_retries=ANALYSIS_REDELIVERY_MAX_RETRIES,
+    max_retries=ANALYSIS_TOTAL_MAX_RETRIES,
     soft_time_limit=ANALYSIS_SOFT_TIME_LIMIT_SECONDS,
     time_limit=ANALYSIS_TIME_LIMIT_SECONDS,
 )
-def ai_analyze_file_task(self: Task, file_id: str) -> str:
-    return _analyze_with_retry(self, file_id)
+def ai_analyze_file_task(
+    self: Task,
+    file_id: str,
+    *,
+    storage_retries: int = 0,
+    provider_retries: int = 0,
+    lease_retries: int = 0,
+    infrastructure_retries: int = 0,
+) -> str:
+    return _analyze_with_retry(
+        self,
+        file_id,
+        storage_retries=storage_retries,
+        provider_retries=provider_retries,
+        lease_retries=lease_retries,
+        infrastructure_retries=infrastructure_retries,
+    )
 
 
 def run_ai_analyze_file_task(file_id: str, *, delivery_token: str | None = None) -> str:

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from typing import Literal
 
 from starlette import status
 
@@ -74,8 +75,22 @@ class AiAnalysisPreconditionError(Exception):
     pass
 
 
+AiRetryBudget = Literal["storage", "provider"]
+
+
 class AiAnalysisTransientError(Exception):
-    pass
+    def __init__(
+        self,
+        message: str,
+        *,
+        failure_category: str = "provider_unavailable",
+        max_retries: int = 3,
+        retry_budget: AiRetryBudget = "provider",
+    ) -> None:
+        self.failure_category = failure_category
+        self.max_retries = max(0, max_retries)
+        self.retry_budget = retry_budget
+        super().__init__(message)
 
 
 class AiAnalysisAlreadyRunningError(AiAnalysisTransientError):

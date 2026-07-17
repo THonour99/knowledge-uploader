@@ -625,6 +625,39 @@ function OriginalDocumentCard({ file }: { file: KnowledgeFile }) {
   );
 }
 
+function analysisEngineLabel(engine?: FileAnalysis["engine_type"]): string {
+  if (engine === "llm") {
+    return "LLM";
+  }
+  if (engine === "hybrid") {
+    return "规则 + LLM";
+  }
+  return "确定性规则";
+}
+
+function formatAnalysisCost(analysis: FileAnalysis): string {
+  const rawMicroUnits = analysis.estimated_cost_microunits;
+  let microUnits: bigint;
+  if (typeof rawMicroUnits === "number") {
+    if (!Number.isSafeInteger(rawMicroUnits) || rawMicroUnits < 0) {
+      return "-";
+    }
+    microUnits = BigInt(rawMicroUnits);
+  } else if (typeof rawMicroUnits === "string" && /^[0-9]+$/.test(rawMicroUnits)) {
+    microUnits = BigInt(rawMicroUnits);
+  } else {
+    return "-";
+  }
+  const wholeUnits = microUnits / 1_000_000n;
+  const fractionalUnits = (microUnits % 1_000_000n).toString().padStart(6, "0");
+  return (analysis.cost_currency ?? "USD") + " " + wholeUnits + "." + fractionalUnits;
+}
+
+function analysisModelLabel(analysis: FileAnalysis): string {
+  const provenance = [analysis.provider_name, analysis.model_name].filter(Boolean);
+  return provenance.length > 0 ? provenance.join(" / ") : "-";
+}
+
 interface AnalysisCardProps {
   analysis: FileAnalysis;
   file: KnowledgeFile;
@@ -639,6 +672,12 @@ function AnalysisCard({ analysis, file, loading }: AnalysisCardProps) {
   const similarItems = similarReferences(analysis);
   const expiresAt = file.expires_at ?? analysis.expires_at ?? analysis.detected_expire_at ?? null;
   const expiryStatus = file.expiry_status ?? analysis.expiry_status ?? null;
+  const ruleOnlyWithoutModelCall = analysis.engine_type === "rule" && !analysis.input_sha256;
+  const providerUsageUnavailable =
+    !ruleOnlyWithoutModelCall &&
+    Boolean(analysis.failure_category) &&
+    (analysis.prompt_tokens ?? 0) === 0 &&
+    (analysis.completion_tokens ?? 0) === 0;
   const collapseItems = [
     {
       key: "extracted-text-preview",
@@ -704,6 +743,61 @@ function AnalysisCard({ analysis, file, loading }: AnalysisCardProps) {
           <Descriptions.Item label="风险等级">
             <StatusTag kind="risk" value={analysis.sensitive_risk_level} />
           </Descriptions.Item>
+          <Descriptions.Item label="分析引擎">
+            {analysisEngineLabel(analysis.engine_type)}
+          </Descriptions.Item>
+          <Descriptions.Item label="供应商 / 模型">
+            {analysisModelLabel(analysis)}
+          </Descriptions.Item>
+          <Descriptions.Item label="Prompt 契约">
+            {analysis.prompt_template_key
+              ? analysis.prompt_template_key + " v" + (analysis.prompt_version ?? "-")
+              : "-"}
+          </Descriptions.Item>
+          <Descriptions.Item label="分析尝试">{analysis.attempt_number ?? 1}</Descriptions.Item>
+          <Descriptions.Item label="输入指纹">
+            {analysis.input_sha256 ? (
+              <Typography.Text code copyable>
+                {analysis.input_sha256}
+              </Typography.Text>
+            ) : ruleOnlyWithoutModelCall ? (
+              "未调用模型"
+            ) : (
+              "-"
+            )}
+          </Descriptions.Item>
+          <Descriptions.Item label="输入范围">
+            {typeof analysis.input_char_count === "number" &&
+            typeof analysis.category_count === "number"
+              ? analysis.input_char_count +
+                " 字符 / " +
+                analysis.category_count +
+                " 个候选" +
+                (analysis.input_truncated ? "（已截断）" : "")
+              : ruleOnlyWithoutModelCall
+                ? "未调用模型"
+                : "-"}
+          </Descriptions.Item>
+          <Descriptions.Item label="Token（输入 / 输出）">
+            {ruleOnlyWithoutModelCall
+              ? "未调用模型"
+              : providerUsageUnavailable
+                ? "供应商未返回用量"
+                : (analysis.prompt_tokens ?? 0) + " / " + (analysis.completion_tokens ?? 0)}
+          </Descriptions.Item>
+          <Descriptions.Item label="模型耗时">
+            {ruleOnlyWithoutModelCall ? "未调用模型" : (analysis.latency_ms ?? 0) + " ms"}
+          </Descriptions.Item>
+          <Descriptions.Item label="预估成本">
+            {ruleOnlyWithoutModelCall
+              ? "未调用模型"
+              : providerUsageUnavailable
+                ? "成本不可估算"
+                : formatAnalysisCost(analysis)}
+          </Descriptions.Item>
+          {analysis.failure_category ? (
+            <Descriptions.Item label="失败分类">{analysis.failure_category}</Descriptions.Item>
+          ) : null}
           <Descriptions.Item label="质量等级">{qualityLevel(qualityScore)}</Descriptions.Item>
           <Descriptions.Item label="过期状态">
             <ExpiryIndicator expiresAt={expiresAt} status={expiryStatus} />

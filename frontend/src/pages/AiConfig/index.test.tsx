@@ -14,7 +14,7 @@ import {
 } from "../../api/client";
 import type * as ApiClientModule from "../../api/client";
 import { themeCssVariables } from "../../theme/tokens";
-import AiConfigPage from "./index";
+import AiConfigPage, { AI_PROVIDER_RUNTIME_LIMITS } from "./index";
 
 vi.mock("../../api/client", async () => {
   const actual = await vi.importActual<typeof ApiClientModule>("../../api/client");
@@ -32,7 +32,11 @@ vi.mock("../../api/client", async () => {
 const mockConfig: AiConfigResponse = {
   global: {
     ai_analysis_enabled: true,
+    ai_analysis_environment_enabled: true,
+    ai_analysis_db_enabled: true,
     allow_external_llm: true,
+    allow_external_llm_environment_enabled: true,
+    allow_external_llm_db_enabled: true,
     allow_sync_when_analysis_failed: false,
   },
   features: [
@@ -56,8 +60,6 @@ const mockConfig: AiConfigResponse = {
       provider_type: "openai_compatible",
       base_url: "https://api.openai.com/v1",
       chat_model: "gpt-4o-mini",
-      embedding_model: null,
-      vision_model: null,
       is_internal: false,
       enabled: true,
       priority: 1,
@@ -249,8 +251,6 @@ describe("AiConfigPage", () => {
       name: "DeepSeek",
       base_url: "https://api.deepseek.com/v1",
       chat_model: "deepseek-chat",
-      embedding_model: null,
-      vision_model: null,
     });
 
     renderWithProviders(<AiConfigPage />);
@@ -259,12 +259,29 @@ describe("AiConfigPage", () => {
     fireEvent.click(screen.getByRole("button", { name: /新增模型配置/ }));
 
     expect(await screen.findByRole("dialog", { name: "新增模型配置" })).toBeInTheDocument();
+    expect(AI_PROVIDER_RUNTIME_LIMITS).toEqual({
+      priority: 2_147_483_647,
+      timeout_seconds: 240,
+      max_retry_count: 10,
+      max_input_tokens: 1_000_000_000,
+      max_output_tokens: 4_096,
+      temperature: 2,
+      top_p: 1,
+    });
+
     fireEvent.change(screen.getByLabelText("供应商名称"), { target: { value: "DeepSeek" } });
     fireEvent.change(screen.getByLabelText("Base URL"), {
       target: { value: "https://api.deepseek.com/v1" },
     });
     fireEvent.change(screen.getByLabelText("API Key"), { target: { value: "sk-deepseek" } });
     fireEvent.change(screen.getByLabelText("模型名称"), { target: { value: "deepseek-chat" } });
+    fireEvent.change(screen.getByLabelText("输入价格（货币/百万 Token）"), {
+      target: { value: "5.25" },
+    });
+    fireEvent.change(screen.getByLabelText("输出价格（货币/百万 Token）"), {
+      target: { value: "10" },
+    });
+    fireEvent.change(screen.getByLabelText("计价币种"), { target: { value: "cny" } });
     fireEvent.click(screen.getByRole("button", { name: /创\s*建/ }));
 
     await waitFor(() => {
@@ -277,9 +294,10 @@ describe("AiConfigPage", () => {
         base_url: "https://api.deepseek.com/v1",
         api_key: "sk-deepseek",
         chat_model: "deepseek-chat",
-        embedding_model: null,
-        vision_model: null,
         enabled: true,
+        input_price_microunits_per_million_tokens: 5_250_000,
+        output_price_microunits_per_million_tokens: 10_000_000,
+        pricing_currency: "CNY",
       }),
     );
   });
@@ -360,5 +378,60 @@ describe("AiConfigPage", () => {
     await waitFor(() => {
       expect(updateAiFeature).toHaveBeenCalledWith("ai_analysis", { enabled: false });
     });
+  });
+
+  it("shows the effective AI gate and disables DB control when environment blocks it", async () => {
+    vi.mocked(getAiConfig).mockResolvedValue({
+      ...mockConfig,
+      global: {
+        ...mockConfig.global,
+        ai_analysis_enabled: false,
+        ai_analysis_environment_enabled: false,
+        ai_analysis_db_enabled: true,
+      },
+    });
+
+    renderWithProviders(<AiConfigPage />);
+
+    const aiTitles = await screen.findAllByText("AI 总开关");
+    const kpiCard = aiTitles
+      .map((element) => element.closest(".kpi-card"))
+      .find((card): card is HTMLElement => card instanceof HTMLElement);
+    expect(kpiCard).toBeDefined();
+    expect(within(kpiCard as HTMLElement).getByText("已关闭")).toBeInTheDocument();
+
+    const globalCard = aiTitles
+      .map((element) => element.closest(".ai-config-switch-card"))
+      .find((card): card is HTMLElement => card instanceof HTMLElement);
+    expect(globalCard).toBeDefined();
+    const switchControl = within(globalCard as HTMLElement).getByRole("switch");
+    expect(switchControl).toBeChecked();
+    expect(switchControl).toBeDisabled();
+    expect(
+      within(globalCard as HTMLElement).getByText(/环境硬门禁已关闭，需先由运维启用/),
+    ).toBeInTheDocument();
+    expect(within(globalCard as HTMLElement).getByText("已关闭")).toBeInTheDocument();
+  });
+
+  it("shows the effective external gate and disables DB control when environment blocks it", async () => {
+    vi.mocked(getAiConfig).mockResolvedValue({
+      ...mockConfig,
+      global: {
+        ...mockConfig.global,
+        allow_external_llm: false,
+        allow_external_llm_environment_enabled: false,
+        allow_external_llm_db_enabled: true,
+      },
+    });
+
+    renderWithProviders(<AiConfigPage />);
+
+    const title = await screen.findByText("是否允许外部模型");
+    const globalCard = title.closest(".ai-config-switch-card");
+    expect(globalCard).not.toBeNull();
+    expect(within(globalCard as HTMLElement).getByRole("switch")).toBeDisabled();
+    expect(
+      within(globalCard as HTMLElement).getByText(/环境硬门禁已关闭，需先由运维启用/),
+    ).toBeInTheDocument();
   });
 });

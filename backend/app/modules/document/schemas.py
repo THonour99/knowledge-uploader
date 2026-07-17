@@ -4,7 +4,14 @@ from datetime import UTC, datetime, timedelta
 from typing import Annotated, Literal, Self
 from uuid import UUID
 
-from pydantic import BaseModel, ConfigDict, Field, StringConstraints, model_validator
+from pydantic import (
+    BaseModel,
+    ConfigDict,
+    Field,
+    StringConstraints,
+    field_serializer,
+    model_validator,
+)
 
 
 class DocumentModuleStatus(BaseModel):
@@ -115,7 +122,25 @@ class FileDraftUpdateRequest(BaseModel):
 
 
 class FileAnalysisDetail(BaseModel):
+    model_config = ConfigDict(protected_namespaces=())
+
     status: str
+    engine_type: Literal["rule", "llm", "hybrid"] = "rule"
+    provider_name: str | None = None
+    model_name: str | None = None
+    prompt_template_key: str | None = None
+    prompt_version: int | None = None
+    input_char_count: int | None = None
+    input_sha256: str | None = None
+    category_count: int | None = None
+    input_truncated: bool | None = None
+    attempt_number: int = 1
+    prompt_tokens: int = 0
+    completion_tokens: int = 0
+    latency_ms: int = 0
+    failure_category: str | None = None
+    estimated_cost_microunits: int = 0
+    cost_currency: str = "USD"
     summary: str | None
     sensitive_risk_level: str
     quality_score: float | None = None
@@ -125,6 +150,10 @@ class FileAnalysisDetail(BaseModel):
     similar_file_ids: list[str] = []
     error_message: str | None
     finished_at: datetime | None
+
+    @field_serializer("estimated_cost_microunits")
+    def serialize_estimated_cost(self, value: int) -> str:
+        return str(value)
 
 
 class FileDetailResponse(FileResponse):

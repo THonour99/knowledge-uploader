@@ -1,8 +1,9 @@
 from __future__ import annotations
 
+import json
 import os
-from collections.abc import AsyncGenerator
-from dataclasses import dataclass
+from collections.abc import AsyncGenerator, Callable
+from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta
 from importlib import import_module
 from io import BytesIO
@@ -12,6 +13,8 @@ import pytest
 from openpyxl import Workbook
 from redis.asyncio import from_url
 from sqlalchemy import select
+
+from app.adapters.llm.base import LLMCompletion, LLMUsage
 
 pytestmark = pytest.mark.asyncio
 
@@ -41,6 +44,45 @@ class TransientOnceAiStorage:
         if self.calls == 1:
             raise OSError("temporary object storage outage")
         return self.content
+
+
+@dataclass
+class ScriptedLLMProvider:
+    outputs: list[str]
+    calls: int = 0
+    transaction_probe: Callable[[], bool] | None = None
+    observed_transactions: list[bool] = field(default_factory=list)
+
+    async def complete(
+        self,
+        prompt: str,
+        *,
+        model: str | None = None,
+        temperature: float | None = None,
+        top_p: float | None = None,
+        max_output_tokens: int | None = None,
+        system_prompt: str | None = None,
+        json_mode: bool = False,
+    ) -> LLMCompletion:
+        _ = (
+            prompt,
+            model,
+            temperature,
+            top_p,
+            max_output_tokens,
+            system_prompt,
+            json_mode,
+        )
+        if self.transaction_probe is not None:
+            self.observed_transactions.append(self.transaction_probe())
+        output = self.outputs[self.calls]
+        self.calls += 1
+        return LLMCompletion(
+            content=output,
+            model="scripted-model",
+            usage=LLMUsage(prompt_tokens=10, completion_tokens=5),
+            latency_ms=7,
+        )
 
 
 async def _reset_database() -> None:
@@ -153,9 +195,7 @@ async def _create_file(
         status=status_value,
         review_status="pending",
         submitted_at=submitted_at,
-        review_due_at=(
-            submitted_at + timedelta(hours=24) if submitted_at is not None else None
-        ),
+        review_due_at=(submitted_at + timedelta(hours=24) if submitted_at is not None else None),
         ai_analysis_enabled_at_upload=ai_enabled,
         ai_config_snapshot=(
             {"submit_after_upload": submit_after_upload}
@@ -1308,3 +1348,459 @@ async def test_ai_failure_does_not_revert_file_already_in_review() -> None:
         analysis = result.scalar_one()
         assert analysis.status == "failed"
         assert analysis.error_message == "DocumentStateError"
+
+
+async def test_formal_llm_repair_records_each_call_and_cost(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from app.core.database import AsyncSessionFactory
+    from app.modules.ai.models import AiProvider, AiUsageLog, DocumentAnalysis
+    from app.modules.ai.service import AiAnalysisService  # noqa: TID251 - same-module test
+
+    uploader_id = await _create_user()
+    file_id = await _create_file(uploader_id=uploader_id)
+    scripted = ScriptedLLMProvider(
+        outputs=[
+            "not-json",
+            json.dumps(
+                {
+                    "summary": "修复后的摘要",
+                    "category_id": None,
+                    "tags": ["制度"],
+                    "sensitive_risk_level": "none",
+                },
+                ensure_ascii=False,
+            ),
+        ]
+    )
+
+    def build_provider(
+        _self: AiAnalysisService,
+        _provider: AiProvider,
+        *,
+        allow_external_llm: bool,
+    ) -> ScriptedLLMProvider:
+        _ = allow_external_llm
+        return scripted
+
+    monkeypatch.setattr(AiAnalysisService, "_build_llm_provider", build_provider)
+    async with AsyncSessionFactory() as session:
+        session.add(
+            AiProvider(
+                name="costed mock",
+                provider_type="mock",
+                chat_model="scripted-model",
+                is_internal=True,
+                enabled=True,
+                priority=1,
+                input_price_microunits_per_million_tokens=2_000_000,
+                output_price_microunits_per_million_tokens=4_000_000,
+                pricing_currency="CNY",
+            )
+        )
+        await session.commit()
+
+    analysis_id = await _run_analysis_for_id(
+        file_id,
+        FakeAiStorage(content=b"policy content"),
+        delivery_token="formal-llm-delivery",
+    )
+
+    async with AsyncSessionFactory() as session:
+        analysis = await session.get(DocumentAnalysis, analysis_id)
+        usage_logs = list(
+            (
+                await session.execute(
+                    select(AiUsageLog)
+                    .where(AiUsageLog.analysis_id == analysis_id)
+                    .order_by(AiUsageLog.call_sequence.asc())
+                )
+            ).scalars()
+        )
+
+    assert analysis is not None
+    assert analysis.status == "succeeded"
+    assert analysis.engine_type == "hybrid"
+    assert analysis.model_name == "scripted-model"
+    assert analysis.prompt_template_key == "document_analysis"
+    assert analysis.prompt_tokens == 20
+    assert analysis.completion_tokens == 10
+    assert analysis.latency_ms == 14
+    assert analysis.estimated_cost_microunits == 80
+    assert analysis.cost_currency == "CNY"
+    assert analysis.input_sha256 is not None
+    assert len(analysis.input_sha256) == 64
+    assert [usage.status for usage in usage_logs] == ["failed", "success"]
+    assert [usage.failure_category for usage in usage_logs] == ["invalid_output", None]
+    assert [usage.estimated_cost_microunits for usage in usage_logs] == [40, 40]
+    assert usage_logs[0].input_sha256 != usage_logs[1].input_sha256
+    assert all(usage.error_message is None for usage in usage_logs)
+
+    repeated_id = await _run_analysis_for_id(
+        file_id,
+        FakeAiStorage(content=b"must not be read"),
+        delivery_token="formal-llm-redelivery",
+    )
+    assert repeated_id == analysis_id
+    assert scripted.calls == 2
+
+
+async def test_malformed_llm_output_is_repaired_once_without_raw_persistence(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from app.core.database import AsyncSessionFactory
+    from app.modules.ai.models import AiProvider, AiUsageLog, DocumentAnalysis
+    from app.modules.ai.service import AiAnalysisService  # noqa: TID251
+
+    uploader_id = await _create_user()
+    file_id = await _create_file(uploader_id=uploader_id)
+    raw_secret = "vendor-body sk-never-store-this"
+    scripted = ScriptedLLMProvider(outputs=[raw_secret, raw_secret])
+
+    def build_provider(
+        _self: AiAnalysisService,
+        _provider: AiProvider,
+        *,
+        allow_external_llm: bool,
+    ) -> ScriptedLLMProvider:
+        _ = allow_external_llm
+        return scripted
+
+    monkeypatch.setattr(AiAnalysisService, "_build_llm_provider", build_provider)
+    analysis_id = await _run_analysis_for_id(
+        file_id,
+        FakeAiStorage(content=b"ordinary content"),
+        delivery_token="invalid-llm-delivery",
+    )
+
+    async with AsyncSessionFactory() as session:
+        analysis = await session.get(DocumentAnalysis, analysis_id)
+        usage_logs = list(
+            (
+                await session.execute(
+                    select(AiUsageLog)
+                    .where(AiUsageLog.analysis_id == analysis_id)
+                    .order_by(AiUsageLog.call_sequence.asc())
+                )
+            ).scalars()
+        )
+
+    assert analysis is not None
+    assert analysis.status == "failed"
+    assert analysis.failure_category == "invalid_output"
+    assert analysis.error_message == "模型输出未通过安全格式校验"
+    assert len(usage_logs) == 2
+    assert all(usage.status == "failed" for usage in usage_logs)
+    assert all(usage.failure_category == "invalid_output" for usage in usage_logs)
+    assert all(usage.error_message is None for usage in usage_logs)
+    persisted_text = analysis.error_message + repr(
+        [(usage.error_message, usage.failure_category) for usage in usage_logs]
+    )
+    assert raw_secret not in persisted_text
+
+
+async def test_default_disabled_provider_uses_rule_fallback_without_network(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from app.core.config import Settings
+    from app.core.database import AsyncSessionFactory
+    from app.modules.ai.models import AiUsageLog, DocumentAnalysis
+    from app.modules.ai.repository import AiRepository  # noqa: TID251
+    from app.modules.ai.service import AiAnalysisService  # noqa: TID251
+    from app.modules.document.models import File
+
+    uploader_id = await _create_user()
+    category_id = await _create_category(keyword="handbook")
+    file_id = await _create_file(uploader_id=uploader_id)
+
+    def fail_provider_build(
+        _self: AiAnalysisService,
+        _provider: object,
+        *,
+        allow_external_llm: bool,
+    ) -> object:
+        _ = allow_external_llm
+        raise AssertionError("rule fallback must not build a provider")
+
+    monkeypatch.setattr(AiAnalysisService, "_build_llm_provider", fail_provider_build)
+    settings = Settings(
+        allowed_email_domains="company.com",
+        jwt_secret="test-jwt-secret-with-more-than-32-bytes",
+        cache_redis_url=os.environ["CACHE_REDIS_URL"],
+        require_email_verification=False,
+        llm_provider="disabled",
+    )
+    storage = FakeAiStorage(content=b"handbook policy handbook")
+    async with AsyncSessionFactory() as session:
+        service = AiAnalysisService(
+            session=session,
+            repository=AiRepository(session),
+            settings=settings,
+        )
+        analysis_id = await service.run_file_analysis(
+            file_id,
+            storage=storage,
+        )
+        analysis = await session.get(DocumentAnalysis, analysis_id)
+        file = await session.get(File, file_id)
+        usage_logs = list((await session.execute(select(AiUsageLog))).scalars())
+
+    assert analysis is not None
+    assert file is not None
+    assert analysis.status == "succeeded"
+    assert analysis.engine_type == "rule"
+    assert analysis.provider_id is None
+    assert analysis.model_name is None
+    assert analysis.summary == "handbook policy handbook"
+    assert analysis.suggested_category_id == category_id
+    assert "handbook" in analysis.suggested_tags
+    assert analysis.input_char_count is None
+    assert analysis.input_sha256 is None
+    assert usage_logs == []
+
+
+async def test_external_provider_blocked_by_policy_fails_closed() -> None:
+    from app.core.config import Settings
+    from app.core.database import AsyncSessionFactory
+    from app.modules.ai.models import AiProvider, DocumentAnalysis
+    from app.modules.ai.repository import AiRepository  # noqa: TID251
+    from app.modules.ai.service import AiAnalysisService  # noqa: TID251
+    from app.modules.document.models import File
+
+    uploader_id = await _create_user()
+    file_id = await _create_file(uploader_id=uploader_id)
+    settings = Settings(
+        allowed_email_domains="company.com",
+        jwt_secret="test-jwt-secret-with-more-than-32-bytes",
+        cache_redis_url=os.environ["CACHE_REDIS_URL"],
+        require_email_verification=False,
+        allow_external_llm=False,
+        llm_allowed_base_urls="https://8.8.8.8/v1",
+    )
+
+    storage = FakeAiStorage(content=b"ordinary handbook content")
+    async with AsyncSessionFactory() as session:
+        provider = AiProvider(
+            name="blocked external",
+            provider_type="openai_compatible",
+            base_url="https://8.8.8.8/v1",
+            chat_model="external-model",
+            is_internal=False,
+            enabled=True,
+            priority=1,
+        )
+        session.add(provider)
+        await session.commit()
+        service = AiAnalysisService(
+            session=session,
+            repository=AiRepository(session),
+            settings=settings,
+        )
+        analysis_id = await service.run_file_analysis(file_id, storage=storage)
+        analysis = await session.get(DocumentAnalysis, analysis_id)
+        file = await session.get(File, file_id)
+
+    assert analysis is not None
+    assert file is not None
+    assert analysis.status == "failed"
+    assert analysis.engine_type == "hybrid"
+    assert analysis.provider_id == provider.id
+    assert analysis.failure_category == "request_rejected"
+    assert file.ai_config_snapshot["provider_id"] == str(provider.id)
+    assert storage.calls == 1
+
+
+async def test_permitted_provider_with_invalid_config_fails_closed() -> None:
+    from app.core.config import Settings
+    from app.core.database import AsyncSessionFactory
+    from app.modules.ai.models import AiProvider, DocumentAnalysis
+    from app.modules.ai.repository import AiRepository  # noqa: TID251
+    from app.modules.ai.service import AiAnalysisService  # noqa: TID251
+
+    uploader_id = await _create_user()
+    file_id = await _create_file(uploader_id=uploader_id)
+    settings = Settings(
+        allowed_email_domains="company.com",
+        jwt_secret="test-jwt-secret-with-more-than-32-bytes",
+        cache_redis_url=os.environ["CACHE_REDIS_URL"],
+        require_email_verification=False,
+        allow_external_llm=True,
+    )
+    storage = FakeAiStorage(content=b"ordinary handbook content")
+    async with AsyncSessionFactory() as session:
+        session.add(
+            AiProvider(
+                name="invalid selected provider",
+                provider_type="openai_compatible",
+                base_url=None,
+                chat_model="external-model",
+                is_internal=False,
+                enabled=True,
+                priority=1,
+            )
+        )
+        await session.commit()
+        service = AiAnalysisService(
+            session=session,
+            repository=AiRepository(session),
+            settings=settings,
+        )
+        analysis_id = await service.run_file_analysis(file_id, storage=storage)
+        analysis = await session.get(DocumentAnalysis, analysis_id)
+
+    assert analysis is not None
+    assert analysis.status == "failed"
+    assert analysis.failure_category == "configuration_error"
+    assert analysis.provider_name == "invalid selected provider"
+    assert storage.calls == 1
+
+
+async def test_provider_calls_run_without_open_database_transaction(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from app.core.config import Settings
+    from app.core.database import AsyncSessionFactory
+    from app.modules.ai.models import AiProvider, AiUsageLog, DocumentAnalysis
+    from app.modules.ai.repository import AiRepository  # noqa: TID251
+    from app.modules.ai.service import AiAnalysisService  # noqa: TID251
+
+    uploader_id = await _create_user()
+    file_id = await _create_file(uploader_id=uploader_id)
+    valid_output = json.dumps(
+        {
+            "summary": "事务外调用",
+            "category_id": None,
+            "tags": ["安全"],
+            "sensitive_risk_level": "none",
+        },
+        ensure_ascii=False,
+    )
+    settings = Settings(
+        allowed_email_domains="company.com",
+        jwt_secret="test-jwt-secret-with-more-than-32-bytes",
+        cache_redis_url=os.environ["CACHE_REDIS_URL"],
+        require_email_verification=False,
+        llm_provider="mock",
+    )
+
+    async with AsyncSessionFactory() as session:
+        scripted = ScriptedLLMProvider(
+            outputs=["not-json", valid_output],
+            transaction_probe=session.in_transaction,
+        )
+
+        def build_provider(
+            _self: AiAnalysisService,
+            _provider: AiProvider,
+            *,
+            allow_external_llm: bool,
+        ) -> ScriptedLLMProvider:
+            _ = allow_external_llm
+            return scripted
+
+        monkeypatch.setattr(AiAnalysisService, "_build_llm_provider", build_provider)
+        session.add(
+            AiProvider(
+                name="transaction probe",
+                provider_type="mock",
+                chat_model="scripted-model",
+                is_internal=True,
+                enabled=True,
+                priority=1,
+            )
+        )
+        await session.commit()
+        service = AiAnalysisService(
+            session=session,
+            repository=AiRepository(session),
+            settings=settings,
+        )
+        analysis_id = await service.run_file_analysis(
+            file_id,
+            storage=FakeAiStorage(content=b"ordinary content"),
+        )
+        analysis = await session.get(DocumentAnalysis, analysis_id)
+        usage_logs = list((await session.execute(select(AiUsageLog))).scalars())
+
+    assert analysis is not None
+    assert analysis.status == "succeeded"
+    assert analysis.engine_type == "hybrid"
+    assert analysis.summary == "事务外调用"
+    assert scripted.observed_transactions == [False, False]
+    assert len(usage_logs) == 2
+    assert usage_logs[0].status == "failed"
+    assert usage_logs[0].failure_category == "invalid_output"
+    assert usage_logs[1].status == "success"
+
+
+async def test_default_provider_seed_normalizes_complete_environment_config() -> None:
+    from app.core.config import Settings
+    from app.core.database import AsyncSessionFactory
+    from app.modules.ai.repository import AiRepository  # noqa: TID251
+    from app.modules.ai.service import AiConfigService  # noqa: TID251
+
+    settings = Settings(
+        app_env="test",
+        allowed_email_domains="company.com",
+        jwt_secret="test-jwt-secret-with-more-than-32-bytes",
+        cache_redis_url=os.environ["CACHE_REDIS_URL"],
+        require_email_verification=False,
+        llm_provider="openai_compatible",
+        llm_base_url="https://llm.example.test/v1/",
+        llm_model="analysis-model",
+        allow_external_llm=True,
+        llm_allowed_base_urls="https://llm.example.test/v1",
+    )
+    async with AsyncSessionFactory() as session:
+        repository = AiRepository(session)
+        service = AiConfigService(session=session, repository=repository, settings=settings)
+        await service._ensure_defaults()
+        providers = await repository.list_providers()
+
+    assert len(providers) == 1
+    assert providers[0].provider_type == "openai_compatible"
+    assert providers[0].base_url == "https://llm.example.test/v1"
+    assert providers[0].chat_model == "analysis-model"
+    assert providers[0].enabled is True
+
+
+async def test_enabled_provider_without_chat_model_is_rejected_by_database() -> None:
+    from sqlalchemy.exc import IntegrityError
+
+    from app.core.database import AsyncSessionFactory
+    from app.modules.ai.models import AiProvider
+    from app.modules.ai.repository import AiRepository  # noqa: TID251
+
+    async with AsyncSessionFactory() as session:
+        session.add(
+            AiProvider(
+                name="invalid enabled provider",
+                provider_type="openai_compatible",
+                enabled=True,
+                priority=0,
+            )
+        )
+        with pytest.raises(IntegrityError):
+            await session.commit()
+        await session.rollback()
+
+        disabled_provider = AiProvider(
+            name="disabled without chat model",
+            provider_type="openai_compatible",
+            enabled=False,
+            priority=0,
+        )
+        chat_provider = AiProvider(
+            name="chat provider",
+            provider_type="mock",
+            chat_model="chat-model",
+            enabled=True,
+            priority=10,
+        )
+        session.add_all([disabled_provider, chat_provider])
+        await session.commit()
+        selected = await AiRepository(session).get_enabled_chat_provider()
+
+    assert selected is not None
+    assert selected.id == chat_provider.id
+    assert selected.chat_model == "chat-model"

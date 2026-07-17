@@ -29,6 +29,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from .models import (
     AiFeatureConfig,
     AiProvider,
+    AiUsageLog,
     DocumentAnalysis,
     PromptTemplate,
     SensitiveRule,
@@ -128,16 +129,28 @@ class AiRepository:
         result = await self._session.execute(select(AiProvider).where(AiProvider.id == provider_id))
         return result.scalar_one_or_none()
 
+    async def get_provider_for_update(self, provider_id: uuid.UUID) -> AiProvider | None:
+        result = await self._session.execute(
+            select(AiProvider)
+            .where(AiProvider.id == provider_id)
+            .with_for_update()
+            .execution_options(populate_existing=True)
+        )
+        return result.scalar_one_or_none()
+
     async def list_providers(self) -> list[AiProvider]:
         result = await self._session.execute(
             select(AiProvider).order_by(AiProvider.priority.asc(), AiProvider.created_at.desc())
         )
         return list(result.scalars())
 
-    async def get_enabled_provider(self) -> AiProvider | None:
+    async def get_enabled_chat_provider(self) -> AiProvider | None:
         result = await self._session.execute(
             select(AiProvider)
-            .where(AiProvider.enabled.is_(True), AiProvider.provider_type != "disabled")
+            .where(
+                AiProvider.enabled.is_(True),
+                AiProvider.provider_type != "disabled",
+            )
             .order_by(AiProvider.priority.asc(), AiProvider.created_at.asc())
             .limit(1)
         )
@@ -273,6 +286,25 @@ class AiRepository:
         )
         return [file_record_from_row(row) for row in result.mappings()]
 
+    async def add_usage_log(self, usage_log: AiUsageLog) -> AiUsageLog:
+        self._session.add(usage_log)
+        await self._session.flush()
+        return usage_log
+
+    async def next_usage_call_sequence(
+        self,
+        *,
+        analysis_id: uuid.UUID,
+        analysis_attempt: int,
+    ) -> int:
+        result = await self._session.execute(
+            select(func.coalesce(func.max(AiUsageLog.call_sequence), 0)).where(
+                AiUsageLog.analysis_id == analysis_id,
+                AiUsageLog.analysis_attempt == analysis_attempt,
+            )
+        )
+        return int(result.scalar_one()) + 1
+
     async def list_categories(self) -> list[AiCategoryRecord]:
         result = await self._session.execute(
             select(
@@ -283,7 +315,9 @@ class AiRepository:
                 CATEGORIES.c.allow_ai_recommend,
                 CATEGORIES.c.ai_analysis_enabled,
                 CATEGORIES.c.sensitive_detection_enabled,
-            ).where(CATEGORIES.c.allow_ai_recommend.is_(True))
+            )
+            .where(CATEGORIES.c.allow_ai_recommend.is_(True))
+            .order_by(CATEGORIES.c.code.asc(), CATEGORIES.c.id.asc())
         )
         return [category_record_from_row(row) for row in result.mappings()]
 
@@ -298,9 +332,7 @@ class AiRepository:
         file_id: uuid.UUID,
     ) -> DocumentAnalysis | None:
         result = await self._session.execute(
-            select(DocumentAnalysis)
-            .where(DocumentAnalysis.file_id == file_id)
-            .with_for_update()
+            select(DocumentAnalysis).where(DocumentAnalysis.file_id == file_id).with_for_update()
         )
         return result.scalar_one_or_none()
 

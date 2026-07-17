@@ -33,18 +33,67 @@ class AiProvider(Base):
             ")",
             name="ck_ai_providers_provider_type",
         ),
+        CheckConstraint(
+            "provider_type = 'disabled' OR NOT enabled OR "
+            "(chat_model IS NOT NULL AND length(btrim(chat_model)) > 0)",
+            name="ck_ai_providers_enabled_chat_model",
+        ),
         CheckConstraint("priority >= 0", name="ck_ai_providers_priority_non_negative"),
         CheckConstraint(
             "timeout_seconds > 0",
             name="ck_ai_providers_timeout_positive",
         ),
         CheckConstraint(
+            "timeout_seconds <= 240",
+            name="ck_ai_providers_timeout_max",
+        ),
+        CheckConstraint(
             "max_retry_count >= 0",
             name="ck_ai_providers_retry_non_negative",
         ),
         CheckConstraint(
+            "max_retry_count <= 10",
+            name="ck_ai_providers_retry_max",
+        ),
+        CheckConstraint(
+            "max_input_tokens IS NULL OR (max_input_tokens > 0 AND max_input_tokens <= 1000000000)",
+            name="ck_ai_providers_max_input_tokens_range",
+        ),
+        CheckConstraint(
+            "max_output_tokens IS NULL OR (max_output_tokens > 0 AND max_output_tokens <= 4096)",
+            name="ck_ai_providers_max_output_tokens_range",
+        ),
+        CheckConstraint(
+            "temperature >= 0 AND temperature <= 2",
+            name="ck_ai_providers_temperature_range",
+        ),
+        CheckConstraint(
+            "top_p IS NULL OR (top_p >= 0 AND top_p <= 1)",
+            name="ck_ai_providers_top_p_range",
+        ),
+        CheckConstraint(
             "last_test_status IS NULL OR last_test_status IN ('success', 'failed')",
             name="ck_ai_providers_last_test_status",
+        ),
+        CheckConstraint(
+            "input_price_microunits_per_million_tokens >= 0",
+            name="ck_ai_providers_input_price_non_negative",
+        ),
+        CheckConstraint(
+            "input_price_microunits_per_million_tokens <= 1000000000000",
+            name="ck_ai_providers_input_price_max",
+        ),
+        CheckConstraint(
+            "output_price_microunits_per_million_tokens >= 0",
+            name="ck_ai_providers_output_price_non_negative",
+        ),
+        CheckConstraint(
+            "output_price_microunits_per_million_tokens <= 1000000000000",
+            name="ck_ai_providers_output_price_max",
+        ),
+        CheckConstraint(
+            "pricing_currency ~ '^[A-Z]{3}$'",
+            name="ck_ai_providers_pricing_currency",
         ),
         Index("idx_ai_providers_enabled_priority", "enabled", "priority"),
         Index("uq_ai_providers_name", "name", unique=True),
@@ -56,8 +105,6 @@ class AiProvider(Base):
     base_url: Mapped[str | None] = mapped_column(String(500))
     api_key_encrypted: Mapped[str | None] = mapped_column(Text)
     chat_model: Mapped[str | None] = mapped_column(String(120))
-    embedding_model: Mapped[str | None] = mapped_column(String(120))
-    vision_model: Mapped[str | None] = mapped_column(String(120))
     is_internal: Mapped[bool] = mapped_column(Boolean, nullable=False, server_default="false")
     enabled: Mapped[bool] = mapped_column(Boolean, nullable=False, server_default="true")
     priority: Mapped[int] = mapped_column(Integer, nullable=False, server_default="100")
@@ -67,6 +114,15 @@ class AiProvider(Base):
     max_output_tokens: Mapped[int | None] = mapped_column(Integer)
     temperature: Mapped[float] = mapped_column(Float, nullable=False, server_default="0.2")
     top_p: Mapped[float | None] = mapped_column(Float)
+    input_price_microunits_per_million_tokens: Mapped[int] = mapped_column(
+        BigInteger, nullable=False, server_default="0"
+    )
+    output_price_microunits_per_million_tokens: Mapped[int] = mapped_column(
+        BigInteger, nullable=False, server_default="0"
+    )
+    pricing_currency: Mapped[str] = mapped_column(
+        String(3), nullable=False, server_default=sql_text("'USD'")
+    )
     last_test_status: Mapped[str | None] = mapped_column(String(20))
     last_test_latency_ms: Mapped[int | None] = mapped_column(Integer)
     last_tested_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
@@ -204,6 +260,50 @@ class DocumentAnalysis(Base):
             "quality_score IS NULL OR (quality_score >= 0 AND quality_score <= 100)",
             name="ck_document_analysis_quality_score_range",
         ),
+        CheckConstraint(
+            "engine_type IN ('rule', 'llm', 'hybrid')",
+            name="ck_document_analysis_engine_type",
+        ),
+        CheckConstraint(
+            "attempt_number > 0",
+            name="ck_document_analysis_attempt_number_positive",
+        ),
+        CheckConstraint(
+            "prompt_version IS NULL OR prompt_version > 0",
+            name="ck_document_analysis_prompt_version_positive",
+        ),
+        CheckConstraint(
+            "input_char_count IS NULL OR input_char_count >= 0",
+            name="ck_document_analysis_input_char_count_non_negative",
+        ),
+        CheckConstraint(
+            "input_sha256 IS NULL OR input_sha256 ~ '^[0-9a-f]{64}$'",
+            name="ck_document_analysis_input_sha256",
+        ),
+        CheckConstraint(
+            "category_count IS NULL OR category_count >= 0",
+            name="ck_document_analysis_category_count_non_negative",
+        ),
+        CheckConstraint(
+            "prompt_tokens >= 0",
+            name="ck_document_analysis_prompt_tokens_non_negative",
+        ),
+        CheckConstraint(
+            "completion_tokens >= 0",
+            name="ck_document_analysis_completion_tokens_non_negative",
+        ),
+        CheckConstraint(
+            "latency_ms >= 0",
+            name="ck_document_analysis_latency_non_negative",
+        ),
+        CheckConstraint(
+            "estimated_cost_microunits >= 0",
+            name="ck_document_analysis_cost_non_negative",
+        ),
+        CheckConstraint(
+            "cost_currency ~ '^[A-Z]{3}$'",
+            name="ck_document_analysis_cost_currency",
+        ),
         Index("uq_document_analysis_file_id", "file_id", unique=True),
         Index("idx_document_analysis_status", "status"),
         Index("idx_document_analysis_sensitive_risk_level", "sensitive_risk_level"),
@@ -218,6 +318,33 @@ class DocumentAnalysis(Base):
         ForeignKey("ai_providers.id", ondelete="SET NULL"),
     )
     status: Mapped[str] = mapped_column(String(20), nullable=False, server_default="running")
+    engine_type: Mapped[str] = mapped_column(String(20), nullable=False, server_default="rule")
+    provider_name: Mapped[str | None] = mapped_column(String(120))
+    model_name: Mapped[str | None] = mapped_column(String(120))
+    prompt_template_id: Mapped[uuid.UUID | None] = mapped_column(
+        ForeignKey("prompt_templates.id", ondelete="SET NULL")
+    )
+    prompt_template_key: Mapped[str | None] = mapped_column(String(80))
+    prompt_version: Mapped[int | None] = mapped_column(Integer)
+    input_char_count: Mapped[int | None] = mapped_column(Integer)
+    input_sha256: Mapped[str | None] = mapped_column(String(64))
+    category_count: Mapped[int | None] = mapped_column(Integer)
+    input_truncated: Mapped[bool | None] = mapped_column(Boolean)
+    attempt_number: Mapped[int] = mapped_column(Integer, nullable=False, server_default="1")
+    prompt_tokens: Mapped[int] = mapped_column(Integer, nullable=False, server_default="0")
+    completion_tokens: Mapped[int] = mapped_column(Integer, nullable=False, server_default="0")
+    latency_ms: Mapped[int] = mapped_column(Integer, nullable=False, server_default="0")
+    failure_category: Mapped[str | None] = mapped_column(String(40))
+    estimated_cost_microunits: Mapped[int] = mapped_column(
+        BigInteger,
+        nullable=False,
+        server_default="0",
+    )
+    cost_currency: Mapped[str] = mapped_column(
+        String(3),
+        nullable=False,
+        server_default=sql_text("'USD'"),
+    )
     extracted_text: Mapped[str | None] = mapped_column(Text)
     summary: Mapped[str | None] = mapped_column(Text)
     suggested_category_id: Mapped[uuid.UUID | None] = mapped_column(
@@ -288,7 +415,47 @@ class AiUsageLog(Base):
             "completion_tokens IS NULL OR completion_tokens >= 0",
             name="ck_ai_usage_logs_completion_tokens_non_negative",
         ),
+        CheckConstraint(
+            "analysis_attempt > 0",
+            name="ck_ai_usage_logs_analysis_attempt_positive",
+        ),
+        CheckConstraint(
+            "call_sequence > 0",
+            name="ck_ai_usage_logs_call_sequence_positive",
+        ),
+        CheckConstraint(
+            "prompt_version IS NULL OR prompt_version > 0",
+            name="ck_ai_usage_logs_prompt_version_positive",
+        ),
+        CheckConstraint(
+            "input_char_count IS NULL OR input_char_count >= 0",
+            name="ck_ai_usage_logs_input_char_count_non_negative",
+        ),
+        CheckConstraint(
+            "input_sha256 IS NULL OR input_sha256 ~ '^[0-9a-f]{64}$'",
+            name="ck_ai_usage_logs_input_sha256",
+        ),
+        CheckConstraint(
+            "category_count IS NULL OR category_count >= 0",
+            name="ck_ai_usage_logs_category_count_non_negative",
+        ),
+        CheckConstraint(
+            "estimated_cost_microunits >= 0",
+            name="ck_ai_usage_logs_cost_non_negative",
+        ),
+        CheckConstraint(
+            "cost_currency ~ '^[A-Z]{3}$'",
+            name="ck_ai_usage_logs_cost_currency",
+        ),
         Index("idx_ai_usage_logs_provider_id", "provider_id"),
+        Index("idx_ai_usage_logs_analysis_id", "analysis_id"),
+        Index(
+            "uq_ai_usage_logs_analysis_attempt_call",
+            "analysis_id",
+            "analysis_attempt",
+            "call_sequence",
+            unique=True,
+        ),
         Index("idx_ai_usage_logs_file_id", "file_id"),
         Index("idx_ai_usage_logs_created_at", "created_at"),
     )
@@ -300,7 +467,32 @@ class AiUsageLog(Base):
     file_id: Mapped[uuid.UUID | None] = mapped_column(
         ForeignKey("files.id", ondelete="SET NULL"),
     )
+    analysis_id: Mapped[uuid.UUID | None] = mapped_column(
+        ForeignKey("document_analysis.id", ondelete="SET NULL")
+    )
     feature_name: Mapped[str] = mapped_column(String(80), nullable=False)
+    provider_name: Mapped[str | None] = mapped_column(String(120))
+    model_name: Mapped[str | None] = mapped_column(String(120))
+    prompt_template_id: Mapped[uuid.UUID | None] = mapped_column(
+        ForeignKey("prompt_templates.id", ondelete="SET NULL")
+    )
+    prompt_template_key: Mapped[str | None] = mapped_column(String(80))
+    prompt_version: Mapped[int | None] = mapped_column(Integer)
+    input_char_count: Mapped[int | None] = mapped_column(Integer)
+    input_sha256: Mapped[str | None] = mapped_column(String(64))
+    category_count: Mapped[int | None] = mapped_column(Integer)
+    input_truncated: Mapped[bool | None] = mapped_column(Boolean)
+    analysis_attempt: Mapped[int] = mapped_column(Integer, nullable=False, server_default="1")
+    call_sequence: Mapped[int] = mapped_column(Integer, nullable=False, server_default="1")
+    failure_category: Mapped[str | None] = mapped_column(String(40))
+    estimated_cost_microunits: Mapped[int] = mapped_column(
+        BigInteger,
+        nullable=False,
+        server_default="0",
+    )
+    cost_currency: Mapped[str] = mapped_column(
+        String(3), nullable=False, server_default=sql_text("'USD'")
+    )
     prompt_tokens: Mapped[int | None] = mapped_column(Integer)
     completion_tokens: Mapped[int | None] = mapped_column(Integer)
     latency_ms: Mapped[int | None] = mapped_column(Integer)

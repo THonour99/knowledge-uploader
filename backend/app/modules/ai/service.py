@@ -1,21 +1,33 @@
 from __future__ import annotations
 
+import hashlib
+import json
 import re
 import uuid
 from collections.abc import Iterable, Mapping, Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta
-from ipaddress import ip_address
 from typing import Protocol
-from urllib.parse import urlparse
 
+from cryptography.fernet import InvalidToken
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.adapters.llm.openai_compatible import LLMTestKind, LLMTestResult, OpenAICompatibleProvider
+from app.adapters.llm.base import BaseLLMProvider, LLMCompletion, LLMProviderError
+from app.adapters.llm.mock import MockLLMProvider
+from app.adapters.llm.openai_compatible import (
+    LLMTestResult,
+    OpenAICompatibleProvider,
+    validate_model_name,
+)
 from app.adapters.minio_client import STORAGE_TRANSIENT_ERRORS, is_transient_storage_error
 from app.core.audit import record_admin_audit_log
-from app.core.config import Settings
+from app.core.config import PROTECTED_ENVS, Settings
 from app.core.document_state import DocumentStateError, DocumentStateMachine
+from app.core.llm_endpoint import (
+    llm_base_url_is_allowed,
+    normalize_llm_base_url,
+    normalized_llm_allowed_base_urls,
+)
 from app.core.outbox import OutboxRepository
 from app.core.review_policy import review_submission_times
 from app.core.runtime_config import get_config as get_runtime_config
@@ -23,7 +35,30 @@ from app.core.security import decrypt_api_key, encrypt_api_key
 from app.modules.user.schemas import AuthUserRecord
 
 from . import events, exceptions
-from .models import AiFeatureConfig, AiProvider, DocumentAnalysis, PromptTemplate, SensitiveRule
+from .llm_analysis import (
+    ANALYSIS_PROMPT_KEY,
+    LLM_ANALYSIS_SYSTEM_PROMPT,
+    LLM_REPAIR_SUFFIX,
+    MAX_POSTGRES_BIGINT,
+    MAX_POSTGRES_INTEGER,
+    AnalysisFeatureSelection,
+    LLMInputProvenance,
+    LLMOutputValidationError,
+    ValidatedLLMAnalysis,
+    build_analysis_prompt,
+    build_input_provenance,
+    checked_persisted_sum,
+    estimate_cost_microunits,
+    parse_analysis_output,
+)
+from .models import (
+    AiFeatureConfig,
+    AiProvider,
+    AiUsageLog,
+    DocumentAnalysis,
+    PromptTemplate,
+    SensitiveRule,
+)
 from .parsers import (
     MAX_EXTRACTED_TEXT_LENGTH,
     MAX_PDF_PAGES,
@@ -95,6 +130,14 @@ SENSITIVE_RISK_LEVELS = {"low", "medium", "high", "critical"}
 SENSITIVE_RULE_ACTIONS = {"flag", "require_review", "block_sync"}
 
 
+class LLMAnalysisConfigurationError(Exception):
+    pass
+
+
+class AnalysisLeaseLostError(Exception):
+    pass
+
+
 class AiObjectStorage(Protocol):
     async def get_object(self, *, bucket: str, object_key: str) -> bytes:
         pass
@@ -104,6 +147,20 @@ class AiObjectStorage(Protocol):
 class RequestContext:
     ip_address: str
     user_agent: str
+
+
+@dataclass(frozen=True)
+class ProviderTestSnapshot:
+    provider_id: uuid.UUID
+    updated_at: datetime
+    fingerprint: str
+    provider_type: str
+    base_url: str | None
+    api_key: str | None = field(repr=False)
+    chat_model: str | None
+    is_internal: bool
+    timeout_seconds: int
+    effective_allow_external: bool
 
 
 @dataclass(frozen=True)
@@ -162,8 +219,16 @@ class AiConfigService:
         features = await self._feature_map()
         response = AiConfigResponse(
             global_config=AiGlobalConfigResponse(
-                ai_analysis_enabled=features["ai_analysis"].enabled,
-                allow_external_llm=features["allow_external_llm"].enabled,
+                ai_analysis_enabled=(
+                    self._settings.ai_analysis_enabled and features["ai_analysis"].enabled
+                ),
+                ai_analysis_environment_enabled=self._settings.ai_analysis_enabled,
+                ai_analysis_db_enabled=features["ai_analysis"].enabled,
+                allow_external_llm=(
+                    self._settings.allow_external_llm and features["allow_external_llm"].enabled
+                ),
+                allow_external_llm_environment_enabled=self._settings.allow_external_llm,
+                allow_external_llm_db_enabled=features["allow_external_llm"].enabled,
                 allow_sync_when_analysis_failed=features["allow_sync_when_analysis_failed"].enabled,
             ),
             features=[
@@ -229,25 +294,42 @@ class AiConfigService:
     ) -> AiProvider:
         self._require_system_admin(current_user)
         self._validate_provider_type(request.provider_type, is_internal=request.is_internal)
+        invalid_base_url = False
+        try:
+            base_url = normalize_provider_base_url(request.base_url)
+        except ValueError:
+            base_url = None
+            invalid_base_url = True
+        if invalid_base_url:
+            raise exceptions.invalid_provider_config("invalid provider base URL")
+        chat_model = clean_optional_text(request.chat_model)
+        self._validate_provider_activation(
+            provider_type=request.provider_type,
+            base_url=base_url,
+            chat_model=chat_model,
+            enabled=request.enabled,
+        )
         provider = AiProvider(
             name=request.name.strip(),
             provider_type=request.provider_type,
-            base_url=clean_optional_text(request.base_url),
+            base_url=base_url,
             api_key_encrypted=self._encrypt_api_key(request.api_key),
-            chat_model=clean_optional_text(request.chat_model),
-            embedding_model=clean_optional_text(request.embedding_model),
-            vision_model=clean_optional_text(request.vision_model),
+            chat_model=chat_model,
             is_internal=request.is_internal,
             enabled=request.enabled,
-            priority=max(0, request.priority),
-            timeout_seconds=max(1, request.timeout_seconds),
-            max_retry_count=max(0, request.max_retry_count),
+            priority=request.priority,
+            timeout_seconds=request.timeout_seconds,
+            max_retry_count=request.max_retry_count,
             max_input_tokens=request.max_input_tokens,
             max_output_tokens=request.max_output_tokens,
             temperature=request.temperature,
             top_p=request.top_p,
+            input_price_microunits_per_million_tokens=request.input_price_microunits_per_million_tokens,
+            output_price_microunits_per_million_tokens=request.output_price_microunits_per_million_tokens,
+            pricing_currency=request.pricing_currency,
         )
         await self._repository.add_provider(provider)
+        provider_changed_fields = _provider_create_audit_fields(provider)
         await self._record_admin_audit(
             current_user=current_user,
             action="ai.provider.create",
@@ -258,6 +340,14 @@ class AiConfigService:
                 "name": provider.name,
                 "provider_type": provider.provider_type,
                 "enabled": provider.enabled,
+                "pricing_currency": provider.pricing_currency,
+                "input_price_microunits_per_million_tokens": (
+                    provider.input_price_microunits_per_million_tokens
+                ),
+                "output_price_microunits_per_million_tokens": (
+                    provider.output_price_microunits_per_million_tokens
+                ),
+                "changed_fields": provider_changed_fields,
             },
         )
         await self._session.commit()
@@ -287,27 +377,26 @@ class AiConfigService:
         if request.provider_type is not None:
             provider.provider_type = request.provider_type
         if "base_url" in fields_set:
-            provider.base_url = clean_optional_text(request.base_url)
+            try:
+                provider.base_url = normalize_provider_base_url(request.base_url)
+            except ValueError as exc:
+                raise exceptions.invalid_provider_config("invalid provider base URL") from exc
         if request.clear_api_key:
             provider.api_key_encrypted = None
         elif request.api_key is not None:
             provider.api_key_encrypted = self._encrypt_api_key(request.api_key)
         if "chat_model" in fields_set:
             provider.chat_model = clean_optional_text(request.chat_model)
-        if "embedding_model" in fields_set:
-            provider.embedding_model = clean_optional_text(request.embedding_model)
-        if "vision_model" in fields_set:
-            provider.vision_model = clean_optional_text(request.vision_model)
         if request.is_internal is not None:
             provider.is_internal = request.is_internal
         if request.enabled is not None:
             provider.enabled = request.enabled
         if request.priority is not None:
-            provider.priority = max(0, request.priority)
+            provider.priority = request.priority
         if request.timeout_seconds is not None:
-            provider.timeout_seconds = max(1, request.timeout_seconds)
+            provider.timeout_seconds = request.timeout_seconds
         if request.max_retry_count is not None:
-            provider.max_retry_count = max(0, request.max_retry_count)
+            provider.max_retry_count = request.max_retry_count
         if "max_input_tokens" in fields_set:
             provider.max_input_tokens = request.max_input_tokens
         if "max_output_tokens" in fields_set:
@@ -316,6 +405,23 @@ class AiConfigService:
             provider.temperature = request.temperature
         if "top_p" in fields_set:
             provider.top_p = request.top_p
+        if request.input_price_microunits_per_million_tokens is not None:
+            provider.input_price_microunits_per_million_tokens = (
+                request.input_price_microunits_per_million_tokens
+            )
+        if request.output_price_microunits_per_million_tokens is not None:
+            provider.output_price_microunits_per_million_tokens = (
+                request.output_price_microunits_per_million_tokens
+            )
+        if request.pricing_currency is not None:
+            provider.pricing_currency = request.pricing_currency
+        provider_changed_fields = _provider_update_audit_fields(request)
+        self._validate_provider_activation(
+            provider_type=provider.provider_type,
+            base_url=provider.base_url,
+            chat_model=provider.chat_model,
+            enabled=provider.enabled,
+        )
         await self._record_admin_audit(
             current_user=current_user,
             action="ai.provider.update",
@@ -326,6 +432,14 @@ class AiConfigService:
                 "name": provider.name,
                 "provider_type": provider.provider_type,
                 "enabled": provider.enabled,
+                "pricing_currency": provider.pricing_currency,
+                "input_price_microunits_per_million_tokens": (
+                    provider.input_price_microunits_per_million_tokens
+                ),
+                "output_price_microunits_per_million_tokens": (
+                    provider.output_price_microunits_per_million_tokens
+                ),
+                "changed_fields": provider_changed_fields,
             },
         )
         await self._session.commit()
@@ -341,21 +455,68 @@ class AiConfigService:
     ) -> AiProviderTestResponse:
         self._require_system_admin(current_user)
         provider = await self._get_provider_or_raise(provider_id)
-        result = await self._test_provider_connectivity(provider)
-        provider.last_test_status = result.status
-        provider.last_test_latency_ms = result.latency_ms
-        provider.last_tested_at = datetime.now(UTC)
+        features = await self._feature_map()
+        db_external_enabled = features["allow_external_llm"].enabled
+        snapshot = self._provider_test_snapshot(
+            provider,
+            db_external_enabled=db_external_enabled,
+        )
+        await self._session.commit()
+        if self._session.in_transaction():
+            await self._session.rollback()
+            raise RuntimeError("provider test transaction was not released")
+
+        try:
+            result = await self._test_provider_connectivity(snapshot)
+        except Exception:
+            result = LLMTestResult(
+                status="failed",
+                latency_ms=None,
+                message="connection_error",
+            )
+
+        current_provider = await self._repository.get_provider_for_update(provider_id)
+        current_features = await self._feature_map()
+        current_db_external = current_features["allow_external_llm"].enabled
+        stale_config = current_provider is None
+        if current_provider is not None:
+            stale_config = bool(
+                current_provider.updated_at != snapshot.updated_at
+                or self._provider_config_fingerprint(
+                    current_provider,
+                    db_external_enabled=current_db_external,
+                )
+                != snapshot.fingerprint
+            )
+            if not stale_config:
+                current_provider.last_test_status = result.status
+                current_provider.last_test_latency_ms = result.latency_ms
+                current_provider.last_tested_at = datetime.now(UTC)
+        audit_status = "discarded" if stale_config else result.status
         await self._record_admin_audit(
             current_user=current_user,
             action="ai.provider.test",
             target_type="ai_provider",
-            target_id=provider.id,
+            target_id=snapshot.provider_id,
             context=context,
-            metadata_json={"status": result.status, "latency_ms": result.latency_ms},
+            metadata_json={
+                "status": audit_status,
+                "observed_status": result.status,
+                "latency_ms": result.latency_ms,
+                "stale_config": stale_config,
+                "config_fingerprint": snapshot.fingerprint,
+            },
         )
         await self._session.commit()
+        if stale_config:
+            return AiProviderTestResponse(
+                provider_id=snapshot.provider_id,
+                status="failed",
+                latency_ms=result.latency_ms,
+                message="provider configuration changed during test",
+            )
         return AiProviderTestResponse(
-            provider_id=provider.id,
+            provider_id=snapshot.provider_id,
             status=result.status,
             latency_ms=result.latency_ms,
             message=result.message,
@@ -371,14 +532,21 @@ class AiConfigService:
         self._require_system_admin(current_user)
         await self._ensure_defaults()
         template_key = self._normalize_template_key(request.template_key)
+        prompt_text = self._required_text(request.prompt_text, "prompt text")
+        variables = self._normalize_variables(request.variables)
+        self._validate_reserved_prompt_contract(
+            template_key=template_key,
+            prompt_text=prompt_text,
+            variables=variables,
+        )
         if await self._repository.get_prompt_template_by_key(template_key) is not None:
             raise exceptions.invalid_ai_config("prompt template key already exists")
         template = PromptTemplate(
             template_key=template_key,
             name=self._required_text(request.name, "prompt template name"),
             description=clean_optional_text(request.description),
-            prompt_text=self._required_text(request.prompt_text, "prompt text"),
-            variables=self._normalize_variables(request.variables),
+            prompt_text=prompt_text,
+            variables=variables,
             enabled=request.enabled,
             is_default=False,
             version=1,
@@ -420,6 +588,21 @@ class AiConfigService:
         self._require_system_admin(current_user)
         template = await self._get_prompt_template_or_raise(template_id)
         changed_fields: list[str] = []
+        next_prompt_text = (
+            self._required_text(request.prompt_text, "prompt text")
+            if request.prompt_text is not None
+            else template.prompt_text
+        )
+        next_variables = (
+            self._normalize_variables(request.variables)
+            if request.variables is not None
+            else template.variables
+        )
+        self._validate_reserved_prompt_contract(
+            template_key=template.template_key,
+            prompt_text=next_prompt_text,
+            variables=next_variables,
+        )
         if request.name is not None:
             template.name = self._required_text(request.name, "prompt template name")
             changed_fields.append("name")
@@ -427,11 +610,11 @@ class AiConfigService:
             template.description = clean_optional_text(request.description)
             changed_fields.append("description")
         if request.prompt_text is not None:
-            template.prompt_text = self._required_text(request.prompt_text, "prompt text")
+            template.prompt_text = next_prompt_text
             template.version += 1
             changed_fields.append("prompt_text")
         if request.variables is not None:
-            template.variables = self._normalize_variables(request.variables)
+            template.variables = next_variables
             if "prompt_text" not in changed_fields:
                 template.version += 1
             changed_fields.append("variables")
@@ -703,10 +886,8 @@ class AiConfigService:
             id=provider.id,
             name=provider.name,
             provider_type=provider.provider_type,
-            base_url=provider.base_url,
+            base_url=safe_provider_base_url(provider.base_url),
             chat_model=provider.chat_model,
-            embedding_model=provider.embedding_model,
-            vision_model=provider.vision_model,
             is_internal=provider.is_internal,
             enabled=provider.enabled,
             priority=provider.priority,
@@ -716,6 +897,9 @@ class AiConfigService:
             max_output_tokens=provider.max_output_tokens,
             temperature=provider.temperature,
             top_p=provider.top_p,
+            input_price_microunits_per_million_tokens=provider.input_price_microunits_per_million_tokens,
+            output_price_microunits_per_million_tokens=provider.output_price_microunits_per_million_tokens,
+            pricing_currency=provider.pricing_currency,
             has_api_key=bool(provider.api_key_encrypted),
             api_key_masked=self._masked_provider_key(provider),
             last_test_status=provider.last_test_status,
@@ -797,6 +981,18 @@ class AiConfigService:
             seen.add(cleaned)
             result.append(cleaned)
         return result
+
+    def _validate_reserved_prompt_contract(
+        self,
+        *,
+        template_key: str,
+        prompt_text: str,
+        variables: Sequence[str],
+    ) -> None:
+        if template_key != ANALYSIS_PROMPT_KEY:
+            return
+        if variables or "{" in prompt_text or "}" in prompt_text:
+            raise exceptions.invalid_ai_config("document_analysis prompt must be variable-free")
 
     def _normalize_sensitive_rule_matcher(
         self,
@@ -928,21 +1124,46 @@ class AiConfigService:
                 )
             )
         if not await self._repository.list_providers():
-            provider_type = self._settings.llm_provider.strip() or "disabled"
+            provider_type = self._settings.llm_provider.strip().lower() or "disabled"
+            is_internal = provider_type in {
+                "local_openai_compatible",
+                "ollama",
+                "vllm",
+                "lmstudio",
+                "mock",
+            }
+            self._validate_provider_type(provider_type, is_internal=is_internal)
+            chat_model = clean_optional_text(self._settings.llm_model)
+            if provider_type == "mock" and chat_model is None:
+                chat_model = "mock-analysis-v1"
+            base_url: str | None = None
+            if provider_type not in {"disabled", "mock"}:
+                try:
+                    base_url = normalize_provider_base_url(self._settings.llm_base_url)
+                except ValueError as exc:
+                    raise exceptions.invalid_provider_config() from exc
+                if base_url is None or chat_model is None:
+                    raise exceptions.invalid_provider_config()
+                try:
+                    chat_model = validate_model_name(chat_model)
+                except ValueError as exc:
+                    raise exceptions.invalid_provider_config() from exc
+
             await self._repository.add_provider(
                 AiProvider(
                     name="默认模型供应商",
                     provider_type=provider_type,
-                    base_url=clean_optional_text(self._settings.llm_base_url),
+                    base_url=base_url,
                     api_key_encrypted=self._encrypt_api_key(self._settings.llm_api_key),
-                    chat_model=clean_optional_text(self._settings.llm_model),
-                    embedding_model=clean_optional_text(self._settings.embedding_model),
-                    is_internal=provider_type
-                    in {"local_openai_compatible", "ollama", "vllm", "lmstudio", "mock"},
+                    chat_model=chat_model,
+                    is_internal=is_internal,
                     enabled=provider_type != "disabled",
                     priority=100,
-                    timeout_seconds=max(1, int(self._settings.ai_request_timeout)),
-                    max_retry_count=max(0, self._settings.ai_max_retry_count),
+                    timeout_seconds=self._settings.ai_request_timeout,
+                    max_retry_count=self._settings.ai_max_retry_count,
+                    input_price_microunits_per_million_tokens=0,
+                    output_price_microunits_per_million_tokens=0,
+                    pricing_currency="USD",
                 )
             )
         await self._session.flush()
@@ -1008,9 +1229,6 @@ class AiConfigService:
                 bool(getattr(self._settings, "enable_table_extraction", False)),
             ),
             FeatureDefinition(
-                "ocr", "OCR识别", "为图片/PDF OCR 预留的功能开关", self._settings.enable_ocr
-            ),
-            FeatureDefinition(
                 "similarity_detection",
                 "相似检测",
                 "为近重复文档检测预留的功能开关",
@@ -1018,36 +1236,105 @@ class AiConfigService:
             ),
         ]
 
-    async def _test_provider_connectivity(self, provider: AiProvider) -> LLMTestResult:
-        if provider.provider_type == "mock":
+    def _provider_config_fingerprint(
+        self,
+        provider: AiProvider,
+        *,
+        db_external_enabled: bool,
+    ) -> str:
+        payload = {
+            "provider_id": str(provider.id),
+            "provider_type": provider.provider_type,
+            "base_url": provider.base_url,
+            "api_key_encrypted": provider.api_key_encrypted,
+            "chat_model": provider.chat_model,
+            "is_internal": provider.is_internal,
+            "enabled": provider.enabled,
+            "timeout_seconds": provider.timeout_seconds,
+            "db_external_enabled": db_external_enabled,
+            "environment_external_enabled": self._settings.allow_external_llm,
+            "allowed_base_urls": sorted(
+                normalized_llm_allowed_base_urls(self._settings.llm_allowed_base_urls)
+            ),
+        }
+        encoded = json.dumps(payload, sort_keys=True, separators=(",", ":")).encode("utf-8")
+        return hashlib.sha256(encoded).hexdigest()
+
+    def _provider_test_snapshot(
+        self,
+        provider: AiProvider,
+        *,
+        db_external_enabled: bool,
+    ) -> ProviderTestSnapshot:
+        credential_invalid = False
+        try:
+            api_key = self._decrypt_provider_key(provider)
+        except (InvalidToken, ValueError):
+            credential_invalid = True
+            api_key = None
+        if credential_invalid:
+            raise exceptions.invalid_provider_config("provider credential is unavailable")
+        return ProviderTestSnapshot(
+            provider_id=provider.id,
+            updated_at=provider.updated_at,
+            fingerprint=self._provider_config_fingerprint(
+                provider,
+                db_external_enabled=db_external_enabled,
+            ),
+            provider_type=provider.provider_type,
+            base_url=provider.base_url,
+            api_key=api_key,
+            chat_model=provider.chat_model,
+            is_internal=provider.is_internal,
+            timeout_seconds=provider.timeout_seconds,
+            effective_allow_external=(self._settings.allow_external_llm and db_external_enabled),
+        )
+
+    async def _test_provider_connectivity(
+        self,
+        snapshot: ProviderTestSnapshot,
+    ) -> LLMTestResult:
+        if self._session.in_transaction():
+            return LLMTestResult(
+                status="failed",
+                latency_ms=None,
+                message="database transaction was not released",
+            )
+        if snapshot.provider_type == "mock":
+            if _is_protected_app_env(self._settings.app_env):
+                return LLMTestResult(
+                    status="failed",
+                    latency_ms=None,
+                    message="mock provider is disabled in protected environments",
+                )
             return LLMTestResult(status="success", latency_ms=0, message="ok")
-        if provider.provider_type == "disabled":
+        if snapshot.provider_type == "disabled":
             return LLMTestResult(status="failed", latency_ms=None, message="provider disabled")
-        test_model = _provider_test_model(provider)
-        if not provider.base_url or test_model is None:
+        try:
+            base_url = normalize_provider_base_url(snapshot.base_url)
+        except ValueError:
+            return LLMTestResult(
+                status="failed",
+                latency_ms=None,
+                message="invalid provider base URL",
+            )
+        test_model = clean_optional_text(snapshot.chat_model)
+        if base_url is None or test_model is None:
             return LLMTestResult(
                 status="failed",
                 latency_ms=None,
                 message="base_url and model are required",
             )
-        features = await self._feature_map()
-        allow_external_llm = (
-            self._settings.allow_external_llm and features["allow_external_llm"].enabled
-        )
-        if _is_external_url(provider.base_url) and not allow_external_llm:
-            return LLMTestResult(
-                status="failed",
-                latency_ms=None,
-                message="external model provider is disabled",
-            )
-        model_kind, model_name = test_model
         client = OpenAICompatibleProvider(
-            base_url=provider.base_url,
-            api_key=self._decrypt_provider_key(provider),
-            model=model_name,
-            timeout_seconds=provider.timeout_seconds,
+            base_url=base_url,
+            api_key=snapshot.api_key,
+            model=test_model,
+            timeout_seconds=snapshot.timeout_seconds,
+            raw_allowed_base_urls=self._settings.llm_allowed_base_urls,
+            allow_external=snapshot.effective_allow_external,
+            is_internal=snapshot.is_internal,
         )
-        return await client.test_connection(model_kind=model_kind)
+        return await client.test_connection()
 
     def _validate_provider_type(self, provider_type: str, *, is_internal: bool) -> None:
         allowed = {
@@ -1062,8 +1349,42 @@ class AiConfigService:
         }
         if provider_type not in allowed:
             raise exceptions.invalid_provider_config()
+        if provider_type == "mock" and _is_protected_app_env(self._settings.app_env):
+            raise exceptions.invalid_provider_config(
+                "mock provider is disabled in protected environments"
+            )
         if provider_type == "openai_compatible" and not is_internal:
             return
+
+    def _validate_provider_activation(
+        self,
+        *,
+        provider_type: str,
+        base_url: str | None,
+        chat_model: str | None,
+        enabled: bool,
+    ) -> None:
+        invalid_model = False
+        if chat_model is not None:
+            try:
+                validate_model_name(chat_model)
+            except ValueError:
+                invalid_model = True
+        if invalid_model:
+            raise exceptions.invalid_provider_config("invalid chat model")
+        if base_url is not None and not llm_base_url_is_allowed(
+            base_url,
+            self._settings.llm_allowed_base_urls,
+        ):
+            raise exceptions.invalid_provider_config(
+                "provider base URL is not in LLM_ALLOWED_BASE_URLS"
+            )
+        if not enabled or provider_type == "disabled":
+            return
+        if chat_model is None:
+            raise exceptions.invalid_provider_config("enabled provider requires chat_model")
+        if provider_type != "mock" and base_url is None:
+            raise exceptions.invalid_provider_config("enabled provider requires base_url")
 
     def _encrypt_api_key(self, api_key: str | None) -> str | None:
         cleaned = clean_optional_text(api_key)
@@ -1155,8 +1476,34 @@ class AiAnalysisService:
             await self._session.commit()
             return idempotent_analysis.id
 
-        provider = await self._repository.get_enabled_provider()
+        llm_features = AnalysisFeatureSelection(
+            summary=features["summary"].enabled,
+            category=features["auto_category"].enabled,
+            tags=features["tag_generation"].enabled,
+            sensitive=features["sensitive_detection"].enabled,
+        )
+        provider = (
+            await self._repository.get_enabled_chat_provider()
+            if llm_features.requires_llm
+            else None
+        )
+        llm_will_run = llm_features.requires_llm and provider is not None
+        deterministic_features_enabled = any(
+            features[key].enabled
+            for key in (
+                "sensitive_detection",
+                "quality_score",
+                "table_extraction",
+                "similarity_detection",
+            )
+        ) or (llm_features.requires_llm and not llm_will_run)
+        engine_type = resolve_analysis_engine_type(
+            llm_enabled=llm_will_run,
+            deterministic_enabled=deterministic_features_enabled,
+        )
+
         analysis = await self._start_analysis(
+            engine_type=engine_type,
             file=file,
             provider=provider,
             lease_token=lease_token,
@@ -1187,7 +1534,12 @@ class AiAnalysisService:
                     lease_token=lease_token,
                     lease_started_at=lease_started_at,
                 )
-                raise exceptions.AiAnalysisTransientError("object storage unavailable") from exc
+                raise exceptions.AiAnalysisTransientError(
+                    "object storage unavailable",
+                    failure_category="storage_unavailable",
+                    max_retries=3,
+                    retry_budget="storage",
+                ) from exc
             parse_max_pages, parse_max_chars = await resolve_parse_limits()
             extracted_text = extract_text(
                 raw_content,
@@ -1227,28 +1579,52 @@ class AiAnalysisService:
             file = await self._transition_file(file, "analyzing")
 
             categories = await self._repository.list_categories()
-            summary = (
-                generate_summary(extracted_text, file=file) if features["summary"].enabled else None
+            llm_result = ValidatedLLMAnalysis(
+                summary=None,
+                category_id=None,
+                tags=[],
+                sensitive_risk_level="none",
             )
-            category = (
-                suggest_category(extracted_text, categories)
-                if features["auto_category"].enabled
-                else CategorySuggestion(category_id=None, category_name=None)
-            )
-            tags = (
-                generate_tags(extracted_text, categories=categories)
-                if features["tag_generation"].enabled
-                else []
-            )
+            if llm_features.requires_llm and provider is not None:
+                llm_result, file, analysis = await self._run_llm_analysis(
+                    file=file,
+                    analysis=analysis,
+                    provider=provider,
+                    features=llm_features,
+                    extracted_text=extracted_text,
+                    categories=categories,
+                    allow_external_llm=features["allow_external_llm"].enabled,
+                )
+            elif llm_features.requires_llm:
+                category_suggestion = (
+                    suggest_category(extracted_text, categories)
+                    if llm_features.category
+                    else CategorySuggestion(category_id=None, category_name=None)
+                )
+                llm_result = ValidatedLLMAnalysis(
+                    summary=(
+                        generate_summary(extracted_text, file=file)
+                        if llm_features.summary
+                        else None
+                    ),
+                    category_id=category_suggestion.category_id,
+                    tags=(
+                        generate_tags(extracted_text, categories=categories)
+                        if llm_features.tags
+                        else []
+                    ),
+                    sensitive_risk_level="none",
+                )
             sensitive_hits: list[dict[str, object]] = []
-            risk_level = "none"
+            rule_risk_level = "none"
             if features["sensitive_detection"].enabled:
                 rules = await self._repository.list_sensitive_rules(enabled_only=True)
                 sensitive_hits = detect_sensitive_hits(extracted_text, rules)
-                risk_level = highest_risk_level(hit["risk_level"] for hit in sensitive_hits)
+                rule_risk_level = highest_risk_level(hit["risk_level"] for hit in sensitive_hits)
                 await self._repository.increment_sensitive_rule_hits(
                     [uuid.UUID(str(hit["rule_id"])) for hit in sensitive_hits]
                 )
+            risk_level = highest_risk_level([rule_risk_level, llm_result.sensitive_risk_level])
             quality_result = None
             if features["quality_score"].enabled:
                 quality_weights = await resolve_quality_weights(
@@ -1291,18 +1667,27 @@ class AiAnalysisService:
 
             analysis_target_status = (
                 "sensitive_review_required"
-                if requires_sensitive_review(sensitive_hits)
+                if risk_level == "critical" or requires_sensitive_review(sensitive_hits)
                 else "analyzed"
             )
-            file.tags = merge_tags(file.tags, tags)
-            file.category_id = category.category_id or file.category_id
+            category_by_id = {category.id: category for category in categories}
+            selected_category = (
+                category_by_id.get(llm_result.category_id)
+                if llm_result.category_id is not None
+                else None
+            )
+            file.tags = merge_tags(file.tags, llm_result.tags)
+            file.category_id = llm_result.category_id or file.category_id
             file = await self._transition_file(file, analysis_target_status)
             analysis.status = "succeeded"
+            analysis.engine_type = engine_type
             analysis.extracted_text = truncate_text(extracted_text, parse_max_chars)
-            analysis.summary = summary
-            analysis.suggested_category_id = category.category_id
-            analysis.suggested_category_name = category.category_name
-            analysis.suggested_tags = tags
+            analysis.summary = llm_result.summary
+            analysis.suggested_category_id = llm_result.category_id
+            analysis.suggested_category_name = (
+                selected_category.name if selected_category is not None else None
+            )
+            analysis.suggested_tags = llm_result.tags
             analysis.sensitive_risk_level = risk_level
             analysis.sensitive_hits = sensitive_hits
             analysis.tables_json = tables
@@ -1311,6 +1696,7 @@ class AiAnalysisService:
             analysis.quality_detail = quality_result.detail if quality_result is not None else {}
             analysis.similar_file_ids = similar_file_ids
             analysis.error_message = None
+            analysis.failure_category = None
             analysis.lease_token = None
             analysis.finished_at = datetime.now(UTC)
             auto_submit_requested = self._auto_submit_requested(file)
@@ -1337,7 +1723,7 @@ class AiAnalysisService:
                     "auto_submit_blocked_reason": auto_submit_blocked_reason,
                 },
             )
-            if sensitive_hits:
+            if risk_level != "none":
                 await self._append_analysis_event(
                     event_type=events.AI_SENSITIVE_DETECTED,
                     file=file,
@@ -1355,8 +1741,58 @@ class AiAnalysisService:
                 )
             await self._session.commit()
             return analysis.id
+        except AnalysisLeaseLostError:
+            await self._session.rollback()
+            return lease_analysis_id
         except exceptions.AiAnalysisTransientError:
             raise
+        except LLMProviderError as exc:
+            if exc.retryable:
+                await self._release_llm_analysis_for_retry(
+                    file_id=file_id,
+                    analysis_id=lease_analysis_id,
+                    lease_token=lease_token,
+                    lease_started_at=lease_started_at,
+                    failure_category=exc.category,
+                )
+                raise exceptions.AiAnalysisTransientError(
+                    "llm provider temporarily unavailable",
+                    failure_category=exc.category,
+                    max_retries=provider.max_retry_count if provider is not None else 0,
+                    retry_budget="provider",
+                ) from exc
+            await self._mark_analysis_failed(
+                file_id=file_id,
+                error_message=provider_failure_message(exc.category),
+                error_code=exc.category,
+                failure_category=exc.category,
+                expected_delivery_token=lease_token,
+                expected_started_at=lease_started_at,
+                verify_started_at=True,
+            )
+            return analysis.id
+        except LLMOutputValidationError:
+            await self._mark_analysis_failed(
+                file_id=file_id,
+                error_message="模型输出未通过安全格式校验",
+                error_code=events.AiAnalysisFailureCode.INVALID_OUTPUT,
+                failure_category="invalid_output",
+                expected_delivery_token=lease_token,
+                expected_started_at=lease_started_at,
+                verify_started_at=True,
+            )
+            return analysis.id
+        except LLMAnalysisConfigurationError:
+            await self._mark_analysis_failed(
+                file_id=file_id,
+                error_message="AI 分析配置不可用",
+                error_code=events.AiAnalysisFailureCode.CONFIGURATION_ERROR,
+                failure_category="configuration_error",
+                expected_delivery_token=lease_token,
+                expected_started_at=lease_started_at,
+                verify_started_at=True,
+            )
+            return analysis.id
         except exceptions.DocumentParseError as exc:
             await self._session.rollback()
             await self._mark_analysis_failed(
@@ -1430,21 +1866,377 @@ class AiAnalysisService:
         await self._session.commit()
         return True
 
+    async def _run_llm_analysis(
+        self,
+        *,
+        file: AiFileRecord,
+        analysis: DocumentAnalysis,
+        provider: AiProvider,
+        features: AnalysisFeatureSelection,
+        extracted_text: str,
+        categories: list[AiCategoryRecord],
+        allow_external_llm: bool,
+    ) -> tuple[ValidatedLLMAnalysis, AiFileRecord, DocumentAnalysis]:
+        prompt_template = await self._repository.get_prompt_template_by_key(ANALYSIS_PROMPT_KEY)
+        if prompt_template is None or not prompt_template.enabled or prompt_template.variables:
+            raise LLMAnalysisConfigurationError("analysis prompt is unavailable")
+        try:
+            built_prompt = build_analysis_prompt(
+                template_text=prompt_template.prompt_text,
+                text=extracted_text,
+                categories=categories if features.category else [],
+                max_input_tokens=provider.max_input_tokens,
+            )
+        except ValueError as exc:
+            raise LLMAnalysisConfigurationError("analysis prompt is invalid") from exc
+        llm_provider = self._build_llm_provider(
+            provider,
+            allow_external_llm=allow_external_llm,
+        )
+        analysis.prompt_template_id = prompt_template.id
+        analysis.prompt_template_key = prompt_template.template_key
+        analysis.prompt_version = prompt_template.version
+        output_limit = provider.max_output_tokens or 1_024
+        analysis_id = analysis.id
+        lease_token = analysis.lease_token
+        lease_started_at = analysis.started_at
+        if lease_token is None or lease_started_at is None:
+            raise LLMAnalysisConfigurationError("analysis lease is unavailable")
+        # Persist the analyzing state and release all DB locks before provider I/O.
+        await self._session.commit()
+
+        for call_index in range(2):
+            call_prompt = (
+                built_prompt.text if call_index == 0 else f"{built_prompt.text}{LLM_REPAIR_SUFFIX}"
+            )
+            input_provenance = build_input_provenance(
+                user_prompt=call_prompt,
+                category_count=built_prompt.category_count,
+                input_truncated=built_prompt.input_truncated,
+            )
+            try:
+                completion = await llm_provider.complete(
+                    call_prompt,
+                    model=provider.chat_model,
+                    temperature=provider.temperature,
+                    top_p=provider.top_p,
+                    max_output_tokens=output_limit,
+                    system_prompt=LLM_ANALYSIS_SYSTEM_PROMPT,
+                    json_mode=True,
+                )
+            except LLMProviderError as exc:
+                file, analysis = await self._reacquire_analysis_lease(
+                    file_id=file.id,
+                    analysis_id=analysis_id,
+                    lease_token=lease_token,
+                    lease_started_at=lease_started_at,
+                )
+                await self._record_llm_usage(
+                    file=file,
+                    analysis=analysis,
+                    provider=provider,
+                    prompt_template=prompt_template,
+                    completion=None,
+                    input_provenance=input_provenance,
+                    latency_ms=exc.latency_ms,
+                    status="failed",
+                    failure_category=exc.category,
+                )
+                raise
+            try:
+                result = parse_analysis_output(
+                    completion.content,
+                    allowed_category_ids=built_prompt.allowed_category_ids,
+                    features=features,
+                )
+            except LLMOutputValidationError:
+                file, analysis = await self._reacquire_analysis_lease(
+                    file_id=file.id,
+                    analysis_id=analysis_id,
+                    lease_token=lease_token,
+                    lease_started_at=lease_started_at,
+                )
+                await self._record_llm_usage(
+                    file=file,
+                    analysis=analysis,
+                    provider=provider,
+                    prompt_template=prompt_template,
+                    completion=completion,
+                    input_provenance=input_provenance,
+                    latency_ms=completion.latency_ms,
+                    status="failed",
+                    failure_category="invalid_output",
+                )
+                if call_index == 0:
+                    await self._session.commit()
+                    continue
+                raise
+            file, analysis = await self._reacquire_analysis_lease(
+                file_id=file.id,
+                analysis_id=analysis_id,
+                lease_token=lease_token,
+                lease_started_at=lease_started_at,
+            )
+            await self._record_llm_usage(
+                file=file,
+                analysis=analysis,
+                provider=provider,
+                prompt_template=prompt_template,
+                completion=completion,
+                latency_ms=completion.latency_ms,
+                input_provenance=input_provenance,
+                status="success",
+                failure_category=None,
+            )
+            return result, file, analysis
+        raise LLMOutputValidationError("invalid_output")
+
+    async def _reacquire_analysis_lease(
+        self,
+        *,
+        file_id: uuid.UUID,
+        analysis_id: uuid.UUID,
+        lease_token: str,
+        lease_started_at: datetime,
+    ) -> tuple[AiFileRecord, DocumentAnalysis]:
+        file = await self._repository.get_file_for_update(file_id)
+        analysis = await self._repository.get_document_analysis_for_update(file_id)
+        if (
+            file is None
+            or analysis is None
+            or analysis.id != analysis_id
+            or analysis.status != "running"
+            or analysis.lease_token != lease_token
+            or analysis.started_at != lease_started_at
+        ):
+            await self._session.rollback()
+            raise AnalysisLeaseLostError
+        return file, analysis
+
+    def _build_llm_provider(
+        self,
+        provider: AiProvider,
+        *,
+        allow_external_llm: bool,
+    ) -> BaseLLMProvider:
+        model = clean_optional_text(provider.chat_model)
+        if provider.provider_type == "mock":
+            if _is_protected_app_env(self._settings.app_env):
+                raise LLMAnalysisConfigurationError(
+                    "mock provider is disabled in protected environments"
+                )
+            invalid_model = False
+            try:
+                validated_mock_model = validate_model_name(model or "mock-analysis-v1")
+            except ValueError:
+                validated_mock_model = ""
+                invalid_model = True
+            if invalid_model:
+                raise LLMAnalysisConfigurationError("provider model is invalid")
+            return MockLLMProvider(model=validated_mock_model)
+
+        supported_types = {
+            "openai_compatible",
+            "local_openai_compatible",
+            "ollama",
+            "vllm",
+            "lmstudio",
+            "custom",
+        }
+        invalid_endpoint = False
+        try:
+            base_url = normalize_provider_base_url(provider.base_url)
+        except ValueError:
+            base_url = None
+            invalid_endpoint = True
+        if invalid_endpoint:
+            raise LLMAnalysisConfigurationError("provider endpoint is invalid")
+        if provider.provider_type not in supported_types or base_url is None or model is None:
+            raise LLMAnalysisConfigurationError("provider endpoint and chat model are required")
+        if not llm_base_url_is_allowed(base_url, self._settings.llm_allowed_base_urls):
+            raise LLMAnalysisConfigurationError("provider endpoint is not in LLM_ALLOWED_BASE_URLS")
+
+        invalid_model = False
+        try:
+            model = validate_model_name(model)
+        except ValueError:
+            invalid_model = True
+        if invalid_model:
+            raise LLMAnalysisConfigurationError("provider model is invalid")
+
+        credential_invalid = False
+        try:
+            api_key = (
+                decrypt_api_key(
+                    provider.api_key_encrypted,
+                    self._settings.encryption_key,
+                )
+                if provider.api_key_encrypted is not None
+                else None
+            )
+        except (InvalidToken, ValueError):
+            api_key = None
+            credential_invalid = True
+        if credential_invalid:
+            raise LLMAnalysisConfigurationError("provider credential is unavailable")
+
+        return OpenAICompatibleProvider(
+            base_url=base_url,
+            api_key=api_key,
+            model=model,
+            timeout_seconds=provider.timeout_seconds,
+            raw_allowed_base_urls=self._settings.llm_allowed_base_urls,
+            allow_external=self._settings.allow_external_llm and allow_external_llm,
+            is_internal=provider.is_internal,
+        )
+
+    async def _record_llm_usage(
+        self,
+        *,
+        file: AiFileRecord,
+        analysis: DocumentAnalysis,
+        provider: AiProvider,
+        prompt_template: PromptTemplate,
+        completion: LLMCompletion | None,
+        input_provenance: LLMInputProvenance,
+        latency_ms: int | None,
+        status: str,
+        failure_category: str | None,
+    ) -> None:
+        prompt_tokens = completion.usage.prompt_tokens if completion is not None else None
+        completion_tokens = completion.usage.completion_tokens if completion is not None else None
+        estimated_cost = (
+            estimate_cost_microunits(
+                prompt_tokens=prompt_tokens,
+                completion_tokens=completion_tokens,
+                input_price_microunits_per_million_tokens=(
+                    provider.input_price_microunits_per_million_tokens
+                ),
+                output_price_microunits_per_million_tokens=(
+                    provider.output_price_microunits_per_million_tokens
+                ),
+            )
+            if prompt_tokens is not None and completion_tokens is not None
+            else 0
+        )
+        call_sequence = await self._repository.next_usage_call_sequence(
+            analysis_id=analysis.id,
+            analysis_attempt=analysis.attempt_number,
+        )
+        model_name = completion.model if completion is not None else provider.chat_model
+        try:
+            next_prompt_tokens = checked_persisted_sum(
+                analysis.prompt_tokens,
+                prompt_tokens or 0,
+                maximum=MAX_POSTGRES_INTEGER,
+            )
+            next_completion_tokens = checked_persisted_sum(
+                analysis.completion_tokens,
+                completion_tokens or 0,
+                maximum=MAX_POSTGRES_INTEGER,
+            )
+            next_latency_ms = checked_persisted_sum(
+                analysis.latency_ms,
+                latency_ms or 0,
+                maximum=MAX_POSTGRES_INTEGER,
+            )
+            next_cost = checked_persisted_sum(
+                analysis.estimated_cost_microunits,
+                estimated_cost,
+                maximum=MAX_POSTGRES_BIGINT,
+            )
+            usage_overflow = False
+        except (OverflowError, ValueError):
+            usage_overflow = True
+        await self._repository.add_usage_log(
+            AiUsageLog(
+                provider_id=provider.id,
+                file_id=file.id,
+                analysis_id=analysis.id,
+                feature_name=ANALYSIS_PROMPT_KEY,
+                provider_name=provider.name,
+                model_name=model_name[:120] if model_name is not None else None,
+                prompt_template_id=prompt_template.id,
+                prompt_template_key=prompt_template.template_key,
+                prompt_version=prompt_template.version,
+                analysis_attempt=analysis.attempt_number,
+                call_sequence=call_sequence,
+                prompt_tokens=prompt_tokens,
+                input_char_count=input_provenance.input_char_count,
+                input_sha256=input_provenance.input_sha256,
+                category_count=input_provenance.category_count,
+                input_truncated=input_provenance.input_truncated,
+                completion_tokens=completion_tokens,
+                latency_ms=latency_ms,
+                status="failed" if usage_overflow else status,
+                failure_category="usage_overflow" if usage_overflow else failure_category,
+                estimated_cost_microunits=estimated_cost,
+                cost_currency=provider.pricing_currency,
+                error_message=None,
+            )
+        )
+        analysis.model_name = model_name[:120] if model_name is not None else None
+        analysis.input_char_count = input_provenance.input_char_count
+        analysis.input_sha256 = input_provenance.input_sha256
+        analysis.category_count = input_provenance.category_count
+        analysis.input_truncated = input_provenance.input_truncated
+        if usage_overflow:
+            analysis.failure_category = "usage_overflow"
+            raise LLMAnalysisConfigurationError("analysis usage aggregate overflow")
+        analysis.prompt_tokens = next_prompt_tokens
+        analysis.completion_tokens = next_completion_tokens
+        analysis.latency_ms = next_latency_ms
+        analysis.estimated_cost_microunits = next_cost
+        analysis.cost_currency = provider.pricing_currency
+        analysis.failure_category = failure_category
+
     async def _start_analysis(
         self,
         *,
         file: AiFileRecord,
+        engine_type: str,
         provider: AiProvider | None,
         lease_token: str,
     ) -> DocumentAnalysis:
         analysis = await self._repository.get_document_analysis(file.id)
         started_at = datetime.now(UTC)
+        new_attempt = analysis is None or analysis.status != "running"
         if analysis is None:
             analysis = DocumentAnalysis(file_id=file.id)
             await self._repository.add_document_analysis(analysis)
+        elif new_attempt:
+            analysis.attempt_number += 1
+        if new_attempt:
+            analysis.prompt_template_id = None
+            analysis.input_char_count = None
+            analysis.input_sha256 = None
+            analysis.category_count = None
+            analysis.input_truncated = None
+            analysis.prompt_template_key = None
+            analysis.prompt_version = None
+            analysis.prompt_tokens = 0
+            analysis.completion_tokens = 0
+            analysis.latency_ms = 0
+            analysis.estimated_cost_microunits = 0
+            analysis.summary = None
+            analysis.suggested_category_id = None
+            analysis.suggested_category_name = None
+            analysis.suggested_tags = []
+            analysis.sensitive_risk_level = "none"
+            analysis.sensitive_hits = []
+            analysis.tables_json = []
+            analysis.table_count = 0
+            analysis.quality_score = None
+            analysis.quality_detail = {}
+            analysis.similar_file_ids = []
         analysis.provider_id = provider.id if provider is not None else None
+        analysis.provider_name = provider.name if provider is not None else None
+        analysis.model_name = None
+        analysis.engine_type = engine_type
+        analysis.cost_currency = provider.pricing_currency if provider is not None else "USD"
         analysis.status = "running"
         analysis.error_message = None
+        analysis.failure_category = None
         analysis.lease_token = lease_token
         analysis.started_at = started_at
         analysis.finished_at = None
@@ -1477,6 +2269,9 @@ class AiAnalysisService:
             if file.status in AI_ANALYSIS_IN_PROGRESS_FILE_STATUSES:
                 file.status = DocumentStateMachine.transition(file.status, "analysis_failed")
                 await self._repository.update_file_analysis_state(file)
+            analysis.status = "failed"
+            analysis.failure_category = "stale_lease"
+            analysis.finished_at = datetime.now(UTC)
             analysis.lease_token = None
             return None
         if analysis.status == "succeeded" and file.status in AI_ANALYSIS_SUCCEEDED_FILE_STATUSES:
@@ -1489,6 +2284,7 @@ class AiAnalysisService:
         file_id: uuid.UUID,
         error_message: str,
         error_code: events.AiAnalysisFailureCode | str = events.AiAnalysisFailureCode.INTERNAL,
+        failure_category: str | None = None,
         expected_delivery_token: str | None = None,
         require_retry_wait: bool = False,
     ) -> bool:
@@ -1497,6 +2293,7 @@ class AiAnalysisService:
             file_id=file_id,
             error_message=error_message,
             error_code=error_code,
+            failure_category=failure_category,
             expected_delivery_token=expected_delivery_token,
             expected_started_at=None,
             verify_started_at=require_retry_wait,
@@ -1508,6 +2305,7 @@ class AiAnalysisService:
         file_id: uuid.UUID,
         error_message: str,
         error_code: events.AiAnalysisFailureCode | str = events.AiAnalysisFailureCode.INTERNAL,
+        failure_category: str | None = None,
         expected_delivery_token: str | None = None,
         expected_started_at: datetime | None = None,
         verify_started_at: bool = False,
@@ -1533,7 +2331,9 @@ class AiAnalysisService:
         except DocumentStateError:
             pass
         analysis.status = "failed"
+        normalized_failure = events.normalize_analysis_failure_code(error_code)
         analysis.error_message = error_message[:MAX_ERROR_MESSAGE_LENGTH]
+        analysis.failure_category = failure_category or normalized_failure.value
         analysis.lease_token = None
         analysis.finished_at = datetime.now(UTC)
         auto_submit_requested = self._auto_submit_requested(file)
@@ -1555,7 +2355,7 @@ class AiAnalysisService:
                 payload={
                     "analysis_id": str(analysis.id),
                     "analysis_status": analysis.status,
-                    "error_code": events.normalize_analysis_failure_code(error_code).value,
+                    "error_code": normalized_failure.value,
                 },
             )
         await self._session.commit()
@@ -1585,6 +2385,38 @@ class AiAnalysisService:
             return False
         analysis.started_at = None
         analysis.finished_at = None
+        await self._session.commit()
+        return True
+
+    async def _release_llm_analysis_for_retry(
+        self,
+        *,
+        file_id: uuid.UUID,
+        analysis_id: uuid.UUID,
+        lease_token: str,
+        lease_started_at: datetime,
+        failure_category: str,
+    ) -> bool:
+        """Persist safe call usage and fence the same Celery delivery for a bounded retry."""
+        file = await self._repository.get_file_for_update(file_id)
+        analysis = await self._repository.get_document_analysis_for_update(file_id)
+        if (
+            file is None
+            or analysis is None
+            or analysis.id != analysis_id
+            or analysis.status != "running"
+            or analysis.lease_token != lease_token
+            or analysis.started_at != lease_started_at
+        ):
+            await self._session.rollback()
+            return False
+        if file.status in AI_ANALYSIS_IN_PROGRESS_FILE_STATUSES:
+            file.status = DocumentStateMachine.transition(file.status, "analysis_failed")
+            await self._repository.update_file_analysis_state(file)
+        analysis.started_at = None
+        analysis.finished_at = None
+        analysis.failure_category = failure_category
+        analysis.error_message = None
         await self._session.commit()
         return True
 
@@ -1660,6 +2492,19 @@ class AiAnalysisService:
         )
 
 
+def provider_failure_message(category: str) -> str:
+    messages = {
+        "timeout": "模型服务调用超时",
+        "connection_error": "模型服务暂时无法连接",
+        "rate_limited": "模型服务请求频率受限",
+        "provider_unavailable": "模型服务暂不可用",
+        "authentication_failed": "模型服务鉴权失败",
+        "request_rejected": "模型服务拒绝了分析请求",
+        "invalid_response": "模型服务响应不符合协议",
+    }
+    return messages.get(category, "模型服务调用失败")
+
+
 def clean_optional_text(value: str | None) -> str | None:
     if value is None:
         return None
@@ -1667,14 +2512,58 @@ def clean_optional_text(value: str | None) -> str | None:
     return cleaned or None
 
 
-def _provider_test_model(provider: AiProvider) -> tuple[LLMTestKind, str] | None:
-    if provider.chat_model:
-        return "chat", provider.chat_model
-    if provider.embedding_model:
-        return "embedding", provider.embedding_model
-    if provider.vision_model:
-        return "vision", provider.vision_model
-    return None
+def normalize_provider_base_url(value: str | None) -> str | None:
+    cleaned = clean_optional_text(value)
+    return None if cleaned is None else normalize_llm_base_url(cleaned)
+
+
+def safe_provider_base_url(value: str | None) -> str | None:
+    try:
+        return normalize_provider_base_url(value)
+    except ValueError:
+        return None
+
+
+def _provider_create_audit_fields(provider: AiProvider) -> list[str]:
+    fields = [
+        "name",
+        "provider_type",
+        "is_internal",
+        "enabled",
+        "priority",
+        "timeout_seconds",
+        "max_retry_count",
+        "temperature",
+        "input_price_microunits_per_million_tokens",
+        "output_price_microunits_per_million_tokens",
+        "pricing_currency",
+    ]
+    optional_fields = (
+        "base_url",
+        "chat_model",
+        "max_input_tokens",
+        "max_output_tokens",
+        "top_p",
+    )
+    fields.extend(
+        field_name for field_name in optional_fields if getattr(provider, field_name) is not None
+    )
+    if provider.api_key_encrypted is not None:
+        fields.append("api_key_rotated")
+    return sorted(fields)
+
+
+def _provider_update_audit_fields(request: AiProviderUpdateRequest) -> list[str]:
+    fields = {
+        field_name
+        for field_name in request.model_fields_set
+        if field_name not in {"api_key", "clear_api_key"}
+    }
+    if request.clear_api_key:
+        fields.add("api_key_cleared")
+    elif request.api_key is not None:
+        fields.add("api_key_rotated")
+    return sorted(fields)
 
 
 def cast_optional_str(value: object) -> str | None:
@@ -1688,8 +2577,11 @@ def cast_optional_str(value: object) -> str | None:
 def mask_secret(secret: str | None) -> str | None:
     if not secret:
         return None
-    suffix = secret[-4:] if len(secret) >= 4 else secret
     prefix = "sk-" if secret.startswith("sk-") else ""
+    credential = secret[len(prefix) :]
+    if len(credential) < 8:
+        return f"{prefix}****"
+    suffix = credential[-4:]
     return f"{prefix}****{suffix}"
 
 
@@ -1865,32 +2757,35 @@ def unique_ordered(values: Sequence[str]) -> list[str]:
     return result
 
 
+def resolve_analysis_engine_type(
+    *,
+    llm_enabled: bool,
+    deterministic_enabled: bool,
+) -> str:
+    if llm_enabled and deterministic_enabled:
+        return "hybrid"
+    if llm_enabled:
+        return "llm"
+    return "rule"
+
+
 def normalize_space(value: str) -> str:
     return re.sub(r"\s+", " ", value).strip()
 
 
-def _is_external_url(url: str) -> bool:
-    parsed = urlparse(url.strip())
-    host = (parsed.hostname or "").lower()
-    if not host:
-        return True
-    if host in {
-        "localhost",
-        "host.docker.internal",
-        "ollama",
-        "vllm",
-        "lmstudio",
-    }:
-        return False
-    try:
-        address = ip_address(host)
-    except ValueError:
-        return True
-    return not (address.is_loopback or address.is_private or address.is_link_local)
+def _is_protected_app_env(app_env: str) -> bool:
+    return app_env.strip().lower() in PROTECTED_ENVS
 
 
 def _default_prompt_definitions() -> list[PromptDefinition]:
     return [
+        PromptDefinition(
+            template_key=ANALYSIS_PROMPT_KEY,
+            name="文档组合分析",
+            description="一次调用生成严格 JSON 摘要、分类、标签与风险建议",
+            prompt_text=("分析下方经过长度限制的文档输入,并严格遵循系统消息中的 JSON 契约。"),
+            variables=[],
+        ),
         PromptDefinition(
             template_key="summary",
             name="文档摘要",
