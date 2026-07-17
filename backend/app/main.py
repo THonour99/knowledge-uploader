@@ -36,6 +36,7 @@ from app.modules.document.api import router as document_router
 from app.modules.notification.api import router as notification_router
 from app.modules.ragflow.api import router as ragflow_router
 from app.modules.review.api import router as review_router
+from app.modules.saved_view.api import router as saved_view_router
 from app.modules.statistics.api import router as statistics_router
 from app.modules.user.api import router as user_router
 
@@ -56,6 +57,7 @@ app.include_router(document_policy_router)
 app.include_router(notification_router)
 app.include_router(ragflow_router)
 app.include_router(review_router)
+app.include_router(saved_view_router)
 app.include_router(statistics_router)
 app.include_router(user_router)
 
