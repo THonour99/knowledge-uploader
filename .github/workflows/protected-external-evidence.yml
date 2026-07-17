@@ -66,6 +66,8 @@ jobs:
             --output-dir artifacts/external \
             --git-sha "${{ github.sha }}" \
             --environment "$RELEASE_ENVIRONMENT" \
+            --collector-run-id "${{ github.run_id }}" \
+            --collector-run-attempt "${{ github.run_attempt }}" \
             --prometheus-image "$PROMETHEUS_VALIDATOR_IMAGE" \
             --alertmanager-image "$ALERTMANAGER_VALIDATOR_IMAGE"
 

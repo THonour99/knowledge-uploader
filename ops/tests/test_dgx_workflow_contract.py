@@ -269,6 +269,7 @@ def test_protected_workflow_runs_full_checker_with_complete_inventory() -> None:
     for filename in (
         "alertmanager-notification.json",
         "alertmanager.yml",
+        "dr-release-policy.json",
         "dr-release.json",
         "rabbitmq-dlq-replay.json",
         "email-delivery.json",
@@ -344,6 +345,10 @@ def test_external_evidence_workflow_uses_protected_self_hosted_runner() -> None:
         "${{ github.sha }}",
         "--environment",
         "$RELEASE_ENVIRONMENT",
+        "--collector-run-id",
+        "${{ github.run_id }}",
+        "--collector-run-attempt",
+        "${{ github.run_attempt }}",
         "--prometheus-image",
         "$PROMETHEUS_VALIDATOR_IMAGE",
         "--alertmanager-image",
@@ -429,6 +434,7 @@ def test_main_ci_builds_one_multiarch_oci_artifact_for_downstream_consumers() ->
     assert "python scripts/release_oci.py create" in seal
     assert "python scripts/release_oci.py verify" in seal
     assert "--require-archives" in seal
+    assert "--source-input ops/policies/dr-release-policy.json" in seal
     assert '--build-arg PYTHON_IMAGE="${PYTHON_RELEASE_IMAGE}"' in backend
     assert '--build-arg NODE_IMAGE="${NODE_RELEASE_IMAGE}"' in frontend
     assert '--build-arg NGINX_IMAGE="${NGINX_RELEASE_IMAGE}"' in frontend
@@ -452,3 +458,13 @@ def test_frontend_native_dependency_builder_uses_target_platform() -> None:
 
     assert builder_lines == ["FROM --platform=$TARGETPLATFORM ${NODE_IMAGE} AS builder"]
     assert "npm ci" in dockerfile
+
+
+def test_dgx_workflow_validates_protected_prometheus_mount_contract() -> None:
+    workflow = (ROOT / ".github/workflows/dgx-spark-device.yml").read_text(
+        encoding="utf-8"
+    )
+
+    assert "PROMETHEUS_CONFIG_FILE=./ops/observability/prometheus.protected.yml" in workflow
+    assert "PROMETHEUS_TLS_DIR=/run/secrets/prometheus-tls" in workflow
+    assert "-f docker-compose.observability.protected.yml" in workflow

@@ -55,6 +55,27 @@ If validation fails, the isolated database or bucket may be retained for diagnos
 then remove only the exact `restore_` database and `restore-` bucket named by the failed command.
 Never point this tool at a production target.
 
+### Protected release DR receipt
+
+The isolated operator that performs the real protected-environment drill owns
+`knowledge-uploader.dr-release-source.v1`; the collector must not synthesize it. Its exact receipt
+keys are defined in [the protected release runbook](protected-release.md#外部源收据-v1严格契约).
+`recovery_pair_id` is an opaque identifier for one paired drill. It binds the two independent,
+one-way markers `postgres_restore_point_sha256` and `minio_restore_point_sha256`; the hashes are
+not required to be equal because a PostgreSQL LSN/time point and a MinIO version/snapshot marker
+are different identifiers. Operators must hash each native marker separately and must never put
+the raw LSN, bucket marker, off-site URI, key identifier, or credential in release evidence.
+
+The pair is accepted only together with the table digest, zero missing/orphan/mismatched objects,
+measured RPO/RTO and the passed main-chain smoke. The version-controlled
+`ops/policies/dr-release-policy.json` sets the current release maxima to 300 seconds RPO and
+600 seconds RTO. The receipt must bind the exact policy bytes through `policy_sha256`; a drill may
+declare stricter targets, but neither target nor actual measurement may exceed the policy. The
+collector copies the exact policy into release evidence, and OCI provenance plus authorization bind
+the same source bytes, so policy or evidence replacement fails closed. The local logical restore
+command does not prove these external fields. No real protected DR source receipt is present in this
+repository, so this gate remains **PENDING** until a new isolated drill supplies it.
+
 ## Backup staleness alert
 
 `KnowledgeUploaderBackupMissing` fires when no validated timestamp exists.
@@ -80,7 +101,7 @@ DR-001 and DR-002 stay `待执行` until a protected-environment gate proves all
 - MinIO versioning and replication, or a coordinated snapshot paired to the database restore point;
 - encrypted configuration values plus a separately controlled key version and a no-plaintext
   decrypt verification;
-- a quarterly isolated drill within agreed RPO/RTO, with zero missing/orphaned objects and a passed
-  upload → review → RAGFlow protocol-mock smoke.
+- a quarterly isolated drill within the version-controlled RPO/RTO policy, with zero
+  missing/orphaned objects and a passed upload → review → RAGFlow protocol-mock smoke.
 
 Do not change either acceptance item to passed merely because the logical backup command succeeds.

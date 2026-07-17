@@ -38,7 +38,7 @@
 | OBS-001 | 指标告警 | 制造 outbox 积压、worker 离线、SLA 超时、同步失败 | 指标可抓取；告警在约定窗口触发并有 runbook | 待执行 |
 | REL-001 | 不可变制品链 | 主 CI build-once OCI；伪造 run/ref/artifact/digest；DGX 与部署消费同一 digest | 代码契约拒绝重建/tag/跨 run；真实 CI/DGX/registry/deploy 留证 | 进行中（离线契约已通过；物理证据待执行） |
 | ARM-001 | ARM64 实机 | DGX Spark 下载主 CI 的 arm64 OCI manifest（禁止重建），完整启动并跑 smoke/E2E | digest/config ID 一致；原生依赖、health/ready/E2E 通过 | 待执行 |
-| DR-001 | PostgreSQL 恢复 | 备份后新增数据，再恢复到隔离环境 | RPO/RTO 达标；迁移版本/行数/关键 hash 校验 | 待执行 |
+| DR-001 | PostgreSQL 恢复 | 备份后新增数据，再恢复到隔离环境 | 收据绑定策略 SHA；RPO ≤ 300s、RTO ≤ 600s；自报 target 不宽于策略；迁移版本/行数/关键 hash 校验；篡改策略、摘要或证据必须拒绝发布 | 待执行 |
 | DR-002 | MinIO 一致恢复 | 配对数据库时间点和对象版本恢复 | 元数据对象均存在；孤儿/缺失对象报告 | 待执行 |
 
 ## P2：增强治理

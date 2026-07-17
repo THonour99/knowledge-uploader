@@ -207,7 +207,12 @@ def _source_inputs(root: Path) -> list[Path]:
     for index, path in enumerate(paths):
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_text(f"fixture-{index}\n", encoding="utf-8", newline="\n")
-    return paths
+    policy_path = root / "ops/policies/dr-release-policy.json"
+    policy_path.parent.mkdir(parents=True, exist_ok=True)
+    policy_path.write_bytes(
+        (Path(__file__).parents[2] / "ops/policies/dr-release-policy.json").read_bytes()
+    )
+    return [*paths, policy_path]
 
 
 def _create_bundle(tmp_path: Path) -> tuple[ModuleType, Path, dict[str, object]]:
@@ -397,6 +402,38 @@ def test_create_rejects_source_change_while_archives_are_snapshotted(
             repository_root=source_root,
             output_dir=tmp_path / "bundle",
             now=NOW,
+        )
+
+
+def test_dr_policy_provenance_binding_rejects_mismatch() -> None:
+    module = _load_module()
+    policy_payload = (
+        Path(__file__).parents[2] / "ops/policies/dr-release-policy.json"
+    ).read_bytes()
+    metadata: dict[str, object] = {
+        "inputs": [
+            {
+                "path": module.DR_RELEASE_POLICY_INPUT_PATH,
+                "sha256": module._sha256_bytes(policy_payload),
+            }
+        ]
+    }
+
+    module._verify_dr_policy_provenance_binding(
+        metadata,
+        policy_payload=policy_payload,
+    )
+    metadata["inputs"] = [
+        {
+            "path": module.DR_RELEASE_POLICY_INPUT_PATH,
+            "sha256": "sha256:" + "f" * 64,
+        }
+    ]
+
+    with pytest.raises(module.ContractError, match="DR policy checksum"):
+        module._verify_dr_policy_provenance_binding(
+            metadata,
+            policy_payload=policy_payload,
         )
 
 
@@ -611,7 +648,7 @@ def test_dgx_binding_rejects_locally_rebuilt_image_id(tmp_path: Path) -> None:
     infrastructure_path.write_text(
         json.dumps(
             {
-                "status": "passed",
+                "status": "development_passed",
                 "git_sha": TEST_SHA,
                 "environment": "staging",
                 "backend_image_id": "sha256:" + "d" * 64,
@@ -665,6 +702,8 @@ def _write_valid_external_evidence(
     now: datetime,
 ) -> dict[str, bytes]:
     root = Path(__file__).parents[2]
+    policy_payload = (root / "ops/policies/dr-release-policy.json").read_bytes()
+    (bundle / "dr-release-policy.json").write_bytes(policy_payload)
     source_generated_at = (now - timedelta(minutes=12)).isoformat()
     projected_at = (now - timedelta(minutes=10)).isoformat()
     alertmanager_payload = (
@@ -696,6 +735,7 @@ def _write_valid_external_evidence(
             "rpo_target_seconds": 300,
             "rto_seconds": 120,
             "rto_target_seconds": 600,
+            "policy_sha256": module.protected_release_gate._sha256_bytes(policy_payload),
             "alembic_revision": "20260716o001",
             "database_tables_sha256": "6" * 64,
             "minio_missing_objects": 0,
@@ -751,7 +791,7 @@ def _write_valid_external_evidence(
             "prometheus_rules": "passed",
             "alertmanager_config": "passed",
             "prometheus_config_sha256": module.protected_release_gate._sha256_path(
-                root / "ops/observability/prometheus.yml"
+                root / "ops/observability/prometheus.protected.yml"
             ),
             "prometheus_rules_sha256": module.protected_release_gate._sha256_path(
                 root / "ops/observability/alerts.yml"
@@ -779,7 +819,10 @@ def _write_valid_external_evidence(
             "alertmanager_docker_architecture": "amd64",
         },
     }
-    payloads: dict[str, bytes] = {"alertmanager.yml": alertmanager_payload}
+    payloads: dict[str, bytes] = {
+        "alertmanager.yml": alertmanager_payload,
+        "dr-release-policy.json": policy_payload,
+    }
     for index, (name, contract) in enumerate(
         sorted(module.EXTERNAL_EVIDENCE_CONTRACTS.items()),
         1,
@@ -1003,12 +1046,12 @@ def _write_valid_internal_evidence(
         ),
     }
     infrastructure = {
-        "evidence_contract_version": 2,
-        "status": "passed",
+        "evidence_contract_version": 3,
+        "status": "development_passed",
         "generated_at": generated_at,
         "git_sha": TEST_SHA,
         "environment": "staging",
-        "full_compose_e2e": "passed",
+        "full_compose_e2e": "development_passed",
         "architecture": "arm64",
         "docker_architecture": "arm64",
         "run_id": str(run_id),
@@ -1033,6 +1076,19 @@ def _write_valid_internal_evidence(
                 "ragflow_https",
                 "smtp_starttls",
             ],
+        },
+        "prometheus_minio_tls": {
+            "status": "passed",
+            "job": "minio",
+            "health": "up",
+            "scrape_url": "https://minio:9000/minio/v2/metrics/cluster",
+            "config_sha256": gate._sha256_path(
+                Path(__file__).parents[2]
+                / "ops/observability/prometheus.protected.yml"
+            ),
+            "ca_file": "/etc/prometheus/tls/ca.crt",
+            "server_name": "minio",
+            "certificate_verification": "required",
         },
         "rabbitmq_probe_run_id": str(run_id),
         "rabbitmq_evidence_sha256": gate._sha256_bytes(rabbitmq_payload),
@@ -1365,6 +1421,7 @@ def test_authorization_and_deployment_handoff_keep_the_exact_main_artifact(
     original_evidence_validator = module.protected_release_gate.validate_evidence_payloads
     for index, evidence_name in enumerate(
         (
+            "dr-release-policy.json",
             "rabbitmq-dlq-replay.json",
             "infrastructure-e2e.json",
             "dgx-spark-evidence.json",

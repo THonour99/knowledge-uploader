@@ -270,6 +270,7 @@ jobs:
             --source-input backend/requirements.txt \
             --source-input frontend/Dockerfile \
             --source-input frontend/package-lock.json \
+            --source-input ops/policies/dr-release-policy.json \
             --repository-root "${GITHUB_WORKSPACE}" \
             --output-dir release-oci
           python scripts/release_oci.py verify \

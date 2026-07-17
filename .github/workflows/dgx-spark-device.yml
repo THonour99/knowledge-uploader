@@ -81,6 +81,13 @@ jobs:
         run: |
           docker compose config --quiet
           docker compose -f docker-compose.yml -f docker-compose.observability.yml config --quiet
+          PROMETHEUS_CONFIG_FILE=./ops/observability/prometheus.protected.yml \
+          PROMETHEUS_TLS_DIR=/run/secrets/prometheus-tls \
+          docker compose \
+            -f docker-compose.yml \
+            -f docker-compose.observability.yml \
+            -f docker-compose.observability.protected.yml \
+            config --quiet
 
       - name: Run isolated full Compose and business E2E
         run: |

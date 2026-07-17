@@ -33,6 +33,12 @@ else:
         ).sensitive_http_header_paths
 
 ROOT = Path(__file__).resolve().parents[1]
+DR_RELEASE_POLICY_CONTRACT_PATH = "ops/policies/dr-release-policy.json"
+DR_RELEASE_POLICY_EVIDENCE = "dr-release-policy.json"
+DR_RELEASE_POLICY_SCHEMA = "knowledge-uploader.dr-release-policy.v1"
+DR_RELEASE_POLICY_KEYS = frozenset(
+    {"schema", "max_rpo_seconds", "max_rto_seconds", "measurement", "owner"}
+)
 EVIDENCE_MAX_AGE = timedelta(hours=2)
 DELIVERY_REQUIRED_FIELDS: dict[str, frozenset[str]] = {
     "webhook_configs": frozenset({"url", "url_file"}),
@@ -98,6 +104,7 @@ REQUIRED_INFRASTRUCTURE_RESULTS = frozenset(
         "ragflow_tls",
         "dlq_protocol",
         "dependency_fault_recovery",
+        "prometheus_minio_tls",
         "cleanup",
     }
 )
@@ -119,6 +126,7 @@ REQUIRED_SERVICE_CONTAINERS = frozenset(
         "rabbitmq",
         "redis",
         "minio",
+        "prometheus",
     }
 )
 REQUIRED_WORKER_QUEUES = frozenset(
@@ -135,8 +143,11 @@ CONTRACT_INPUT_PATHS = frozenset(
     {
         "docker-compose.yml",
         "docker-compose.observability.yml",
+        "docker-compose.observability.protected.yml",
         "ops/observability/prometheus.yml",
+        "ops/observability/prometheus.protected.yml",
         "ops/observability/alerts.yml",
+        DR_RELEASE_POLICY_CONTRACT_PATH,
         "backend/app/workers/rabbitmq_topology.py",
     }
 )
@@ -209,6 +220,7 @@ DR_RECEIPT_KEYS = frozenset(
         "rpo_target_seconds",
         "rto_seconds",
         "rto_target_seconds",
+        "policy_sha256",
         "alembic_revision",
         "database_tables_sha256",
         "minio_missing_objects",
@@ -445,6 +457,20 @@ def _positive_integer(value: object, label: str) -> int:
     return value
 
 
+def _load_dr_release_policy(payload: bytes) -> dict[str, Any]:
+    policy = _parse_evidence_payload(payload, "DR release policy")
+    _exact_keys(policy, DR_RELEASE_POLICY_KEYS, "DR release policy")
+    if policy.get("schema") != DR_RELEASE_POLICY_SCHEMA:
+        raise RuntimeError("DR release policy schema is unsupported")
+    _positive_integer(policy.get("max_rpo_seconds"), "DR policy max_rpo_seconds")
+    _positive_integer(policy.get("max_rto_seconds"), "DR policy max_rto_seconds")
+    for field in ("measurement", "owner"):
+        value = policy.get(field)
+        if not isinstance(value, str) or not value.strip() or len(value) > 256:
+            raise RuntimeError(f"DR policy {field} is invalid")
+    return policy
+
+
 def _exact_keys(value: dict[str, Any], expected: frozenset[str], label: str) -> None:
     if set(value) != expected:
         raise RuntimeError(f"{label} schema mismatch")
@@ -607,9 +633,13 @@ def _infrastructure_e2e_errors(
     git_sha: str,
 ) -> list[str]:
     errors: list[str] = []
-    _require(evidence.get("status") == "passed", "infrastructure E2E did not pass", errors)
     _require(
-        evidence.get("full_compose_e2e") == "passed",
+        evidence.get("status") == "development_passed",
+        "infrastructure E2E raw execution status is invalid",
+        errors,
+    )
+    _require(
+        evidence.get("full_compose_e2e") == "development_passed",
         "infrastructure full Compose E2E is missing",
         errors,
     )
@@ -713,7 +743,7 @@ def _infrastructure_e2e_errors(
 def _infrastructure_resilience_errors(evidence: dict[str, Any]) -> list[str]:
     errors: list[str] = []
     _require(
-        evidence.get("evidence_contract_version") == 2,
+        evidence.get("evidence_contract_version") == 3,
         "infrastructure evidence contract version is unsupported",
         errors,
     )
@@ -761,6 +791,43 @@ def _infrastructure_resilience_errors(evidence: dict[str, Any]) -> list[str]:
     _require(
         evidence.get("tls_certificate_sha256") == tls.get("certificate_bundle_sha256"),
         "legacy TLS bundle digest does not match the structured proof",
+        errors,
+    )
+    raw_prometheus_minio = evidence.get("prometheus_minio_tls")
+    prometheus_minio = (
+        raw_prometheus_minio if isinstance(raw_prometheus_minio, dict) else {}
+    )
+    _require(
+        set(prometheus_minio)
+        == {
+            "status",
+            "job",
+            "health",
+            "scrape_url",
+            "config_sha256",
+            "ca_file",
+            "server_name",
+            "certificate_verification",
+        },
+        "infrastructure Prometheus MinIO TLS schema mismatch",
+        errors,
+    )
+    _require(
+        prometheus_minio.get("status") == "passed"
+        and prometheus_minio.get("job") == "minio"
+        and prometheus_minio.get("health") == "up"
+        and prometheus_minio.get("scrape_url")
+        == "https://minio:9000/minio/v2/metrics/cluster"
+        and prometheus_minio.get("ca_file") == "/etc/prometheus/tls/ca.crt"
+        and prometheus_minio.get("server_name") == "minio"
+        and prometheus_minio.get("certificate_verification") == "required",
+        "infrastructure Prometheus did not prove a verified HTTPS MinIO scrape",
+        errors,
+    )
+    _require(
+        isinstance(prometheus_minio.get("config_sha256"), str)
+        and SHA256_PATTERN.fullmatch(str(prometheus_minio["config_sha256"])) is not None,
+        "infrastructure protected Prometheus config digest is invalid",
         errors,
     )
 
@@ -1079,7 +1146,7 @@ def _promtool_evidence_errors(
     )
     expected_hashes = {
         "prometheus_config_sha256": _sha256_bytes(
-            contracts["ops/observability/prometheus.yml"]
+            contracts["ops/observability/prometheus.protected.yml"]
         ),
         "prometheus_rules_sha256": _sha256_bytes(
             contracts["ops/observability/alerts.yml"]
@@ -1320,6 +1387,8 @@ def _dr_release_evidence_errors(
     receipt: dict[str, Any],
     *,
     now: datetime,
+    policy: Mapping[str, Any],
+    policy_sha256: str,
 ) -> list[str]:
     errors: list[str] = []
     _require(set(receipt) == DR_RECEIPT_KEYS, "DR receipt schema mismatch", errors)
@@ -1331,6 +1400,7 @@ def _dr_release_evidence_errors(
         "minio_restore_point_sha256",
         "offsite_location_sha256",
         "key_version_sha256",
+        "policy_sha256",
     ):
         value = receipt.get(field)
         _require(
@@ -1338,6 +1408,11 @@ def _dr_release_evidence_errors(
             f"DR {field} is invalid",
             errors,
         )
+    _require(
+        receipt.get("policy_sha256") == policy_sha256,
+        "DR receipt policy digest does not match the repository policy",
+        errors,
+    )
     for field in (
         "backup_id",
         "alembic_revision",
@@ -1390,14 +1465,32 @@ def _dr_release_evidence_errors(
     rpo_target = _non_negative_number(receipt.get("rpo_target_seconds"))
     rto = _non_negative_number(receipt.get("rto_seconds"))
     rto_target = _non_negative_number(receipt.get("rto_target_seconds"))
+    max_rpo = _positive_integer(policy.get("max_rpo_seconds"), "DR policy max_rpo_seconds")
+    max_rto = _positive_integer(policy.get("max_rto_seconds"), "DR policy max_rto_seconds")
     _require(
         rpo is not None and rpo_target is not None and rpo_target > 0 and rpo <= rpo_target,
         "restore RPO target missed",
         errors,
     )
     _require(
+        rpo is not None
+        and rpo_target is not None
+        and rpo_target <= max_rpo
+        and rpo <= max_rpo,
+        "restore RPO exceeds the repository policy",
+        errors,
+    )
+    _require(
         rto is not None and rto_target is not None and rto_target > 0 and rto <= rto_target,
         "restore RTO target missed",
+        errors,
+    )
+    _require(
+        rto is not None
+        and rto_target is not None
+        and rto_target <= max_rto
+        and rto <= max_rto,
+        "restore RTO exceeds the repository policy",
         errors,
     )
     for field in ("minio_missing_objects", "minio_orphan_objects", "minio_mismatched_objects"):
@@ -1626,6 +1719,7 @@ def check_contract(
     contracts = _contract_payload_mapping(
         snapshot_contract_payloads() if contract_payloads is None else contract_payloads
     )
+    _load_dr_release_policy(contracts[DR_RELEASE_POLICY_CONTRACT_PATH])
     errors: list[str] = []
     compose = _mapping(
         yaml.safe_load(contracts["docker-compose.yml"].decode("utf-8")),
@@ -1635,9 +1729,21 @@ def check_contract(
         yaml.safe_load(contracts["docker-compose.observability.yml"].decode("utf-8")),
         "observability Compose config",
     )
+    protected_observability = _mapping(
+        yaml.safe_load(
+            contracts["docker-compose.observability.protected.yml"].decode("utf-8")
+        ),
+        "protected observability Compose config",
+    )
     prometheus = _mapping(
         yaml.safe_load(contracts["ops/observability/prometheus.yml"].decode("utf-8")),
         "Prometheus config",
+    )
+    protected_prometheus = _mapping(
+        yaml.safe_load(
+            contracts["ops/observability/prometheus.protected.yml"].decode("utf-8")
+        ),
+        "protected Prometheus config",
     )
     compose_services = _mapping(compose.get("services"), "Compose services")
     backend_api = _mapping(compose_services.get("backend-api"), "backend-api service")
@@ -1650,6 +1756,13 @@ def check_contract(
     prometheus_service = _mapping(
         observability_services.get("prometheus"),
         "Prometheus service",
+    )
+    protected_prometheus_service = _mapping(
+        _mapping(
+            protected_observability.get("services"),
+            "protected observability services",
+        ).get("prometheus"),
+        "protected Prometheus service",
     )
     prometheus_ports = prometheus_service.get("ports")
     _require(
@@ -1674,6 +1787,23 @@ def check_contract(
         "Prometheus has no Alertmanager target",
         errors,
     )
+    protected_volumes = protected_prometheus_service.get("volumes")
+    _require(
+        isinstance(protected_volumes, list)
+        and (
+            "${PROMETHEUS_CONFIG_FILE:?PROMETHEUS_CONFIG_FILE is required}"
+            ":/etc/prometheus/prometheus.yml:ro"
+        )
+        in protected_volumes
+        and (
+            "${PROMETHEUS_TLS_DIR:?PROMETHEUS_TLS_DIR is required}"
+            ":/etc/prometheus/tls:ro"
+        )
+        in protected_volumes,
+        "protected Prometheus config and TLS directory mounts are not required read-only",
+        errors,
+    )
+    errors.extend(_protected_minio_scrape_errors(protected_prometheus))
     errors.extend(
         _topology_contract_errors(
             contracts["backend/app/workers/rabbitmq_topology.py"],
@@ -1704,6 +1834,44 @@ def _prometheus_alertmanager_targets(config: dict[str, Any]) -> set[str]:
             if isinstance(raw_targets, list):
                 targets.update(target for target in raw_targets if isinstance(target, str))
     return targets
+
+
+def _protected_minio_scrape_errors(config: dict[str, Any]) -> list[str]:
+    scrape_configs = config.get("scrape_configs")
+    jobs = (
+        {
+            str(item.get("job_name")): item
+            for item in scrape_configs
+            if isinstance(item, dict)
+        }
+        if isinstance(scrape_configs, list)
+        else {}
+    )
+    minio = jobs.get("minio")
+    errors: list[str] = []
+    _require(isinstance(minio, dict), "protected Prometheus MinIO job is missing", errors)
+    if not isinstance(minio, dict):
+        return errors
+    tls = minio.get("tls_config")
+    _require(minio.get("scheme") == "https", "protected MinIO scrape is not HTTPS", errors)
+    _require(
+        isinstance(tls, dict)
+        and tls.get("ca_file") == "/etc/prometheus/tls/ca.crt"
+        and tls.get("server_name") == "minio"
+        and tls.get("insecure_skip_verify") is False,
+        "protected MinIO scrape does not require the mounted CA and hostname verification",
+        errors,
+    )
+    static_configs = minio.get("static_configs")
+    targets = {
+        target
+        for item in static_configs
+        if isinstance(item, dict) and isinstance(item.get("targets"), list)
+        for target in item["targets"]
+        if isinstance(target, str)
+    } if isinstance(static_configs, list) else set()
+    _require(targets == {"minio:9000"}, "protected MinIO scrape target is invalid", errors)
+    return errors
 
 
 def _topology_contract_errors(payload: bytes, *, filename: str) -> list[str]:
@@ -1848,6 +2016,10 @@ def check_evidence(
             errors,
         )
         payloads = {
+            DR_RELEASE_POLICY_EVIDENCE: _read_stable_regular_file(
+                _safe_evidence_file(evidence_root, DR_RELEASE_POLICY_EVIDENCE),
+                label=DR_RELEASE_POLICY_EVIDENCE,
+            ),
             "alertmanager.yml": _read_stable_regular_file(
                 config_path,
                 label="alertmanager.yml",
@@ -1867,6 +2039,7 @@ def check_evidence(
     else:
         payloads = dict(evidence_payloads)
         required_payloads = {
+            DR_RELEASE_POLICY_EVIDENCE,
             "alertmanager.yml",
             "release-workflow-trust.json",
             *evidence_filenames,
@@ -1877,6 +2050,13 @@ def check_evidence(
                 f"release evidence payload inventory is incomplete: {missing_payloads}"
             )
     config_payload = payloads["alertmanager.yml"]
+    dr_policy_payload = contracts[DR_RELEASE_POLICY_CONTRACT_PATH]
+    dr_policy = _load_dr_release_policy(dr_policy_payload)
+    _require(
+        payloads[DR_RELEASE_POLICY_EVIDENCE] == dr_policy_payload,
+        "DR policy evidence does not match the repository policy bytes",
+        errors,
+    )
     errors.extend(_alertmanager_receiver_errors(config_payload))
     errors.extend(_alertmanager_inline_secret_errors(config_payload))
 
@@ -1936,6 +2116,8 @@ def check_evidence(
         _dr_release_evidence_errors(
             external_receipts["dr-release.json"],
             now=timestamp,
+            policy=dr_policy,
+            policy_sha256=_sha256_bytes(dr_policy_payload),
         )
     )
 
@@ -2078,9 +2260,17 @@ def check_evidence(
         )
     )
 
-    for filename in ("infrastructure-e2e.json", "dgx-spark-evidence.json"):
-        evidence = evidence_by_name[filename]
-        _require(evidence.get("status") == "passed", f"{filename} did not pass", errors)
+    _require(
+        evidence_by_name["infrastructure-e2e.json"].get("status")
+        == "development_passed",
+        "infrastructure-e2e.json raw status is invalid",
+        errors,
+    )
+    _require(
+        evidence_by_name["dgx-spark-evidence.json"].get("status") == "passed",
+        "dgx-spark-evidence.json did not pass",
+        errors,
+    )
     errors.extend(
         _promtool_evidence_errors(
             external_receipts["promtool.json"],
@@ -2090,6 +2280,16 @@ def check_evidence(
     )
     infrastructure = evidence_by_name["infrastructure-e2e.json"]
     errors.extend(_infrastructure_e2e_errors(infrastructure, git_sha=git_sha))
+    raw_prometheus_minio = infrastructure.get("prometheus_minio_tls")
+    prometheus_minio = (
+        raw_prometheus_minio if isinstance(raw_prometheus_minio, dict) else {}
+    )
+    _require(
+        prometheus_minio.get("config_sha256")
+        == _sha256_bytes(contracts["ops/observability/prometheus.protected.yml"]),
+        "infrastructure Prometheus config digest does not match the protected contract",
+        errors,
+    )
     _require(
         infrastructure.get("rabbitmq_probe_run_id") == replay.get("probe_run_id"),
         "infrastructure and RabbitMQ evidence do not share one run identity",

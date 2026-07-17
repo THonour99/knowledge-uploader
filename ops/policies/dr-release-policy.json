@@ -1,0 +1,7 @@
+{
+  "schema": "knowledge-uploader.dr-release-policy.v1",
+  "max_rpo_seconds": 300,
+  "max_rto_seconds": 600,
+  "measurement": "isolated restore drill with paired PostgreSQL and MinIO recovery points",
+  "owner": "platform-operations"
+}

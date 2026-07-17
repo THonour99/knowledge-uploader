@@ -3,7 +3,7 @@ from __future__ import annotations
 import importlib.util
 import json
 import uuid
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from types import ModuleType, SimpleNamespace
 
@@ -27,6 +27,7 @@ REQUIRED_SERVICES = (
     "rabbitmq",
     "redis",
     "minio",
+    "prometheus",
 )
 
 
@@ -38,6 +39,104 @@ def _load_gate() -> ModuleType:
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
     return module
+
+
+def _valid_dr_receipt(gate: ModuleType, *, now: datetime) -> dict[str, object]:
+    policy_payload = (
+        Path(__file__).parents[2] / "ops/policies/dr-release-policy.json"
+    ).read_bytes()
+    return {
+        "backup_id": "20260716T000000Z-aabbccdd",
+        "backup_manifest_sha256": "4" * 64,
+        "restore_evidence_sha256": "5" * 64,
+        "restore_started_at": (now - timedelta(minutes=20)).isoformat(),
+        "restore_completed_at": (now - timedelta(minutes=18)).isoformat(),
+        "rpo_seconds": 60,
+        "rpo_target_seconds": 300,
+        "rto_seconds": 120,
+        "rto_target_seconds": 600,
+        "policy_sha256": gate._sha256_bytes(policy_payload),
+        "alembic_revision": "20260716o001",
+        "database_tables_sha256": "6" * 64,
+        "minio_missing_objects": 0,
+        "minio_orphan_objects": 0,
+        "minio_mismatched_objects": 0,
+        "recovery_pair_id": "recovery-pair-001",
+        "postgres_restore_point_sha256": "d" * 64,
+        "minio_restore_point_sha256": "e" * 64,
+        "postgres_pitr_enabled": True,
+        "last_archived_at": (now - timedelta(minutes=15)).isoformat(),
+        "full_backup_encrypted": True,
+        "full_backup_immutable": True,
+        "offsite_location_sha256": "7" * 64,
+        "retention_until": (now + timedelta(days=31)).isoformat(),
+        "minio_versioning_enabled": True,
+        "minio_replication_enabled": True,
+        "coordinated_snapshot": False,
+        "key_version_sha256": "8" * 64,
+        "decrypt_validation": "passed",
+        "plaintext_emitted": False,
+        "main_chain_smoke": "passed",
+        "cleanup_validation": "passed",
+    }
+
+
+def test_dr_release_policy_allows_stricter_targets() -> None:
+    gate = _load_gate()
+    now = datetime.now(UTC)
+    policy_payload = (
+        Path(__file__).parents[2] / "ops/policies/dr-release-policy.json"
+    ).read_bytes()
+    receipt = _valid_dr_receipt(gate, now=now)
+    receipt.update(
+        {
+            "rpo_target_seconds": 120,
+            "rto_target_seconds": 300,
+        }
+    )
+
+    assert (
+        gate._dr_release_evidence_errors(
+            receipt,
+            now=now,
+            policy=gate._load_dr_release_policy(policy_payload),
+            policy_sha256=gate._sha256_bytes(policy_payload),
+        )
+        == []
+    )
+
+
+@pytest.mark.parametrize(
+    ("field", "value", "expected_error"),
+    (
+        ("policy_sha256", "f" * 64, "policy digest"),
+        ("rpo_target_seconds", 301, "RPO exceeds the repository policy"),
+        ("rto_target_seconds", 601, "RTO exceeds the repository policy"),
+        ("rpo_seconds", 301, "RPO exceeds the repository policy"),
+        ("rto_seconds", 601, "RTO exceeds the repository policy"),
+    ),
+)
+def test_dr_release_policy_rejects_digest_or_limit_widening(
+    field: str,
+    value: object,
+    expected_error: str,
+) -> None:
+    gate = _load_gate()
+    now = datetime.now(UTC)
+    policy_payload = (
+        Path(__file__).parents[2] / "ops/policies/dr-release-policy.json"
+    ).read_bytes()
+    receipt = _valid_dr_receipt(gate, now=now)
+    receipt[field] = value
+
+    errors = gate._dr_release_evidence_errors(
+        receipt,
+        now=now,
+        policy=gate._load_dr_release_policy(policy_payload),
+        policy_sha256=gate._sha256_bytes(policy_payload),
+    )
+
+    assert any(expected_error in error for error in errors)
 
 
 @pytest.mark.parametrize(
@@ -114,6 +213,7 @@ def test_alertmanager_gate_rejects_blackhole_child_route(tmp_path: Path) -> None
 def test_contract_does_not_accept_expected_strings_from_comments(tmp_path: Path) -> None:
     gate = _load_gate()
     (tmp_path / "ops/observability").mkdir(parents=True)
+    (tmp_path / "ops/policies").mkdir(parents=True)
     (tmp_path / "backend/app/workers").mkdir(parents=True)
     (tmp_path / "docker-compose.yml").write_text(
         "# ${BACKEND_API_HOST:-127.0.0.1}:${BACKEND_API_PORT:-18000}:8000\n"
@@ -127,11 +227,22 @@ def test_contract_does_not_accept_expected_strings_from_comments(tmp_path: Path)
         'services:\n  prometheus:\n    ports: ["0.0.0.0:19090:9090"]\n',
         encoding="utf-8",
     )
+    (tmp_path / "docker-compose.observability.protected.yml").write_text(
+        "services:\n  prometheus:\n    volumes: []\n",
+        encoding="utf-8",
+    )
     (tmp_path / "ops/observability/prometheus.yml").write_text(
         "# alertmanager:9093\nalerting:\n  alertmanagers: []\n",
         encoding="utf-8",
     )
+    (tmp_path / "ops/observability/prometheus.protected.yml").write_text(
+        "scrape_configs: []\n",
+        encoding="utf-8",
+    )
     (tmp_path / "ops/observability/alerts.yml").write_text("{}\n", encoding="utf-8")
+    (tmp_path / "ops/policies/dr-release-policy.json").write_bytes(
+        (Path(__file__).parents[2] / "ops/policies/dr-release-policy.json").read_bytes()
+    )
     (tmp_path / "backend/app/workers/rabbitmq_topology.py").write_text(
         "# document_queue ai_queue ragflow_queue notification_queue\n"
         "# x-dead-letter-exchange x-dead-letter-routing-key .dlq\n",
@@ -370,9 +481,9 @@ def test_infrastructure_e2e_requires_run_compose_image_and_worker_identity() -> 
         )
 
     evidence = {
-        "evidence_contract_version": 2,
-        "status": "passed",
-        "full_compose_e2e": "passed",
+        "evidence_contract_version": 3,
+        "status": "development_passed",
+        "full_compose_e2e": "development_passed",
         "architecture": "aarch64",
         "run_id": run_id,
         "compose_project": "knowledge-uploader-dgx-test",
@@ -397,6 +508,16 @@ def test_infrastructure_e2e_requires_run_compose_image_and_worker_identity() -> 
                 "smtp_starttls",
             ],
         },
+        "prometheus_minio_tls": {
+            "status": "passed",
+            "job": "minio",
+            "health": "up",
+            "scrape_url": "https://minio:9000/minio/v2/metrics/cluster",
+            "config_sha256": "6" * 64,
+            "ca_file": "/etc/prometheus/tls/ca.crt",
+            "server_name": "minio",
+            "certificate_verification": "required",
+        },
         "rabbitmq_probe_run_id": run_id,
         "backend_image_revision": TEST_GIT_SHA,
         "backend_image_id": "sha256:" + "c" * 64,
@@ -413,6 +534,7 @@ def test_infrastructure_e2e_requires_run_compose_image_and_worker_identity() -> 
             "workers": "passed",
             "rabbitmq_topology": "passed",
             "minio_tls": "passed",
+            "prometheus_minio_tls": "passed",
             "ragflow_tls": "passed",
             "upload_review_ragflow": "passed",
             "dependency_fault_recovery": "passed",
@@ -463,7 +585,7 @@ def test_promtool_evidence_is_bound_to_exact_configs(tmp_path: Path) -> None:
         "prometheus_rules": "passed",
         "alertmanager_config": "passed",
         "prometheus_config_sha256": gate._sha256_path(
-            Path(__file__).parents[2] / "ops/observability/prometheus.yml"
+            Path(__file__).parents[2] / "ops/observability/prometheus.protected.yml"
         ),
         "prometheus_rules_sha256": gate._sha256_path(
             Path(__file__).parents[2] / "ops/observability/alerts.yml"

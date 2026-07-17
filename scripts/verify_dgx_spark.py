@@ -26,11 +26,16 @@ REQUIRED_RESULTS = (
     "ready",
     "gateway",
     "email_verification_floor",
+    "gateway_tls",
     "workers",
+    "smtp_starttls",
     "rabbitmq_topology",
     "minio_tls",
+    "prometheus_minio_tls",
     "upload_review_ragflow",
+    "ragflow_tls",
     "dlq_protocol",
+    "dependency_fault_recovery",
     "cleanup",
 )
 REQUIRED_SERVICE_CONTAINERS = frozenset(
@@ -51,6 +56,7 @@ REQUIRED_SERVICE_CONTAINERS = frozenset(
         "rabbitmq",
         "redis",
         "minio",
+        "prometheus",
     }
 )
 REQUIRED_WORKER_QUEUES = frozenset(
@@ -192,7 +198,7 @@ def verify(
         compose_project=str(compose_e2e["compose_project"]),
         resolved_compose_sha256=str(compose_e2e["resolved_compose_sha256"]),
         architecture=host_machine,
-        full_compose_e2e=str(compose_e2e["full_compose_e2e"]),
+        full_compose_e2e="passed",
         docker_architecture=docker_architecture,
         gpu_name=gpu_name,
         gpu_driver=gpu_driver,
@@ -259,10 +265,11 @@ def _load_compose_e2e_evidence(
     if not isinstance(raw, dict):
         raise RuntimeError("Compose E2E evidence must be a JSON object")
     expected = {
-        "status": "passed",
+        "evidence_contract_version": 3,
+        "status": "development_passed",
         "git_sha": git_sha,
         "environment": environment,
-        "full_compose_e2e": "passed",
+        "full_compose_e2e": "development_passed",
     }
     for key, expected_value in expected.items():
         if raw.get(key) != expected_value:
@@ -289,8 +296,10 @@ def _load_compose_e2e_evidence(
     if age.total_seconds() < -300 or age.total_seconds() > 7200:
         raise RuntimeError("Compose E2E evidence is stale or from the future")
     results = raw.get("results")
-    missing_results = not isinstance(results, dict) or any(
-        results.get(key) != "passed" for key in REQUIRED_RESULTS
+    missing_results = (
+        not isinstance(results, dict)
+        or set(results) != set(REQUIRED_RESULTS)
+        or any(results.get(key) != "passed" for key in REQUIRED_RESULTS)
     )
     if missing_results:
         raise RuntimeError("Compose E2E evidence is missing required passed results")
@@ -356,7 +365,65 @@ def _load_compose_e2e_evidence(
         or business_probe.get("mock_smtp_delivery") != "passed"
     ):
         raise RuntimeError("Compose E2E email verification behavior is incomplete")
+    _validate_v3_tls_and_fault_evidence(raw)
     return raw
+
+
+def _validate_v3_tls_and_fault_evidence(raw: dict[str, object]) -> None:
+    run_id = str(raw.get("run_id"))
+    tls = raw.get("tls")
+    channels = tls.get("verified_channels") if isinstance(tls, dict) else None
+    if (
+        not isinstance(tls, dict)
+        or tls.get("status") != "passed"
+        or tls.get("certificate_bundle_sha256") != raw.get("tls_certificate_sha256")
+        or not isinstance(channels, list)
+        or set(channels)
+        != {"gateway_https", "minio_https", "ragflow_https", "smtp_starttls"}
+    ):
+        raise RuntimeError("Compose E2E TLS evidence is incomplete")
+    fault_recovery = raw.get("fault_recovery")
+    if not isinstance(fault_recovery, dict) or set(fault_recovery) != {
+        "rabbitmq",
+        "redis",
+        "minio",
+        "ragflow",
+    }:
+        raise RuntimeError("Compose E2E fault recovery evidence is incomplete")
+    targets: set[str] = set()
+    for dependency in ("rabbitmq", "redis", "minio", "ragflow"):
+        entry = fault_recovery.get(dependency)
+        if (
+            not isinstance(entry, dict)
+            or entry.get("status") != "passed"
+            or entry.get("run_id") != run_id
+            or entry.get("event_loss_detected") is not False
+            or entry.get("duplicate_remote_document") is not False
+            or entry.get("remote_upload_delta") != 1
+            or entry.get("remote_document_count") != 1
+        ):
+            raise RuntimeError("Compose E2E fault recovery evidence is incomplete")
+        target = entry.get("target_file_id")
+        try:
+            targets.add(str(uuid.UUID(str(target))))
+        except ValueError as error:
+            raise RuntimeError("Compose E2E fault recovery target is invalid") from error
+    if len(targets) != 4:
+        raise RuntimeError("Compose E2E fault recovery targets are not unique")
+    prometheus = raw.get("prometheus_minio_tls")
+    if (
+        not isinstance(prometheus, dict)
+        or prometheus.get("status") != "passed"
+        or prometheus.get("health") != "up"
+        or prometheus.get("scrape_url")
+        != "https://minio:9000/minio/v2/metrics/cluster"
+        or prometheus.get("ca_file") != "/etc/prometheus/tls/ca.crt"
+        or prometheus.get("server_name") != "minio"
+        or prometheus.get("certificate_verification") != "required"
+        or not isinstance(prometheus.get("config_sha256"), str)
+        or SHA256_PATTERN.fullmatch(str(prometheus["config_sha256"])) is None
+    ):
+        raise RuntimeError("Compose E2E Prometheus MinIO TLS evidence is incomplete")
 
 
 def _image_revision(image: str) -> str:

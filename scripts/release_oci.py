@@ -44,12 +44,14 @@ MAIN_WORKFLOW: Final = ".github/workflows/knowledge-uploader.yml"
 DGX_WORKFLOW: Final = ".github/workflows/dgx-spark-device.yml"
 PROTECTED_WORKFLOW: Final = ".github/workflows/protected-release.yml"
 EXTERNAL_WORKFLOW: Final = ".github/workflows/protected-external-evidence.yml"
+DR_RELEASE_POLICY_INPUT_PATH: Final = "ops/policies/dr-release-policy.json"
 REQUIRED_INPUT_PATHS: Final = frozenset(
     {
         "backend/Dockerfile",
         "backend/requirements.txt",
         "frontend/Dockerfile",
         "frontend/package-lock.json",
+        DR_RELEASE_POLICY_INPUT_PATH,
     }
 )
 REQUIRED_PLATFORMS: Final = frozenset({("linux", "amd64", None), ("linux", "arm64", None)})
@@ -66,6 +68,7 @@ REQUIRED_RELEASE_EVIDENCE: Final = frozenset(
     {
         "alertmanager-notification.json",
         "alertmanager.yml",
+        "dr-release-policy.json",
         "dr-release.json",
         "email-delivery.json",
         "promtool.json",
@@ -1321,9 +1324,13 @@ def bind_dgx_evidence(
     infrastructure = infrastructure_snapshot.parsed
     dgx = dgx_snapshot.parsed
     sha = _git_sha(git_sha, "git_sha")
+    expected_statuses = {
+        "infrastructure": "development_passed",
+        "DGX": "passed",
+    }
     for name, evidence in (("infrastructure", infrastructure), ("DGX", dgx)):
-        if evidence.get("status") != "passed":
-            raise ContractError(f"{name} evidence did not pass")
+        if evidence.get("status") != expected_statuses[name]:
+            raise ContractError(f"{name} evidence status is invalid")
         if evidence.get("git_sha") != sha or evidence.get("environment") != environment:
             raise ContractError(f"{name} evidence identity mismatch")
     if str(dgx.get("architecture", "")).lower() not in {"arm64", "aarch64"}:
@@ -1717,6 +1724,25 @@ def _snapshot_release_authorization_evidence(
     }
 
 
+def _verify_dr_policy_provenance_binding(
+    metadata: Mapping[str, object],
+    *,
+    policy_payload: bytes,
+) -> None:
+    policy_input_sha256: object | None = None
+    for index, raw in enumerate(
+        _sequence(metadata.get("inputs"), "release provenance.inputs")
+    ):
+        record = _mapping(raw, f"release provenance.inputs[{index}]")
+        if record.get("path") == DR_RELEASE_POLICY_INPUT_PATH:
+            policy_input_sha256 = record.get("sha256")
+            break
+    if policy_input_sha256 != _sha256_bytes(policy_payload):
+        raise ContractError(
+            "release provenance DR policy checksum does not match the authorized contract"
+        )
+
+
 def authorize_release(
     *,
     evidence_dir: Path,
@@ -1770,6 +1796,10 @@ def authorize_release(
         now=timestamp,
         provenance_snapshot=provenance_snapshot,
         checksum_snapshot=provenance_checksum,
+    )
+    _verify_dr_policy_provenance_binding(
+        metadata,
+        policy_payload=contract_payloads[DR_RELEASE_POLICY_INPUT_PATH],
     )
     provenance_sha256 = provenance_snapshot.sha256
     binding_snapshot = _parse_json_snapshot(

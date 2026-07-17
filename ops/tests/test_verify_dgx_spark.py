@@ -31,6 +31,7 @@ REQUIRED_SERVICES = (
     "rabbitmq",
     "redis",
     "minio",
+    "prometheus",
 )
 
 
@@ -47,8 +48,21 @@ def _load_verifier() -> ModuleType:
 
 def _evidence(*, generated_at: datetime | None = None) -> dict[str, object]:
     run_id = str(uuid.uuid4())
+    fault_recovery = {
+        dependency: {
+            "status": "passed",
+            "run_id": run_id,
+            "target_file_id": str(uuid.uuid4()),
+            "remote_upload_delta": 1,
+            "remote_document_count": 1,
+            "event_loss_detected": False,
+            "duplicate_remote_document": False,
+        }
+        for dependency in ("rabbitmq", "redis", "minio", "ragflow")
+    }
     return {
-        "status": "passed",
+        "evidence_contract_version": 3,
+        "status": "development_passed",
         "generated_at": (generated_at or datetime.now(UTC)).isoformat(),
         "git_sha": TEST_GIT_SHA,
         "environment": "staging",
@@ -58,7 +72,7 @@ def _evidence(*, generated_at: datetime | None = None) -> dict[str, object]:
         "cleanup_status": "passed",
         "resolved_compose_sha256": "d" * 64,
         "architecture": "aarch64",
-        "full_compose_e2e": "passed",
+        "full_compose_e2e": "development_passed",
         "backend_image": "backend:test",
         "backend_image_revision": TEST_GIT_SHA,
         "backend_image_id": TEST_BACKEND_IMAGE_ID,
@@ -67,6 +81,27 @@ def _evidence(*, generated_at: datetime | None = None) -> dict[str, object]:
         "frontend_image_id": TEST_FRONTEND_IMAGE_ID,
         "rabbitmq_probe_run_id": run_id,
         "tls_certificate_sha256": "e" * 64,
+        "tls": {
+            "status": "passed",
+            "certificate_bundle_sha256": "e" * 64,
+            "verified_channels": [
+                "gateway_https",
+                "minio_https",
+                "ragflow_https",
+                "smtp_starttls",
+            ],
+        },
+        "fault_recovery": fault_recovery,
+        "prometheus_minio_tls": {
+            "status": "passed",
+            "job": "minio",
+            "health": "up",
+            "scrape_url": "https://minio:9000/minio/v2/metrics/cluster",
+            "config_sha256": "f" * 64,
+            "ca_file": "/etc/prometheus/tls/ca.crt",
+            "server_name": "minio",
+            "certificate_verification": "required",
+        },
         "service_container_ids": {
             service: f"{index:064x}" for index, service in enumerate(REQUIRED_SERVICES, 1)
         },
@@ -87,11 +122,16 @@ def _evidence(*, generated_at: datetime | None = None) -> dict[str, object]:
             "ready": "passed",
             "gateway": "passed",
             "email_verification_floor": "passed",
+            "gateway_tls": "passed",
             "workers": "passed",
+            "smtp_starttls": "passed",
             "rabbitmq_topology": "passed",
             "minio_tls": "passed",
+            "prometheus_minio_tls": "passed",
             "upload_review_ragflow": "passed",
+            "ragflow_tls": "passed",
             "dlq_protocol": "passed",
+            "dependency_fault_recovery": "passed",
             "cleanup": "passed",
         },
     }
@@ -224,6 +264,8 @@ def test_verifier_binds_device_proof_to_compose_run_and_image_content(
     assert proof.resolved_compose_sha256 == infrastructure["resolved_compose_sha256"]
     assert proof.backend_image_id == infrastructure["backend_image_id"]
     assert proof.frontend_image_id == infrastructure["frontend_image_id"]
+    assert proof.status == "passed"
+    assert proof.full_compose_e2e == "passed"
     assert proof.compose_e2e_evidence_sha256 == hashlib.sha256(original_payload).hexdigest()
     assert evidence_path.read_bytes() == replacement_payload
     tag_uses = [
@@ -259,7 +301,7 @@ def test_compose_e2e_evidence_accepts_matching_complete_proof(tmp_path: Path) ->
         architecture="arm64",
     )
 
-    assert loaded["full_compose_e2e"] == "passed"
+    assert loaded["full_compose_e2e"] == "development_passed"
 
 
 @pytest.mark.parametrize(
@@ -268,6 +310,8 @@ def test_compose_e2e_evidence_accepts_matching_complete_proof(tmp_path: Path) ->
         ("git_sha", "wrong"),
         ("environment", "production"),
         ("architecture", "amd64"),
+        ("status", "passed"),
+        ("status", "failed"),
         ("full_compose_e2e", "skipped"),
         ("source_worktree_clean", False),
         ("cleanup_status", "failed"),
@@ -332,13 +376,26 @@ def test_verifier_rejects_compose_evidence_for_different_image_content(
         )
 
 
-def test_compose_e2e_evidence_rejects_missing_protocol_result(tmp_path: Path) -> None:
+@pytest.mark.parametrize(
+    "result_name",
+    (
+        "gateway_tls",
+        "smtp_starttls",
+        "ragflow_tls",
+        "dependency_fault_recovery",
+        "prometheus_minio_tls",
+    ),
+)
+def test_compose_e2e_evidence_rejects_missing_protocol_result(
+    tmp_path: Path,
+    result_name: str,
+) -> None:
     verifier = _load_verifier()
     evidence_path = tmp_path / "infrastructure-e2e.json"
     evidence = _evidence()
     results = evidence["results"]
     assert isinstance(results, dict)
-    results["dlq_protocol"] = "skipped"
+    del results[result_name]
     _write_evidence(evidence_path, evidence)
 
     with pytest.raises(RuntimeError, match="required passed results"):

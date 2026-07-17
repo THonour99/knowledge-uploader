@@ -35,7 +35,77 @@ artifact id/digest + provenance checksum + OCI archive/index/platform manifest/c
 |---|---|---|
 | 主 CI 制品包 | `.github/workflows/knowledge-uploader.yml` | OCI archives、`release-oci-provenance.*` |
 | DGX 实机包 | `.github/workflows/dgx-spark-device.yml` | infrastructure、DLQ、DGX、`dgx-oci-consumption.json`、主 CI provenance、DGX trust summary |
-| 外部运维包 | `.github/workflows/protected-external-evidence.yml` | alert delivery、DR、email、Alertmanager、promtool |
+| 外部运维包 | `.github/workflows/protected-external-evidence.yml` | alert delivery、DR 策略与演练、email、Alertmanager、promtool |
+
+
+### 外部源收据 v1（严格契约）
+
+外部 collector 不执行告警投递、DR 或 SMTP 演练，也不生成或自证任何 source `passed`；它只会
+对独立 validator source 再执行一次 promtool/amtool 重验。四种演练分别生成独立 source 文件；
+共同顶层字段必须且只能是：
+
+`schema`、`generated_at`、`git_sha`、`environment`、`source_run_id`、
+`source_run_attempt`、`source_tool`、`status`、`receipt`。
+
+`source_run_id` 必须由实际接收器/演练/探针/验证器为该次执行生成 UUID，不能使用 GitHub
+run id；四份 source 的 `(source_run_id, source_run_attempt)` 必须互不相同。时间必须含时区且在
+两小时窗口内，Git SHA 与 environment 必须相同，`status` 必须来自对应工具的真实结果。JSON
+拒绝重复 key、未知字段、NaN/Infinity、符号链接和读取期间变化；投影中禁止邮箱、原始
+Message-ID、收件人、正文、URL userinfo、API key 与 bearer token。
+
+| Source 文件 / schema / 生成责任 | `receipt` 的 exact keys |
+|---|---|
+| `alertmanager-notification.json` / `knowledge-uploader.alertmanager-webhook-source.v1` / 独立 webhook receiver | `alert_name`, `alert_fingerprint`, `receiver_name`, `receiver_type`, `webhook_delivery_id_sha256`, `webhook_receipt_sha256`, `webhook_status_code`, `firing_at`, `delivered_at`, `resolved_at` |
+| `dr-release.json` / `knowledge-uploader.dr-release-source.v1` / 隔离 backup-restore drill | `backup_id`, `backup_manifest_sha256`, `restore_evidence_sha256`, `restore_started_at`, `restore_completed_at`, `rpo_seconds`, `rpo_target_seconds`, `rto_seconds`, `rto_target_seconds`, `policy_sha256`, `alembic_revision`, `database_tables_sha256`, `minio_missing_objects`, `minio_orphan_objects`, `minio_mismatched_objects`, `recovery_pair_id`, `postgres_restore_point_sha256`, `minio_restore_point_sha256`, `postgres_pitr_enabled`, `last_archived_at`, `full_backup_encrypted`, `full_backup_immutable`, `offsite_location_sha256`, `retention_until`, `minio_versioning_enabled`, `minio_replication_enabled`, `coordinated_snapshot`, `key_version_sha256`, `decrypt_validation`, `plaintext_emitted`, `main_chain_smoke`, `cleanup_validation` |
+| `email-delivery.json` / `knowledge-uploader.smtp-delivery-source.v1` / SMTP delivery probe | `registration_delivery`, `password_reset_delivery`, `registration_message_id_sha256`, `password_reset_message_id_sha256`, `registration_smtp_receipt_sha256`, `password_reset_smtp_receipt_sha256`, `registration_smtp_result`, `password_reset_smtp_result`, `registration_delivered_at`, `password_reset_delivered_at`, `persistent_message`, `broker_expiry_at_or_before_token_expiry`, `publisher_confirm`, `encrypted_envelope_observed`, `plaintext_token_observed`, `dlq_plaintext_token_observed`, `publish_failure_public_response_indistinguishable`, `publish_failure_public_statuses`, `publish_failure_metric_recorded`, `retry_issued_fresh_token`, `smtp_delivery_semantics` |
+| `validator-receipt.json` / `knowledge-uploader.observability-validator-source.v1` / 独立 observability validator | `prometheus_config`, `prometheus_rules`, `alertmanager_config`, 三个 config/rules SHA-256，以及 Prometheus/Alertmanager 各自的固定 `image`, `manifest_list_digest`, 实际 `image_id`, `image_os`, `image_architecture`, `docker_architecture` |
+
+Validator 的完整 exact keys 为三个结果字段 `prometheus_config`、`prometheus_rules`、
+`alertmanager_config`；三个输入摘要 `prometheus_config_sha256`、
+`prometheus_rules_sha256`、`alertmanager_config_sha256`；以及两组分别以 `prometheus_` 和
+`alertmanager_` 开头的 `image`、`manifest_list_digest`、`image_id`、`image_os`、
+`image_architecture`、`docker_architecture`。代码权威源是
+`scripts/prepare_external_release_evidence.py` 中的 `VALIDATOR_RECEIPT_KEYS`，checker 必须保持
+同一集合。修改字段前必须同步 collector、checker、OCI authorization 和契约测试；不能通过
+增加“兼容字段”绕过 exact-key 校验。
+
+Collector 输出不是 source 原文复制。每份安全投影顶层必须且只能包含：
+
+`schema`、`generated_at`、`git_sha`、`environment`、`collector_run_id`、
+`collector_run_attempt`、`status`、`source`、`receipt`。
+
+其中 `collector_run_id`/`collector_run_attempt` 必须等于
+`.github/workflows/protected-external-evidence.yml` 的实际 GitHub run/attempt。`source` 必须且
+只能包含 `schema`、`generated_at`、`run_id`、`run_attempt`、`tool`、`file_sha256`、
+`canonical_sha256`；后两个摘要分别绑定稳定读取的 source 字节和规范化 source 对象。输出
+schema 分别为：
+
+- `knowledge-uploader.alertmanager-webhook-evidence.v1`
+- `knowledge-uploader.dr-release-evidence.v1`
+- `knowledge-uploader.smtp-delivery-evidence.v1`
+- `knowledge-uploader.observability-validator-evidence.v1`
+
+Validator source 必须先独立声明结果，collector 再用固定 digest 镜像执行真实 promtool/amtool，
+并逐字段核对实际 image ID、OS/架构、daemon 架构和规则/配置摘要；Prometheus 校验和收据绑定
+`ops/observability/prometheus.protected.yml`，不能用开发配置替代。collector 不能凭命令退出码
+新造一份 `passed` 收据。`alertmanager.yml` 只复制稳定快照，实际 receiver 必须使用
+`*_file` secret 引用；内联 URL/token 会被拒绝。
+
+Alertmanager 的所有嵌套 `http_config.http_headers.*.secrets` 只要非空即拒绝。Header 名先
+casefold，再移除大小写、连字符和下划线差异；内联 `values` 仅允许规范化后的 `Accept`、
+`Content-Type`、`User-Agent` 三个公共名称。任何未知、自定义或凭据类 Header 均 fail-closed，
+必须改用 `files`；空值不算配置，扫描错误只报告字段路径，绝不回显值。
+
+版本控制的 `ops/policies/dr-release-policy.json` 是 DR 发布上限的唯一权威源：当前最大
+RPO 为 300 秒、最大 RTO 为 600 秒。演练收据的 `policy_sha256` 必须等于该文件稳定读取字节的
+SHA-256；自报 target 可以更严格，但不得大于策略，实际值必须同时不超过自报 target 与策略。
+Collector 原样输出 `dr-release-policy.json`，checker 比较其精确字节；主 CI 又把策略文件作为
+OCI source input，发布授权会核对 provenance 中的策略摘要。任一策略、收据、证据快照或摘要
+被替换，授权或部署 handoff 都必须失败。
+
+本地 fixture 只证明 fail-closed 契约。当前没有本仓库可验证的真实 webhook、SMTP、隔离 DR
+和外部 validator 四份 source receipts，因此外部执行状态仍为 **PENDING**；不得把示例、单测
+或 collector 成功当成发布通过。
 
 `release_workflow_trust.py` 从 GitHub API 验证 repository id/full name、固定 workflow path、event、
 exact `head_sha`、run attempt、success、时间窗口和 artifact digest。所有 run id 在一次授权中必须
@@ -80,7 +150,12 @@ protected ref、Git SHA、subject digest，不能退回 tag 或重新构建。
 5. 手动运行 `Protected release evidence gate`，输入 main CI、DGX、外部证据各自的 run id 与
    attempt。在线 trust summary 固定三份来源 artifact 的 id/digest，下载步骤只消费这些 ID；
    门禁随后要求 main/DGX provenance 逐字节一致，白名单复制证据，运行
-   `check_protected_release.py`，随后生成 30 分钟有效的 `release-authorization.json`。
+   `check_protected_release.py`。生成授权时 `release_oci.py authorize` 不复用前一步的
+   成功结论：它会再次执行四份 receipt 的 exact-key 与完整语义校验。每份外部 JSON 和
+   `alertmanager.yml` 都以 `lstat -> O_NOFOLLOW open -> fstat -> read -> fstat/lstat` 单次
+   稳定读取；解析、语义判断与 authorization 的 `evidence_sha256` 只使用该次读取的同一
+   内存 payload。任何 symlink、inode/size/mtime 变化、路径交换或解析错误均固定失败且不回显
+   原始证据。随后才生成 30 分钟有效的 `release-authorization.json`。
 6. 最终 artifact 名为
    `protected-release-validated-<SHA>-<environment>-<release-run>-<attempt>`。授权文件记录原始
    main CI bundle artifact id/digest、DGX/外部 artifact id/digest、每个 OCI digest、四个
@@ -106,7 +181,9 @@ python scripts/release_oci.py verify-deployment `
 ```
 
 该命令复验 authorization checksum/TTL、protected ref、run 唯一性、artifact/provenance 身份，
-并重新哈希两个 OCI archives、index、manifest、config、SBOM、provenance 与 base materials。
+稳定重读 authorization 中列出的全部证据并逐一核对 `evidence_sha256`，同时重新哈希两个 OCI
+archives、index、manifest、config、SBOM、provenance 与 base materials。因此授权后替换外部
+receipt/config 会在部署交接时失败。
 随后才可运行 `release_oci.py load-arm64`，并在启动后核对容器 `.Image`/本地 image ID 等于授权
 中的 config digest。任一 digest 不同立即停止；禁止用同 SHA 重建、`:latest` 或本地 tag 兜底。
 

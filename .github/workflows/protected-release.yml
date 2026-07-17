@@ -150,6 +150,7 @@ jobs:
           external_required = {
               "alertmanager-notification.json",
               "alertmanager.yml",
+              "dr-release-policy.json",
               "dr-release.json",
               "email-delivery.json",
               "promtool.json",
