@@ -218,6 +218,57 @@ async def test_private_views_are_owner_only_and_page_permissions_are_enforced() 
     assert statistics.status_code == 422
 
 
+async def test_responsible_view_rejects_tag_filter_not_supported_by_listing_api() -> None:
+    department_id = await _create_department(name="负责人契约", code="owner-contract")
+    owner = await _create_user(
+        email="responsible@company.com",
+        role="employee",
+        department_id=department_id,
+    )
+
+    response = await _request(
+        owner,
+        "POST",
+        "/api/saved-views",
+        json=_create_payload(
+            name="不支持的标签组合",
+            query_definition={
+                "relationship": "responsible",
+                "tag_id": str(uuid.uuid4()),
+            },
+        ),
+    )
+
+    assert response.status_code == 422
+    assert response.json()["detail"]["error_code"] == "SAVED_VIEW_INVALID_DEFINITION"
+
+    valid = await _request(
+        owner,
+        "POST",
+        "/api/saved-views",
+        json=_create_payload(
+            name="负责人视图",
+            query_definition={"relationship": "responsible"},
+        ),
+    )
+    assert valid.status_code == 201
+
+    update = await _request(
+        owner,
+        "PATCH",
+        f"/api/saved-views/{valid.json()['data']['id']}",
+        json={
+            "row_version": 1,
+            "query_definition": {
+                "relationship": "responsible",
+                "tag_id": str(uuid.uuid4()),
+            },
+        },
+    )
+    assert update.status_code == 422
+    assert update.json()["detail"]["error_code"] == "SAVED_VIEW_INVALID_DEFINITION"
+
+
 async def test_department_access_is_live_scoped_and_system_admin_is_global() -> None:
     department_a = await _create_department(name="一部", code="d1")
     department_b = await _create_department(name="二部", code="d2")

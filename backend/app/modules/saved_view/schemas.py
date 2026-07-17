@@ -122,6 +122,12 @@ class MyFilesQueryDefinition(BaseModel):
     order: SortOrder = "desc"
     page_size: int = Field(default=20, ge=1, le=100)
 
+    @model_validator(mode="after")
+    def reject_unsupported_responsible_filters(self) -> MyFilesQueryDefinition:
+        if self.relationship == "responsible" and self.tag_id is not None:
+            raise ValueError("tag_id is not supported for responsible documents")
+        return self
+
 
 class ReviewFilesQueryDefinition(BaseModel):
     model_config = ConfigDict(extra="forbid")
