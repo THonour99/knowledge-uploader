@@ -18,7 +18,7 @@ from app.core.ragflow_runtime import (
 )
 from app.core.review_policy import review_claim_expiry, review_submission_times
 from app.core.runtime_config import get_config
-from app.modules.document.schemas import FileDraftUpdateRequest
+from app.modules.document.schemas import FileDraftUpdateRequest, effective_expiry_status
 from app.modules.user.schemas import AuthUserRecord
 
 from . import events, exceptions
@@ -1031,10 +1031,24 @@ class ReviewService:
         request: FileDraftUpdateRequest,
         context: RequestContext,
     ) -> ReviewFileRecord:
+        if not has_assigned_department(current_user):
+            raise exceptions.department_assignment_required()
+        current = await self._repository.get_file(file_id)
+        if current is None or current.uploader_id != current_user.id:
+            raise exceptions.file_not_found()
+        if current.status not in DRAFT_EDITABLE_STATUSES:
+            raise exceptions.draft_metadata_locked()
+
         values: dict[str, object] = {}
-        changed_fields = request.model_fields_set & {"title", "description", "visibility"}
+        expiry_notification_basis_changed = False
+        changed_fields = request.model_fields_set & {
+            "title",
+            "description",
+            "visibility",
+            "owner_id",
+            "expires_at",
+        }
         if "title" in changed_fields:
-            # Schema validation rejects null and strips surrounding whitespace.
             values["title"] = request.title
         if "description" in changed_fields:
             values["description"] = clean_optional_text(request.description)
@@ -1042,6 +1056,34 @@ class ReviewService:
             if request.visibility is None:
                 raise exceptions.invalid_visibility()
             values["visibility"] = request.visibility
+        if "owner_id" in changed_fields:
+            owner_id = request.owner_id
+            if owner_id is None or not await self._repository.is_valid_document_owner(
+                owner_id=owner_id,
+                department_id=current.department_id,
+            ):
+                raise exceptions.invalid_document_owner()
+            values["owner_id"] = owner_id
+            expiry_notification_basis_changed = owner_id != current.owner_id
+        if "expires_at" in changed_fields:
+            expires_at = request.expires_at
+            if expires_at is not None and expires_at.tzinfo is None:
+                raise exceptions.invalid_expiry()
+            normalized_expiry = expires_at.astimezone(UTC) if expires_at is not None else None
+            current_expiry = (
+                current.expires_at.astimezone(UTC) if current.expires_at is not None else None
+            )
+            expiry_changed = normalized_expiry != current_expiry
+            expiry_notification_basis_changed = expiry_notification_basis_changed or expiry_changed
+            if expiry_changed:
+                values["expires_at"] = normalized_expiry
+                values["expiry_status"] = effective_expiry_status(
+                    expires_at=normalized_expiry,
+                    stored_status=None,
+                )
+        if expiry_notification_basis_changed:
+            values["expiry_warning_sent_at"] = None
+            values["expiry_expired_sent_at"] = None
 
         file = await self._repository.update_owner_draft_metadata(
             file_id=file_id,
@@ -1051,11 +1093,6 @@ class ReviewService:
             values=values,
         )
         if file is None:
-            current = await self._repository.get_file(file_id)
-            if current is None or current.uploader_id != current_user.id:
-                raise exceptions.file_not_found()
-            if current.status not in DRAFT_EDITABLE_STATUSES:
-                raise exceptions.draft_metadata_locked()
             raise exceptions.file_version_conflict()
 
         await record_audit_log(

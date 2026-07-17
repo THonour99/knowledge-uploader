@@ -136,9 +136,7 @@ async def _create_file(
     from app.modules.document.models import File
 
     submitted_at = datetime.now(UTC) if status_value == "pending_review" else None
-    review_due_at = (
-        submitted_at + timedelta(hours=24) if submitted_at is not None else None
-    )
+    review_due_at = submitted_at + timedelta(hours=24) if submitted_at is not None else None
     file = File(
         original_name="phase4-handbook.pdf",
         title="phase4-handbook.pdf",
@@ -172,6 +170,62 @@ async def _create_file(
         await session.commit()
         await session.refresh(file)
         return file.id
+
+
+async def _create_incomplete_version_switch_task(
+    *,
+    uploader_id: UUID,
+    department_id: UUID = UNASSIGNED_DEPARTMENT_ID,
+    task_status: str = "failed",
+    retry_count: int = 3,
+    max_retry_count: int = 3,
+) -> tuple[UUID, UUID, UUID]:
+    from app.core.database import AsyncSessionFactory
+    from app.modules.document.models import File
+    from app.modules.ragflow.models import SyncTask
+
+    predecessor_id = await _create_file(
+        uploader_id=uploader_id,
+        department_id=department_id,
+        status_value="parsed",
+        review_status="approved",
+        hash_value="3" * 64,
+        ragflow_dataset_id="reconcile-dataset",
+        ragflow_document_id="reconcile-v1",
+        ragflow_parse_status="DONE",
+    )
+    candidate_id = await _create_file(
+        uploader_id=uploader_id,
+        department_id=department_id,
+        status_value="parsed",
+        review_status="approved",
+        hash_value="4" * 64,
+        ragflow_dataset_id="reconcile-dataset",
+        ragflow_document_id="reconcile-v2",
+        ragflow_parse_status="DONE",
+    )
+    async with AsyncSessionFactory() as session:
+        predecessor = await session.get(File, predecessor_id)
+        candidate = await session.get(File, candidate_id)
+        assert predecessor is not None and candidate is not None
+        candidate.is_current_version = False
+        await session.flush()
+        candidate.series_id = predecessor.series_id
+        candidate.version_number = 2
+        candidate.replaces_file_id = predecessor.id
+        candidate.replacement_remote_action = "archive"
+        candidate.version_switch_status = "pending"
+        task = SyncTask(
+            file_id=candidate_id,
+            task_type="ragflow_upload",
+            status=task_status,
+            retry_count=retry_count,
+            max_retry_count=max_retry_count,
+        )
+        session.add(task)
+        await session.commit()
+        await session.refresh(task)
+        return predecessor_id, candidate_id, task.id
 
 
 async def _create_category_and_mapping(
@@ -487,12 +541,17 @@ async def test_employee_cannot_get_retry_or_cancel_tasks(task_client: AsyncClien
             headers={"Authorization": f"Bearer {token}"},
         ),
         await task_client.post(
+            f"/api/tasks/{task_id}/reconcile-version-switch",
+            headers={"Authorization": f"Bearer {token}"},
+            json={"reason": "unauthorized"},
+        ),
+        await task_client.post(
             f"/api/tasks/{task_id}/cancel",
             headers={"Authorization": f"Bearer {token}"},
         ),
     ]
 
-    assert [response.status_code for response in responses] == [403, 403, 403]
+    assert [response.status_code for response in responses] == [403, 403, 403, 403]
 
 
 async def test_failed_task_can_be_retried(task_client: AsyncClient) -> None:
@@ -703,6 +762,497 @@ async def test_cancel_queued_task_marks_canceled(task_client: AsyncClient) -> No
     assert data["logs"][-1]["status"] == "canceled"
 
 
+async def test_incomplete_version_switch_cancel_and_exhausted_reconcile_are_safe(
+    task_client: AsyncClient,
+) -> None:
+    from app.core.database import AsyncSessionFactory
+    from app.core.outbox import EventOutbox
+    from app.modules.audit.models import AuditLog
+    from app.modules.document.models import File
+    from app.modules.ragflow import events
+    from app.modules.ragflow.models import SyncTask
+
+    token = await _create_admin_token(task_client)
+    uploader_id = await _create_user(
+        email="version-reconcile-owner@company.com",
+        password="password123",
+    )
+    predecessor_id = await _create_file(
+        uploader_id=uploader_id,
+        status_value="parsed",
+        review_status="approved",
+        hash_value="1" * 64,
+        ragflow_dataset_id="version-reconcile-dataset",
+        ragflow_document_id="version-reconcile-v1",
+        ragflow_parse_status="DONE",
+    )
+    candidate_id = await _create_file(
+        uploader_id=uploader_id,
+        status_value="parsed",
+        review_status="approved",
+        hash_value="2" * 64,
+        ragflow_dataset_id="version-reconcile-dataset",
+        ragflow_document_id="version-reconcile-v2",
+        ragflow_parse_status="DONE",
+    )
+    async with AsyncSessionFactory() as session:
+        predecessor = await session.get(File, predecessor_id)
+        candidate = await session.get(File, candidate_id)
+        assert predecessor is not None and candidate is not None
+        candidate.is_current_version = False
+        await session.flush()
+        candidate.series_id = predecessor.series_id
+        candidate.version_number = 2
+        candidate.replaces_file_id = predecessor.id
+        candidate.replacement_remote_action = "archive"
+        candidate.version_switch_status = "pending"
+        task = SyncTask(
+            file_id=candidate_id,
+            task_type="ragflow_upload",
+            status="queued",
+            retry_count=3,
+            max_retry_count=3,
+        )
+        session.add(task)
+        await session.commit()
+        await session.refresh(task)
+        task_id = task.id
+
+    cancel = await task_client.post(
+        f"/api/tasks/{task_id}/cancel",
+        headers={"Authorization": f"Bearer {token}"},
+    )
+    assert cancel.status_code == 409
+    assert cancel.json()["error_code"] == "VALIDATION_ERROR"
+    assert cancel.json()["message"] == "an incomplete version switch task cannot be canceled"
+
+    async with AsyncSessionFactory() as session:
+        task = await session.get(SyncTask, task_id)
+        assert task is not None
+        task.status = "failed"
+        task.error_message = "version activation interrupted"
+        task.reconcile_attempt_count = 3
+        await session.commit()
+
+    ordinary_retry = await task_client.post(
+        f"/api/tasks/{task_id}/retry",
+        headers={"Authorization": f"Bearer {token}"},
+    )
+    assert ordinary_retry.status_code == 400
+    assert ordinary_retry.json()["message"] == "task cannot be retried"
+
+    reason = "远端激活中断, 已人工核对旧版本不可删除"
+    reconciled = await task_client.post(
+        f"/api/tasks/{task_id}/reconcile-version-switch",
+        headers={"Authorization": f"Bearer {token}"},
+        json={"reason": reason},
+    )
+    assert reconciled.status_code == 200, reconciled.text
+    data = reconciled.json()["data"]
+    assert data["status"] == "queued"
+    assert data["retry_count"] == 3
+    assert data["max_retry_count"] == 3
+
+    async with AsyncSessionFactory() as session:
+        task = await session.get(SyncTask, task_id)
+        assert task is not None
+        assert task.reconcile_attempt_count == 0
+        queued_events_before = list(
+            (
+                await session.execute(
+                    select(EventOutbox).where(
+                        EventOutbox.event_type == events.RAGFLOW_SYNC_TASK_QUEUED,
+                        EventOutbox.aggregate_id == str(task_id),
+                    )
+                )
+            ).scalars()
+        )
+    assert len(queued_events_before) == 1
+
+    repeated = await task_client.post(
+        f"/api/tasks/{task_id}/reconcile-version-switch",
+        headers={"Authorization": f"Bearer {token}"},
+        json={"reason": reason},
+    )
+    assert repeated.status_code == 200
+    assert repeated.json()["data"]["status"] == "queued"
+
+    async with AsyncSessionFactory() as session:
+        queued_events_after = list(
+            (
+                await session.execute(
+                    select(EventOutbox).where(
+                        EventOutbox.event_type == events.RAGFLOW_SYNC_TASK_QUEUED,
+                        EventOutbox.aggregate_id == str(task_id),
+                    )
+                )
+            ).scalars()
+        )
+        audits = list(
+            (
+                await session.execute(
+                    select(AuditLog)
+                    .where(
+                        AuditLog.action == "task.version_switch_reconcile",
+                        AuditLog.target_id == task_id,
+                    )
+                    .order_by(AuditLog.created_at, AuditLog.id)
+                )
+            ).scalars()
+        )
+    assert len(queued_events_after) == 1
+    assert [audit.reason for audit in audits] == [reason, reason]
+    assert [audit.metadata_json["idempotent"] for audit in audits] == [False, True]
+
+
+async def test_version_switch_reconcile_rejects_ineligible_files_without_side_effects(
+    task_client: AsyncClient,
+) -> None:
+    from app.core.database import AsyncSessionFactory
+    from app.core.outbox import EventOutbox
+    from app.modules.audit.models import AuditLog
+    from app.modules.document.models import File
+    from app.modules.ragflow.models import SyncTask
+
+    token = await _create_admin_token(task_client)
+    uploader_id = await _create_user(
+        email="reconcile-ineligible@company.com",
+        password="password123",
+    )
+    nonreplacement_file_id = await _create_file(uploader_id=uploader_id, hash_value="5" * 64)
+    async with AsyncSessionFactory() as session:
+        nonreplacement_task = SyncTask(
+            file_id=nonreplacement_file_id,
+            task_type="ragflow_upload",
+            status="failed",
+            retry_count=3,
+            max_retry_count=3,
+        )
+        session.add(nonreplacement_task)
+        await session.commit()
+        await session.refresh(nonreplacement_task)
+        nonreplacement_task_id = nonreplacement_task.id
+
+    predecessor_id, candidate_id, completed_task_id = await _create_incomplete_version_switch_task(
+        uploader_id=uploader_id
+    )
+    async with AsyncSessionFactory() as session:
+        predecessor = await session.get(File, predecessor_id)
+        candidate = await session.get(File, candidate_id)
+        assert predecessor is not None and candidate is not None
+        predecessor.is_current_version = False
+        await session.flush()
+        candidate.is_current_version = True
+        candidate.remote_visibility = "current"
+        candidate.version_switch_status = "completed"
+        await session.commit()
+
+    responses = [
+        await task_client.post(
+            f"/api/tasks/{task_id}/reconcile-version-switch",
+            headers={"Authorization": f"Bearer {token}"},
+            json={"reason": "must be rejected"},
+        )
+        for task_id in (nonreplacement_task_id, completed_task_id)
+    ]
+    assert [response.status_code for response in responses] == [409, 409]
+    assert all(
+        response.json()["message"] == "task is not eligible for version switch reconciliation"
+        for response in responses
+    )
+
+    task_ids = {nonreplacement_task_id, completed_task_id}
+    async with AsyncSessionFactory() as session:
+        audit_count = (
+            (
+                await session.execute(
+                    select(AuditLog).where(
+                        AuditLog.action == "task.version_switch_reconcile",
+                        AuditLog.target_id.in_(task_ids),
+                    )
+                )
+            )
+            .scalars()
+            .all()
+        )
+        event_count = (
+            (
+                await session.execute(
+                    select(EventOutbox).where(
+                        EventOutbox.aggregate_id.in_({str(task_id) for task_id in task_ids})
+                    )
+                )
+            )
+            .scalars()
+            .all()
+        )
+    assert audit_count == []
+    assert event_count == []
+
+
+async def test_version_switch_reconcile_is_department_scoped(task_client: AsyncClient) -> None:
+    from app.core.database import AsyncSessionFactory
+    from app.modules.user.models import User
+
+    admin_department_id = await _create_department(
+        name="恢复管理员部门",
+        code="reconcile-admin-dept",
+    )
+    file_department_id = await _create_department(
+        name="恢复文件部门",
+        code="reconcile-file-dept",
+    )
+    admin_id = await _create_user(
+        email="reconcile-dept-admin@company.com",
+        password="password123",
+        role="dept_admin",
+    )
+    uploader_id = await _create_user(
+        email="reconcile-cross-dept-owner@company.com",
+        password="password123",
+    )
+    async with AsyncSessionFactory() as session:
+        admin = await session.get(User, admin_id)
+        assert admin is not None
+        admin.department_id = admin_department_id
+        admin.department = "恢复管理员部门"
+        await session.commit()
+    token = await _login(
+        task_client,
+        email="reconcile-dept-admin@company.com",
+        password="password123",
+    )
+    _predecessor_id, _candidate_id, task_id = await _create_incomplete_version_switch_task(
+        uploader_id=uploader_id,
+        department_id=file_department_id,
+    )
+
+    response = await task_client.post(
+        f"/api/tasks/{task_id}/reconcile-version-switch",
+        headers={"Authorization": f"Bearer {token}"},
+        json={"reason": "cross department"},
+    )
+
+    assert response.status_code == 404
+    assert response.json()["message"] == "task not found"
+
+
+async def test_version_switch_reconcile_lock_busy_has_no_event_or_audit(
+    task_client: AsyncClient,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from app.core.database import AsyncSessionFactory
+    from app.core.outbox import EventOutbox
+    from app.modules.audit.models import AuditLog
+    from app.modules.ragflow import service as ragflow_service  # noqa: TID251
+
+    token = await _create_admin_token(task_client)
+    uploader_id = await _create_user(
+        email="reconcile-lock-owner@company.com",
+        password="password123",
+    )
+    _predecessor_id, _candidate_id, task_id = await _create_incomplete_version_switch_task(
+        uploader_id=uploader_id
+    )
+
+    async def lock_unavailable(**_kwargs: object) -> bool:
+        return False
+
+    monkeypatch.setattr(ragflow_service, "acquire_sync_lock", lock_unavailable)
+    response = await task_client.post(
+        f"/api/tasks/{task_id}/reconcile-version-switch",
+        headers={"Authorization": f"Bearer {token}"},
+        json={"reason": "operator verified remote state"},
+    )
+
+    assert response.status_code == 409
+    assert response.json()["message"] == "ragflow sync task is busy"
+    async with AsyncSessionFactory() as session:
+        audits = list(
+            (
+                await session.execute(
+                    select(AuditLog).where(
+                        AuditLog.action == "task.version_switch_reconcile",
+                        AuditLog.target_id == task_id,
+                    )
+                )
+            ).scalars()
+        )
+        events = list(
+            (
+                await session.execute(
+                    select(EventOutbox).where(EventOutbox.aggregate_id == str(task_id))
+                )
+            ).scalars()
+        )
+    assert audits == []
+    assert events == []
+
+
+async def test_version_switch_reconcile_rejects_active_status_check_sibling(
+    task_client: AsyncClient,
+) -> None:
+    from app.core.database import AsyncSessionFactory
+    from app.modules.ragflow.models import SyncTask
+
+    token = await _create_admin_token(task_client)
+    uploader_id = await _create_user(
+        email="reconcile-status-check-owner@company.com",
+        password="password123",
+    )
+    _predecessor_id, candidate_id, task_id = await _create_incomplete_version_switch_task(
+        uploader_id=uploader_id
+    )
+    async with AsyncSessionFactory() as session:
+        task = await session.get(SyncTask, task_id)
+        assert task is not None
+        task.task_type = "ragflow_status_check"
+        sibling = SyncTask(
+            file_id=candidate_id,
+            task_type="ragflow_status_check",
+            status="queued",
+        )
+        session.add(sibling)
+        await session.commit()
+
+    response = await task_client.post(
+        f"/api/tasks/{task_id}/reconcile-version-switch",
+        headers={"Authorization": f"Bearer {token}"},
+        json={"reason": "resume status polling"},
+    )
+
+    assert response.status_code == 409
+    assert response.json()["message"] == "another active ragflow synchronization task exists"
+
+
+@pytest.mark.parametrize(
+    ("target_type", "sibling_type", "sibling_status"),
+    (
+        ("ragflow_upload", "ragflow_status_check", "queued"),
+        ("ragflow_upload", "ragflow_status_check", "running"),
+        ("ragflow_status_check", "ragflow_upload", "queued"),
+        ("ragflow_status_check", "ragflow_upload", "running"),
+    ),
+)
+async def test_version_switch_reconcile_rejects_cross_type_active_sibling_without_side_effects(
+    task_client: AsyncClient,
+    target_type: str,
+    sibling_type: str,
+    sibling_status: str,
+) -> None:
+    from app.core.database import AsyncSessionFactory
+    from app.core.outbox import EventOutbox
+    from app.modules.audit.models import AuditLog
+    from app.modules.ragflow.models import SyncTask
+
+    token = await _create_admin_token(task_client)
+    uploader_id = await _create_user(
+        email=(f"reconcile-cross-{target_type}-{sibling_type}-{sibling_status}" "@company.com"),
+        password="password123",
+    )
+    _predecessor_id, candidate_id, task_id = await _create_incomplete_version_switch_task(
+        uploader_id=uploader_id
+    )
+    async with AsyncSessionFactory() as session:
+        task = await session.get(SyncTask, task_id)
+        assert task is not None
+        task.task_type = target_type
+        sibling = SyncTask(
+            file_id=candidate_id,
+            task_type=sibling_type,
+            status=sibling_status,
+            lease_token="active-sibling" if sibling_status == "running" else None,
+        )
+        session.add(sibling)
+        await session.commit()
+
+    response = await task_client.post(
+        f"/api/tasks/{task_id}/reconcile-version-switch",
+        headers={"Authorization": f"Bearer {token}"},
+        json={"reason": "must not race another version task"},
+    )
+
+    assert response.status_code == 409
+    assert response.json()["message"] == "another active ragflow synchronization task exists"
+    async with AsyncSessionFactory() as session:
+        task = await session.get(SyncTask, task_id)
+        audits = list(
+            (
+                await session.execute(
+                    select(AuditLog).where(
+                        AuditLog.action == "task.version_switch_reconcile",
+                        AuditLog.target_id == task_id,
+                    )
+                )
+            ).scalars()
+        )
+        events = list(
+            (
+                await session.execute(
+                    select(EventOutbox).where(EventOutbox.aggregate_id == str(task_id))
+                )
+            ).scalars()
+        )
+    assert task is not None
+    assert task.status == "failed"
+    assert audits == []
+    assert events == []
+
+
+async def test_version_switch_reconcile_rejects_non_exhausted_failed_task_without_side_effects(
+    task_client: AsyncClient,
+) -> None:
+    from app.core.database import AsyncSessionFactory
+    from app.core.outbox import EventOutbox
+    from app.modules.audit.models import AuditLog
+    from app.modules.ragflow.models import SyncTask
+
+    token = await _create_admin_token(task_client)
+    uploader_id = await _create_user(
+        email="reconcile-non-exhausted@company.com",
+        password="password123",
+    )
+    _predecessor_id, _candidate_id, task_id = await _create_incomplete_version_switch_task(
+        uploader_id=uploader_id,
+        retry_count=1,
+        max_retry_count=3,
+    )
+
+    response = await task_client.post(
+        f"/api/tasks/{task_id}/reconcile-version-switch",
+        headers={"Authorization": f"Bearer {token}"},
+        json={"reason": "ordinary retry budget still exists"},
+    )
+
+    assert response.status_code == 409
+    assert response.json()["message"] == ("task is not eligible for version switch reconciliation")
+    async with AsyncSessionFactory() as session:
+        task = await session.get(SyncTask, task_id)
+        audits = list(
+            (
+                await session.execute(
+                    select(AuditLog).where(
+                        AuditLog.action == "task.version_switch_reconcile",
+                        AuditLog.target_id == task_id,
+                    )
+                )
+            ).scalars()
+        )
+        events = list(
+            (
+                await session.execute(
+                    select(EventOutbox).where(EventOutbox.aggregate_id == str(task_id))
+                )
+            ).scalars()
+        )
+    assert task is not None
+    assert task.status == "failed"
+    assert task.retry_count == 1
+    assert task.max_retry_count == 3
+    assert audits == []
+    assert events == []
+
+
 class _FakeReadableStorage:
     def __init__(self, payload: bytes) -> None:
         self.payload = payload
@@ -887,9 +1437,7 @@ class _ExplicitlyRejectedUploadClient(_FakeRagflowClient):
                 "content_type": content_type,
             }
         )
-        raise RagflowClientError(
-            "HTTP 413 private-body sk-live-secret must-never-reach-database"
-        )
+        raise RagflowClientError("HTTP 413 private-body sk-live-secret must-never-reach-database")
 
 
 class _BlockingReconcileClient(_FakeRagflowClient):
@@ -949,9 +1497,7 @@ async def test_ragflow_upload_worker_uploads_minio_object_and_parses_document(
     reviewed_at = datetime(2026, 7, 16, 8, 30, tzinfo=UTC)
     async with AsyncSessionFactory() as session:
         reviewer_id = (
-            await session.execute(
-                select(User.id).where(User.email == "phase4-system@company.com")
-            )
+            await session.execute(select(User.id).where(User.email == "phase4-system@company.com"))
         ).scalar_one()
         session.add(
             AuditLog(
@@ -1049,6 +1595,7 @@ async def test_ragflow_upload_worker_uploads_minio_object_and_parses_document(
         "ragflow document metadata updated",
         "ragflow document parse started",
         "ragflow parse status DONE",
+        "initial ragflow document version activated",
         "ragflow upload task completed",
     ]
     assert client.metadata_updates[0]["metadata"] == {
@@ -1056,6 +1603,9 @@ async def test_ragflow_upload_worker_uploads_minio_object_and_parses_document(
         "file_id": str(file_id),
         "version_id": str(file_id),
         "version_number": 1,
+        "series_id": str(file_id),
+        "replaces_file_id": None,
+        "is_current_version": True,
         "uploader_id": str(uploader_id),
         "department_id": str(department_id),
         "department_name": "研发知识部",
@@ -1720,9 +2270,7 @@ async def test_exhausted_redelivery_schedules_unique_probe_and_stale_task_recove
         task = await session.get(SyncTask, task_id)
         assert task is not None
         assert task.status == "running"
-        stale_at = datetime.now(UTC) - timedelta(
-            seconds=RAGFLOW_EXECUTION_LEASE_SECONDS + 1
-        )
+        stale_at = datetime.now(UTC) - timedelta(seconds=RAGFLOW_EXECUTION_LEASE_SECONDS + 1)
         task.lease_heartbeat_at = stale_at
         await session.commit()
 
@@ -2319,6 +2867,88 @@ async def test_ragflow_status_check_worker_marks_done_as_parsed(
     }
 
 
+async def test_reconciled_failed_version_status_check_transitions_via_parsing_and_completes_switch(
+    task_client: AsyncClient,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from app.core.database import AsyncSessionFactory
+    from app.modules.document.models import File
+    from app.modules.ragflow import tasks
+    from app.modules.ragflow.models import SyncTask, SyncTaskLog
+
+    token = await _create_admin_token(task_client)
+    uploader_id = await _create_user(
+        email="reconcile-failed-status-check@company.com",
+        password="password123",
+    )
+    category_id, mapping_id = await _create_category_and_mapping(
+        task_client,
+        token,
+        ragflow_dataset_id="reconcile-dataset",
+        ragflow_dataset_name="版本协调知识库",
+    )
+    predecessor_id, candidate_id, task_id = await _create_incomplete_version_switch_task(
+        uploader_id=uploader_id
+    )
+    async with AsyncSessionFactory() as session:
+        candidate = await session.get(File, candidate_id)
+        task = await session.get(SyncTask, task_id)
+        assert candidate is not None and task is not None
+        candidate.category_id = UUID(category_id)
+        candidate.dataset_mapping_id = UUID(mapping_id)
+        candidate.status = "failed"
+        candidate.ragflow_error_message = "previous status poll exhausted"
+        task.task_type = "ragflow_status_check"
+        task.error_message = "previous status poll exhausted"
+        await session.commit()
+
+    response = await task_client.post(
+        f"/api/tasks/{task_id}/reconcile-version-switch",
+        headers={"Authorization": f"Bearer {token}"},
+        json={"reason": "remote parsing completed after local polling exhausted"},
+    )
+    assert response.status_code == 200
+    assert response.json()["data"]["status"] == "queued"
+
+    storage = _FakeReadableStorage(b"must not be read")
+    client = _FakeRagflowClient(document_id="reconcile-v2", run_statuses=["DONE"])
+    monkeypatch.setattr(tasks, "build_document_storage", lambda _settings: storage)
+
+    async def _fake_build_ragflow_client() -> object:
+        return client
+
+    monkeypatch.setattr(
+        tasks,
+        "build_ragflow_client_from_runtime_config",
+        _fake_build_ragflow_client,
+    )
+
+    await tasks.run_ragflow_upload_task_async(str(task_id))
+
+    async with AsyncSessionFactory() as session:
+        predecessor = await session.get(File, predecessor_id)
+        candidate = await session.get(File, candidate_id)
+        task = await session.get(SyncTask, task_id)
+        log_result = await session.execute(
+            select(SyncTaskLog)
+            .where(SyncTaskLog.task_id == task_id)
+            .order_by(SyncTaskLog.created_at.asc(), SyncTaskLog.id.asc())
+        )
+        messages = [log.message for log in log_result.scalars()]
+
+    assert predecessor is not None and candidate is not None and task is not None
+    assert task.status == "succeeded"
+    assert candidate.status == "parsed"
+    assert candidate.ragflow_parse_status == "DONE"
+    assert candidate.ragflow_error_message is None
+    assert candidate.is_current_version is True
+    assert candidate.version_switch_status == "completed"
+    assert predecessor.is_current_version is False
+    assert "ragflow existing document status check started" in messages
+    assert storage.reads == []
+    assert client.status_requests == [("reconcile-dataset", "reconcile-v2")]
+
+
 async def test_ragflow_status_check_worker_marks_fail_as_failed(
     task_client: AsyncClient,
     monkeypatch: pytest.MonkeyPatch,
@@ -2473,8 +3103,7 @@ async def test_stale_status_check_lease_is_reclaimed_and_completed(
             file_id=file_id,
             task_type="ragflow_status_check",
             status="running",
-            started_at=datetime.now(UTC)
-            - timedelta(seconds=RAGFLOW_EXECUTION_LEASE_SECONDS + 1),
+            started_at=datetime.now(UTC) - timedelta(seconds=RAGFLOW_EXECUTION_LEASE_SECONDS + 1),
             retry_count=1,
             max_retry_count=3,
         )
@@ -3069,9 +3698,7 @@ async def test_claimed_stale_delivery_is_acked_after_new_execution_takes_ownersh
         assert file is not None
     assert task.status == replacement_status
     assert task.error_message is None
-    assert task.lease_token == (
-        "new-execution" if replacement_status == "running" else None
-    )
+    assert task.lease_token == ("new-execution" if replacement_status == "running" else None)
     assert file.ragflow_error_message is None
 
 

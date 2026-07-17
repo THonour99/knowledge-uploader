@@ -12,6 +12,7 @@ from sqlalchemy import (
     Integer,
     String,
     Text,
+    UniqueConstraint,
     func,
     text,
 )
@@ -88,6 +89,61 @@ class SyncTask(Base):
         nullable=False,
         server_default=func.now(),
         onupdate=func.now(),
+    )
+
+
+class RagflowVersionOperation(Base):
+    """Durable, idempotent remote switch operation for one candidate version.
+
+    ``file_id`` is always the replacement candidate. ``target_file_id`` identifies
+    the local file whose remote document is deleted (predecessor) or whose current-version
+    metadata is activated (candidate). The unique
+    ``(file_id, operation)`` key turns retries into updates of the same evidence row.
+    """
+
+    __tablename__ = "ragflow_version_operations"
+    __table_args__ = (
+        CheckConstraint(
+            "operation IN ('deactivate_predecessor', 'activate_candidate')",
+            name="ck_ragflow_version_operations_operation",
+        ),
+        CheckConstraint(
+            "status IN ('pending', 'running', 'succeeded', 'failed', 'unknown')",
+            name="ck_ragflow_version_operations_status",
+        ),
+        CheckConstraint(
+            "attempt_count >= 0",
+            name="ck_ragflow_version_operations_attempt_count_non_negative",
+        ),
+        UniqueConstraint(
+            "file_id",
+            "operation",
+            name="uq_ragflow_version_operations_file_operation",
+        ),
+        Index("idx_ragflow_version_operations_file_id", "file_id"),
+        Index("idx_ragflow_version_operations_status", "status"),
+    )
+
+    id: Mapped[uuid.UUID] = mapped_column(primary_key=True, default=uuid.uuid4)
+    file_id: Mapped[uuid.UUID] = mapped_column(
+        ForeignKey("files.id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    target_file_id: Mapped[uuid.UUID] = mapped_column(
+        ForeignKey("files.id", ondelete="RESTRICT"),
+        nullable=False,
+    )
+    operation: Mapped[str] = mapped_column(String(40), nullable=False)
+    status: Mapped[str] = mapped_column(String(20), nullable=False, server_default="pending")
+    attempt_count: Mapped[int] = mapped_column(Integer, nullable=False, server_default="0")
+    last_error: Mapped[str | None] = mapped_column(String(120))
+    started_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    finished_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, server_default=func.now()
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, server_default=func.now(), onupdate=func.now()
     )
 
 

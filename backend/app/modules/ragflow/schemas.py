@@ -1,9 +1,10 @@
 from __future__ import annotations
 
 from datetime import datetime
+from typing import Annotated
 from uuid import UUID
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, ConfigDict, Field, StringConstraints
 
 
 class RagflowModuleStatus(BaseModel):
@@ -13,6 +14,15 @@ class RagflowModuleStatus(BaseModel):
 class ManualSyncRequest(BaseModel):
     dataset_mapping_id: UUID
     reason: str | None = Field(default=None, max_length=1000)
+
+
+class VersionSwitchReconcileRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    reason: Annotated[
+        str,
+        StringConstraints(strip_whitespace=True, min_length=1, max_length=1000),
+    ]
 
 
 class SyncTaskLogResponse(BaseModel):

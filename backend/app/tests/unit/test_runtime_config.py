@@ -353,7 +353,7 @@ def test_fallback_keys_match_active_config_definitions() -> None:
     definition_keys = set(DEFINITIONS_BY_KEY)
 
     assert fallback_keys == definition_keys
-    assert len(fallback_keys) == 25
+    assert len(fallback_keys) == 26
     assert set(runtime_config.FAIL_CLOSED_DEFAULTS) == fallback_keys
     assert runtime_config.FAIL_CLOSED_DEFAULTS["review.claim_timeout_minutes"] == 5
 
@@ -370,9 +370,7 @@ async def test_critical_sensitive_sync_invariant_cannot_be_disabled(
 async def test_email_verification_environment_floor_overrides_false_database_value(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    factory = FakeSessionFactory(
-        rows={"security.require_email_verification": (False, False)}
-    )
+    factory = FakeSessionFactory(rows={"security.require_email_verification": (False, False)})
     _use_factory(monkeypatch, factory)
     _use_settings(
         monkeypatch,
@@ -387,9 +385,7 @@ async def test_email_verification_environment_floor_overrides_false_database_val
 async def test_email_verification_floor_tightens_cached_and_last_known_good_values(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    factory = FakeSessionFactory(
-        rows={"security.require_email_verification": (False, False)}
-    )
+    factory = FakeSessionFactory(rows={"security.require_email_verification": (False, False)})
     _use_factory(monkeypatch, factory)
     settings = {
         "value": Settings(

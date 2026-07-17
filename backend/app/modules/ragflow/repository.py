@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import uuid
+from collections.abc import Collection
 from datetime import datetime
 from typing import Any, cast
 
@@ -9,6 +10,7 @@ from sqlalchemy import (
     Boolean,
     Column,
     DateTime,
+    Integer,
     MetaData,
     String,
     Table,
@@ -22,7 +24,12 @@ from sqlalchemy.engine import RowMapping
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.sql import Select
 
-from .models import ACTIVE_SYNC_TASK_STATUSES, SyncTask, SyncTaskLog
+from .models import (
+    ACTIVE_SYNC_TASK_STATUSES,
+    RagflowVersionOperation,
+    SyncTask,
+    SyncTaskLog,
+)
 from .records import RagflowDatasetMappingRecord, RagflowSyncFileRecord
 
 FILES = Table(
@@ -45,6 +52,18 @@ FILES = Table(
     Column("visibility", String(20), nullable=False),
     Column("description", Text),
     Column("tags", JSONB, nullable=False),
+    Column("series_id", UUID(as_uuid=True), nullable=False),
+    Column("version_number", Integer, nullable=False),
+    Column("replaces_file_id", UUID(as_uuid=True)),
+    Column("replacement_remote_action", String(20)),
+    Column("is_current_version", Boolean, nullable=False),
+    Column("remote_visibility", String(20), nullable=False),
+    Column("version_switch_status", String(40), nullable=False),
+    Column("version_switch_error", String(120)),
+    Column("version_switch_attempt_count", Integer, nullable=False),
+    Column("predecessor_remote_deactivated_at", DateTime(timezone=True)),
+    Column("local_version_activated_at", DateTime(timezone=True)),
+    Column("remote_version_activated_at", DateTime(timezone=True)),
     Column("status", String(40), nullable=False),
     Column("review_status", String(40), nullable=False),
     Column("ragflow_dataset_id", String(120)),
@@ -113,6 +132,71 @@ class RagflowTaskRepository:
         await self._session.refresh(task)
         return task
 
+    async def begin_version_operation(
+        self,
+        *,
+        file_id: uuid.UUID,
+        target_file_id: uuid.UUID,
+        operation: str,
+        started_at: datetime,
+    ) -> RagflowVersionOperation:
+        result = await self._session.execute(
+            select(RagflowVersionOperation)
+            .where(
+                RagflowVersionOperation.file_id == file_id,
+                RagflowVersionOperation.operation == operation,
+            )
+            .with_for_update()
+        )
+        record = result.scalar_one_or_none()
+        if record is None:
+            record = RagflowVersionOperation(
+                file_id=file_id,
+                target_file_id=target_file_id,
+                operation=operation,
+            )
+            self._session.add(record)
+            await self._session.flush()
+        elif record.target_file_id != target_file_id:
+            raise RuntimeError("version operation target is immutable")
+        record.status = "running"
+        record.attempt_count += 1
+        record.last_error = None
+        record.started_at = started_at
+        record.finished_at = None
+        await self._session.flush()
+        return record
+
+    async def finish_version_operation(
+        self,
+        *,
+        file_id: uuid.UUID,
+        operation: str,
+        succeeded: bool,
+        finished_at: datetime,
+        error_type: str | None = None,
+        outcome_unknown: bool = False,
+    ) -> RagflowVersionOperation:
+        result = await self._session.execute(
+            select(RagflowVersionOperation)
+            .where(
+                RagflowVersionOperation.file_id == file_id,
+                RagflowVersionOperation.operation == operation,
+            )
+            .with_for_update()
+        )
+        record = result.scalar_one_or_none()
+        if record is None:
+            raise RuntimeError("version operation record is missing")
+        if succeeded:
+            record.status = "succeeded"
+        else:
+            record.status = "unknown" if outcome_unknown else "failed"
+        record.last_error = None if succeeded else (error_type or "RemoteMetadataError")[:120]
+        record.finished_at = finished_at
+        await self._session.flush()
+        return record
+
     async def get_active_task(self, *, file_id: uuid.UUID, task_type: str) -> SyncTask | None:
         result = await self._session.execute(
             select(SyncTask)
@@ -120,6 +204,29 @@ class RagflowTaskRepository:
                 SyncTask.file_id == file_id,
                 SyncTask.task_type == task_type,
                 SyncTask.status.in_(ACTIVE_SYNC_TASK_STATUSES),
+            )
+            .order_by(SyncTask.created_at.asc(), SyncTask.id.asc())
+            .limit(1)
+        )
+        return result.scalar_one_or_none()
+
+    async def get_active_task_for_types(
+        self,
+        *,
+        file_id: uuid.UUID,
+        task_types: Collection[str],
+        exclude_task_id: uuid.UUID,
+    ) -> SyncTask | None:
+        normalized_types = tuple(sorted(set(task_types)))
+        if not normalized_types:
+            return None
+        result = await self._session.execute(
+            select(SyncTask)
+            .where(
+                SyncTask.file_id == file_id,
+                SyncTask.task_type.in_(normalized_types),
+                SyncTask.status.in_(ACTIVE_SYNC_TASK_STATUSES),
+                SyncTask.id != exclude_task_id,
             )
             .order_by(SyncTask.created_at.asc(), SyncTask.id.asc())
             .limit(1)
@@ -226,6 +333,14 @@ class RagflowTaskRepository:
                 status=file.status,
                 category_id=file.category_id,
                 dataset_mapping_id=file.dataset_mapping_id,
+                is_current_version=file.is_current_version,
+                remote_visibility=file.remote_visibility,
+                version_switch_status=file.version_switch_status,
+                version_switch_error=file.version_switch_error,
+                version_switch_attempt_count=file.version_switch_attempt_count,
+                predecessor_remote_deactivated_at=file.predecessor_remote_deactivated_at,
+                local_version_activated_at=file.local_version_activated_at,
+                remote_version_activated_at=file.remote_version_activated_at,
                 ragflow_dataset_id=file.ragflow_dataset_id,
                 ragflow_document_id=file.ragflow_document_id,
                 ragflow_parse_status=file.ragflow_parse_status,
@@ -238,6 +353,41 @@ class RagflowTaskRepository:
         if updated_file is None:
             raise RuntimeError("updated ragflow file record disappeared")
         return updated_file
+
+    async def get_version_files_for_update(
+        self,
+        file_ids: set[uuid.UUID],
+    ) -> list[RagflowSyncFileRecord]:
+        if not file_ids:
+            return []
+        result = await self._session.execute(
+            select(
+                *FILE_COLUMNS,
+                *self._department_lookup_columns(),
+                *self._metadata_lookup_columns(),
+            )
+            .where(FILES.c.id.in_(file_ids))
+            .order_by(FILES.c.id.asc())
+            .with_for_update(of=FILES)
+        )
+        return [file_record_from_row(row) for row in result.mappings()]
+
+    async def get_version_series_for_update(
+        self,
+        series_id: uuid.UUID,
+    ) -> list[RagflowSyncFileRecord]:
+        result = await self._session.execute(
+            select(
+                *FILE_COLUMNS,
+                *self._department_lookup_columns(),
+                *self._metadata_lookup_columns(),
+            )
+            .where(FILES.c.series_id == series_id)
+            .order_by(FILES.c.version_number.asc(), FILES.c.id.asc())
+            .with_for_update(of=FILES)
+            .execution_options(populate_existing=True)
+        )
+        return [file_record_from_row(row) for row in result.mappings()]
 
     def _file_select(self) -> Select[tuple[Any, ...]]:
         return select(
@@ -393,6 +543,20 @@ def file_record_from_row(row: RowMapping) -> RagflowSyncFileRecord:
             row.get("metadata_sensitive_risk_level"),
         )
         or "none",
+        series_id=cast(uuid.UUID, row["series_id"]),
+        version_number=cast(int, row["version_number"]),
+        replaces_file_id=cast(uuid.UUID | None, row["replaces_file_id"]),
+        replacement_remote_action=cast(str | None, row["replacement_remote_action"]),
+        is_current_version=cast(bool, row["is_current_version"]),
+        remote_visibility=cast(str, row["remote_visibility"]),
+        version_switch_status=cast(str, row["version_switch_status"]),
+        version_switch_error=cast(str | None, row["version_switch_error"]),
+        version_switch_attempt_count=cast(int, row["version_switch_attempt_count"]),
+        predecessor_remote_deactivated_at=cast(
+            datetime | None, row["predecessor_remote_deactivated_at"]
+        ),
+        local_version_activated_at=cast(datetime | None, row["local_version_activated_at"]),
+        remote_version_activated_at=cast(datetime | None, row["remote_version_activated_at"]),
         ragflow_dataset_id=cast(str | None, row["ragflow_dataset_id"]),
         ragflow_document_id=cast(str | None, row["ragflow_document_id"]),
         ragflow_parse_status=cast(str | None, row["ragflow_parse_status"]),

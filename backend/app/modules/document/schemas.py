@@ -50,6 +50,8 @@ class FileResponse(BaseModel):
     size: int
     uploader_id: UUID
     uploader_name: str | None = None
+    owner_id: UUID | None = None
+    owner_name: str | None = None
     department_id: UUID
     department_name: str | None = None
     department_code: str | None = None
@@ -76,6 +78,18 @@ class FileResponse(BaseModel):
     ai_analysis_enabled_at_upload: bool
     expires_at: datetime | None
     expiry_status: str
+    series_id: UUID
+    version_number: int
+    replaces_file_id: UUID | None = None
+    replacement_remote_action: Literal["delete", "archive"] | None = None
+    is_current_version: bool
+    remote_visibility: str
+    version_switch_status: str
+    version_switch_error: str | None = None
+    version_switch_attempt_count: int = 0
+    predecessor_remote_deactivated_at: datetime | None = None
+    local_version_activated_at: datetime | None = None
+    remote_version_activated_at: datetime | None = None
     uploaded_at: datetime
     last_sync_at: datetime | None
     created_at: datetime
@@ -103,14 +117,16 @@ class FileDraftUpdateRequest(BaseModel):
 
     model_config = ConfigDict(extra="forbid")
 
-    expected_version: int = Field(ge=0)
+    expected_version: int = Field(strict=True, ge=0, le=2_147_483_647)
     title: DraftTitle | None = None
     description: str | None = Field(default=None, max_length=2000)
     visibility: Literal["private", "department", "company"] | None = None
+    owner_id: UUID | None = None
+    expires_at: datetime | None = None
 
     @model_validator(mode="after")
     def validate_patch(self) -> Self:
-        mutable_fields = {"title", "description", "visibility"}
+        mutable_fields = {"title", "description", "visibility", "owner_id", "expires_at"}
         supplied_fields = self.model_fields_set & mutable_fields
         if not supplied_fields:
             raise ValueError("at least one draft metadata field is required")
@@ -118,6 +134,8 @@ class FileDraftUpdateRequest(BaseModel):
             raise ValueError("title cannot be null")
         if "visibility" in supplied_fields and self.visibility is None:
             raise ValueError("visibility cannot be null")
+        if "owner_id" in supplied_fields and self.owner_id is None:
+            raise ValueError("owner_id cannot be null")
         return self
 
 
@@ -156,10 +174,38 @@ class FileAnalysisDetail(BaseModel):
         return str(value)
 
 
+class VersionChainItem(BaseModel):
+    id: UUID
+    version_number: int
+    replaces_file_id: UUID | None = None
+    replacement_remote_action: Literal["delete", "archive"] | None = None
+    title: str
+    status: str
+    is_current_version: bool
+    remote_visibility: str
+    version_switch_status: str
+    version_switch_error: str | None = None
+    created_at: datetime
+
+
+class OwnerOptionResponse(BaseModel):
+    id: UUID
+    name: str
+
+
+class OwnerOptionListResponse(BaseModel):
+    items: list[OwnerOptionResponse]
+    total: int
+    page: int
+    page_size: int
+    total_pages: int
+
+
 class FileDetailResponse(FileResponse):
     category_name: str | None = None
     analysis: FileAnalysisDetail | None = None
     sync_error: str | None = None
+    version_chain: list[VersionChainItem] = Field(default_factory=list)
 
 
 class UploadPolicyResponse(BaseModel):

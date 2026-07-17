@@ -22,7 +22,9 @@ from sqlalchemy import (
 )
 from sqlalchemy import update as sql_update
 from sqlalchemy.dialects.postgresql import JSONB, UUID
+from sqlalchemy.engine import CursorResult
 from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.sql.elements import ColumnElement
 
 from app.modules.document.models import File
 
@@ -77,6 +79,14 @@ SYNC_TASKS = Table(
     Column("created_at", DateTime(timezone=True), nullable=False),
 )
 
+RAGFLOW_VERSION_OPERATIONS = Table(
+    "ragflow_version_operations",
+    MetaData(),
+    Column("file_id", UUID(as_uuid=True), nullable=False),
+    Column("operation", String(40), nullable=False),
+    Column("status", String(20), nullable=False),
+)
+
 FILE_TAGS = Table(
     "file_tags",
     MetaData(),
@@ -90,6 +100,16 @@ AI_FEATURE_CONFIGS = Table(
     Column("id", UUID(as_uuid=True), primary_key=True),
     Column("feature_name", String(80), nullable=False),
     Column("enabled", Boolean, nullable=False),
+)
+
+USERS = Table(
+    "users",
+    MetaData(),
+    Column("id", UUID(as_uuid=True), primary_key=True),
+    Column("name", String(100), nullable=False),
+    Column("department_id", UUID(as_uuid=True), nullable=False),
+    Column("status", String(40), nullable=False),
+    Column("email_verified", Boolean, nullable=False),
 )
 
 
@@ -137,6 +157,12 @@ class ExpiryScanCandidate:
     notification_kind: str
 
 
+@dataclass(frozen=True, slots=True)
+class OwnerOptionRecord:
+    id: uuid.UUID
+    name: str
+
+
 class DocumentRepository:
     def __init__(self, session: AsyncSession) -> None:
         self._session = session
@@ -150,6 +176,140 @@ class DocumentRepository:
             select(File).where(File.id == file_id).with_for_update()
         )
         return result.scalar_one_or_none()
+
+    async def get_valid_owner(
+        self,
+        *,
+        owner_id: uuid.UUID,
+        department_id: uuid.UUID,
+    ) -> OwnerOptionRecord | None:
+        result = await self._session.execute(
+            select(USERS.c.id, USERS.c.name)
+            .where(
+                USERS.c.id == owner_id,
+                USERS.c.department_id == department_id,
+                USERS.c.status == "active",
+                USERS.c.email_verified.is_(True),
+            )
+            .with_for_update()
+        )
+        row = result.one_or_none()
+        if row is None:
+            return None
+        return OwnerOptionRecord(id=cast(uuid.UUID, row.id), name=str(row.name))
+
+    async def list_owner_options(
+        self,
+        *,
+        department_id: uuid.UUID,
+        search: str | None,
+        page: int,
+        page_size: int,
+    ) -> tuple[list[OwnerOptionRecord], int]:
+        statement = select(USERS.c.id, USERS.c.name).where(
+            USERS.c.department_id == department_id,
+            USERS.c.status == "active",
+            USERS.c.email_verified.is_(True),
+        )
+        count_statement = (
+            select(func.count())
+            .select_from(USERS)
+            .where(
+                USERS.c.department_id == department_id,
+                USERS.c.status == "active",
+                USERS.c.email_verified.is_(True),
+            )
+        )
+        if search:
+            predicate = USERS.c.name.ilike(f"%{_escape_like(search)}%", escape="\\")
+            statement = statement.where(predicate)
+            count_statement = count_statement.where(predicate)
+        result = await self._session.execute(
+            statement.order_by(USERS.c.name.asc(), USERS.c.id.asc())
+            .offset((page - 1) * page_size)
+            .limit(page_size)
+        )
+        total = int((await self._session.execute(count_statement)).scalar_one())
+        owners = [
+            OwnerOptionRecord(id=cast(uuid.UUID, row.id), name=str(row.name)) for row in result
+        ]
+        return owners, total
+
+    async def get_owner_names(
+        self,
+        owner_ids: set[uuid.UUID],
+    ) -> dict[uuid.UUID, str]:
+        if not owner_ids:
+            return {}
+        result = await self._session.execute(
+            select(USERS.c.id, USERS.c.name).where(USERS.c.id.in_(owner_ids))
+        )
+        return {cast(uuid.UUID, row.id): str(row.name) for row in result}
+
+    async def list_version_chain(
+        self,
+        series_id: uuid.UUID,
+        *,
+        owner_id: uuid.UUID | None = None,
+        department_id: uuid.UUID | None = None,
+    ) -> list[File]:
+        statement = select(File).where(File.series_id == series_id)
+        if owner_id is not None:
+            statement = statement.where(File.owner_id == owner_id)
+        if department_id is not None:
+            statement = statement.where(File.department_id == department_id)
+        result = await self._session.execute(
+            statement.order_by(File.version_number.desc(), File.id.asc())
+        )
+        return list(result.scalars())
+
+    async def lock_version_series(self, series_id: uuid.UUID) -> list[File]:
+        result = await self._session.execute(
+            select(File)
+            .where(File.series_id == series_id)
+            .order_by(File.id.asc())
+            .with_for_update()
+        )
+        return list(result.scalars())
+
+    async def has_direct_replacement(self, file_id: uuid.UUID) -> bool:
+        result = await self._session.execute(
+            select(File.id)
+            .where(
+                File.replaces_file_id == file_id,
+                File.status.not_in(ABANDONED_VERSION_STATUSES),
+            )
+            .limit(1)
+        )
+        return result.scalar_one_or_none() is not None
+
+    async def has_incomplete_direct_replacement(self, file_id: uuid.UUID) -> bool:
+        """Return whether a direct child still has an unfinished version switch."""
+        result = await self._session.execute(
+            select(File.id)
+            .where(
+                File.replaces_file_id == file_id,
+                File.version_switch_status != "completed",
+                File.status.not_in(ABANDONED_VERSION_STATUSES),
+            )
+            .limit(1)
+        )
+        return result.scalar_one_or_none() is not None
+
+    async def has_blocking_version_operation(self, file_id: uuid.UUID) -> bool:
+        """Return whether remote work makes a local candidate unsafe to abandon."""
+        result = await self._session.execute(
+            select(RAGFLOW_VERSION_OPERATIONS.c.file_id)
+            .where(
+                RAGFLOW_VERSION_OPERATIONS.c.file_id == file_id,
+                or_(
+                    RAGFLOW_VERSION_OPERATIONS.c.operation != "deactivate_predecessor",
+                    RAGFLOW_VERSION_OPERATIONS.c.status != "failed",
+                ),
+            )
+            .limit(1)
+        )
+        return result.scalar_one_or_none() is not None
 
     async def get_for_uploader(self, *, file_id: uuid.UUID, uploader_id: uuid.UUID) -> File | None:
         result = await self._session.execute(
@@ -224,6 +384,65 @@ class DocumentRepository:
             .limit(page_size)
         )
         result = await self._session.execute(stmt)
+        total = int((await self._session.execute(count_stmt)).scalar_one())
+        return list(result.scalars()), total
+
+    async def list_for_owner(
+        self,
+        owner_id: uuid.UUID,
+        *,
+        department_id: uuid.UUID,
+        page: int,
+        page_size: int,
+        search: str | None = None,
+        status: str | None = None,
+        extension: str | None = None,
+        expiry_status: str | None = None,
+        sort: str = "uploaded_at",
+        order: str = "desc",
+    ) -> tuple[list[File], int]:
+        predicates = (
+            File.owner_id == owner_id,
+            File.uploader_id != owner_id,
+            File.department_id == department_id,
+            File.status.not_in(HIDDEN_FILE_STATUSES),
+            File.is_current_version.is_(True),
+        )
+        stmt = select(File).where(*predicates)
+        count_stmt = select(func.count()).select_from(File).where(*predicates)
+        if search:
+            pattern = f"%{_escape_like(search)}%"
+            predicate = or_(
+                File.title.ilike(pattern, escape="\\"),
+                File.original_name.ilike(pattern, escape="\\"),
+                File.description.ilike(pattern, escape="\\"),
+            )
+            stmt = stmt.where(predicate)
+            count_stmt = count_stmt.where(predicate)
+        if status:
+            stmt = stmt.where(File.status == status)
+            count_stmt = count_stmt.where(File.status == status)
+        if extension:
+            stmt = stmt.where(File.extension == extension)
+            count_stmt = count_stmt.where(File.extension == extension)
+        if expiry_status:
+            stmt = stmt.where(File.expiry_status == expiry_status)
+            count_stmt = count_stmt.where(File.expiry_status == expiry_status)
+        sort_columns = {
+            "uploaded_at": File.uploaded_at,
+            "updated_at": File.updated_at,
+            "original_name": File.original_name,
+            "title": File.title,
+            "size": File.size,
+            "status": File.status,
+        }
+        sort_column = sort_columns.get(sort, File.uploaded_at)
+        order_expression = sort_column.asc() if order == "asc" else sort_column.desc()
+        result = await self._session.execute(
+            stmt.order_by(order_expression, File.id.asc())
+            .offset((page - 1) * page_size)
+            .limit(page_size)
+        )
         total = int((await self._session.execute(count_stmt)).scalar_one())
         return list(result.scalars()), total
 
@@ -363,7 +582,10 @@ class DocumentRepository:
     ) -> int:
         result = await self._session.execute(
             sql_update(File)
-            .where(File.status.not_in(HIDDEN_FILE_STATUSES))
+            .where(
+                File.status.not_in(EXPIRY_SCAN_EXCLUDED_FILE_STATUSES),
+                File.is_current_version.is_(True),
+            )
             .values(
                 expiry_status=case(
                     (File.expires_at.is_(None), "never"),
@@ -373,7 +595,7 @@ class DocumentRepository:
                 )
             )
         )
-        return int(result.rowcount or 0)
+        return int(cast(CursorResult[object], result).rowcount or 0)
 
     async def list_expiry_scan_candidates(
         self,
@@ -388,6 +610,7 @@ class DocumentRepository:
                 File.expires_at.is_not(None),
                 File.expires_at <= warning_deadline,
                 File.status.not_in(EXPIRY_SCAN_EXCLUDED_FILE_STATUSES),
+                File.is_current_version.is_(True),
                 (
                     (File.expires_at <= now) & File.expiry_expired_sent_at.is_(None)
                     | (File.expires_at > now) & File.expiry_warning_sent_at.is_(None)
@@ -418,16 +641,22 @@ class DocumentRepository:
         *,
         file_id: uuid.UUID,
         notification_kind: str,
+        expected_expires_at: datetime,
+        now: datetime,
+        warning_deadline: datetime,
         sent_at: datetime,
     ) -> bool:
+        time_window_predicate: ColumnElement[bool]
         if notification_kind == "warning":
             timestamp_field = "expiry_warning_sent_at"
             status_value = "expiring"
             idempotency_predicate = File.expiry_warning_sent_at.is_(None)
+            time_window_predicate = (File.expires_at > now) & (File.expires_at <= warning_deadline)
         elif notification_kind == "expired":
             timestamp_field = "expiry_expired_sent_at"
             status_value = "expired"
             idempotency_predicate = File.expiry_expired_sent_at.is_(None)
+            time_window_predicate = File.expires_at <= now
         else:
             msg = f"invalid expiry notification kind: {notification_kind}"
             raise ValueError(msg)
@@ -436,15 +665,19 @@ class DocumentRepository:
             sql_update(File)
             .where(
                 File.id == file_id,
-                File.status.not_in(HIDDEN_FILE_STATUSES),
+                File.expires_at == expected_expires_at,
+                File.status.not_in(EXPIRY_SCAN_EXCLUDED_FILE_STATUSES),
+                File.is_current_version.is_(True),
                 idempotency_predicate,
+                time_window_predicate,
             )
             .values({timestamp_field: sent_at, "expiry_status": status_value})
         )
-        return bool(result.rowcount == 1)
+        return int(cast(CursorResult[object], result).rowcount) == 1
 
 
 HIDDEN_FILE_STATUSES = ("deleted", "ragflow_cleanup_failed")
+ABANDONED_VERSION_STATUSES = (*HIDDEN_FILE_STATUSES, "disabled")
 EXPIRY_SCAN_EXCLUDED_FILE_STATUSES = (*HIDDEN_FILE_STATUSES, "disabled")
 
 

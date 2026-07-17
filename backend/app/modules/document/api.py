@@ -36,7 +36,15 @@ from . import exceptions
 from .exceptions import DocumentError
 from .models import File as DocumentFile
 from .repository import DocumentRepository
-from .schemas import FileDetailResponse, FileListResponse, FileResponse, effective_expiry_status
+from .schemas import (
+    FileDetailResponse,
+    FileListResponse,
+    FileResponse,
+    OwnerOptionListResponse,
+    OwnerOptionResponse,
+    VersionChainItem,
+    effective_expiry_status,
+)
 from .service import (
     DocumentContentStream,
     DocumentService,
@@ -100,6 +108,8 @@ def _file_response(
         mime_type=file.mime_type,
         size=file.size,
         uploader_id=file.uploader_id,
+        owner_id=file.owner_id,
+        owner_name=getattr(file, "owner_name", None),
         department_id=file.department_id,
         department_name=getattr(file, "department_name", None) or file.department,
         department_code=getattr(file, "department_code", None),
@@ -126,6 +136,18 @@ def _file_response(
             expires_at=file.expires_at,
             stored_status=file.expiry_status,
         ),
+        series_id=file.series_id,
+        version_number=file.version_number,
+        replaces_file_id=file.replaces_file_id,
+        replacement_remote_action=file.replacement_remote_action,
+        is_current_version=file.is_current_version,
+        remote_visibility=file.remote_visibility,
+        version_switch_status=file.version_switch_status,
+        version_switch_error=file.version_switch_error,
+        version_switch_attempt_count=file.version_switch_attempt_count,
+        predecessor_remote_deactivated_at=file.predecessor_remote_deactivated_at,
+        local_version_activated_at=file.local_version_activated_at,
+        remote_version_activated_at=file.remote_version_activated_at,
         uploaded_at=file.uploaded_at,
         last_sync_at=file.last_sync_at,
         created_at=file.created_at,
@@ -145,6 +167,22 @@ def _file_detail_response(detail: FileDetailResult) -> FileDetailResponse:
         category_name=detail.category_name,
         analysis=detail.analysis,
         sync_error=detail.sync_error,
+        version_chain=[
+            VersionChainItem(
+                id=item.id,
+                version_number=item.version_number,
+                replaces_file_id=item.replaces_file_id,
+                replacement_remote_action=item.replacement_remote_action,
+                title=item.title,
+                status=item.status,
+                is_current_version=item.is_current_version,
+                remote_visibility=item.remote_visibility,
+                version_switch_status=item.version_switch_status,
+                version_switch_error=item.version_switch_error,
+                created_at=item.created_at,
+            )
+            for item in detail.version_chain
+        ],
     )
 
 
@@ -404,6 +442,7 @@ async def upload_file(
     description: Annotated[str | None, Form(max_length=2000)] = None,
     visibility: Annotated[str, Form()] = "private",
     ai_analysis_enabled: Annotated[bool | None, Form()] = None,
+    replaces_file_id: Annotated[UUID | None, Form()] = None,
 ) -> dict[str, object]:
     try:
         await ensure_upload_allowed(current_user)
@@ -423,6 +462,7 @@ async def upload_file(
             visibility=visibility,
             submit_after_upload=submit_after_upload,
             ai_analysis_enabled=ai_analysis_enabled,
+            replaces_file_id=replaces_file_id,
             client_ip=_client_ip(request),
             user_agent=_user_agent(request),
         )
@@ -468,6 +508,87 @@ async def list_my_files(
     )
     response = FileListResponse(
         items=[_file_response(file) for file in result.items],
+        total=result.total,
+        page=result.page,
+        page_size=result.page_size,
+        total_pages=(result.total + result.page_size - 1) // result.page_size,
+    )
+    return success_response(response.model_dump(mode="json"), request)
+
+
+@router.get("/responsible")
+async def list_responsible_files(
+    request: Request,
+    current_user: CurrentUserDep,
+    session: SessionDep,
+    settings: SettingsDep,
+    storage: DocumentStorageDep,
+    page: Annotated[int, Query(ge=1)] = 1,
+    page_size: Annotated[int, Query(ge=1, le=100)] = 20,
+    q: Annotated[str | None, Query(max_length=200)] = None,
+    status: Annotated[str | None, Query(max_length=40)] = None,
+    extension: Annotated[str | None, Query()] = None,
+    expiry_status: Annotated[
+        Literal["never", "active", "expiring", "expired"] | None,
+        Query(),
+    ] = None,
+    sort: Annotated[
+        Literal["uploaded_at", "updated_at", "original_name", "title", "size", "status"],
+        Query(),
+    ] = "uploaded_at",
+    order: Annotated[Literal["asc", "desc"], Query()] = "desc",
+) -> dict[str, object]:
+    result = await _service(
+        session=session,
+        settings=settings,
+        storage=storage,
+    ).list_responsible_files(
+        current_user,
+        page=page,
+        page_size=page_size,
+        search=q,
+        status=status,
+        extension=extension,
+        expiry_status=expiry_status,
+        sort=sort,
+        order=order,
+    )
+    response = FileListResponse(
+        items=[_file_response(file) for file in result.items],
+        total=result.total,
+        page=result.page,
+        page_size=result.page_size,
+        total_pages=(result.total + result.page_size - 1) // result.page_size,
+    )
+    return success_response(response.model_dump(mode="json"), request)
+
+
+@router.get("/owner-options")
+async def list_owner_options(
+    request: Request,
+    current_user: CurrentUserDep,
+    session: SessionDep,
+    settings: SettingsDep,
+    storage: DocumentStorageDep,
+    q: Annotated[str | None, Query(max_length=200)] = None,
+    page: Annotated[int, Query(ge=1)] = 1,
+    page_size: Annotated[int, Query(ge=1, le=100)] = 20,
+) -> dict[str, object]:
+    try:
+        result = await _service(
+            session=session,
+            settings=settings,
+            storage=storage,
+        ).list_owner_options(
+            current_user=current_user,
+            search=q,
+            page=page,
+            page_size=page_size,
+        )
+    except DocumentError as error:
+        _raise_document_error(error)
+    response = OwnerOptionListResponse(
+        items=[OwnerOptionResponse(id=owner_id, name=name) for owner_id, name in result.items],
         total=result.total,
         page=result.page,
         page_size=result.page_size,

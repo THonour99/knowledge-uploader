@@ -38,6 +38,7 @@ ADMIN_ROLES = {"dept_admin", "system_admin"}
 RAGFLOW_UPLOAD_TASK = "ragflow_upload"
 RAGFLOW_STATUS_CHECK_TASK = "ragflow_status_check"
 RAGFLOW_DELETE_TASK = "ragflow_delete"
+VERSION_SWITCH_RECONCILABLE_TASKS = frozenset({RAGFLOW_UPLOAD_TASK, RAGFLOW_STATUS_CHECK_TASK})
 MANUAL_SYNC_SOURCE_STATUSES = {"approved", "failed"}
 MAX_ERROR_MESSAGE_LENGTH = 2000
 DELETE_CLEANUP_FAILURE_SOURCE_STATUSES = {"deleted"}
@@ -52,6 +53,7 @@ RAGFLOW_EXECUTION_LEASE_BUFFER_SECONDS = 300
 RAGFLOW_UPLOAD_RECONCILE_MAX_ATTEMPTS = 3
 RAGFLOW_UPLOAD_RECONCILE_DELAYS_SECONDS = (5, 30)
 RAGFLOW_RECOVERY_PROBE_COUNTDOWN_SECONDS = 300
+ABANDONED_VERSION_STATUSES = {"deleted", "disabled", "ragflow_cleanup_failed"}
 SYNC_READY_STATUSES = {
     "queued",
     "syncing",
@@ -76,6 +78,10 @@ class RagflowParseFailedError(Exception):
 
 class RagflowParsePendingError(Exception):
     pass
+
+
+class RagflowVersionSwitchError(Exception):
+    """A recoverable two-stage RAGFlow version switch did not complete."""
 
 
 @dataclass(frozen=True)
@@ -311,6 +317,126 @@ class RagflowTaskService:
             )
             raise
 
+    async def reconcile_version_switch_task(
+        self,
+        *,
+        current_user: AuthUserRecord,
+        scope: DepartmentAccessScope,
+        task_id: uuid.UUID,
+        reason: str,
+        context: RequestContext,
+    ) -> SyncTaskBundle:
+        self._require_admin(current_user)
+        cleaned_reason = reason.strip()
+        if not cleaned_reason:
+            raise exceptions.version_switch_reconcile_reason_required()
+        task = await self._get_task_for_update_or_raise(task_id)
+        file = await self._get_task_file_or_raise(task)
+        self._require_scope_for_file(scope=scope, file=file)
+        if not self._is_incomplete_version_switch_task(task=task, file=file):
+            raise exceptions.task_not_version_switch_reconcilable()
+        if task.status == "failed" and task.retry_count < task.max_retry_count:
+            raise exceptions.task_not_version_switch_reconcilable()
+
+        if task.status in {"queued", "running"}:
+            active_sibling = await self._repository.get_active_task_for_types(
+                file_id=task.file_id,
+                task_types=VERSION_SWITCH_RECONCILABLE_TASKS,
+                exclude_task_id=task.id,
+            )
+            if active_sibling is not None:
+                raise exceptions.task_conflict()
+            await self._record_admin_audit(
+                current_user=current_user,
+                action="task.version_switch_reconcile",
+                target_type="task",
+                target_id=task.id,
+                context=context,
+                reason=cleaned_reason,
+                metadata_json={
+                    "previous_status": task.status,
+                    "idempotent": True,
+                    "retry_count": task.retry_count,
+                    "max_retry_count": task.max_retry_count,
+                    "version_switch_status": file.version_switch_status,
+                    **scope.audit_metadata(file_department_id=file.department_id),
+                },
+            )
+            await self._session.commit()
+            return await self._bundle(task)
+        if task.status not in {"failed", "canceled"}:
+            raise exceptions.task_not_version_switch_reconcilable()
+
+        settings = get_settings()
+        lock_token = uuid.uuid4().hex
+        lock_acquired = await acquire_sync_lock(
+            redis_url=settings.cache_redis_url,
+            file_id=task.file_id,
+            token=lock_token,
+        )
+        if not lock_acquired:
+            raise exceptions.task_lock_busy()
+
+        release_sync_lock_after_transaction(
+            session=self._session,
+            redis_url=settings.cache_redis_url,
+            file_id=task.file_id,
+            token=lock_token,
+        )
+        try:
+            active_sibling = await self._repository.get_active_task_for_types(
+                file_id=task.file_id,
+                task_types=VERSION_SWITCH_RECONCILABLE_TASKS,
+                exclude_task_id=task.id,
+            )
+            if active_sibling is not None:
+                raise exceptions.task_conflict()
+
+            previous_status = task.status
+            previous_reconcile_attempt_count = task.reconcile_attempt_count
+            task.status = "queued"
+            task.error_message = None
+            task.lease_token = None
+            task.lease_heartbeat_at = None
+            task.reconcile_attempt_count = 0
+            task.reconcile_not_before = None
+            task.recovery_probe_due_at = None
+            task.started_at = None
+            task.finished_at = None
+            await self._repository.add_log(
+                task_id=task.id,
+                status=task.status,
+                message="version switch reconciliation requested by administrator",
+            )
+            await self._append_task_queued_event(task)
+            await self._record_admin_audit(
+                current_user=current_user,
+                action="task.version_switch_reconcile",
+                target_type="task",
+                target_id=task.id,
+                context=context,
+                reason=cleaned_reason,
+                metadata_json={
+                    "previous_status": previous_status,
+                    "idempotent": False,
+                    "retry_count": task.retry_count,
+                    "max_retry_count": task.max_retry_count,
+                    "previous_reconcile_attempt_count": previous_reconcile_attempt_count,
+                    "version_switch_status": file.version_switch_status,
+                    **scope.audit_metadata(file_department_id=file.department_id),
+                },
+            )
+            await self._session.commit()
+            await self._session.refresh(task)
+            return await self._bundle(task)
+        except Exception:
+            await release_sync_lock(
+                redis_url=settings.cache_redis_url,
+                file_id=task.file_id,
+                token=lock_token,
+            )
+            raise
+
     async def cancel_task(
         self,
         *,
@@ -323,6 +449,8 @@ class RagflowTaskService:
         task = await self._get_task_for_update_or_raise(task_id)
         file = await self._get_task_file_or_raise(task)
         self._require_scope_for_file(scope=scope, file=file)
+        if self._is_incomplete_version_switch_task(task=task, file=file):
+            raise exceptions.incomplete_version_switch_task_not_cancelable()
         if task.status != "queued":
             raise exceptions.task_not_cancelable()
 
@@ -698,6 +826,7 @@ class RagflowTaskService:
             task=task,
             file=file,
             parse_status=parse_status,
+            ragflow_client=ragflow_client,
         )
 
     async def _reconcile_upload_without_lock(
@@ -766,6 +895,7 @@ class RagflowTaskService:
         document_id = file.ragflow_document_id
         if document_id is None or not document_id.strip():
             raise RagflowSyncPreconditionError
+        file = await self._ensure_file_parsing(task=task, file=file)
 
         return await self._poll_existing_document_without_lock(
             task=task,
@@ -806,9 +936,7 @@ class RagflowTaskService:
             execution_token=execution_token,
         )
         parse_started = False
-        should_start_parse = (
-            start_if_unstarted and _is_unstarted_run(parse_status.run)
-        ) or (
+        should_start_parse = (start_if_unstarted and _is_unstarted_run(parse_status.run)) or (
             restart_if_failed and _is_failed_run(parse_status.run)
         )
         if should_start_parse:
@@ -838,10 +966,7 @@ class RagflowTaskService:
             )
 
         locked_task = await self._get_task_for_update_or_raise(task_id)
-        if (
-            locked_task.status != "running"
-            or locked_task.lease_token != execution_token
-        ):
+        if locked_task.status != "running" or locked_task.lease_token != execution_token:
             await self._session.rollback()
             return locked_task
         locked_file = await self._repository.get_file_for_update(file_id)
@@ -872,6 +997,7 @@ class RagflowTaskService:
             task=locked_task,
             file=locked_file,
             parse_status=parse_status,
+            ragflow_client=ragflow_client,
         )
 
     async def run_delete_task(
@@ -1182,17 +1308,461 @@ class RagflowTaskService:
         task: SyncTask,
         file: RagflowSyncFileRecord,
         parse_status: RagflowDocumentStatus,
+        ragflow_client: RagflowClient,
     ) -> SyncTask:
         run = parse_status.run.upper()
         if _is_failed_run(run):
             raise RagflowParseFailedError
         if _is_success_run(run):
+            file = await self._complete_version_switch(
+                task=task,
+                file=file,
+                ragflow_client=ragflow_client,
+            )
             return await self.mark_succeeded(
                 task.id,
                 expected_lease_token=task.lease_token,
                 publish_sync_success=True,
             )
         return await self._complete_and_queue_status_check(task=task, file=file, run=run)
+
+    async def _complete_version_switch(
+        self,
+        *,
+        task: SyncTask,
+        file: RagflowSyncFileRecord,
+        ragflow_client: RagflowClient,
+    ) -> RagflowSyncFileRecord:
+        if file.status != "parsed":
+            raise RagflowSyncPreconditionError
+        if file.replaces_file_id is None:
+            return await self._record_initial_version_active(task=task, file=file)
+        if file.version_switch_status == "completed":
+            if not file.is_current_version or file.remote_visibility != "current":
+                raise RagflowSyncPreconditionError
+            return file
+
+        candidate = file
+        if candidate.version_switch_status in {"pending", "failed_old_deactivate"}:
+            candidate = await self._deactivate_predecessor_remote(
+                task=task,
+                candidate=candidate,
+                ragflow_client=ragflow_client,
+            )
+        if candidate.version_switch_status == "old_remote_deactivated":
+            candidate = await self._activate_local_version(task=task, candidate=candidate)
+        if candidate.version_switch_status in {"local_switched", "failed_new_activate"}:
+            candidate = await self._activate_candidate_remote(
+                task=task,
+                candidate=candidate,
+                ragflow_client=ragflow_client,
+            )
+        if candidate.version_switch_status != "completed":
+            raise RagflowSyncPreconditionError
+        return candidate
+
+    async def _record_initial_version_active(
+        self,
+        *,
+        task: SyncTask,
+        file: RagflowSyncFileRecord,
+    ) -> RagflowSyncFileRecord:
+        await self._assert_execution_lease(task)
+        locked = await self._repository.get_file_for_update(file.id)
+        if (
+            locked is None
+            or locked.replaces_file_id is not None
+            or locked.series_id != locked.id
+            or locked.version_number != 1
+            or not locked.is_current_version
+        ):
+            raise RagflowSyncPreconditionError
+        changed = (
+            locked.remote_visibility != "current"
+            or locked.version_switch_status != "not_required"
+            or locked.version_switch_error is not None
+        )
+        if changed:
+            now = datetime.now(UTC)
+            locked.remote_visibility = "current"
+            locked.version_switch_status = "not_required"
+            locked.version_switch_error = None
+            locked.local_version_activated_at = (
+                locked.local_version_activated_at or locked.uploaded_at
+            )
+            locked.remote_version_activated_at = locked.remote_version_activated_at or now
+            locked = await self._repository.update_file_sync_state(locked)
+            await self._repository.add_log(
+                task_id=task.id,
+                status=task.status,
+                message="initial ragflow document version activated",
+            )
+        await self._session.commit()
+        return locked
+
+    async def _deactivate_predecessor_remote(
+        self,
+        *,
+        task: SyncTask,
+        candidate: RagflowSyncFileRecord,
+        ragflow_client: RagflowClient,
+    ) -> RagflowSyncFileRecord:
+        await self._assert_execution_lease(task)
+        candidate, predecessor = await self._load_version_pair_for_update(candidate)
+        if (
+            candidate.version_switch_status not in {"pending", "failed_old_deactivate"}
+            or candidate.is_current_version
+            or not predecessor.is_current_version
+            or candidate.remote_visibility != "candidate"
+        ):
+            raise RagflowSyncPreconditionError
+        dataset_id, document_id = self._remote_identity(predecessor)
+        remote_action = candidate.replacement_remote_action
+        if remote_action not in {"delete", "archive"}:
+            raise RagflowSyncPreconditionError
+        await self._repository.begin_version_operation(
+            file_id=candidate.id,
+            target_file_id=predecessor.id,
+            operation="deactivate_predecessor",
+            started_at=datetime.now(UTC),
+        )
+        candidate.version_switch_status = "pending"
+        candidate.version_switch_error = None
+        candidate.version_switch_attempt_count += 1
+        candidate = await self._repository.update_file_sync_state(candidate)
+        await self._repository.add_log(
+            task_id=task.id,
+            status=task.status,
+            message=f"ragflow predecessor remote {remote_action} started",
+        )
+        await self._session.commit()
+        execution_token = self._require_execution_token(task)
+        await self._heartbeat_execution_lease(
+            task_id=task.id,
+            execution_token=execution_token,
+        )
+        try:
+            if remote_action == "delete":
+                await ragflow_client.delete_document(
+                    dataset_id=dataset_id,
+                    document_id=document_id,
+                )
+            else:
+                await ragflow_client.update_document_metadata(
+                    dataset_id=dataset_id,
+                    document_id=document_id,
+                    name=self._ragflow_document_name(predecessor),
+                    metadata=self._build_metadata(predecessor, is_current_version=False),
+                )
+        except RagflowDocumentNotFoundError as exc:
+            if remote_action != "delete":
+                await self._record_version_operation_failure(
+                    task=task,
+                    candidate_id=candidate.id,
+                    operation="deactivate_predecessor",
+                    failure_status="failed_old_deactivate",
+                    error=exc,
+                )
+                raise RagflowVersionSwitchError from None
+        except Exception as exc:
+            await self._record_version_operation_failure(
+                task=task,
+                candidate_id=candidate.id,
+                operation="deactivate_predecessor",
+                failure_status="failed_old_deactivate",
+                error=exc,
+            )
+            raise RagflowVersionSwitchError from None
+        await self._heartbeat_execution_lease(
+            task_id=task.id,
+            execution_token=execution_token,
+        )
+
+        await self._assert_execution_lease(task)
+        candidate, predecessor = await self._load_version_pair_for_update(candidate)
+        if candidate.is_current_version or not predecessor.is_current_version:
+            raise RagflowSyncPreconditionError
+        now = datetime.now(UTC)
+        predecessor.remote_visibility = "not_current"
+        candidate.predecessor_remote_deactivated_at = now
+        candidate.version_switch_status = "old_remote_deactivated"
+        candidate.version_switch_error = None
+        await self._repository.finish_version_operation(
+            file_id=candidate.id,
+            operation="deactivate_predecessor",
+            succeeded=True,
+            finished_at=now,
+        )
+        await self._repository.update_file_sync_state(predecessor)
+        candidate = await self._repository.update_file_sync_state(candidate)
+        await self._repository.add_log(
+            task_id=task.id,
+            status=task.status,
+            message=(
+                "ragflow predecessor remote document deleted or already absent"
+                if remote_action == "delete"
+                else "ragflow predecessor remote document preserved and marked non-current"
+            ),
+        )
+        await self._session.commit()
+        return candidate
+
+    async def _activate_local_version(
+        self,
+        *,
+        task: SyncTask,
+        candidate: RagflowSyncFileRecord,
+    ) -> RagflowSyncFileRecord:
+        await self._assert_execution_lease(task)
+        candidate, predecessor = await self._load_version_pair_for_update(candidate)
+        if (
+            candidate.version_switch_status != "old_remote_deactivated"
+            or candidate.is_current_version
+            or not predecessor.is_current_version
+            or predecessor.remote_visibility != "not_current"
+        ):
+            raise RagflowSyncPreconditionError
+        now = datetime.now(UTC)
+        predecessor.is_current_version = False
+        candidate.is_current_version = True
+        candidate.version_switch_status = "local_switched"
+        candidate.version_switch_error = None
+        candidate.local_version_activated_at = now
+        await self._repository.update_file_sync_state(predecessor)
+        candidate = await self._repository.update_file_sync_state(candidate)
+        await self._repository.add_log(
+            task_id=task.id,
+            status=task.status,
+            message="local current document version switched",
+        )
+        await self._session.commit()
+        return candidate
+
+    async def _activate_candidate_remote(
+        self,
+        *,
+        task: SyncTask,
+        candidate: RagflowSyncFileRecord,
+        ragflow_client: RagflowClient,
+    ) -> RagflowSyncFileRecord:
+        await self._assert_execution_lease(task)
+        candidate, predecessor = await self._load_version_pair_for_update(candidate)
+        if (
+            candidate.version_switch_status not in {"local_switched", "failed_new_activate"}
+            or not candidate.is_current_version
+            or predecessor.is_current_version
+            or predecessor.remote_visibility != "not_current"
+        ):
+            raise RagflowSyncPreconditionError
+        dataset_id, document_id = self._remote_identity(candidate)
+        await self._repository.begin_version_operation(
+            file_id=candidate.id,
+            target_file_id=candidate.id,
+            operation="activate_candidate",
+            started_at=datetime.now(UTC),
+        )
+        candidate.version_switch_status = "local_switched"
+        candidate.version_switch_error = None
+        candidate.version_switch_attempt_count += 1
+        candidate = await self._repository.update_file_sync_state(candidate)
+        await self._repository.add_log(
+            task_id=task.id,
+            status=task.status,
+            message="ragflow candidate metadata activation started",
+        )
+        await self._session.commit()
+        execution_token = self._require_execution_token(task)
+        await self._heartbeat_execution_lease(
+            task_id=task.id,
+            execution_token=execution_token,
+        )
+        try:
+            await ragflow_client.update_document_metadata(
+                dataset_id=dataset_id,
+                document_id=document_id,
+                name=self._ragflow_document_name(candidate),
+                metadata=self._build_metadata(candidate, is_current_version=True),
+            )
+        except Exception as exc:
+            await self._record_version_operation_failure(
+                task=task,
+                candidate_id=candidate.id,
+                operation="activate_candidate",
+                failure_status="failed_new_activate",
+                error=exc,
+            )
+            raise RagflowVersionSwitchError from None
+        await self._heartbeat_execution_lease(
+            task_id=task.id,
+            execution_token=execution_token,
+        )
+
+        await self._assert_execution_lease(task)
+        candidate, predecessor = await self._load_version_pair_for_update(candidate)
+        if not candidate.is_current_version or predecessor.is_current_version:
+            raise RagflowSyncPreconditionError
+        now = datetime.now(UTC)
+        candidate.remote_visibility = "current"
+        candidate.version_switch_status = "completed"
+        candidate.version_switch_error = None
+        candidate.remote_version_activated_at = now
+        await self._repository.finish_version_operation(
+            file_id=candidate.id,
+            operation="activate_candidate",
+            succeeded=True,
+            finished_at=now,
+        )
+        candidate = await self._repository.update_file_sync_state(candidate)
+        await self._repository.add_log(
+            task_id=task.id,
+            status=task.status,
+            message="ragflow candidate metadata activated",
+        )
+        await self._session.commit()
+        return candidate
+
+    async def _record_version_operation_failure(
+        self,
+        *,
+        task: SyncTask,
+        candidate_id: uuid.UUID,
+        operation: str,
+        failure_status: str,
+        error: Exception,
+    ) -> None:
+        error_type = type(error).__name__[:120]
+        candidate = await self._repository.get_file_for_update(candidate_id)
+        if candidate is None:
+            raise RagflowSyncPreconditionError
+        candidate.version_switch_status = failure_status
+        candidate.version_switch_error = error_type
+        await self._repository.finish_version_operation(
+            file_id=candidate.id,
+            operation=operation,
+            succeeded=False,
+            finished_at=datetime.now(UTC),
+            error_type=error_type,
+            outcome_unknown=isinstance(error, RagflowSubmissionOutcomeUnknownError),
+        )
+        await self._repository.update_file_sync_state(candidate)
+        await self._repository.add_log(
+            task_id=task.id,
+            status=task.status,
+            message=f"ragflow version operation {operation} failed ({error_type})",
+        )
+        await self._session.commit()
+
+    async def _load_version_pair_for_update(
+        self,
+        candidate: RagflowSyncFileRecord,
+    ) -> tuple[RagflowSyncFileRecord, RagflowSyncFileRecord]:
+        predecessor_id = candidate.replaces_file_id
+        if predecessor_id is None:
+            raise RagflowSyncPreconditionError
+        records = await self._repository.get_version_series_for_update(candidate.series_id)
+        by_id = {record.id: record for record in records}
+        locked_candidate = by_id.get(candidate.id)
+        predecessor = by_id.get(predecessor_id)
+        if locked_candidate is None or predecessor is None:
+            raise RagflowSyncPreconditionError
+        self._validate_version_pair(
+            candidate=locked_candidate,
+            predecessor=predecessor,
+            series=records,
+        )
+        return locked_candidate, predecessor
+
+    @staticmethod
+    def _validate_version_pair(
+        *,
+        candidate: RagflowSyncFileRecord,
+        predecessor: RagflowSyncFileRecord,
+        series: list[RagflowSyncFileRecord],
+    ) -> None:
+        if (
+            candidate.replaces_file_id != predecessor.id
+            or candidate.series_id != predecessor.series_id
+            or candidate.version_number <= predecessor.version_number
+            or candidate.department_id != predecessor.department_id
+            or candidate.status != "parsed"
+            or candidate.review_status != "approved"
+            or predecessor.status != "parsed"
+            or candidate.replacement_remote_action not in {"delete", "archive"}
+        ):
+            raise RagflowSyncPreconditionError
+        ordered = sorted(series, key=lambda item: item.version_number)
+        if not ordered:
+            raise RagflowSyncPreconditionError
+        root = ordered[0]
+        if (
+            root.id != root.series_id
+            or root.version_number != 1
+            or root.replaces_file_id is not None
+            or root.replacement_remote_action is not None
+            or candidate.version_number != ordered[-1].version_number
+            or [item.version_number for item in ordered] != list(range(1, len(ordered) + 1))
+        ):
+            raise RagflowSyncPreconditionError
+        by_id = {item.id: item for item in ordered}
+        current = [item for item in ordered if item.is_current_version]
+        if len(current) != 1 or current[0].id not in {candidate.id, predecessor.id}:
+            raise RagflowSyncPreconditionError
+        for item in ordered:
+            if (
+                item.series_id != root.id
+                or item.department_id != root.department_id
+                or item.uploader_id != root.uploader_id
+                or (
+                    item.id != root.id
+                    and item.replacement_remote_action not in {"delete", "archive"}
+                )
+            ):
+                raise RagflowSyncPreconditionError
+            if item.id == root.id:
+                continue
+            if item.replaces_file_id is None:
+                raise RagflowSyncPreconditionError
+            item_predecessor = by_id.get(item.replaces_file_id)
+            if item_predecessor is None or item_predecessor.version_number >= item.version_number:
+                raise RagflowSyncPreconditionError
+        skipped = [
+            item
+            for item in ordered
+            if predecessor.version_number < item.version_number < candidate.version_number
+        ]
+        if any(
+            item.status not in ABANDONED_VERSION_STATUSES
+            or item.is_current_version
+            or item.remote_visibility != "candidate"
+            or item.ragflow_document_id is not None
+            or item.version_switch_status not in {"pending", "failed_old_deactivate"}
+            or item.predecessor_remote_deactivated_at is not None
+            or item.local_version_activated_at is not None
+            or item.remote_version_activated_at is not None
+            for item in skipped
+        ):
+            raise RagflowSyncPreconditionError
+        RagflowTaskService._remote_identity(candidate)
+        RagflowTaskService._remote_identity(predecessor)
+
+    @staticmethod
+    def _remote_identity(file: RagflowSyncFileRecord) -> tuple[str, str]:
+        dataset_id = file.ragflow_dataset_id
+        document_id = file.ragflow_document_id
+        if (
+            dataset_id is None
+            or not dataset_id.strip()
+            or document_id is None
+            or not document_id.strip()
+        ):
+            raise RagflowSyncPreconditionError
+        return dataset_id, document_id
+
+    @staticmethod
+    def _require_execution_token(task: SyncTask) -> str:
+        if task.lease_token is None:
+            raise RagflowSyncPreconditionError
+        return task.lease_token
 
     async def _complete_and_queue_status_check(
         self,
@@ -1286,12 +1856,23 @@ class RagflowTaskService:
         file.last_sync_at = datetime.now(UTC)
         await self._repository.update_file_sync_state(file)
 
-    def _build_metadata(self, file: RagflowSyncFileRecord) -> dict[str, object]:
+    def _build_metadata(
+        self,
+        file: RagflowSyncFileRecord,
+        *,
+        is_current_version: bool | None = None,
+    ) -> dict[str, object]:
+        effective_current = (
+            file.is_current_version if is_current_version is None else is_current_version
+        )
         return {
             "source": "knowledge_uploader",
             "file_id": str(file.id),
             "version_id": str(file.id),
-            "version_number": 1,
+            "series_id": str(file.series_id),
+            "version_number": file.version_number,
+            "replaces_file_id": str(file.replaces_file_id) if file.replaces_file_id else None,
+            "is_current_version": effective_current,
             "uploader_id": str(file.uploader_id),
             "department_id": str(file.department_id),
             "department_name": file.department_name or file.department,
@@ -1410,6 +1991,18 @@ class RagflowTaskService:
             user_agent=context.user_agent,
             metadata_json=metadata_json,
             reason=reason,
+        )
+
+    @staticmethod
+    def _is_incomplete_version_switch_task(
+        *,
+        task: SyncTask,
+        file: RagflowSyncFileRecord,
+    ) -> bool:
+        return (
+            task.task_type in VERSION_SWITCH_RECONCILABLE_TASKS
+            and file.replaces_file_id is not None
+            and file.version_switch_status != "completed"
         )
 
     def _require_admin(self, current_user: AuthUserRecord) -> None:

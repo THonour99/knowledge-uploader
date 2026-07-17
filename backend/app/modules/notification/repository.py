@@ -5,6 +5,7 @@ from dataclasses import dataclass
 from datetime import UTC, datetime
 
 from sqlalchemy import (
+    Boolean,
     Column,
     DateTime,
     MetaData,
@@ -21,6 +22,7 @@ from sqlalchemy.dialects.postgresql import UUID
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.core.identity import UNASSIGNED_DEPARTMENT_ID
 from app.core.outbox import EventOutbox
 
 from .models import Notification
@@ -33,14 +35,18 @@ USERS = Table(
     Column("department_id", UUID(as_uuid=True), nullable=False),
     Column("role", String(40), nullable=False),
     Column("status", String(40), nullable=False),
+    Column("email_verified", Boolean, nullable=False),
 )
 FILES = Table(
     "files",
     MetaData(),
     Column("id", UUID(as_uuid=True), primary_key=True),
     Column("uploader_id", UUID(as_uuid=True), nullable=False),
+    Column("owner_id", UUID(as_uuid=True)),
     Column("department_id", UUID(as_uuid=True), nullable=False),
     Column("original_name", String(255), nullable=False),
+    Column("status", String(40), nullable=False),
+    Column("is_current_version", Boolean, nullable=False),
     Column("expires_at", DateTime(timezone=True)),
     Column("expiry_status", String(20), nullable=False),
 )
@@ -62,10 +68,13 @@ USER_MANAGED_DEPARTMENTS = Table(
 class NotificationFileContext:
     id: uuid.UUID
     uploader_id: uuid.UUID
+    owner_id: uuid.UUID | None
     department_id: uuid.UUID
     original_name: str
     expires_at: datetime | None
     expiry_status: str
+    status: str
+    is_current_version: bool
 
 
 @dataclass(frozen=True, slots=True)
@@ -157,10 +166,13 @@ class NotificationRepository:
         return NotificationFileContext(
             id=row["id"],
             uploader_id=row["uploader_id"],
+            owner_id=row["owner_id"],
             department_id=row["department_id"],
             original_name=str(row["original_name"]),
             expires_at=row["expires_at"],
             expiry_status=str(row["expiry_status"]),
+            status=str(row["status"]),
+            is_current_version=bool(row["is_current_version"]),
         )
 
     async def get_file_context_for_sync_task(
@@ -178,10 +190,13 @@ class NotificationRepository:
         return NotificationFileContext(
             id=row["id"],
             uploader_id=row["uploader_id"],
+            owner_id=row["owner_id"],
             department_id=row["department_id"],
             original_name=str(row["original_name"]),
             expires_at=row["expires_at"],
             expiry_status=str(row["expiry_status"]),
+            status=str(row["status"]),
+            is_current_version=bool(row["is_current_version"]),
         )
 
     async def get_active_recipient(
@@ -192,6 +207,28 @@ class NotificationRepository:
             select(USERS.c.id, USERS.c.email).where(
                 USERS.c.id == user_id,
                 USERS.c.status == "active",
+                USERS.c.email_verified.is_(True),
+            )
+        )
+        row = result.one_or_none()
+        if row is None:
+            return None
+        return NotificationRecipientRecord(user_id=row.id, email=str(row.email))
+
+    async def get_active_department_recipient(
+        self,
+        user_id: uuid.UUID,
+        *,
+        department_id: uuid.UUID,
+    ) -> NotificationRecipientRecord | None:
+        if department_id == UNASSIGNED_DEPARTMENT_ID:
+            return None
+        result = await self._session.execute(
+            select(USERS.c.id, USERS.c.email).where(
+                USERS.c.id == user_id,
+                USERS.c.department_id == department_id,
+                USERS.c.status == "active",
+                USERS.c.email_verified.is_(True),
             )
         )
         row = result.one_or_none()
@@ -203,6 +240,8 @@ class NotificationRepository:
         self,
         department_id: uuid.UUID,
     ) -> list[NotificationRecipientRecord]:
+        if department_id == UNASSIGNED_DEPARTMENT_ID:
+            return []
         managed_department = exists(
             select(USER_MANAGED_DEPARTMENTS.c.user_id).where(
                 USER_MANAGED_DEPARTMENTS.c.user_id == USERS.c.id,
@@ -214,6 +253,7 @@ class NotificationRepository:
             .where(
                 USERS.c.role == "dept_admin",
                 USERS.c.status == "active",
+                USERS.c.email_verified.is_(True),
                 or_(
                     USERS.c.department_id == department_id,
                     managed_department,

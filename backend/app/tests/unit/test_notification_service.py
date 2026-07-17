@@ -114,6 +114,7 @@ async def _create_file(
     department_id: uuid.UUID,
     name: str,
     expires_at: datetime | None = None,
+    owner_id: uuid.UUID | None = None,
 ) -> uuid.UUID:
     from app.core.database import AsyncSessionFactory
     from app.modules.document.models import File
@@ -132,6 +133,7 @@ async def _create_file(
         object_key=f"test/{uuid.uuid4()}.pdf",
         uploader_id=uploader_id,
         department_id=department_id,
+        owner_id=owner_id or uploader_id,
         status="pending_review",
         review_status="pending",
         submitted_at=submitted_at,
@@ -182,6 +184,13 @@ async def _create_source_event(
         await session.commit()
         await session.refresh(event)
         return event.id
+
+
+def _expiry_payload(expires_at: datetime, *, kind: str = "warning") -> dict[str, object]:
+    return {
+        "expected_expires_at": expires_at.isoformat(),
+        "notification_kind": kind,
+    }
 
 
 async def _process_source_event(event_id: int) -> int:
@@ -461,8 +470,10 @@ async def test_expiry_uses_explicit_uploader_fallback_and_copies_department_admi
     from app.core.database import AsyncSessionFactory
     from app.modules.notification import events
     from app.modules.notification.models import Notification
+    from app.modules.user.models import User
 
     department_id = await _create_department("Expiry")
+    moved_department_id = await _create_department("Expiry uploader moved")
     uploader_id = await _create_user(
         "owner-fallback@company.com",
         department_id=department_id,
@@ -483,7 +494,13 @@ async def test_expiry_uses_explicit_uploader_fallback_and_copies_department_admi
         event_type=events.DOCUMENT_FILE_EXPIRING,
         aggregate_type="file",
         aggregate_id=file_id,
+        payload=_expiry_payload(expires_at),
     )
+    async with AsyncSessionFactory() as session:
+        uploader = await session.get(User, uploader_id)
+        assert uploader is not None
+        uploader.department_id = moved_department_id
+        await session.commit()
 
     assert await _process_source_event(event_id) == 2
 
@@ -501,6 +518,248 @@ async def test_expiry_uses_explicit_uploader_fallback_and_copies_department_admi
     assert {row.user_id for row in rows} == {uploader_id, admin_id}
     assert all(row.metadata_json["resource_type"] == "file" for row in rows)
     assert all(row.metadata_json["expiry_status"] == "expiring" for row in rows)
+
+
+async def test_expiry_prefers_active_owner_falls_back_and_deduplicates_admin() -> None:
+    from app.core.database import AsyncSessionFactory
+    from app.modules.notification import events
+    from app.modules.notification.models import Notification
+    from app.modules.user.models import User
+
+    department_id = await _create_department("Expiry ownership")
+    moved_department_id = await _create_department("Expiry owner moved")
+    uploader_id = await _create_user(
+        "expiry-source@company.com",
+        department_id=department_id,
+    )
+    fallback_uploader_id = await _create_user(
+        "expiry-fallback@company.com",
+        department_id=department_id,
+    )
+    owner_id = await _create_user(
+        "expiry-primary-owner@company.com",
+        department_id=department_id,
+    )
+    moved_uploader_id = await _create_user(
+        "expiry-moved-owner-uploader@company.com",
+        department_id=department_id,
+    )
+    moved_owner_id = await _create_user(
+        "expiry-moved-owner@company.com",
+        department_id=department_id,
+    )
+    invalid_owner_id = await _create_user(
+        "expiry-invalid-owner@company.com",
+        department_id=department_id,
+    )
+    admin_id = await _create_user(
+        "expiry-owner-admin@company.com",
+        role="dept_admin",
+        department_id=department_id,
+    )
+    async with AsyncSessionFactory() as session:
+        invalid_owner = await session.get(User, invalid_owner_id)
+        assert invalid_owner is not None
+        invalid_owner.email_verified = False
+        await session.commit()
+
+    expires_at = datetime.now(UTC) + timedelta(days=3)
+    owned_file_id = await _create_file(
+        uploader_id=uploader_id,
+        owner_id=owner_id,
+        department_id=department_id,
+        name="owned-expiry.pdf",
+        expires_at=expires_at,
+    )
+    fallback_file_id = await _create_file(
+        uploader_id=fallback_uploader_id,
+        owner_id=invalid_owner_id,
+        department_id=department_id,
+        name="fallback-expiry.pdf",
+        expires_at=expires_at,
+    )
+    admin_owned_file_id = await _create_file(
+        uploader_id=uploader_id,
+        owner_id=admin_id,
+        department_id=department_id,
+        name="admin-owned-expiry.pdf",
+        expires_at=expires_at,
+    )
+    moved_owner_file_id = await _create_file(
+        uploader_id=moved_uploader_id,
+        owner_id=moved_owner_id,
+        department_id=department_id,
+        name="moved-owner-expiry.pdf",
+        expires_at=expires_at,
+    )
+    owned_event_id = await _create_source_event(
+        event_type=events.DOCUMENT_FILE_EXPIRING,
+        aggregate_type="file",
+        aggregate_id=owned_file_id,
+        payload=_expiry_payload(expires_at),
+    )
+    fallback_event_id = await _create_source_event(
+        event_type=events.DOCUMENT_FILE_EXPIRING,
+        aggregate_type="file",
+        aggregate_id=fallback_file_id,
+        payload=_expiry_payload(expires_at),
+    )
+    admin_owned_event_id = await _create_source_event(
+        event_type=events.DOCUMENT_FILE_EXPIRING,
+        aggregate_type="file",
+        aggregate_id=admin_owned_file_id,
+        payload=_expiry_payload(expires_at),
+    )
+    moved_owner_event_id = await _create_source_event(
+        event_type=events.DOCUMENT_FILE_EXPIRING,
+        aggregate_type="file",
+        aggregate_id=moved_owner_file_id,
+        payload=_expiry_payload(expires_at),
+    )
+    async with AsyncSessionFactory() as session:
+        moved_owner = await session.get(User, moved_owner_id)
+        assert moved_owner is not None
+        moved_owner.department_id = moved_department_id
+        await session.commit()
+
+    assert await _process_source_event(owned_event_id) == 2
+    assert await _process_source_event(fallback_event_id) == 2
+    assert await _process_source_event(admin_owned_event_id) == 1
+    assert await _process_source_event(moved_owner_event_id) == 2
+
+    async with AsyncSessionFactory() as session:
+        rows = list(
+            (
+                await session.execute(
+                    select(Notification.source_event_id, Notification.user_id).where(
+                        Notification.source_event_id.in_(
+                            {
+                                owned_event_id,
+                                fallback_event_id,
+                                admin_owned_event_id,
+                                moved_owner_event_id,
+                            }
+                        ),
+                        Notification.channel == "in_app",
+                    )
+                )
+            ).all()
+        )
+    recipients: dict[int, set[uuid.UUID]] = {}
+    for source_event_id, user_id in rows:
+        recipients.setdefault(source_event_id, set()).add(user_id)
+    assert recipients[owned_event_id] == {owner_id, admin_id}
+    assert uploader_id not in recipients[owned_event_id]
+    assert recipients[fallback_event_id] == {fallback_uploader_id, admin_id}
+    assert invalid_owner_id not in recipients[fallback_event_id]
+    assert recipients[admin_owned_event_id] == {admin_id}
+    assert recipients[moved_owner_event_id] == {moved_uploader_id, admin_id}
+    assert moved_owner_id not in recipients[moved_owner_event_id]
+
+
+async def test_expiry_event_snapshot_skips_delayed_patch_archive_and_historical_rows() -> None:
+    from app.core.database import AsyncSessionFactory
+    from app.modules.document.models import File
+    from app.modules.notification import events
+    from app.modules.notification.models import Notification
+
+    department_id = await _create_department("Expiry event CAS")
+    uploader_id = await _create_user(
+        "expiry-event-cas@company.com",
+        department_id=department_id,
+    )
+    original_expires_at = datetime.now(UTC) + timedelta(days=3)
+    patched_expires_at = original_expires_at + timedelta(days=1)
+    patched_file_id = await _create_file(
+        uploader_id=uploader_id,
+        department_id=department_id,
+        name="patched-expiry.pdf",
+        expires_at=original_expires_at,
+    )
+    archived_file_id = await _create_file(
+        uploader_id=uploader_id,
+        department_id=department_id,
+        name="archived-expiry.pdf",
+        expires_at=original_expires_at,
+    )
+    historical_file_id = await _create_file(
+        uploader_id=uploader_id,
+        department_id=department_id,
+        name="historical-expiry.pdf",
+        expires_at=original_expires_at,
+    )
+    stale_event_id = await _create_source_event(
+        event_type=events.DOCUMENT_FILE_EXPIRING,
+        aggregate_type="file",
+        aggregate_id=patched_file_id,
+        payload=_expiry_payload(original_expires_at),
+    )
+    archived_event_id = await _create_source_event(
+        event_type=events.DOCUMENT_FILE_EXPIRING,
+        aggregate_type="file",
+        aggregate_id=archived_file_id,
+        payload=_expiry_payload(original_expires_at),
+    )
+    historical_event_id = await _create_source_event(
+        event_type=events.DOCUMENT_FILE_EXPIRING,
+        aggregate_type="file",
+        aggregate_id=historical_file_id,
+        payload=_expiry_payload(original_expires_at),
+    )
+    malformed_event_id = await _create_source_event(
+        event_type=events.DOCUMENT_FILE_EXPIRING,
+        aggregate_type="file",
+        aggregate_id=patched_file_id,
+        payload={},
+    )
+
+    async with AsyncSessionFactory() as session:
+        patched = await session.get(File, patched_file_id)
+        archived = await session.get(File, archived_file_id)
+        historical = await session.get(File, historical_file_id)
+        assert patched is not None and archived is not None and historical is not None
+        patched.expires_at = patched_expires_at
+        patched.expiry_status = "expiring"
+        patched.expiry_warning_sent_at = None
+        archived.status = "disabled"
+        historical.is_current_version = False
+        await session.commit()
+
+    assert await _process_source_event(stale_event_id) == 0
+    assert await _process_source_event(archived_event_id) == 0
+    assert await _process_source_event(historical_event_id) == 0
+    assert await _process_source_event(malformed_event_id) == 0
+
+    fresh_event_id = await _create_source_event(
+        event_type=events.DOCUMENT_FILE_EXPIRING,
+        aggregate_type="file",
+        aggregate_id=patched_file_id,
+        payload=_expiry_payload(patched_expires_at),
+    )
+    assert await _process_source_event(fresh_event_id) == 1
+    assert await _process_source_event(fresh_event_id) == 0
+
+    async with AsyncSessionFactory() as session:
+        notifications = list(
+            (
+                await session.execute(
+                    select(Notification).where(
+                        Notification.source_event_id.in_(
+                            {
+                                stale_event_id,
+                                archived_event_id,
+                                historical_event_id,
+                                malformed_event_id,
+                                fresh_event_id,
+                            }
+                        ),
+                        Notification.channel == "in_app",
+                    )
+                )
+            ).scalars()
+        )
+    assert len(notifications) == 1
+    assert notifications[0].source_event_id == fresh_event_id
 
 
 async def test_ragflow_and_ai_results_notify_uploader_without_raw_error() -> None:

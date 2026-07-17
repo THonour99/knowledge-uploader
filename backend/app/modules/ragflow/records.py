@@ -31,6 +31,18 @@ class RagflowSyncFileRecord:
     reviewer_id: UUID | None
     reviewed_at: datetime | None
     sensitive_risk_level: str
+    series_id: UUID
+    version_number: int
+    replaces_file_id: UUID | None
+    replacement_remote_action: str | None
+    is_current_version: bool
+    remote_visibility: str
+    version_switch_status: str
+    version_switch_error: str | None
+    version_switch_attempt_count: int
+    predecessor_remote_deactivated_at: datetime | None
+    local_version_activated_at: datetime | None
+    remote_version_activated_at: datetime | None
     ragflow_dataset_id: str | None
     ragflow_document_id: str | None
     ragflow_parse_status: str | None

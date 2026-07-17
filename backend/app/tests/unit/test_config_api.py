@@ -50,6 +50,7 @@ EXPECTED_GROUP_KEYS: dict[str, set[str]] = {
         "ragflow.allow_high_risk_sync",
         "ragflow.delete_remote_on_file_delete",
         "ragflow.keep_remote_on_archive",
+        "ragflow.keep_replaced_remote",
     },
 }
 
@@ -727,9 +728,7 @@ async def test_email_verification_environment_floor_is_effective_and_cannot_be_r
         )
         update_audits = list(
             (
-                await session.execute(
-                    select(AuditLog).where(AuditLog.action == "config.update")
-                )
+                await session.execute(select(AuditLog).where(AuditLog.action == "config.update"))
             ).scalars()
         )
     assert stored is False

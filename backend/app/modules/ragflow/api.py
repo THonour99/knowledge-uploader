@@ -20,7 +20,13 @@ from app.modules.user.schemas import AuthUserRecord
 
 from .exceptions import RagflowTaskError
 from .repository import RagflowTaskRepository  # noqa: TID251 - same-module repository dependency
-from .schemas import ManualSyncRequest, SyncTaskListResponse, SyncTaskLogResponse, SyncTaskResponse
+from .schemas import (
+    ManualSyncRequest,
+    SyncTaskListResponse,
+    SyncTaskLogResponse,
+    SyncTaskResponse,
+    VersionSwitchReconcileRequest,
+)
 from .service import (  # noqa: TID251 - same-module service dependency
     RagflowTaskService,
     RequestContext,
@@ -135,6 +141,28 @@ async def retry_task(
             current_user=current_user,
             scope=scope,
             task_id=task_id,
+            context=_context_from(request),
+        )
+    except RagflowTaskError as error:
+        _raise_ragflow_task_error(error)
+    return success_response(_task_response(task).model_dump(mode="json"), request)
+
+
+@router.post("/api/tasks/{task_id}/reconcile-version-switch")
+async def reconcile_version_switch_task(
+    task_id: UUID,
+    payload: VersionSwitchReconcileRequest,
+    request: Request,
+    current_user: CurrentUserDep,
+    scope: ScopedAdminDep,
+    session: SessionDep,
+) -> dict[str, object]:
+    try:
+        task = await _service(session).reconcile_version_switch_task(
+            current_user=current_user,
+            scope=scope,
+            task_id=task_id,
+            reason=payload.reason,
             context=_context_from(request),
         )
     except RagflowTaskError as error:

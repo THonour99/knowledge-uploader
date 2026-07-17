@@ -40,6 +40,7 @@ FILES = Table(
     Column("mime_type", String(120), nullable=False),
     Column("size", BigInteger, nullable=False),
     Column("uploader_id", UUID(as_uuid=True), nullable=False),
+    Column("owner_id", UUID(as_uuid=True)),
     Column("department_id", UUID(as_uuid=True), nullable=False),
     Column("department", String(100)),
     Column("category_id", UUID(as_uuid=True)),
@@ -61,6 +62,20 @@ FILES = Table(
     Column("ai_analysis_enabled_at_upload", Boolean, nullable=False),
     Column("expires_at", DateTime(timezone=True)),
     Column("expiry_status", String(20), nullable=False),
+    Column("expiry_warning_sent_at", DateTime(timezone=True)),
+    Column("expiry_expired_sent_at", DateTime(timezone=True)),
+    Column("series_id", UUID(as_uuid=True), nullable=False),
+    Column("version_number", Integer, nullable=False),
+    Column("replaces_file_id", UUID(as_uuid=True)),
+    Column("replacement_remote_action", String(20)),
+    Column("is_current_version", Boolean, nullable=False),
+    Column("remote_visibility", String(20), nullable=False),
+    Column("version_switch_status", String(40), nullable=False),
+    Column("version_switch_error", String(120)),
+    Column("version_switch_attempt_count", Integer, nullable=False),
+    Column("predecessor_remote_deactivated_at", DateTime(timezone=True)),
+    Column("local_version_activated_at", DateTime(timezone=True)),
+    Column("remote_version_activated_at", DateTime(timezone=True)),
     Column("uploaded_at", DateTime(timezone=True), nullable=False),
     Column("last_sync_at", DateTime(timezone=True)),
     Column("created_at", DateTime(timezone=True), nullable=False),
@@ -74,6 +89,9 @@ USERS = Table(
     MetaData(),
     Column("id", UUID(as_uuid=True), primary_key=True),
     Column("name", String(100), nullable=False),
+    Column("department_id", UUID(as_uuid=True), nullable=False),
+    Column("status", String(40), nullable=False),
+    Column("email_verified", Boolean, nullable=False),
 )
 
 DOCUMENT_ANALYSIS = Table(
@@ -108,6 +126,13 @@ UPLOADER_NAME = (
     .scalar_subquery()
     .label("uploader_name")
 )
+OWNER_NAME = (
+    select(USERS.c.name)
+    .where(USERS.c.id == FILES.c.owner_id)
+    .correlate(FILES)
+    .scalar_subquery()
+    .label("owner_name")
+)
 CLAIMED_BY_NAME = (
     select(USERS.c.name)
     .where(USERS.c.id == FILES.c.claimed_by)
@@ -122,7 +147,13 @@ SENSITIVE_RISK_LEVEL = (
     .scalar_subquery()
     .label("sensitive_risk_level")
 )
-FILE_RECORD_COLUMNS = (*FILE_COLUMNS, UPLOADER_NAME, CLAIMED_BY_NAME, SENSITIVE_RISK_LEVEL)
+FILE_RECORD_COLUMNS = (
+    *FILE_COLUMNS,
+    UPLOADER_NAME,
+    OWNER_NAME,
+    CLAIMED_BY_NAME,
+    SENSITIVE_RISK_LEVEL,
+)
 
 
 def _escape_like(value: str) -> str:
@@ -132,6 +163,24 @@ def _escape_like(value: str) -> str:
 class ReviewRepository:
     def __init__(self, session: AsyncSession) -> None:
         self._session = session
+
+    async def is_valid_document_owner(
+        self,
+        *,
+        owner_id: uuid.UUID,
+        department_id: uuid.UUID,
+    ) -> bool:
+        result = await self._session.execute(
+            select(USERS.c.id)
+            .where(
+                USERS.c.id == owner_id,
+                USERS.c.department_id == department_id,
+                USERS.c.status == "active",
+                USERS.c.email_verified.is_(True),
+            )
+            .with_for_update()
+        )
+        return result.scalar_one_or_none() is not None
 
     async def add_category(self, category: Category) -> Category:
         self._session.add(category)
@@ -170,9 +219,7 @@ class ReviewRepository:
         mapping_id: uuid.UUID,
     ) -> DatasetMapping | None:
         result = await self._session.execute(
-            select(DatasetMapping)
-            .where(DatasetMapping.id == mapping_id)
-            .with_for_update()
+            select(DatasetMapping).where(DatasetMapping.id == mapping_id).with_for_update()
         )
         return result.scalar_one_or_none()
 
@@ -454,10 +501,12 @@ class ReviewRepository:
                 review_version=FILES.c.review_version + 1,
                 updated_at=func.now(),
             )
-            .returning(*FILE_COLUMNS)
+            .returning(FILES.c.id)
         )
-        row = result.mappings().one_or_none()
-        return file_record_from_row(row) if row is not None else None
+        updated_id = result.scalar_one_or_none()
+        if updated_id is None:
+            return None
+        return await self.get_file(cast(uuid.UUID, updated_id))
 
     async def release_expired_claims(
         self,
@@ -523,8 +572,7 @@ class ReviewRepository:
             return True
         hits = cast(list[object] | None, row["sensitive_hits"])
         return any(
-            isinstance(hit, dict)
-            and hit.get("action") in {"require_review", "block_sync"}
+            isinstance(hit, dict) and hit.get("action") in {"require_review", "block_sync"}
             for hit in (hits or [])
         )
 
@@ -553,6 +601,8 @@ def file_record_from_row(row: RowMapping) -> ReviewFileRecord:
         size=cast(int, row["size"]),
         uploader_id=cast(uuid.UUID, row["uploader_id"]),
         uploader_name=cast(str | None, row.get("uploader_name")),
+        owner_id=cast(uuid.UUID | None, row["owner_id"]),
+        owner_name=cast(str | None, row.get("owner_name")),
         department_id=cast(uuid.UUID, row["department_id"]),
         department=cast(str | None, row["department"]),
         category_id=cast(uuid.UUID | None, row["category_id"]),
@@ -576,6 +626,20 @@ def file_record_from_row(row: RowMapping) -> ReviewFileRecord:
         ai_analysis_enabled_at_upload=cast(bool, row["ai_analysis_enabled_at_upload"]),
         expires_at=cast(datetime | None, row["expires_at"]),
         expiry_status=cast(str, row["expiry_status"]),
+        series_id=cast(uuid.UUID, row["series_id"]),
+        version_number=cast(int, row["version_number"]),
+        replaces_file_id=cast(uuid.UUID | None, row["replaces_file_id"]),
+        replacement_remote_action=cast(str | None, row["replacement_remote_action"]),
+        is_current_version=cast(bool, row["is_current_version"]),
+        remote_visibility=cast(str, row["remote_visibility"]),
+        version_switch_status=cast(str, row["version_switch_status"]),
+        version_switch_error=cast(str | None, row["version_switch_error"]),
+        version_switch_attempt_count=cast(int, row["version_switch_attempt_count"]),
+        predecessor_remote_deactivated_at=cast(
+            datetime | None, row["predecessor_remote_deactivated_at"]
+        ),
+        local_version_activated_at=cast(datetime | None, row["local_version_activated_at"]),
+        remote_version_activated_at=cast(datetime | None, row["remote_version_activated_at"]),
         uploaded_at=cast(datetime, row["uploaded_at"]),
         last_sync_at=cast(datetime | None, row["last_sync_at"]),
         created_at=cast(datetime, row["created_at"]),

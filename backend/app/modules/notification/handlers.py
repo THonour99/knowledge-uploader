@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import uuid
 from collections.abc import Iterable
-from datetime import datetime
+from datetime import UTC, datetime
 
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -293,16 +293,41 @@ async def _handle_document_expiry(
     repository: NotificationRepository,
     session: AsyncSession,
 ) -> int:
-    file = await _file_from_event(event, repository=repository)
-    if file.expires_at is None:
+    snapshot = _expiry_snapshot_from_event(event)
+    if snapshot is None:
         return 0
-    expiry_status = "expired" if event.event_type == events.DOCUMENT_FILE_EXPIRED else "expiring"
-    # TODO(governance-owner): use files.owner_id once document ownership is implemented.
-    # Until then uploader_id is the explicit compatibility fallback, never a fabricated owner.
+    expected_expires_at, expiry_status = snapshot
+    file = await _file_from_event(event, repository=repository)
+    now = datetime.now(UTC)
+    if (
+        file.expires_at is None
+        or file.expires_at != expected_expires_at
+        or not file.is_current_version
+        or file.status in {"deleted", "ragflow_cleanup_failed", "disabled"}
+    ):
+        return 0
+    if expiry_status == "expired":
+        if file.expiry_status != "expired" or file.expires_at > now:
+            return 0
+    elif file.expiry_status != "expiring" or file.expires_at <= now:
+        return 0
     recipients: list[NotificationRecipientRecord] = []
-    uploader = await repository.get_active_recipient(file.uploader_id)
-    if uploader is not None:
-        recipients.append(uploader)
+    owner = (
+        await repository.get_active_department_recipient(
+            file.owner_id,
+            department_id=file.department_id,
+        )
+        if file.owner_id is not None
+        else None
+    )
+    if owner is not None:
+        recipients.append(owner)
+    else:
+        uploader = await repository.get_active_recipient(file.uploader_id)
+        # The uploader keeps historical access to their own file even after a
+        # department move, so fallback delivery is intentionally not department-scoped.
+        if uploader is not None:
+            recipients.append(uploader)
     recipients.extend(await repository.list_active_department_admins(file.department_id))
 
     display_date = _display_date(file.expires_at)
@@ -399,6 +424,31 @@ def _safe_reason(value: object) -> str | None:
         return None
     cleaned = " ".join(value.split())
     return cleaned[:500] or None
+
+
+def _expiry_snapshot_from_event(event: EventOutbox) -> tuple[datetime, str] | None:
+    if set(event.payload) != {"expected_expires_at", "notification_kind"}:
+        return None
+    notification_kind = event.payload.get("notification_kind")
+    if not isinstance(notification_kind, str):
+        return None
+    expected_event_type = {
+        "warning": events.DOCUMENT_FILE_EXPIRING,
+        "expired": events.DOCUMENT_FILE_EXPIRED,
+    }.get(notification_kind)
+    if expected_event_type != event.event_type:
+        return None
+    value = event.payload.get("expected_expires_at")
+    if not isinstance(value, str):
+        return None
+    try:
+        expected_expires_at = datetime.fromisoformat(value)
+    except ValueError:
+        return None
+    if expected_expires_at.tzinfo is None:
+        return None
+    expiry_status = "expired" if notification_kind == "expired" else "expiring"
+    return expected_expires_at, expiry_status
 
 
 def _display_date(value: datetime) -> str:

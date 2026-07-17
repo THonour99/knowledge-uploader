@@ -220,6 +220,13 @@ CONFIG_DEFINITIONS: tuple[ConfigDefinition, ...] = (
         default=True,
         description="归档文件时是否保留远端文档",
     ),
+    ConfigDefinition(
+        key="ragflow.keep_replaced_remote",
+        group="ragflow",
+        value_type="bool",
+        default=False,
+        description="新版本生效时是否保留旧远端文档并将其标记为非当前版本",
+    ),
 )
 
 CONFIG_GROUPS: frozenset[str] = frozenset(definition.group for definition in CONFIG_DEFINITIONS)

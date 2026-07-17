@@ -64,9 +64,7 @@ class HttpRagflowClient:
         document = self._extract_first_document(payload)
         document_id = document.get("id")
         if not isinstance(document_id, str) or not document_id:
-            raise self._submission_outcome_unknown(
-                "RAGFlow upload response missing document id"
-            )
+            raise self._submission_outcome_unknown("RAGFlow upload response missing document id")
         return RagflowUploadResult(document_id=document_id, raw=document)
 
     async def find_document_by_name(
@@ -106,9 +104,7 @@ class HttpRagflowClient:
                     continue
                 document_id = document.get("id")
                 if not isinstance(document_id, str) or not document_id:
-                    raise self._client_error(
-                        "RAGFlow reconciliation response missing document id"
-                    )
+                    raise self._client_error("RAGFlow reconciliation response missing document id")
                 matches_by_id[document_id] = document
             total = self._extract_total(payload)
             if total is not None and documents_seen >= total:
@@ -135,6 +131,7 @@ class HttpRagflowClient:
             "PUT",
             f"/api/v1/datasets/{dataset_id}/documents/{document_id}",
             json={"name": name, "meta_fields": metadata},
+            submission_outcome_unknown=True,
         )
 
     async def start_parse(self, *, dataset_id: str, document_id: str) -> None:
@@ -175,6 +172,7 @@ class HttpRagflowClient:
                 "DELETE",
                 f"/api/v1/datasets/{dataset_id}/documents",
                 json={"ids": [document_id]},
+                submission_outcome_unknown=True,
             )
         except RagflowDocumentNotFoundError:
             raise
@@ -255,9 +253,7 @@ class HttpRagflowClient:
             raise self._client_error("RAGFlow response is not JSON") from None
         if not isinstance(payload, dict):
             if submission_outcome_unknown:
-                raise self._submission_outcome_unknown(
-                    "RAGFlow upload response has invalid shape"
-                )
+                raise self._submission_outcome_unknown("RAGFlow upload response has invalid shape")
             raise self._client_error("RAGFlow response has invalid shape")
 
         typed_payload = cast(dict[str, object], payload)
@@ -272,9 +268,7 @@ class HttpRagflowClient:
         documents = self._extract_documents(payload)
         if documents:
             return documents[0]
-        raise self._submission_outcome_unknown(
-            "RAGFlow upload response missing document data"
-        )
+        raise self._submission_outcome_unknown("RAGFlow upload response missing document data")
 
     def _extract_document_by_id(
         self,
@@ -317,9 +311,7 @@ class HttpRagflowClient:
         self,
         message: str,
     ) -> RagflowSubmissionOutcomeUnknownError:
-        return RagflowSubmissionOutcomeUnknownError(
-            redact_secret(message, self._api_key)
-        )
+        return RagflowSubmissionOutcomeUnknownError(redact_secret(message, self._api_key))
 
 
 def _is_document_not_found(message: str) -> bool:

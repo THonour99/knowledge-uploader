@@ -12,7 +12,7 @@ from typing import cast
 from uuid import UUID, uuid4
 
 import pytest
-from httpx import ASGITransport, AsyncClient
+from httpx import ASGITransport, AsyncClient, Response
 from redis.asyncio import from_url
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -393,6 +393,12 @@ async def test_upload_api_cannot_bypass_runtime_disabled_gate(
     assert response.status_code == 403
     assert response.json()["error_code"] == "UPLOAD_DISABLED"
     assert storage.objects == []
+    owner_options = await client.get(
+        "/api/files/owner-options",
+        headers={"Authorization": f"Bearer {token}"},
+    )
+    assert owner_options.status_code == 200, owner_options.text
+    assert owner_options.json()["data"]["total"] == 1
 
 
 async def test_unassigned_employee_cannot_upload(
@@ -1136,6 +1142,39 @@ async def test_my_files_search_treats_percent_and_underscore_as_literals(
     assert [item["id"] for item in data["items"]] == [file_ids[0]]
 
 
+@pytest.mark.parametrize("invalid_version", [True, 2_147_483_648])
+async def test_draft_patch_rejects_non_int32_expected_version(
+    document_client: tuple[AsyncClient, FakeDocumentStorage],
+    invalid_version: object,
+) -> None:
+    client, _storage = document_client
+    await _create_user(
+        email="strict-version@company.com",
+        password="password123",
+    )
+    token = await _login(
+        client,
+        email="strict-version@company.com",
+        password="password123",
+    )
+    upload = await client.post(
+        "/api/files/upload",
+        headers={"Authorization": f"Bearer {token}"},
+        files={"file": ("strict-version.pdf", PDF_BYTES, "application/pdf")},
+        data=UPLOAD_DRAFT_FORM,
+    )
+    assert upload.status_code == 201
+    file_id = upload.json()["data"]["id"]
+
+    response = await client.patch(
+        f"/api/files/{file_id}",
+        headers={"Authorization": f"Bearer {token}"},
+        json={"expected_version": invalid_version, "title": "不得写入"},
+    )
+
+    assert response.status_code == 422
+
+
 async def test_owner_updates_draft_metadata_with_version_audit_and_title_search(
     document_client: tuple[AsyncClient, FakeDocumentStorage],
 ) -> None:
@@ -1162,7 +1201,7 @@ async def test_owner_updates_draft_metadata_with_version_audit_and_title_search(
         json={
             "expected_version": 0,
             "title": "  新版安全手册  ",
-            "description": "员工可见说明",
+            "description": "  员工可见说明  ",
             "visibility": "department",
         },
     )
@@ -1194,6 +1233,589 @@ async def test_owner_updates_draft_metadata_with_version_audit_and_title_search(
     assert audit.metadata_json["changed_fields"] == ["description", "title", "visibility"]
     assert audit.metadata_json["expected_version"] == 0
     assert audit.metadata_json["review_version"] == 1
+
+
+async def test_concurrent_replacement_upload_creates_one_contiguous_version_chain(
+    document_client: tuple[AsyncClient, FakeDocumentStorage],
+) -> None:
+    from app.core.database import AsyncSessionFactory
+    from app.modules.document.models import File
+
+    client, _storage = document_client
+    uploader_id = await _create_user(
+        email="version-uploader@company.com",
+        password="password123",
+    )
+    token = await _login(client, email="version-uploader@company.com", password="password123")
+    predecessor_id = await _upload_pdf(client, token=token, filename="policy-v1.pdf")
+    async with AsyncSessionFactory() as session:
+        predecessor = await session.get(File, UUID(predecessor_id))
+        assert predecessor is not None
+        predecessor.status = "parsed"
+        predecessor.review_status = "approved"
+        predecessor.ragflow_dataset_id = "dataset-version-api"
+        predecessor.ragflow_document_id = "remote-version-api-v1"
+        predecessor.ragflow_parse_status = "DONE"
+        predecessor.remote_visibility = "current"
+        predecessor.version_switch_status = "not_required"
+        await session.commit()
+
+    async def upload_replacement(filename: str) -> Response:
+        return await client.post(
+            "/api/files/upload",
+            headers={"Authorization": f"Bearer {token}"},
+            files={"file": (filename, PDF_BYTES, "application/pdf")},
+            data={
+                **UPLOAD_DRAFT_FORM,
+                "replaces_file_id": predecessor_id,
+            },
+        )
+
+    first, second = await asyncio.gather(
+        upload_replacement("policy-v2-a.pdf"),
+        upload_replacement("policy-v2-b.pdf"),
+    )
+    assert sorted([first.status_code, second.status_code]) == [201, 409]
+    succeeded = first if first.status_code == 201 else second
+    conflicted = first if first.status_code == 409 else second
+    assert conflicted.json()["error_code"] == "FILE_REPLACEMENT_CONFLICT"
+
+    candidate = succeeded.json()["data"]
+    assert candidate["uploader_id"] == str(uploader_id)
+    assert candidate["series_id"] == predecessor_id
+    assert candidate["version_number"] == 2
+    assert candidate["replaces_file_id"] == predecessor_id
+    assert candidate["is_current_version"] is False
+    assert candidate["remote_visibility"] == "candidate"
+    assert candidate["version_switch_status"] == "pending"
+    assert candidate["replacement_remote_action"] == "archive"
+    patched = await client.patch(
+        f"/api/files/{candidate['id']}",
+        headers={"Authorization": f"Bearer {token}"},
+        json={"expected_version": 0, "title": "policy-v2"},
+    )
+    assert patched.status_code == 200, patched.text
+    assert patched.json()["data"]["replacement_remote_action"] == "archive"
+    assert patched.json()["data"]["review_version"] == 1
+
+    detail = await client.get(
+        f"/api/files/{candidate['id']}",
+        headers={"Authorization": f"Bearer {token}"},
+    )
+    assert detail.status_code == 200, detail.text
+    chain = detail.json()["data"]["version_chain"]
+    assert [(item["id"], item["version_number"]) for item in chain] == [
+        (candidate["id"], 2),
+        (predecessor_id, 1),
+    ]
+    assert [item["is_current_version"] for item in chain] == [False, True]
+
+
+async def test_existing_candidate_conflict_does_not_deadlock_with_version_worker_lock_order(
+    document_client: tuple[AsyncClient, FakeDocumentStorage],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from app.core.database import AsyncSessionFactory
+    from app.modules.document.models import File
+    from app.modules.document.repository import (  # noqa: TID251 - focused lock test
+        DocumentRepository,
+    )
+
+    client, _storage = document_client
+    await _create_user(
+        email="version-deadlock-uploader@company.com",
+        password="password123",
+    )
+    token = await _login(
+        client,
+        email="version-deadlock-uploader@company.com",
+        password="password123",
+    )
+    v1_id = await _upload_pdf(client, token=token, filename="deadlock-v1.pdf")
+    async with AsyncSessionFactory() as session:
+        v1 = await session.get(File, UUID(v1_id))
+        assert v1 is not None
+        v1.status = "parsed"
+        v1.review_status = "approved"
+        v1.ragflow_dataset_id = "dataset-version-deadlock"
+        v1.ragflow_document_id = "remote-version-deadlock-v1"
+        v1.ragflow_parse_status = "DONE"
+        v1.remote_visibility = "current"
+        v1.version_switch_status = "not_required"
+        await session.commit()
+
+    v2_response = await client.post(
+        "/api/files/upload",
+        headers={"Authorization": f"Bearer {token}"},
+        files={"file": ("deadlock-v2.pdf", PDF_BYTES + b"v2", "application/pdf")},
+        data={**UPLOAD_DRAFT_FORM, "replaces_file_id": v1_id},
+    )
+    assert v2_response.status_code == 201, v2_response.text
+    v2_id = v2_response.json()["data"]["id"]
+    async with AsyncSessionFactory() as session:
+        v1 = await session.get(File, UUID(v1_id))
+        v2 = await session.get(File, UUID(v2_id))
+        assert v1 is not None and v2 is not None
+        v1.is_current_version = False
+        v1.remote_visibility = "not_current"
+        await session.flush()
+        v2.status = "parsed"
+        v2.review_status = "approved"
+        v2.ragflow_dataset_id = "dataset-version-deadlock"
+        v2.ragflow_document_id = "remote-version-deadlock-v2"
+        v2.ragflow_parse_status = "DONE"
+        v2.is_current_version = True
+        v2.remote_visibility = "current"
+        v2.version_switch_status = "completed"
+        await session.commit()
+
+    v3_response = await client.post(
+        "/api/files/upload",
+        headers={"Authorization": f"Bearer {token}"},
+        files={"file": ("deadlock-v3.pdf", PDF_BYTES + b"v3", "application/pdf")},
+        data={**UPLOAD_DRAFT_FORM, "replaces_file_id": v2_id},
+    )
+    assert v3_response.status_code == 201, v3_response.text
+
+    worker_locked_root = asyncio.Event()
+    upload_locked_current = asyncio.Event()
+    worker_attempting_current = asyncio.Event()
+    original_get_for_update = DocumentRepository.get_by_id_for_update
+
+    async def gated_get_for_update(
+        repository: DocumentRepository,
+        file_id: UUID,
+    ) -> File | None:
+        file = await original_get_for_update(repository, file_id)
+        if file_id == UUID(v2_id):
+            upload_locked_current.set()
+            await asyncio.wait_for(worker_attempting_current.wait(), timeout=5)
+        return file
+
+    monkeypatch.setattr(
+        DocumentRepository,
+        "get_by_id_for_update",
+        gated_get_for_update,
+    )
+
+    async def emulate_worker_lock_order() -> None:
+        async with AsyncSessionFactory() as session:
+            await session.execute(select(File).where(File.id == UUID(v1_id)).with_for_update())
+            worker_locked_root.set()
+            await asyncio.wait_for(upload_locked_current.wait(), timeout=5)
+            worker_attempting_current.set()
+            await session.execute(select(File).where(File.id == UUID(v2_id)).with_for_update())
+            await session.rollback()
+
+    worker = asyncio.create_task(emulate_worker_lock_order())
+    await asyncio.wait_for(worker_locked_root.wait(), timeout=5)
+    response = await asyncio.wait_for(
+        client.post(
+            "/api/files/upload",
+            headers={"Authorization": f"Bearer {token}"},
+            files={"file": ("deadlock-v4.pdf", PDF_BYTES + b"v4", "application/pdf")},
+            data={**UPLOAD_DRAFT_FORM, "replaces_file_id": v2_id},
+        ),
+        timeout=10,
+    )
+    await asyncio.wait_for(worker, timeout=10)
+
+    assert response.status_code == 409
+    assert response.json()["error_code"] == "FILE_REPLACEMENT_CONFLICT"
+    async with AsyncSessionFactory() as session:
+        chain = list(
+            (
+                await session.execute(
+                    select(File)
+                    .where(File.series_id == UUID(v1_id))
+                    .order_by(File.version_number.asc())
+                )
+            ).scalars()
+        )
+    assert [file.version_number for file in chain] == [1, 2, 3]
+
+
+async def test_owner_options_and_expiry_owner_draft_contract(
+    document_client: tuple[AsyncClient, FakeDocumentStorage],
+) -> None:
+    from app.core.database import AsyncSessionFactory
+    from app.core.outbox import EventOutbox
+    from app.modules.document import tasks as document_tasks
+    from app.modules.document.models import File
+    from app.modules.user.models import User
+
+    client, _storage = document_client
+    uploader_id = await _create_user(email="expiry-uploader@company.com", password="password123")
+    owner_id = await _create_user(email="expiry-owner@company.com", password="password123")
+    inactive_id = await _create_user(
+        email="expiry-inactive@company.com",
+        password="password123",
+    )
+    unverified_id = await _create_user(
+        email="expiry-unverified@company.com",
+        password="password123",
+    )
+    cross_department_id = await _create_user(
+        email="expiry-cross@company.com",
+        password="password123",
+        department_code="expiry-cross-department",
+        department_name="到期跨部门",
+    )
+    async with AsyncSessionFactory() as session:
+        inactive = await session.get(User, inactive_id)
+        unverified = await session.get(User, unverified_id)
+        assert inactive is not None and unverified is not None
+        inactive.status = "disabled"
+        unverified.email_verified = False
+        await session.commit()
+
+    token = await _login(client, email="expiry-uploader@company.com", password="password123")
+    options = await client.get(
+        "/api/files/owner-options",
+        params={"page": 1, "page_size": 2, "q": "expiry"},
+        headers={"Authorization": f"Bearer {token}"},
+    )
+    assert options.status_code == 200, options.text
+    options_data = options.json()["data"]
+    assert options_data["page"] == 1
+    assert options_data["page_size"] == 2
+    assert options_data["total"] >= 2
+    assert options_data["total_pages"] >= 1
+    visible_ids = {item["id"] for item in options_data["items"]}
+    assert str(uploader_id) in visible_ids
+    assert str(owner_id) in visible_ids
+    assert str(inactive_id) not in visible_ids
+    assert str(unverified_id) not in visible_ids
+    assert str(cross_department_id) not in visible_ids
+
+    upload = await client.post(
+        "/api/files/upload",
+        headers={"Authorization": f"Bearer {token}"},
+        files={"file": ("expiry-owner.pdf", PDF_BYTES, "application/pdf")},
+        data=UPLOAD_DRAFT_FORM,
+    )
+    assert upload.status_code == 201, upload.text
+    uploaded = upload.json()["data"]
+    assert uploaded["owner_id"] == str(uploader_id)
+    marker_sent_at = datetime.now(UTC) - timedelta(hours=1)
+    async with AsyncSessionFactory() as session:
+        stored = await session.get(File, UUID(uploaded["id"]))
+        assert stored is not None
+        stored.expiry_warning_sent_at = marker_sent_at
+        stored.expiry_expired_sent_at = marker_sent_at
+        await session.commit()
+
+    expires_at = datetime.now(UTC) + timedelta(days=20)
+    updated = await client.patch(
+        f"/api/files/{uploaded['id']}",
+        headers={"Authorization": f"Bearer {token}"},
+        json={
+            "expected_version": 0,
+            "owner_id": str(owner_id),
+            "expires_at": expires_at.isoformat(),
+        },
+    )
+    assert updated.status_code == 200, updated.text
+    data = updated.json()["data"]
+    assert data["owner_id"] == str(owner_id)
+    assert data["owner_name"] == "expiry-owner"
+    assert data["expiry_status"] == "active"
+    assert data["expires_at"] is not None
+    assert data["review_version"] == 1
+
+    async with AsyncSessionFactory() as session:
+        stored = await session.get(File, UUID(uploaded["id"]))
+        assert stored is not None
+        assert stored.expiry_warning_sent_at is None
+        assert stored.expiry_expired_sent_at is None
+        stored.expiry_status = "expiring"
+        stored.expiry_warning_sent_at = marker_sent_at
+        stored.expiry_expired_sent_at = marker_sent_at
+        await session.commit()
+
+    same_values = await client.patch(
+        f"/api/files/{uploaded['id']}",
+        headers={"Authorization": f"Bearer {token}"},
+        json={
+            "expected_version": 1,
+            "owner_id": str(owner_id),
+            "expires_at": expires_at.isoformat(),
+        },
+    )
+    assert same_values.status_code == 200, same_values.text
+    assert same_values.json()["data"]["review_version"] == 2
+    assert same_values.json()["data"]["expiry_status"] == "expiring"
+    queued = await document_tasks.run_scan_expiring_files_task_async(
+        lookahead_days=30,
+        batch_size=10,
+        max_batches=1,
+    )
+    assert queued == 0
+    async with AsyncSessionFactory() as session:
+        stored = await session.get(File, UUID(uploaded["id"]))
+        expiry_events = list(
+            (
+                await session.execute(
+                    select(EventOutbox).where(
+                        EventOutbox.aggregate_id == uploaded["id"],
+                        EventOutbox.event_type.in_(
+                            ("document.file.expiring", "document.file.expired")
+                        ),
+                    )
+                )
+            ).scalars()
+        )
+    assert stored is not None
+    assert stored.expiry_status == "expiring"
+    assert stored.expiry_warning_sent_at == marker_sent_at
+    assert stored.expiry_expired_sent_at == marker_sent_at
+    assert expiry_events == []
+
+    rejected_owner = await client.patch(
+        f"/api/files/{uploaded['id']}",
+        headers={"Authorization": f"Bearer {token}"},
+        json={
+            "expected_version": 2,
+            "owner_id": str(cross_department_id),
+        },
+    )
+    assert rejected_owner.status_code == 422
+    assert rejected_owner.json()["error_code"] == "INVALID_DOCUMENT_OWNER"
+    rejected_unverified = await client.patch(
+        f"/api/files/{uploaded['id']}",
+        headers={"Authorization": f"Bearer {token}"},
+        json={
+            "expected_version": 2,
+            "owner_id": str(unverified_id),
+        },
+    )
+    assert rejected_unverified.status_code == 422
+    assert rejected_unverified.json()["error_code"] == "INVALID_DOCUMENT_OWNER"
+    naive_expiry = await client.patch(
+        f"/api/files/{uploaded['id']}",
+        headers={"Authorization": f"Bearer {token}"},
+        json={"expected_version": 2, "expires_at": "2026-07-30T08:00:00"},
+    )
+    assert naive_expiry.status_code == 422
+    assert naive_expiry.json()["error_code"] == "VALIDATION_ERROR"
+    empty_patch = await client.patch(
+        f"/api/files/{uploaded['id']}",
+        headers={"Authorization": f"Bearer {token}"},
+        json={"expected_version": 2},
+    )
+    assert empty_patch.status_code == 422
+    assert empty_patch.json()["error_code"] == "VALIDATION_ERROR"
+
+    cleared = await client.patch(
+        f"/api/files/{uploaded['id']}",
+        headers={"Authorization": f"Bearer {token}"},
+        json={"expected_version": 2, "expires_at": None},
+    )
+    assert cleared.status_code == 200, cleared.text
+    cleared_data = cleared.json()["data"]
+    assert cleared_data["owner_id"] == str(owner_id)
+    assert cleared_data["expires_at"] is None
+    assert cleared_data["expiry_status"] == "never"
+    assert cleared_data["review_version"] == 3
+
+
+@pytest.mark.parametrize("owner_role", ["employee", "dept_admin"])
+async def test_delegated_owner_access_is_read_only_department_scoped_and_audited(
+    document_client: tuple[AsyncClient, FakeDocumentStorage],
+    owner_role: str,
+) -> None:
+    from app.core.database import AsyncSessionFactory
+    from app.modules.audit.models import AuditLog
+    from app.modules.document.models import File
+    from app.modules.user.models import User
+
+    client, _storage = document_client
+    uploader_id = await _create_user(
+        email="delegated-uploader@company.com",
+        password="password123",
+    )
+    owner_id = await _create_user(
+        email=f"delegated-owner-{owner_role}@company.com",
+        password="password123",
+        role=owner_role,
+    )
+    new_department_user_id = await _create_user(
+        email="delegated-new-department@company.com",
+        password="password123",
+        department_code="delegated-new-department",
+        department_name="负责人调入部门",
+    )
+    uploader_token = await _login(
+        client,
+        email="delegated-uploader@company.com",
+        password="password123",
+    )
+    owner_token = await _login(
+        client,
+        email=f"delegated-owner-{owner_role}@company.com",
+        password="password123",
+    )
+    upload = await client.post(
+        "/api/files/upload",
+        headers={"Authorization": f"Bearer {uploader_token}"},
+        files={"file": ("delegated-root.pdf", PDF_BYTES, "application/pdf")},
+        data=UPLOAD_DRAFT_FORM,
+    )
+    assert upload.status_code == 201, upload.text
+    root_id = upload.json()["data"]["id"]
+    delegated = await client.patch(
+        f"/api/files/{root_id}",
+        headers={"Authorization": f"Bearer {uploader_token}"},
+        json={"expected_version": 0, "owner_id": str(owner_id)},
+    )
+    assert delegated.status_code == 200, delegated.text
+
+    async with AsyncSessionFactory() as session:
+        root = await session.get(File, UUID(root_id))
+        assert root is not None
+        root.status = "parsed"
+        root.review_status = "approved"
+        root.ragflow_dataset_id = "dataset-delegated"
+        root.ragflow_document_id = "remote-delegated-root"
+        root.ragflow_parse_status = "DONE"
+        root.remote_visibility = "current"
+        await session.commit()
+
+    replacement = await client.post(
+        "/api/files/upload",
+        headers={"Authorization": f"Bearer {uploader_token}"},
+        files={"file": ("delegated-v2.pdf", PDF_BYTES + b"v2", "application/pdf")},
+        data={**UPLOAD_DRAFT_FORM, "replaces_file_id": root_id},
+    )
+    assert replacement.status_code == 201, replacement.text
+    replacement_id = replacement.json()["data"]["id"]
+
+    async with AsyncSessionFactory() as session:
+        root = await session.get(File, UUID(root_id))
+        candidate = await session.get(File, UUID(replacement_id))
+        assert root is not None and candidate is not None
+        root.is_current_version = False
+        root.remote_visibility = "not_current"
+        await session.flush()
+        candidate.is_current_version = True
+        candidate.status = "parsed"
+        candidate.review_status = "approved"
+        candidate.ragflow_dataset_id = "dataset-delegated"
+        candidate.ragflow_document_id = "remote-delegated-v2"
+        candidate.ragflow_parse_status = "DONE"
+        candidate.remote_visibility = "current"
+        candidate.version_switch_status = "completed"
+        await session.commit()
+
+    responsible = await client.get(
+        "/api/files/responsible",
+        params={"page": 1, "page_size": 1, "q": "delegated"},
+        headers={"Authorization": f"Bearer {owner_token}"},
+    )
+    assert responsible.status_code == 200, responsible.text
+    responsible_data = responsible.json()["data"]
+    assert responsible_data["total"] == 1
+    assert [item["id"] for item in responsible_data["items"]] == [replacement_id]
+
+    historical_detail = await client.get(
+        f"/api/files/{root_id}",
+        headers={"Authorization": f"Bearer {owner_token}"},
+    )
+    historical_inline = await client.get(
+        f"/api/files/{root_id}/content",
+        headers={"Authorization": f"Bearer {owner_token}"},
+    )
+    historical_download = await client.get(
+        f"/api/files/{root_id}/content?disposition=attachment",
+        headers={"Authorization": f"Bearer {owner_token}"},
+    )
+    assert historical_detail.status_code == 404
+    assert historical_inline.status_code == 404
+    assert historical_download.status_code == 404
+
+    current_detail = await client.get(
+        f"/api/files/{replacement_id}",
+        headers={"Authorization": f"Bearer {owner_token}"},
+    )
+    assert current_detail.status_code == 200, current_detail.text
+    assert [item["id"] for item in current_detail.json()["data"]["version_chain"]] == [
+        replacement_id,
+    ]
+    current_content = await client.get(
+        f"/api/files/{replacement_id}/content?disposition=attachment",
+        headers={"Authorization": f"Bearer {owner_token}"},
+    )
+    assert current_content.status_code == 200
+    assert current_content.content == PDF_BYTES + b"v2"
+
+    uploader_history_detail = await client.get(
+        f"/api/files/{root_id}",
+        headers={"Authorization": f"Bearer {uploader_token}"},
+    )
+    uploader_history_content = await client.get(
+        f"/api/files/{root_id}/content",
+        headers={"Authorization": f"Bearer {uploader_token}"},
+    )
+    assert uploader_history_detail.status_code == 200
+    assert [item["id"] for item in uploader_history_detail.json()["data"]["version_chain"]] == [
+        replacement_id,
+        root_id,
+    ]
+    assert uploader_history_content.status_code == 200
+    assert uploader_history_content.content == PDF_BYTES
+
+    forbidden_delete = await client.delete(
+        f"/api/files/{replacement_id}",
+        headers={"Authorization": f"Bearer {owner_token}"},
+    )
+    assert forbidden_delete.status_code == 404
+
+    async with AsyncSessionFactory() as session:
+        historical_audit_actions = set(
+            (
+                await session.execute(
+                    select(AuditLog.action).where(
+                        AuditLog.actor_id == owner_id,
+                        AuditLog.target_id == UUID(root_id),
+                    )
+                )
+            ).scalars()
+        )
+        current_audit_actions = set(
+            (
+                await session.execute(
+                    select(AuditLog.action).where(
+                        AuditLog.actor_id == owner_id,
+                        AuditLog.target_id == UUID(replacement_id),
+                    )
+                )
+            ).scalars()
+        )
+        assert historical_audit_actions == set()
+        assert {"file.view_detail", "file.view_content"} <= current_audit_actions
+        owner = await session.get(User, owner_id)
+        assert owner is not None
+        owner.department_id = await _get_user_department_id(new_department_user_id)
+        owner.department = "负责人调入部门"
+        await session.commit()
+
+    moved_responsible = await client.get(
+        "/api/files/responsible",
+        headers={"Authorization": f"Bearer {owner_token}"},
+    )
+    assert moved_responsible.status_code == 200
+    assert moved_responsible.json()["data"]["total"] == 0
+    moved_detail = await client.get(
+        f"/api/files/{replacement_id}",
+        headers={"Authorization": f"Bearer {owner_token}"},
+    )
+    assert moved_detail.status_code == 404
+    moved_content = await client.get(
+        f"/api/files/{replacement_id}/content",
+        headers={"Authorization": f"Bearer {owner_token}"},
+    )
+    assert moved_content.status_code == 404
+    assert str(uploader_id) != str(owner_id)
 
 
 async def test_draft_patch_is_owner_only_hides_deleted_and_locks_reviewed_files(
@@ -1255,6 +1877,53 @@ async def test_draft_patch_is_owner_only_hides_deleted_and_locks_reviewed_files(
     )
     assert hidden.status_code == 404
     assert hidden.json()["error_code"] == "FILE_NOT_FOUND"
+
+
+async def test_unassigned_uploader_cannot_patch_an_existing_draft(
+    document_client: tuple[AsyncClient, FakeDocumentStorage],
+) -> None:
+    from app.core.database import AsyncSessionFactory
+    from app.modules.department.models import UNASSIGNED_DEPARTMENT_ID
+    from app.modules.document.models import File
+    from app.modules.user.models import User
+
+    client, _storage = document_client
+    uploader_id = await _create_user(
+        email="draft-unassigned@company.com",
+        password="password123",
+    )
+    token = await _login(
+        client,
+        email="draft-unassigned@company.com",
+        password="password123",
+    )
+    upload = await client.post(
+        "/api/files/upload",
+        headers={"Authorization": f"Bearer {token}"},
+        files={"file": ("unassigned-after-upload.pdf", PDF_BYTES, "application/pdf")},
+        data=UPLOAD_DRAFT_FORM,
+    )
+    assert upload.status_code == 201, upload.text
+    file_id = UUID(upload.json()["data"]["id"])
+    async with AsyncSessionFactory() as session:
+        uploader = await session.get(User, uploader_id)
+        assert uploader is not None
+        uploader.department_id = UNASSIGNED_DEPARTMENT_ID
+        uploader.department = None
+        await session.commit()
+
+    denied = await client.patch(
+        f"/api/files/{file_id}",
+        headers={"Authorization": f"Bearer {token}"},
+        json={"expected_version": 0, "title": "不应写入"},
+    )
+    assert denied.status_code == 403
+    assert denied.json()["error_code"] == "DEPARTMENT_ASSIGNMENT_REQUIRED"
+    async with AsyncSessionFactory() as session:
+        stored = await session.get(File, file_id)
+        assert stored is not None
+        assert stored.review_version == 0
+        assert stored.title == "unassigned-after-upload.pdf"
 
 
 async def test_concurrent_draft_patches_with_same_version_return_one_conflict(
@@ -1768,10 +2437,11 @@ async def test_admin_accessing_own_file_still_writes_detail_and_content_audits(
         )
         logs = list(result.scalars())
     assert {log.action for log in logs} == {"file.view_detail", "file.view_content"}
-    content_log = next(log for log in logs if log.action == "file.view_content")
-    assert content_log.metadata_json["audit_semantics"] == (
-        "access_authorized_before_stream_open"
-    )
+    logs_by_action = {log.action: log for log in logs}
+    assert logs_by_action["file.view_detail"].metadata_json["access_role"] == "uploader"
+    assert logs_by_action["file.view_content"].metadata_json["access_role"] == "uploader"
+    content_log = logs_by_action["file.view_content"]
+    assert content_log.metadata_json["audit_semantics"] == ("access_authorized_before_stream_open")
     assert content_log.metadata_json["stream_completion_confirmed"] is False
 
 

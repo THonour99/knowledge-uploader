@@ -94,6 +94,38 @@ def invalid_state() -> DocumentError:
     )
 
 
+def invalid_replacement() -> DocumentError:
+    return DocumentError(
+        ErrorCode.FILE_REPLACEMENT_CONFLICT,
+        "replacement must target the current parsed version in the same department",
+        status.HTTP_409_CONFLICT,
+    )
+
+
+def replacement_conflict() -> DocumentError:
+    return DocumentError(
+        ErrorCode.FILE_REPLACEMENT_CONFLICT,
+        "the selected version already has a replacement",
+        status.HTTP_409_CONFLICT,
+    )
+
+
+def version_switch_in_progress() -> DocumentError:
+    return DocumentError(
+        ErrorCode.FILE_REPLACEMENT_CONFLICT,
+        "file cannot be deleted or archived while a version replacement is in progress",
+        status.HTTP_409_CONFLICT,
+    )
+
+
+def invalid_owner() -> DocumentError:
+    return DocumentError(
+        ErrorCode.INVALID_DOCUMENT_OWNER,
+        "document owner must be active, verified, and in the document department",
+        status.HTTP_422_UNPROCESSABLE_ENTITY,
+    )
+
+
 def review_in_progress() -> DocumentError:
     return DocumentError(
         ErrorCode.VALIDATION_ERROR,
@@ -105,10 +137,7 @@ def review_in_progress() -> DocumentError:
 def ragflow_reconciliation_pending() -> DocumentError:
     return DocumentError(
         ErrorCode.VALIDATION_ERROR,
-        (
-            "RAGFlow upload outcome is still being reconciled; "
-            "retry after reconciliation completes"
-        ),
+        ("RAGFlow upload outcome is still being reconciled; retry after reconciliation completes"),
         status.HTTP_409_CONFLICT,
     )
 

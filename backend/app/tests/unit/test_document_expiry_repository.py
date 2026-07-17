@@ -77,6 +77,7 @@ async def _create_file(
     expiry_status: str = "never",
     expiry_warning_sent_at: datetime | None = None,
     expiry_expired_sent_at: datetime | None = None,
+    is_current_version: bool = True,
 ) -> UUID:
     from app.core.database import AsyncSessionFactory
     from app.modules.document.models import File
@@ -106,6 +107,7 @@ async def _create_file(
         expiry_status=expiry_status,
         expiry_warning_sent_at=expiry_warning_sent_at,
         expiry_expired_sent_at=expiry_expired_sent_at,
+        is_current_version=is_current_version,
     )
     async with AsyncSessionFactory() as session:
         session.add(file)
@@ -215,21 +217,33 @@ async def test_refresh_statuses_and_mark_notification_sent_are_idempotent() -> N
         first_warning = await repository.mark_expiry_notification_sent(
             file_id=expiring_id,
             notification_kind="warning",
+            expected_expires_at=now + timedelta(days=2),
+            now=now,
+            warning_deadline=warning_deadline,
             sent_at=now,
         )
         second_warning = await repository.mark_expiry_notification_sent(
             file_id=expiring_id,
             notification_kind="warning",
+            expected_expires_at=now + timedelta(days=2),
+            now=now,
+            warning_deadline=warning_deadline,
             sent_at=now + timedelta(minutes=1),
         )
         first_expired = await repository.mark_expiry_notification_sent(
             file_id=expired_id,
             notification_kind="expired",
+            expected_expires_at=now - timedelta(minutes=1),
+            now=now,
+            warning_deadline=warning_deadline,
             sent_at=now,
         )
         second_expired = await repository.mark_expiry_notification_sent(
             file_id=expired_id,
             notification_kind="expired",
+            expected_expires_at=now - timedelta(minutes=1),
+            now=now,
+            warning_deadline=warning_deadline,
             sent_at=now + timedelta(minutes=1),
         )
         await session.commit()
@@ -249,3 +263,93 @@ async def test_refresh_statuses_and_mark_notification_sent_are_idempotent() -> N
     assert expiring_file.expiry_warning_sent_at == now
     assert expired_file is not None
     assert expired_file.expiry_expired_sent_at == now
+
+
+async def test_expiry_scan_cas_skips_patch_archive_and_historical_version_races() -> None:
+    from app.core.database import AsyncSessionFactory
+    from app.modules.document.models import File
+    from app.modules.document.repository import DocumentRepository  # noqa: TID251
+
+    uploader_id = await _create_user()
+    now = datetime(2026, 6, 15, 9, 0, tzinfo=UTC)
+    warning_deadline = now + timedelta(days=7)
+    scanned_expires_at = now + timedelta(days=2)
+    patched_expires_at = now + timedelta(days=3)
+    patched_id = await _create_file(
+        uploader_id=uploader_id,
+        expires_at=scanned_expires_at,
+        expiry_status="expiring",
+    )
+    archived_id = await _create_file(
+        uploader_id=uploader_id,
+        expires_at=scanned_expires_at,
+        expiry_status="expiring",
+    )
+    historical_id = await _create_file(
+        uploader_id=uploader_id,
+        expires_at=scanned_expires_at,
+        expiry_status="never",
+        is_current_version=False,
+    )
+
+    async with AsyncSessionFactory() as session:
+        repository = DocumentRepository(session)
+        candidates = await repository.list_expiry_scan_candidates(
+            now=now,
+            warning_deadline=warning_deadline,
+            limit=10,
+        )
+        assert {candidate.file_id for candidate in candidates} == {patched_id, archived_id}
+
+        patched = await session.get(File, patched_id)
+        archived = await session.get(File, archived_id)
+        historical = await session.get(File, historical_id)
+        assert patched is not None and archived is not None and historical is not None
+        patched.expires_at = patched_expires_at
+        patched.expiry_status = "expiring"
+        archived.status = "disabled"
+        await session.flush()
+
+        patched_accepted = await repository.mark_expiry_notification_sent(
+            file_id=patched_id,
+            notification_kind="warning",
+            expected_expires_at=scanned_expires_at,
+            now=now,
+            warning_deadline=warning_deadline,
+            sent_at=now,
+        )
+        archived_accepted = await repository.mark_expiry_notification_sent(
+            file_id=archived_id,
+            notification_kind="warning",
+            expected_expires_at=scanned_expires_at,
+            now=now,
+            warning_deadline=warning_deadline,
+            sent_at=now,
+        )
+        historical_accepted = await repository.mark_expiry_notification_sent(
+            file_id=historical_id,
+            notification_kind="warning",
+            expected_expires_at=scanned_expires_at,
+            now=now,
+            warning_deadline=warning_deadline,
+            sent_at=now,
+        )
+        refreshed = await repository.refresh_expiry_statuses(
+            now=now,
+            warning_deadline=warning_deadline,
+        )
+        await session.commit()
+
+        patched = await session.get(File, patched_id)
+        archived = await session.get(File, archived_id)
+        historical = await session.get(File, historical_id)
+
+    assert patched_accepted is False
+    assert archived_accepted is False
+    assert historical_accepted is False
+    assert refreshed == 1
+    assert patched is not None and patched.expiry_warning_sent_at is None
+    assert archived is not None and archived.expiry_warning_sent_at is None
+    assert historical is not None
+    assert historical.expiry_status == "never"
+    assert historical.expiry_warning_sent_at is None

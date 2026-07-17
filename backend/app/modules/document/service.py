@@ -10,9 +10,10 @@ from datetime import datetime, timedelta
 from hashlib import sha256
 from io import BytesIO
 from pathlib import PurePosixPath, PureWindowsPath
-from typing import Any, Protocol, cast
+from typing import Any, Literal, Protocol, cast
 
 import filetype
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.access_scope import DepartmentAccessScope
@@ -22,12 +23,17 @@ from app.core.document_state import DocumentStateError, DocumentStateMachine
 from app.core.identity import has_assigned_department
 from app.core.outbox import OutboxRepository
 from app.core.review_policy import review_submission_times
-from app.core.runtime_config import get_config
+from app.core.runtime_config import get_config, stored_config_is_exact_false
 from app.modules.user.schemas import AuthUserRecord
 
 from . import events, exceptions
 from .models import File
-from .repository import HIDDEN_FILE_STATUSES, DocumentRepository, ExpiryScanCandidate
+from .repository import (
+    ABANDONED_VERSION_STATUSES,
+    HIDDEN_FILE_STATUSES,
+    DocumentRepository,
+    ExpiryScanCandidate,
+)
 from .schemas import FileAnalysisDetail
 
 WINDOWS_RESERVED_NAMES = {
@@ -121,6 +127,7 @@ class FileDetailResult:
     category_name: str | None
     analysis: FileAnalysisDetail | None
     sync_error: str | None
+    version_chain: list[File]
 
 
 @dataclass(frozen=True)
@@ -131,6 +138,14 @@ class FileContentResult:
 @dataclass(frozen=True)
 class FilePage:
     items: list[File]
+    total: int
+    page: int
+    page_size: int
+
+
+@dataclass(frozen=True)
+class OwnerOptionPage:
+    items: list[tuple[uuid.UUID, str]]
     total: int
     page: int
     page_size: int
@@ -163,6 +178,7 @@ class DocumentService:
         ai_analysis_enabled: bool | None,
         client_ip: str,
         user_agent: str,
+        replaces_file_id: uuid.UUID | None = None,
     ) -> UploadedFileResult:
         await ensure_upload_allowed(current_user)
         await self._validate_size(len(data))
@@ -176,6 +192,25 @@ class DocumentService:
         if visibility not in VALID_VISIBILITIES:
             raise exceptions.invalid_visibility()
         await self._validate_quota(uploader_id=current_user.id, incoming_size=len(data))
+
+        predecessor = None
+        if replaces_file_id is not None:
+            predecessor = await self._repository.get_by_id(replaces_file_id)
+            self._validate_replacement_predecessor(
+                current_user=current_user, predecessor=predecessor
+            )
+        effective_ai_analysis_enabled = await self._resolve_upload_ai_analysis_enabled(
+            requested_ai_analysis_enabled=ai_analysis_enabled,
+        )
+        replacement_remote_action = None
+        if predecessor is not None:
+            keep_replaced_remote = await get_config("ragflow.keep_replaced_remote")
+            delete_authorized = (
+                keep_replaced_remote is False
+                and await stored_config_is_exact_false("ragflow.keep_replaced_remote")
+            )
+            # Both resolved and stored observations must be exactly false.
+            replacement_remote_action = "delete" if delete_authorized else "archive"
 
         file_hash = sha256(data).hexdigest()
         duplicate = await self._repository.find_first_by_hash_for_uploader(
@@ -203,10 +238,6 @@ class DocumentService:
             bucket = duplicate.bucket
             duplicate_file_id = duplicate.id
 
-        effective_ai_analysis_enabled = await self._resolve_upload_ai_analysis_enabled(
-            requested_ai_analysis_enabled=ai_analysis_enabled,
-        )
-
         file = File(
             id=file_id,
             original_name=sanitized_name,
@@ -220,6 +251,7 @@ class DocumentService:
             bucket=bucket,
             object_key=object_key,
             uploader_id=current_user.id,
+            owner_id=current_user.id,
             department_id=current_user.department_id,
             department=current_user.department_name or current_user.department,
             visibility=visibility,
@@ -228,11 +260,52 @@ class DocumentService:
             status="uploaded",
             review_status="pending",
             ai_analysis_enabled_at_upload=effective_ai_analysis_enabled,
+            series_id=predecessor.series_id if predecessor is not None else file_id,
+            version_number=(predecessor.version_number + 1 if predecessor is not None else 1),
+            replaces_file_id=replaces_file_id,
+            replacement_remote_action=replacement_remote_action,
+            is_current_version=predecessor is None,
+            remote_visibility="candidate",
+            version_switch_status="pending" if predecessor is not None else "not_required",
             # uploaded 是产品语义上的草稿。AI 开启时必须持久化自动提交意图,
             # 否则异步 worker 完成分析后无法判断是否应进入审核队列。
             ai_config_snapshot={"submit_after_upload": submit_after_upload},
         )
         try:
+            if replaces_file_id is not None:
+                locked_predecessor = await self._repository.get_by_id_for_update(replaces_file_id)
+                self._validate_replacement_predecessor(
+                    current_user=current_user,
+                    predecessor=locked_predecessor,
+                )
+                if locked_predecessor is None:
+                    raise exceptions.invalid_replacement()
+                if await self._repository.has_direct_replacement(locked_predecessor.id):
+                    raise exceptions.replacement_conflict()
+                chain = await self._repository.lock_version_series(locked_predecessor.series_id)
+                self._validate_version_chain(
+                    chain=chain,
+                    expected_current_id=locked_predecessor.id,
+                )
+                file.series_id = locked_predecessor.series_id
+                file.version_number = max(item.version_number for item in chain) + 1
+                file.replaces_file_id = locked_predecessor.id
+                inherited_owner = (
+                    await self._repository.get_valid_owner(
+                        owner_id=locked_predecessor.owner_id,
+                        department_id=locked_predecessor.department_id,
+                    )
+                    if locked_predecessor.owner_id is not None
+                    else None
+                )
+                file.owner_id = (
+                    inherited_owner.id if inherited_owner is not None else current_user.id
+                )
+                file.expires_at = locked_predecessor.expires_at
+                file.expiry_status = locked_predecessor.expiry_status
+                file.expiry_warning_sent_at = None
+                file.expiry_expired_sent_at = None
+                file.is_current_version = False
             await self._repository.add(file)
             await self._append_file_uploaded_event(file)
             await self._record_upload_audit(
@@ -260,7 +333,16 @@ class DocumentService:
                     previous_status=previous_status,
                 )
             await self._session.commit()
+        except IntegrityError as exc:
+            await self._session.rollback()
+            if duplicate is None:
+                with suppress(Exception):
+                    await self._storage.delete_object(bucket=bucket, object_key=object_key)
+            if replaces_file_id is not None:
+                raise exceptions.replacement_conflict() from exc
+            raise
         except Exception:
+            await self._session.rollback()
             if duplicate is None:
                 with suppress(Exception):
                     await self._storage.delete_object(bucket=bucket, object_key=object_key)
@@ -304,6 +386,14 @@ class DocumentService:
                 "size": file.size,
                 "visibility": file.visibility,
                 "file_department_id": str(file.department_id),
+                "series_id": str(file.series_id),
+                "version_number": file.version_number,
+                "replaces_file_id": str(file.replaces_file_id) if file.replaces_file_id else None,
+                "replacement_remote_action": file.replacement_remote_action,
+                "owner_id": str(file.owner_id) if file.owner_id is not None else None,
+                "expires_at": file.expires_at.isoformat() if file.expires_at is not None else None,
+                "expiry_status": file.expiry_status,
+                "governance_inherited_from_predecessor": (file.replaces_file_id is not None),
                 "duplicate": duplicate_file_id is not None,
                 "duplicate_file_id": (
                     str(duplicate_file_id) if duplicate_file_id is not None else None
@@ -365,7 +455,61 @@ class DocumentService:
             sort=sort,
             order=order,
         )
+        await self._attach_owner_names(items)
         return FilePage(items=items, total=total, page=page, page_size=page_size)
+
+    async def list_responsible_files(
+        self,
+        current_user: AuthUserRecord,
+        *,
+        page: int,
+        page_size: int,
+        search: str | None = None,
+        status: str | None = None,
+        extension: str | None = None,
+        expiry_status: str | None = None,
+        sort: str = "uploaded_at",
+        order: str = "desc",
+    ) -> FilePage:
+        if not has_assigned_department(current_user):
+            return FilePage(items=[], total=0, page=page, page_size=page_size)
+        items, total = await self._repository.list_for_owner(
+            current_user.id,
+            department_id=current_user.department_id,
+            page=page,
+            page_size=page_size,
+            search=clean_optional_text(search),
+            status=clean_optional_text(status),
+            extension=clean_optional_text(extension),
+            expiry_status=expiry_status,
+            sort=sort,
+            order=order,
+        )
+        await self._attach_owner_names(items)
+        return FilePage(items=items, total=total, page=page, page_size=page_size)
+
+    async def list_owner_options(
+        self,
+        *,
+        current_user: AuthUserRecord,
+        search: str | None,
+        page: int,
+        page_size: int,
+    ) -> OwnerOptionPage:
+        if not has_assigned_department(current_user):
+            raise exceptions.department_assignment_required()
+        owners, total = await self._repository.list_owner_options(
+            department_id=current_user.department_id,
+            search=clean_optional_text(search),
+            page=page,
+            page_size=page_size,
+        )
+        return OwnerOptionPage(
+            items=[(owner.id, owner.name) for owner in owners],
+            total=total,
+            page=page,
+            page_size=page_size,
+        )
 
     async def get_my_file(self, *, current_user: AuthUserRecord, file_id: uuid.UUID) -> File:
         file = await self._repository.get_for_uploader(
@@ -388,15 +532,19 @@ class DocumentService:
         file = await self._repository.get_by_id(file_id)
         if file is None or file.status in HIDDEN_FILE_STATUSES:
             raise exceptions.file_not_found()
-        is_owner = file.uploader_id == current_user.id
+        access_role = self._resolve_file_read_access(
+            current_user=current_user,
+            file=file,
+        )
+        is_delegated_owner = access_role == "delegated_owner"
         is_admin_action = current_user.role in ADMIN_ROLES
-        if not is_owner:
-            if current_user.role not in ADMIN_ROLES:
-                raise exceptions.file_not_found()
-            if not self._can_admin_access_file(current_user=current_user, file=file):
-                # 越权访问他部门文件统一伪装成不存在(404), 避免 403/404 差异泄露存在性
-                raise exceptions.file_not_found()
 
+        await self._attach_owner_names([file])
+        version_chain = (
+            [file]
+            if is_delegated_owner
+            else await self._repository.list_version_chain(file.series_id)
+        )
         analysis = await self._repository.get_analysis_for_file(file.id)
         result = FileDetailResult(
             file=file,
@@ -438,6 +586,7 @@ class DocumentService:
                 else None
             ),
             sync_error=await self._repository.get_latest_failed_sync_error(file.id),
+            version_chain=version_chain,
         )
         # 审计在全部查询成功后写入并与之同事务提交, 避免 admin/员工两条路径事务边界不一致,
         # 也保证只记录实际成功返回的查看操作。
@@ -453,8 +602,25 @@ class DocumentService:
                 metadata_json={
                     "original_name": file.original_name,
                     "uploader_id": str(file.uploader_id),
+                    "access_role": access_role,
                 },
             )
+        elif is_delegated_owner:
+            await record_audit_log(
+                self._session,
+                actor_id=current_user.id,
+                action="file.view_detail",
+                target_type="file",
+                target_id=file.id,
+                ip_address=client_ip,
+                user_agent=user_agent[:512] or "unknown",
+                metadata_json={
+                    "original_name": file.original_name,
+                    "uploader_id": str(file.uploader_id),
+                    "access_role": "delegated_owner",
+                },
+            )
+        if is_admin_action or is_delegated_owner:
             await self._session.commit()
         return result
 
@@ -471,13 +637,12 @@ class DocumentService:
         file = await self._repository.get_by_id(file_id)
         if file is None or file.status in HIDDEN_FILE_STATUSES:
             raise exceptions.file_not_found()
-        is_owner = file.uploader_id == current_user.id
+        access_role = self._resolve_file_read_access(
+            current_user=current_user,
+            file=file,
+        )
+        is_delegated_owner = access_role == "delegated_owner"
         is_admin_action = current_user.role in ADMIN_ROLES
-        if not is_owner:
-            if current_user.role not in ADMIN_ROLES:
-                raise exceptions.file_not_found()
-            if not self._can_admin_access_file(current_user=current_user, file=file):
-                raise exceptions.file_not_found()
         if is_admin_action:
             await record_admin_audit_log(
                 self._session,
@@ -493,6 +658,25 @@ class DocumentService:
                     "disposition": disposition,
                     "audit_semantics": "access_authorized_before_stream_open",
                     "stream_completion_confirmed": False,
+                    "access_role": access_role,
+                },
+            )
+        elif is_delegated_owner:
+            await record_audit_log(
+                self._session,
+                actor_id=current_user.id,
+                action="file.view_content",
+                target_type="file",
+                target_id=file.id,
+                ip_address=client_ip,
+                user_agent=user_agent[:512] or "unknown",
+                metadata_json={
+                    "original_name": file.original_name,
+                    "uploader_id": str(file.uploader_id),
+                    "disposition": disposition,
+                    "audit_semantics": "access_authorized_before_stream_open",
+                    "stream_completion_confirmed": False,
+                    "access_role": "delegated_owner",
                 },
             )
         # StreamingResponse 在 service 返回后才开始读取对象。这里统一结束授权查询事务,
@@ -536,12 +720,18 @@ class DocumentService:
         *,
         file_id: uuid.UUID,
         notification_kind: str,
+        expected_expires_at: datetime,
+        now: datetime,
+        warning_deadline: datetime,
         sent_at: datetime,
     ) -> bool:
         updated = await self._repository.mark_expiry_notification_sent(
             file_id=file_id,
             notification_kind=notification_kind,
             sent_at=sent_at,
+            expected_expires_at=expected_expires_at,
+            now=now,
+            warning_deadline=warning_deadline,
         )
         if updated:
             await self._session.commit()
@@ -571,6 +761,7 @@ class DocumentService:
             raise exceptions.permission_denied()
         if file.status == "pending_review":
             raise exceptions.review_in_progress()
+        await self._require_version_lifecycle_stable(file)
         self._require_resolved_ragflow_upload_outcome(file)
         previous_status = file.status
         file.status = self._transition_or_raise(file.status, "deleted")
@@ -624,6 +815,7 @@ class DocumentService:
         self._require_scope_for_file(scope=scope, file=file)
         if file.status == "pending_review":
             raise exceptions.review_in_progress()
+        await self._require_version_lifecycle_stable(file)
         self._require_resolved_ragflow_upload_outcome(file)
         previous_status = file.status
         file.status = self._transition_or_raise(file.status, "disabled")
@@ -662,6 +854,28 @@ class DocumentService:
     def _require_resolved_ragflow_upload_outcome(file: File) -> None:
         if file.ragflow_parse_status == "UPLOADING" and not file.ragflow_document_id:
             raise exceptions.ragflow_reconciliation_pending()
+
+    async def _require_version_lifecycle_stable(self, file: File) -> None:
+        if file.replaces_file_id is not None and file.version_switch_status != "completed":
+            if not await self._can_abandon_local_candidate(file):
+                raise exceptions.version_switch_in_progress()
+        if await self._repository.has_incomplete_direct_replacement(file.id):
+            raise exceptions.version_switch_in_progress()
+
+    async def _can_abandon_local_candidate(self, file: File) -> bool:
+        if (
+            file.replaces_file_id is None
+            or file.is_current_version
+            or file.remote_visibility != "candidate"
+            or file.ragflow_document_id is not None
+            or file.ragflow_parse_status == "UPLOADING"
+            or file.version_switch_status not in {"pending", "failed_old_deactivate"}
+            or file.predecessor_remote_deactivated_at is not None
+            or file.local_version_activated_at is not None
+            or file.remote_version_activated_at is not None
+        ):
+            return False
+        return not await self._repository.has_blocking_version_operation(file.id)
 
     async def reanalyze_file(
         self,
@@ -711,6 +925,111 @@ class DocumentService:
             },
         )
         await self._session.commit()
+
+    def _validate_replacement_predecessor(
+        self,
+        *,
+        current_user: AuthUserRecord,
+        predecessor: File | None,
+    ) -> None:
+        if predecessor is None:
+            raise exceptions.invalid_replacement()
+        if predecessor.uploader_id != current_user.id:
+            raise exceptions.file_not_found()
+        if predecessor.department_id != current_user.department_id:
+            raise exceptions.invalid_replacement()
+        if (
+            predecessor.status != "parsed"
+            or not predecessor.is_current_version
+            or predecessor.remote_visibility != "current"
+            or not predecessor.ragflow_dataset_id
+            or not predecessor.ragflow_document_id
+        ):
+            raise exceptions.invalid_replacement()
+
+    @staticmethod
+    def _validate_version_chain(
+        *,
+        chain: list[File],
+        expected_current_id: uuid.UUID,
+    ) -> None:
+        ordered = sorted(chain, key=lambda item: item.version_number)
+        if not ordered:
+            raise exceptions.invalid_replacement()
+        root = ordered[0]
+        if (
+            root.series_id != root.id
+            or root.version_number != 1
+            or root.replaces_file_id is not None
+            or root.replacement_remote_action is not None
+        ):
+            raise exceptions.invalid_replacement()
+        current = [item for item in ordered if item.is_current_version]
+        if len(current) != 1 or current[0].id != expected_current_id:
+            raise exceptions.replacement_conflict()
+        if [item.version_number for item in ordered] != list(range(1, len(ordered) + 1)):
+            raise exceptions.invalid_replacement()
+        by_id = {item.id: item for item in ordered}
+        active_children: dict[uuid.UUID, int] = {}
+        for item in ordered:
+            if (
+                item.series_id != root.id
+                or item.department_id != root.department_id
+                or item.uploader_id != root.uploader_id
+            ):
+                raise exceptions.invalid_replacement()
+            if item.id == root.id:
+                continue
+            if item.replaces_file_id is None:
+                raise exceptions.invalid_replacement()
+            predecessor = by_id.get(item.replaces_file_id)
+            if (
+                predecessor is None
+                or predecessor.version_number >= item.version_number
+                or item.replacement_remote_action not in {"delete", "archive"}
+            ):
+                raise exceptions.invalid_replacement()
+            if item.status not in ABANDONED_VERSION_STATUSES:
+                predecessor_id = predecessor.id
+                active_children[predecessor_id] = active_children.get(predecessor_id, 0) + 1
+                if active_children[predecessor_id] > 1:
+                    raise exceptions.replacement_conflict()
+
+    async def _attach_owner_names(self, files: list[File]) -> None:
+        owner_ids = {file.owner_id for file in files if file.owner_id is not None}
+        names = await self._repository.get_owner_names(owner_ids)
+        for file in files:
+            dynamic_file = cast(Any, file)
+            dynamic_file.owner_name = (
+                names.get(file.owner_id) if file.owner_id is not None else None
+            )
+
+    def _resolve_file_read_access(
+        self,
+        *,
+        current_user: AuthUserRecord,
+        file: File,
+    ) -> Literal["uploader", "delegated_owner", "administrator"]:
+        if file.uploader_id == current_user.id:
+            return "uploader"
+        # A department administrator who is also the delegated owner uses the
+        # narrower delegated-owner grant. This prevents role fallback from
+        # exposing historical versions or bypassing a later department move.
+        if file.owner_id == current_user.id and current_user.role != "system_admin":
+            if (
+                file.is_current_version
+                and has_assigned_department(current_user)
+                and file.department_id == current_user.department_id
+            ):
+                return "delegated_owner"
+            raise exceptions.file_not_found()
+        if current_user.role in ADMIN_ROLES and self._can_admin_access_file(
+            current_user=current_user,
+            file=file,
+        ):
+            return "administrator"
+        # Unauthorized reads always look absent to avoid disclosing existence.
+        raise exceptions.file_not_found()
 
     def _can_admin_access_file(self, *, current_user: AuthUserRecord, file: File) -> bool:
         if current_user.role == "system_admin":
@@ -805,6 +1124,9 @@ class DocumentService:
                 "submit_after_upload": bool(
                     (file.ai_config_snapshot or {}).get("submit_after_upload", False)
                 ),
+                "series_id": str(file.series_id),
+                "version_number": file.version_number,
+                "replaces_file_id": str(file.replaces_file_id) if file.replaces_file_id else None,
             },
         )
 

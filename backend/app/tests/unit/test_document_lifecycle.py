@@ -133,9 +133,7 @@ async def _create_user(*, email: str, password: str, role: str = "employee") -> 
     normalized_email = email.lower()
     async with AsyncSessionFactory() as session:
         department = (
-            await session.execute(
-                select(Department).where(Department.code == "document-lifecycle")
-            )
+            await session.execute(select(Department).where(Department.code == "document-lifecycle"))
         ).scalar_one_or_none()
         if department is None:
             department = Department(
@@ -201,9 +199,7 @@ async def _create_file_row(
         status=status,
         review_status="pending",
         submitted_at=submitted_at,
-        review_due_at=(
-            submitted_at + timedelta(hours=24) if submitted_at is not None else None
-        ),
+        review_due_at=(submitted_at + timedelta(hours=24) if submitted_at is not None else None),
         ai_analysis_enabled_at_upload=ai_enabled,
         ragflow_document_id=ragflow_document_id,
         ragflow_dataset_id=ragflow_dataset_id,
@@ -456,6 +452,271 @@ async def test_unknown_remote_upload_outcome_blocks_destructive_file_action(
     assert await _outbox_payloads("document.file.archived") == []
     assert await _audit_logs("file.delete") == []
     assert await _audit_logs("file.archive") == []
+
+
+@pytest.mark.parametrize("operation", ["delete", "archive"])
+@pytest.mark.parametrize(
+    "switch_status",
+    ["pending", "local_switched", "failed_new_activate"],
+)
+async def test_incomplete_version_switch_blocks_predecessor_destructive_action(
+    lifecycle_client: tuple[AsyncClient, FakeDocumentStorage],
+    operation: str,
+    switch_status: str,
+) -> None:
+    from app.core.database import AsyncSessionFactory
+    from app.modules.document.models import File
+
+    client, _storage = lifecycle_client
+    await _create_user(email="version-owner@company.com", password="password123")
+    await _create_user(
+        email="version-admin@company.com",
+        password="password123",
+        role="system_admin",
+    )
+    owner_token = await _login(
+        client,
+        email="version-owner@company.com",
+        password="password123",
+    )
+    admin_token = await _login(
+        client,
+        email="version-admin@company.com",
+        password="password123",
+    )
+    predecessor_id = await _upload_txt(
+        client,
+        token=owner_token,
+        filename="version-policy-v1.txt",
+    )
+    async with AsyncSessionFactory() as session:
+        predecessor = await session.get(File, UUID(predecessor_id))
+        assert predecessor is not None
+        predecessor.status = "parsed"
+        predecessor.review_status = "approved"
+        predecessor.ragflow_dataset_id = "dataset-version-lifecycle"
+        predecessor.ragflow_document_id = "remote-version-lifecycle-v1"
+        predecessor.ragflow_parse_status = "DONE"
+        predecessor.remote_visibility = "current"
+        predecessor.version_switch_status = "not_required"
+        await session.commit()
+
+    replacement_response = await client.post(
+        "/api/files/upload",
+        headers={"Authorization": f"Bearer {owner_token}"},
+        files={"file": ("version-policy-v2.txt", b"b" * 64, "text/plain")},
+        data={
+            **UPLOAD_DRAFT_FORM,
+            "replaces_file_id": predecessor_id,
+        },
+    )
+    assert replacement_response.status_code == 201, replacement_response.text
+    candidate_id = str(replacement_response.json()["data"]["id"])
+
+    if switch_status != "pending":
+        async with AsyncSessionFactory() as session:
+            predecessor = await session.get(File, UUID(predecessor_id))
+            candidate = await session.get(File, UUID(candidate_id))
+            assert predecessor is not None and candidate is not None
+            predecessor.is_current_version = False
+            predecessor.remote_visibility = "not_current"
+            await session.flush()
+            candidate.is_current_version = True
+            candidate.status = "parsed"
+            candidate.review_status = "approved"
+            candidate.ragflow_dataset_id = "dataset-version-lifecycle"
+            candidate.ragflow_document_id = "remote-version-lifecycle-v2"
+            candidate.ragflow_parse_status = "DONE"
+            candidate.version_switch_status = switch_status
+            candidate.local_version_activated_at = datetime.now(UTC)
+            await session.commit()
+
+    if operation == "delete":
+        response = await client.delete(
+            f"/api/files/{predecessor_id}",
+            headers={"Authorization": f"Bearer {admin_token}"},
+        )
+    else:
+        response = await client.post(
+            f"/api/admin/files/{predecessor_id}/archive",
+            headers={"Authorization": f"Bearer {admin_token}"},
+        )
+
+    assert response.status_code == 409
+    assert response.json()["error_code"] == "FILE_REPLACEMENT_CONFLICT"
+    assert "version replacement is in progress" in response.json()["message"]
+    assert await _file_status(UUID(predecessor_id)) == "parsed"
+    assert await _file_status(UUID(candidate_id)) == (
+        "uploaded" if switch_status == "pending" else "parsed"
+    )
+    assert await _outbox_payloads("document.file.deleted") == []
+    assert await _outbox_payloads("document.file.archived") == []
+    assert await _audit_logs("file.delete") == []
+    assert await _audit_logs("file.archive") == []
+
+
+@pytest.mark.parametrize("operation", ["delete", "archive"])
+async def test_local_only_candidate_can_be_abandoned_before_v3_upload(
+    lifecycle_client: tuple[AsyncClient, FakeDocumentStorage],
+    operation: str,
+) -> None:
+    from app.core.database import AsyncSessionFactory
+    from app.modules.document.models import File
+
+    client, _storage = lifecycle_client
+    owner_email = f"abandon-{operation}-owner@company.com"
+    admin_email = f"abandon-{operation}-admin@company.com"
+    await _create_user(email=owner_email, password="password123")
+    await _create_user(email=admin_email, password="password123", role="system_admin")
+    owner_token = await _login(client, email=owner_email, password="password123")
+    admin_token = await _login(client, email=admin_email, password="password123")
+    predecessor_id = await _upload_txt(
+        client,
+        token=owner_token,
+        filename=f"abandon-{operation}-v1.txt",
+    )
+    async with AsyncSessionFactory() as session:
+        predecessor = await session.get(File, UUID(predecessor_id))
+        assert predecessor is not None
+        predecessor.status = "parsed"
+        predecessor.review_status = "approved"
+        predecessor.ragflow_dataset_id = "dataset-abandon"
+        predecessor.ragflow_document_id = f"remote-abandon-{operation}-v1"
+        predecessor.ragflow_parse_status = "DONE"
+        predecessor.remote_visibility = "current"
+        await session.commit()
+
+    replacement_response = await client.post(
+        "/api/files/upload",
+        headers={"Authorization": f"Bearer {owner_token}"},
+        files={"file": (f"abandon-{operation}-v2.txt", b"b" * 64, "text/plain")},
+        data={**UPLOAD_DRAFT_FORM, "replaces_file_id": predecessor_id},
+    )
+    assert replacement_response.status_code == 201, replacement_response.text
+    candidate_id = UUID(replacement_response.json()["data"]["id"])
+    if operation == "archive":
+        async with AsyncSessionFactory() as session:
+            candidate = await session.get(File, candidate_id)
+            assert candidate is not None
+            candidate.status = "rejected"
+            candidate.review_status = "rejected"
+            await session.commit()
+
+    if operation == "delete":
+        abandon_response = await client.delete(
+            f"/api/files/{candidate_id}",
+            headers={"Authorization": f"Bearer {admin_token}"},
+        )
+        expected_status = "deleted"
+    else:
+        abandon_response = await client.post(
+            f"/api/admin/files/{candidate_id}/archive",
+            headers={"Authorization": f"Bearer {admin_token}"},
+        )
+        expected_status = "disabled"
+    assert abandon_response.status_code == 200, abandon_response.text
+    assert await _file_status(candidate_id) == expected_status
+
+    v3_response = await client.post(
+        "/api/files/upload",
+        headers={"Authorization": f"Bearer {owner_token}"},
+        files={"file": (f"abandon-{operation}-v3.txt", b"c" * 64, "text/plain")},
+        data={**UPLOAD_DRAFT_FORM, "replaces_file_id": predecessor_id},
+    )
+    assert v3_response.status_code == 201, v3_response.text
+    assert v3_response.json()["data"]["version_number"] == 3
+    assert v3_response.json()["data"]["replaces_file_id"] == predecessor_id
+
+    detail_response = await client.get(
+        f"/api/files/{predecessor_id}",
+        headers={"Authorization": f"Bearer {owner_token}"},
+    )
+    assert detail_response.status_code == 200
+    chain = detail_response.json()["data"]["version_chain"]
+    assert [item["version_number"] for item in chain] == [3, 2, 1]
+
+
+@pytest.mark.parametrize("operation", ["delete", "archive"])
+@pytest.mark.parametrize("blocking_evidence", ["remote_document", "running", "unknown"])
+async def test_remote_or_unresolved_candidate_cannot_be_abandoned(
+    lifecycle_client: tuple[AsyncClient, FakeDocumentStorage],
+    operation: str,
+    blocking_evidence: str,
+) -> None:
+    from app.core.database import AsyncSessionFactory
+    from app.modules.document.models import File
+    from app.modules.ragflow.models import RagflowVersionOperation
+
+    client, _storage = lifecycle_client
+    suffix = f"{operation}-{blocking_evidence}"
+    owner_email = f"blocked-{suffix}-owner@company.com"
+    admin_email = f"blocked-{suffix}-admin@company.com"
+    await _create_user(email=owner_email, password="password123")
+    await _create_user(email=admin_email, password="password123", role="system_admin")
+    owner_token = await _login(client, email=owner_email, password="password123")
+    admin_token = await _login(client, email=admin_email, password="password123")
+    predecessor_id = await _upload_txt(
+        client,
+        token=owner_token,
+        filename=f"blocked-{suffix}-v1.txt",
+    )
+    async with AsyncSessionFactory() as session:
+        predecessor = await session.get(File, UUID(predecessor_id))
+        assert predecessor is not None
+        predecessor.status = "parsed"
+        predecessor.review_status = "approved"
+        predecessor.ragflow_dataset_id = "dataset-blocked"
+        predecessor.ragflow_document_id = f"remote-blocked-{suffix}-v1"
+        predecessor.ragflow_parse_status = "DONE"
+        predecessor.remote_visibility = "current"
+        await session.commit()
+
+    replacement_response = await client.post(
+        "/api/files/upload",
+        headers={"Authorization": f"Bearer {owner_token}"},
+        files={"file": (f"blocked-{suffix}-v2.txt", b"d" * 64, "text/plain")},
+        data={**UPLOAD_DRAFT_FORM, "replaces_file_id": predecessor_id},
+    )
+    assert replacement_response.status_code == 201, replacement_response.text
+    candidate_id = UUID(replacement_response.json()["data"]["id"])
+    async with AsyncSessionFactory() as session:
+        candidate = await session.get(File, candidate_id)
+        assert candidate is not None
+        if operation == "archive":
+            candidate.status = "rejected"
+            candidate.review_status = "rejected"
+        if blocking_evidence == "remote_document":
+            candidate.ragflow_dataset_id = "dataset-blocked"
+            candidate.ragflow_document_id = f"remote-blocked-{suffix}-v2"
+        else:
+            session.add(
+                RagflowVersionOperation(
+                    file_id=candidate.id,
+                    target_file_id=UUID(predecessor_id),
+                    operation="deactivate_predecessor",
+                    status=blocking_evidence,
+                    attempt_count=1,
+                )
+            )
+        await session.commit()
+
+    if operation == "delete":
+        response = await client.delete(
+            f"/api/files/{candidate_id}",
+            headers={"Authorization": f"Bearer {admin_token}"},
+        )
+    else:
+        response = await client.post(
+            f"/api/admin/files/{candidate_id}/archive",
+            headers={"Authorization": f"Bearer {admin_token}"},
+        )
+    assert response.status_code == 409
+    assert response.json()["error_code"] == "FILE_REPLACEMENT_CONFLICT"
+    assert await _file_status(candidate_id) == (
+        "rejected" if operation == "archive" else "uploaded"
+    )
+    assert await _outbox_payloads("document.file.deleted") == []
+    assert await _outbox_payloads("document.file.archived") == []
 
 
 async def test_delete_rejects_mid_pipeline_status(
@@ -974,3 +1235,151 @@ async def test_precondition_failure_keeps_non_intermediate_file_untouched(
             select(DocumentAnalysis).where(DocumentAnalysis.file_id == file_id)
         )
         assert result.scalar_one_or_none() is None
+
+
+@pytest.mark.parametrize(
+    ("owner_valid", "configured_value", "expected_action"),
+    [
+        (True, True, "archive"),
+        (False, False, "delete"),
+        (True, None, "archive"),
+        (True, "false", "archive"),
+        (True, {"corrupt": True}, "archive"),
+    ],
+)
+async def test_replacement_snapshots_remote_action_and_inherits_governance(
+    lifecycle_client: tuple[AsyncClient, FakeDocumentStorage],
+    set_system_config: SetSystemConfig,
+    owner_valid: bool,
+    configured_value: object,
+    expected_action: str,
+) -> None:
+    from app.core.database import AsyncSessionFactory
+    from app.modules.document.models import File
+    from app.modules.user.models import User
+
+    client, _storage = lifecycle_client
+    uploader_id = await _create_user(
+        email=f"snapshot-uploader-{owner_valid}@company.com",
+        password="password123",
+    )
+    delegated_owner_id = await _create_user(
+        email=f"snapshot-owner-{owner_valid}@company.com",
+        password="password123",
+    )
+    token = await _login(
+        client,
+        email=f"snapshot-uploader-{owner_valid}@company.com",
+        password="password123",
+    )
+    predecessor_id = UUID(
+        await _upload_txt(client, token=token, filename=f"snapshot-v1-{owner_valid}.txt")
+    )
+    expires_at = datetime.now(UTC) + timedelta(days=14)
+    notification_timestamp = datetime.now(UTC)
+    async with AsyncSessionFactory() as session:
+        predecessor = await session.get(File, predecessor_id)
+        delegated_owner = await session.get(User, delegated_owner_id)
+        assert predecessor is not None and delegated_owner is not None
+        predecessor.status = "parsed"
+        predecessor.review_status = "approved"
+        predecessor.ragflow_dataset_id = "dataset-snapshot"
+        predecessor.ragflow_document_id = f"remote-snapshot-{owner_valid}"
+        predecessor.ragflow_parse_status = "DONE"
+        predecessor.remote_visibility = "current"
+        predecessor.owner_id = delegated_owner_id
+        predecessor.expires_at = expires_at
+        predecessor.expiry_status = "expiring"
+        predecessor.expiry_warning_sent_at = notification_timestamp
+        predecessor.expiry_expired_sent_at = notification_timestamp
+        if not owner_valid:
+            delegated_owner.status = "disabled"
+        await session.commit()
+
+    await set_system_config("ragflow.keep_replaced_remote", configured_value)
+    response = await client.post(
+        "/api/files/upload",
+        headers={"Authorization": f"Bearer {token}"},
+        files={"file": ("snapshot-v2.txt", b"b" * 64, "text/plain")},
+        data={**UPLOAD_DRAFT_FORM, "replaces_file_id": str(predecessor_id)},
+    )
+    assert response.status_code == 201, response.text
+    candidate_data = response.json()["data"]
+    candidate_id = UUID(candidate_data["id"])
+    assert candidate_data["replacement_remote_action"] == expected_action
+    assert candidate_data["owner_id"] == str(delegated_owner_id if owner_valid else uploader_id)
+
+    await set_system_config(
+        "ragflow.keep_replaced_remote",
+        False if configured_value is not False else True,
+    )
+    async with AsyncSessionFactory() as session:
+        candidate = await session.get(File, candidate_id)
+        assert candidate is not None
+        assert candidate.replacement_remote_action == expected_action
+        assert candidate.owner_id == (delegated_owner_id if owner_valid else uploader_id)
+        assert candidate.expires_at == expires_at
+        assert candidate.expiry_status == "expiring"
+        assert candidate.expiry_warning_sent_at is None
+        assert candidate.expiry_expired_sent_at is None
+
+    candidate_audit = next(
+        row for row in await _audit_logs("file.upload") if row[1] == candidate_id
+    )
+    metadata = candidate_audit[2]
+    assert metadata["replacement_remote_action"] == expected_action
+    assert metadata["owner_id"] == str(delegated_owner_id if owner_valid else uploader_id)
+    assert metadata["expires_at"] == expires_at.isoformat()
+    assert metadata["expiry_status"] == "expiring"
+    assert metadata["governance_inherited_from_predecessor"] is True
+
+
+@pytest.mark.parametrize("duplicate_content", [False, True])
+async def test_replacement_config_failure_never_orphans_or_deletes_storage(
+    lifecycle_client: tuple[AsyncClient, FakeDocumentStorage],
+    monkeypatch: pytest.MonkeyPatch,
+    duplicate_content: bool,
+) -> None:
+    from app.core.database import AsyncSessionFactory
+    from app.modules.document import service as document_service  # noqa: TID251
+    from app.modules.document.models import File
+
+    client, storage = lifecycle_client
+    email = f"config-failure-{duplicate_content}@company.com"
+    await _create_user(email=email, password="password123")
+    token = await _login(client, email=email, password="password123")
+    predecessor_id = UUID(await _upload_txt(client, token=token, filename="config-failure-v1.txt"))
+    async with AsyncSessionFactory() as session:
+        predecessor = await session.get(File, predecessor_id)
+        assert predecessor is not None
+        predecessor.status = "parsed"
+        predecessor.review_status = "approved"
+        predecessor.ragflow_dataset_id = "dataset-config-failure"
+        predecessor.ragflow_document_id = "remote-config-failure-v1"
+        predecessor.ragflow_parse_status = "DONE"
+        predecessor.remote_visibility = "current"
+        await session.commit()
+
+    original_get_config = document_service.get_config
+
+    async def failing_get_config(key: str) -> object:
+        if key == "ragflow.keep_replaced_remote":
+            raise RuntimeError("synthetic replacement config failure")
+        return await original_get_config(key)
+
+    monkeypatch.setattr(document_service, "get_config", failing_get_config)
+    before_objects = list(storage.objects)
+    content = b"a" * 64 if duplicate_content else b"z" * 64
+    with pytest.raises(RuntimeError, match="replacement config failure"):
+        await client.post(
+            "/api/files/upload",
+            headers={"Authorization": f"Bearer {token}"},
+            files={"file": ("config-failure-v2.txt", content, "text/plain")},
+            data={**UPLOAD_DRAFT_FORM, "replaces_file_id": str(predecessor_id)},
+        )
+
+    assert storage.objects == before_objects
+    assert storage.deleted_objects == []
+    async with AsyncSessionFactory() as session:
+        files = list((await session.execute(select(File))).scalars())
+    assert [file.id for file in files] == [predecessor_id]

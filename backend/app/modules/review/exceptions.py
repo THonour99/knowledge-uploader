@@ -150,11 +150,27 @@ def draft_metadata_locked() -> ReviewError:
     )
 
 
+def invalid_expiry() -> ReviewError:
+    return ReviewError(
+        ErrorCode.VALIDATION_ERROR,
+        "expires_at must include a timezone",
+        status.HTTP_422_UNPROCESSABLE_ENTITY,
+    )
+
+
 def file_version_conflict() -> ReviewError:
     return ReviewError(
         ErrorCode.FILE_VERSION_CONFLICT,
         "file version has changed",
         status.HTTP_409_CONFLICT,
+    )
+
+
+def invalid_document_owner() -> ReviewError:
+    return ReviewError(
+        ErrorCode.INVALID_DOCUMENT_OWNER,
+        "document owner must be active, verified, and in the document department",
+        status.HTTP_422_UNPROCESSABLE_ENTITY,
     )
 
 

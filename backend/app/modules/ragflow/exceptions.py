@@ -53,7 +53,7 @@ def task_not_retryable() -> RagflowTaskError:
 def task_conflict() -> RagflowTaskError:
     return RagflowTaskError(
         ErrorCode.VALIDATION_ERROR,
-        "another active ragflow upload task exists",
+        "another active ragflow synchronization task exists",
         status.HTTP_409_CONFLICT,
     )
 
@@ -135,6 +135,30 @@ def sync_blocked_by_sensitive_policy() -> RagflowTaskError:
         ErrorCode.VALIDATION_ERROR,
         "file sync is blocked by sensitive content policy",
         status.HTTP_409_CONFLICT,
+    )
+
+
+def incomplete_version_switch_task_not_cancelable() -> RagflowTaskError:
+    return RagflowTaskError(
+        ErrorCode.VALIDATION_ERROR,
+        "an incomplete version switch task cannot be canceled",
+        status.HTTP_409_CONFLICT,
+    )
+
+
+def task_not_version_switch_reconcilable() -> RagflowTaskError:
+    return RagflowTaskError(
+        ErrorCode.VALIDATION_ERROR,
+        "task is not eligible for version switch reconciliation",
+        status.HTTP_409_CONFLICT,
+    )
+
+
+def version_switch_reconcile_reason_required() -> RagflowTaskError:
+    return RagflowTaskError(
+        ErrorCode.VALIDATION_ERROR,
+        "a reason is required for version switch reconciliation",
+        status.HTTP_422_UNPROCESSABLE_ENTITY,
     )
 
 

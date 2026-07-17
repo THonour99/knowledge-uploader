@@ -78,6 +78,7 @@ FALLBACKS: dict[str, Callable[[Settings], object]] = {
     "ragflow.allow_high_risk_sync": lambda _s: False,
     "ragflow.delete_remote_on_file_delete": lambda _s: False,
     "ragflow.keep_remote_on_archive": lambda _s: True,
+    "ragflow.keep_replaced_remote": lambda _s: False,
 }
 
 # Used only when PostgreSQL is unavailable and this process has never observed
@@ -108,6 +109,7 @@ FAIL_CLOSED_DEFAULTS: dict[str, object] = {
     "ragflow.allow_high_risk_sync": False,
     "ragflow.delete_remote_on_file_delete": False,
     "ragflow.keep_remote_on_archive": True,
+    "ragflow.keep_replaced_remote": True,
     "outbox.publish_max_retries": 0,
 }
 
@@ -196,6 +198,17 @@ async def _load_db_value(key: str) -> DatabaseConfigResult:
     if bool(row[1]):
         value = _decrypt_secret_value(key, value)
     return DatabaseConfigResult(available=True, value=value)
+
+
+async def stored_config_is_exact_false(key: str) -> bool:
+    """Return true only for an available database row whose raw value is false.
+
+    This is for destructive decisions where an environment fallback, a missing
+    row, JSON null, a malformed value, or a database outage must not authorize
+    the side effect.
+    """
+    loaded = await _load_db_value(key)
+    return loaded.available and loaded.value is False
 
 
 async def get_config(key: str) -> object | None:

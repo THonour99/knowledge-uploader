@@ -36,6 +36,22 @@ def _title_from_original_name(context: _InsertDefaultContext) -> str:
     return original_name
 
 
+def _owner_from_uploader_id(context: _InsertDefaultContext) -> uuid.UUID:
+    uploader_id = context.get_current_parameters().get("uploader_id")
+    if not isinstance(uploader_id, uuid.UUID):
+        msg = "uploader_id is required to derive file owner"
+        raise ValueError(msg)
+    return uploader_id
+
+
+def _series_from_file_id(context: _InsertDefaultContext) -> uuid.UUID:
+    file_id = context.get_current_parameters().get("id")
+    if not isinstance(file_id, uuid.UUID):
+        msg = "id is required to derive file version series"
+        raise ValueError(msg)
+    return file_id
+
+
 class File(Base):
     __tablename__ = "files"
     __table_args__ = (
@@ -120,6 +136,37 @@ class File(Base):
             "expiry_status IN ('never', 'active', 'expiring', 'expired')",
             name="ck_files_expiry_status",
         ),
+        CheckConstraint("version_number > 0", name="ck_files_version_number_positive"),
+        CheckConstraint(
+            "remote_visibility IN ('candidate', 'current', 'not_current', 'unknown')",
+            name="ck_files_remote_visibility",
+        ),
+        CheckConstraint(
+            "version_switch_status IN ("
+            "'not_required', 'pending', 'old_remote_deactivated', 'local_switched', "
+            "'completed', 'failed_old_deactivate', 'failed_new_activate'"
+            ")",
+            name="ck_files_version_switch_status",
+        ),
+        CheckConstraint(
+            "version_switch_attempt_count >= 0",
+            name="ck_files_version_switch_attempt_count_non_negative",
+        ),
+        CheckConstraint(
+            "(replaces_file_id IS NULL AND version_number = 1) OR "
+            "(replaces_file_id IS NOT NULL AND version_number > 1)",
+            name="ck_files_replacement_version_consistent",
+        ),
+        CheckConstraint(
+            "(replaces_file_id IS NULL AND replacement_remote_action IS NULL) OR "
+            "(replaces_file_id IS NOT NULL AND "
+            "replacement_remote_action IN ('delete', 'archive'))",
+            name="ck_files_replacement_remote_action",
+        ),
+        CheckConstraint(
+            "replaces_file_id IS NULL OR replaces_file_id <> id",
+            name="ck_files_replacement_not_self",
+        ),
         Index(
             "idx_files_expiry_scan",
             "expires_at",
@@ -131,6 +178,23 @@ class File(Base):
             ),
         ),
         Index("idx_files_expiry_status", "expiry_status"),
+        Index("idx_files_owner_id", "owner_id"),
+        Index("idx_files_series_version", "series_id", "version_number", unique=True),
+        Index(
+            "uq_files_replaces_file_id",
+            "replaces_file_id",
+            unique=True,
+            postgresql_where=sql_text(
+                "replaces_file_id IS NOT NULL "
+                "AND status NOT IN ('deleted', 'disabled', 'ragflow_cleanup_failed')"
+            ),
+        ),
+        Index(
+            "uq_files_current_version_per_series",
+            "series_id",
+            unique=True,
+            postgresql_where=sql_text("is_current_version"),
+        ),
     )
 
     id: Mapped[uuid.UUID] = mapped_column(primary_key=True, default=uuid.uuid4)
@@ -151,6 +215,10 @@ class File(Base):
     uploader_id: Mapped[uuid.UUID] = mapped_column(
         ForeignKey("users.id", ondelete="RESTRICT"),
         nullable=False,
+    )
+    owner_id: Mapped[uuid.UUID | None] = mapped_column(
+        ForeignKey("users.id", ondelete="RESTRICT"),
+        default=_owner_from_uploader_id,
     )
     department_id: Mapped[uuid.UUID] = mapped_column(
         ForeignKey("departments.id", ondelete="RESTRICT"),
@@ -205,6 +273,42 @@ class File(Base):
     expiry_status: Mapped[str] = mapped_column(String(20), nullable=False, server_default="never")
     expiry_warning_sent_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     expiry_expired_sent_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    series_id: Mapped[uuid.UUID] = mapped_column(
+        ForeignKey("files.id", ondelete="RESTRICT"),
+        nullable=False,
+        default=_series_from_file_id,
+    )
+    version_number: Mapped[int] = mapped_column(Integer, nullable=False, server_default="1")
+    replaces_file_id: Mapped[uuid.UUID | None] = mapped_column(
+        ForeignKey("files.id", ondelete="RESTRICT"),
+    )
+    replacement_remote_action: Mapped[str | None] = mapped_column(String(20))
+    is_current_version: Mapped[bool] = mapped_column(
+        Boolean,
+        nullable=False,
+        server_default="true",
+    )
+    remote_visibility: Mapped[str] = mapped_column(
+        String(20),
+        nullable=False,
+        server_default="candidate",
+    )
+    version_switch_status: Mapped[str] = mapped_column(
+        String(40),
+        nullable=False,
+        server_default="not_required",
+    )
+    version_switch_error: Mapped[str | None] = mapped_column(String(120))
+    version_switch_attempt_count: Mapped[int] = mapped_column(
+        Integer,
+        nullable=False,
+        server_default="0",
+    )
+    predecessor_remote_deactivated_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True)
+    )
+    local_version_activated_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    remote_version_activated_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     uploaded_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True),
         nullable=False,

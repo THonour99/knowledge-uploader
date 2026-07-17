@@ -8,6 +8,7 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
 DEFAULTS_PATH = ROOT / "backend/app/modules/config/defaults.py"
+CONFIG_CONTRACT_PATH = ROOT / "docs/product/CONFIG_CONTRACT.md"
 RUNTIME_PATH = ROOT / "backend/app/core/runtime_config.py"
 BACKEND_ROOT = ROOT / "backend/app"
 
@@ -121,9 +122,7 @@ def _runtime_config_consumers(path: Path) -> set[str]:
     for walked_node in ast.walk(tree):
         if not isinstance(walked_node, ast.Call) or not walked_node.args:
             continue
-        function_name = (
-            walked_node.func.id if isinstance(walked_node.func, ast.Name) else None
-        )
+        function_name = walked_node.func.id if isinstance(walked_node.func, ast.Name) else None
         if function_name not in direct_aliases | forwarding_helpers:
             continue
         first_argument = walked_node.args[0]
@@ -169,6 +168,25 @@ def _validate_forwarding_helpers(
 def main() -> int:
     errors: list[str] = []
     definition_keys = _definition_keys()
+    contract_text = CONFIG_CONTRACT_PATH.read_text(encoding="utf-8")
+    expected_summary = (
+        f"当前契约恰好包含 {len(definition_keys)} 个 active key 和 "
+        f"{len(DELETED_CONFIG_KEYS)} 个 deleted key。"
+    )
+    if expected_summary not in contract_text:
+        errors.append("CONFIG_CONTRACT active/deleted count is stale")
+    expected_heading = f"## 2. Active 配置\uff08{len(definition_keys)}\uff09"
+    if expected_heading not in contract_text:
+        errors.append("CONFIG_CONTRACT active heading count is stale")
+    active_section = contract_text.split("## 2. Active 配置", maxsplit=1)[-1].split(
+        "备注", maxsplit=1
+    )[0]
+    missing_documented_keys = sorted(
+        key for key in definition_keys if f"| {key} |" not in active_section
+    )
+    if missing_documented_keys:
+        errors.append("CONFIG_CONTRACT missing active keys: " + str(missing_documented_keys))
+
     fallback_keys = _assignment_dict_keys(RUNTIME_PATH, "FALLBACKS")
     if definition_keys != fallback_keys:
         errors.append(
@@ -190,19 +208,20 @@ def main() -> int:
     if dead_keys:
         errors.append(f"runtime config keys without production consumers: {sorted(dead_keys)}")
 
-    production_literals = set().union(*(
-        _literal_string_set(path)
-        for path in BACKEND_ROOT.rglob("*.py")
-        if "tests" not in path.parts and "migrations" not in path.parts
-    ))
+    production_literals = set().union(
+        *(
+            _literal_string_set(path)
+            for path in BACKEND_ROOT.rglob("*.py")
+            if "tests" not in path.parts and "migrations" not in path.parts
+        )
+    )
     resurrected = sorted(key for key in DELETED_CONFIG_KEYS if key in production_literals)
     if resurrected:
         errors.append(f"deleted runtime config keys found in production code: {resurrected}")
 
     deployment_surfaces = (ROOT / "docker-compose.yml", ROOT / ".env.example")
     has_deleted_environment = any(
-        "DEFAULT_DATASET_ID" in path.read_text(encoding="utf-8")
-        for path in deployment_surfaces
+        "DEFAULT_DATASET_ID" in path.read_text(encoding="utf-8") for path in deployment_surfaces
     )
     if has_deleted_environment:
         errors.append("deleted DEFAULT_DATASET_ID remains on a deployment surface")
