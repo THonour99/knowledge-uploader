@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import math
 import sys
 import time
 import uuid
@@ -23,7 +24,12 @@ from app.workers.rabbitmq_replay import (
 )
 from app.workers.rabbitmq_topology import dead_letter_queues, task_queues
 
-Mode = Literal["baseline", "observe-exhaustion", "verify-replay"]
+Mode = Literal["baseline", "observe-retry", "observe-exhaustion", "verify-replay"]
+RETRY_OBSERVATION_MAX_BODY_BYTES = 16 * 1024
+RETRY_OBSERVATION_MAX_JSON_DEPTH = 12
+RETRY_OBSERVATION_MAX_JSON_NODES = 512
+RETRY_OBSERVATION_MAX_CONTAINER_ITEMS = 64
+RETRY_OBSERVATION_MAX_STRING_LENGTH = 1024
 
 
 @dataclass(frozen=True)
@@ -111,6 +117,132 @@ def _validated_identity(
     if delivery_mode not in {2, "2"}:
         raise RuntimeError("RabbitMQ task is not persistent")
     return dead_letter.original_task_id, dead_letter.target_id, str(correlation_id)
+
+
+def _validated_retry_identity(
+    message: RawBrokerMessage,
+    *,
+    queue_name: str,
+    task_name: str,
+    expected_target_id: uuid.UUID,
+) -> tuple[uuid.UUID, uuid.UUID, str]:
+    headers = message.headers if isinstance(message.headers, dict) else {}
+    observed_task_name = headers.get("task")
+    raw_task_id = headers.get("id")
+    if observed_task_name != task_name or SAFE_REPLAY_TASK_QUEUES.get(task_name) != queue_name:
+        raise RuntimeError("RabbitMQ retry task identity is invalid")
+    if not isinstance(raw_task_id, str):
+        raise RuntimeError("RabbitMQ retry task id is invalid")
+    try:
+        task_id = uuid.UUID(raw_task_id)
+    except ValueError:
+        raise RuntimeError("RabbitMQ retry task id is invalid") from None
+
+    payload = _decode_retry_observation_body(message)
+    if not isinstance(payload, list) or len(payload) != 3:
+        raise RuntimeError("RabbitMQ retry payload shape is invalid")
+    args, kwargs, embedded_options = payload
+    if not isinstance(args, list) or len(args) != 1 or not isinstance(args[0], str):
+        raise RuntimeError("RabbitMQ retry target is invalid")
+    if not isinstance(kwargs, dict) or kwargs:
+        raise RuntimeError("RabbitMQ retry keyword arguments are invalid")
+    if not isinstance(embedded_options, dict):
+        raise RuntimeError("RabbitMQ retry embedded options are invalid")
+    try:
+        target_id = uuid.UUID(args[0])
+    except ValueError:
+        raise RuntimeError("RabbitMQ retry target is invalid") from None
+    if target_id != expected_target_id:
+        raise RuntimeError("RabbitMQ retry target identity changed")
+
+    correlation_id = message.properties.get("correlation_id")
+    if correlation_id != str(task_id):
+        raise RuntimeError("RabbitMQ retry correlation id does not match task id")
+    if message.properties.get("delivery_mode") not in {2, "2"}:
+        raise RuntimeError("RabbitMQ retry task is not persistent")
+    return task_id, target_id, str(correlation_id)
+
+
+def _decode_retry_observation_body(message: RawBrokerMessage) -> object:
+    if message.content_type != "application/json":
+        raise RuntimeError("RabbitMQ retry content type is invalid")
+    if (
+        not isinstance(message.content_encoding, str)
+        or message.content_encoding.strip().lower().replace("_", "-") != "utf-8"
+    ):
+        raise RuntimeError("RabbitMQ retry content encoding is invalid")
+    if isinstance(message.body, bytes | bytearray | memoryview):
+        raw_body = bytes(message.body)
+    elif isinstance(message.body, str):
+        # amqp may expose an application/json body as text after applying only the
+        # declared character encoding. Re-encode it strictly so the same byte-size
+        # and JSON-tree limits apply without invoking a Kombu serializer.
+        try:
+            raw_body = message.body.encode("utf-8", errors="strict")
+        except UnicodeEncodeError:
+            raise RuntimeError("RabbitMQ retry body is invalid") from None
+    else:
+        raise RuntimeError("RabbitMQ retry body is invalid")
+    if len(raw_body) > RETRY_OBSERVATION_MAX_BODY_BYTES:
+        raise RuntimeError("RabbitMQ retry body exceeds the observation limit")
+    try:
+        payload = json.loads(
+            raw_body.decode("utf-8", errors="strict"),
+            parse_constant=_reject_retry_json_constant,
+        )
+    except (UnicodeDecodeError, json.JSONDecodeError, ValueError):
+        raise RuntimeError("RabbitMQ retry JSON body is invalid") from None
+    _validate_retry_json_tree(
+        payload,
+        depth=0,
+        remaining_nodes=[RETRY_OBSERVATION_MAX_JSON_NODES],
+    )
+    return payload
+
+
+def _reject_retry_json_constant(_value: str) -> object:
+    raise ValueError("non-finite JSON constant")
+
+
+def _validate_retry_json_tree(value: object, *, depth: int, remaining_nodes: list[int]) -> None:
+    remaining_nodes[0] -= 1
+    if remaining_nodes[0] < 0:
+        raise RuntimeError("RabbitMQ retry JSON node limit exceeded")
+    if depth > RETRY_OBSERVATION_MAX_JSON_DEPTH:
+        raise RuntimeError("RabbitMQ retry JSON depth limit exceeded")
+    if isinstance(value, str):
+        if len(value) > RETRY_OBSERVATION_MAX_STRING_LENGTH:
+            raise RuntimeError("RabbitMQ retry JSON string limit exceeded")
+        return
+    if value is None or isinstance(value, bool | int):
+        return
+    if isinstance(value, float):
+        if not math.isfinite(value):
+            raise RuntimeError("RabbitMQ retry JSON number is invalid")
+        return
+    if isinstance(value, list):
+        if len(value) > RETRY_OBSERVATION_MAX_CONTAINER_ITEMS:
+            raise RuntimeError("RabbitMQ retry JSON container limit exceeded")
+        for item in value:
+            _validate_retry_json_tree(
+                item,
+                depth=depth + 1,
+                remaining_nodes=remaining_nodes,
+            )
+        return
+    if isinstance(value, dict):
+        if len(value) > RETRY_OBSERVATION_MAX_CONTAINER_ITEMS:
+            raise RuntimeError("RabbitMQ retry JSON container limit exceeded")
+        for key, item in value.items():
+            if not isinstance(key, str) or len(key) > RETRY_OBSERVATION_MAX_STRING_LENGTH:
+                raise RuntimeError("RabbitMQ retry JSON key is invalid")
+            _validate_retry_json_tree(
+                item,
+                depth=depth + 1,
+                remaining_nodes=remaining_nodes,
+            )
+        return
+    raise RuntimeError("RabbitMQ retry JSON value is invalid")
 
 
 def _baseline(
@@ -219,6 +351,54 @@ def _death_value(value: object) -> str:
     return str(value)
 
 
+def _observe_retry(
+    *,
+    connection: Connection,
+    queue_name: str,
+    task_name: str,
+    probe_run_id: uuid.UUID,
+    expected_target_id: uuid.UUID,
+    expected_retries: int,
+) -> dict[str, object]:
+    dlq_name = f"{queue_name}.dlq"
+    before = _queue_counts(connection, queue_name)
+    dlq_before = _queue_counts(connection, dlq_name)
+    if before.messages != 1 or before.consumers != 0 or dlq_before.messages != 0:
+        raise RuntimeError(
+            "RabbitMQ retry observation requires one task, an empty DLQ, and zero consumers"
+        )
+
+    message = _get_message(connection, queue_name)
+    try:
+        task_id, target_id, correlation_id = _validated_retry_identity(
+            message,
+            queue_name=queue_name,
+            task_name=task_name,
+            expected_target_id=expected_target_id,
+        )
+        headers = message.headers if isinstance(message.headers, dict) else {}
+        retries = headers.get("retries")
+        if not isinstance(retries, int) or isinstance(retries, bool) or retries != expected_retries:
+            raise RuntimeError("Celery retry count is invalid")
+    finally:
+        message.reject(requeue=True)
+
+    # The AMQP reject frame may not be visible to a passive declaration on the
+    # same channel immediately. The infrastructure runner verifies ready=1 and
+    # DLQ=0 from a separate management connection after this process exits.
+    return {
+        "task_id": str(task_id),
+        "correlation_id": correlation_id,
+        "target_id": str(target_id),
+        "probe_run_id": str(probe_run_id),
+        "task_name": task_name,
+        "queue_name": queue_name,
+        "retry_count": expected_retries,
+        "persistent_message": True,
+        "result": "retry_requeued",
+    }
+
+
 def _is_rejected_death(value: object, *, queue_name: str) -> bool:
     if not isinstance(value, dict):
         return False
@@ -262,11 +442,7 @@ def _observe_exhaustion(
         )
         headers = message.headers if isinstance(message.headers, dict) else {}
         retries = headers.get("retries")
-        if (
-            not isinstance(retries, int)
-            or isinstance(retries, bool)
-            or retries != expected_retries
-        ):
+        if not isinstance(retries, int) or isinstance(retries, bool) or retries != expected_retries:
             raise RuntimeError("Celery retry exhaustion count is invalid")
         deaths = headers.get("x-death")
         if not isinstance(deaths, list):
@@ -393,6 +569,17 @@ def exercise(
                     expected_task_id=expected_task_id,
                 )
             }
+        if mode == "observe-retry":
+            return {
+                "retry_message": _observe_retry(
+                    connection=connection,
+                    queue_name=queue_name,
+                    task_name=task_name,
+                    probe_run_id=probe_run_id,
+                    expected_target_id=expected_target_id,
+                    expected_retries=expected_retries,
+                )
+            }
         return {
             "exhausted": _observe_exhaustion(
                 connection=connection,
@@ -409,7 +596,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument(
         "--mode",
-        choices=("baseline", "observe-exhaustion", "verify-replay"),
+        choices=("baseline", "observe-retry", "observe-exhaustion", "verify-replay"),
         required=True,
     )
     parser.add_argument("--queue", choices=("ragflow_queue",), default="ragflow_queue")

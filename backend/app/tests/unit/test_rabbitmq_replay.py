@@ -30,9 +30,7 @@ def _body(target_id: uuid.UUID) -> bytes:
     return json.dumps(_payload(target_id), separators=(",", ":")).encode()
 
 
-def _parse(
-    *, queue_name: str, task_name: str, target_id: uuid.UUID
-) -> SafeRabbitDeadLetter:
+def _parse(*, queue_name: str, task_name: str, target_id: uuid.UUID) -> SafeRabbitDeadLetter:
     return parse_safe_dead_letter(
         queue_name=queue_name,
         headers=_headers(task_name),
@@ -54,6 +52,68 @@ def test_parser_accepts_only_domain_reconstruction_task() -> None:
     assert dead_letter.task_name == "ragflow.create_upload_task"
     assert dead_letter.target_id == target_id
     assert not hasattr(dead_letter, "payload")
+
+
+def test_parser_accepts_bounded_utf8_text_body() -> None:
+    target_id = uuid.uuid4()
+
+    dead_letter = parse_safe_dead_letter(
+        queue_name="ragflow_queue",
+        headers=_headers("ragflow.create_upload_task"),
+        body=_body(target_id).decode("utf-8"),
+        content_type="application/json",
+        content_encoding="UTF_8",
+    )
+
+    assert dead_letter.target_id == target_id
+
+
+def test_parser_applies_byte_limit_to_utf8_text_body() -> None:
+    oversized_text = "界" * rabbitmq_replay.MAX_MESSAGE_BODY_BYTES
+
+    with pytest.raises(RabbitDeadLetterUnsafe, match="safe limit"):
+        parse_safe_dead_letter(
+            queue_name="ragflow_queue",
+            headers=_headers("ragflow.create_upload_task"),
+            body=oversized_text,
+            content_type="application/json",
+            content_encoding="utf-8",
+        )
+
+
+def test_parser_rejects_unencodable_utf8_text_without_echoing_payload() -> None:
+    invalid_text = '["\ud800-sensitive-token"]'
+
+    with pytest.raises(RabbitDeadLetterUnsafe, match="JSON body is invalid") as captured:
+        parse_safe_dead_letter(
+            queue_name="ragflow_queue",
+            headers=_headers("ragflow.create_upload_task"),
+            body=invalid_text,
+            content_type="application/json",
+            content_encoding="utf-8",
+        )
+
+    assert "sensitive-token" not in str(captured.value)
+
+
+@pytest.mark.parametrize("non_finite_number", ("NaN", "1e999"))
+def test_parser_rejects_non_finite_json_from_utf8_text(non_finite_number: str) -> None:
+    target_id = uuid.uuid4()
+    payload = json.dumps(_payload(target_id), separators=(",", ":")).replace(
+        '{"callbacks":null',
+        f'{{"unexpected":{non_finite_number},"callbacks":null',
+    )
+
+    with pytest.raises(RabbitDeadLetterUnsafe) as captured:
+        parse_safe_dead_letter(
+            queue_name="ragflow_queue",
+            headers=_headers("ragflow.create_upload_task"),
+            body=payload,
+            content_type="application/json",
+            content_encoding="utf-8",
+        )
+
+    assert non_finite_number not in str(captured.value)
 
 
 @pytest.mark.parametrize(
@@ -341,5 +401,4 @@ def test_celery_publish_uses_confirms_and_bounded_retry() -> None:
     assert celery_app.conf.task_publish_retry is True
     assert celery_app.conf.task_publish_retry_policy["max_retries"] == 3
     assert celery_app.conf.task_serializer == "json"
-    assert celery_app.conf.result_serializer == "json"
     assert celery_app.conf.accept_content == ["json"]

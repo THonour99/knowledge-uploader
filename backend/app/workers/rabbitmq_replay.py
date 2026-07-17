@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import math
 import uuid
 from dataclasses import dataclass
 from typing import Protocol
@@ -58,7 +59,12 @@ class CeleryTaskSender(Protocol):
 
 
 class RawBrokerMessage:
-    """Minimal AMQP message wrapper that never runs Kombu decode/decompress hooks."""
+    """Minimal AMQP wrapper that never runs Kombu serializer/decompress hooks.
+
+    The lower-level AMQP client can still expose a declared UTF-8 JSON body as
+    text after applying only the character encoding. The bounded parser below
+    therefore validates either raw bytes or that strict UTF-8 text form.
+    """
 
     def __init__(self, raw_message: object, channel: object) -> None:
         raw_properties: object = getattr(raw_message, "properties", None)
@@ -247,9 +253,15 @@ def _decode_json_body(
         or content_encoding.strip().lower().replace("_", "-") != JSON_CONTENT_ENCODING
     ):
         raise RabbitDeadLetterUnsafe("dead-letter content encoding is forbidden")
-    if not isinstance(body, bytes | bytearray | memoryview):
-        raise RabbitDeadLetterUnsafe("dead-letter body must be raw bytes")
-    raw_body = bytes(body)
+    if isinstance(body, bytes | bytearray | memoryview):
+        raw_body = bytes(body)
+    elif isinstance(body, str):
+        try:
+            raw_body = body.encode(JSON_CONTENT_ENCODING, errors="strict")
+        except UnicodeEncodeError:
+            raise RabbitDeadLetterUnsafe("dead-letter JSON body is invalid") from None
+    else:
+        raise RabbitDeadLetterUnsafe("dead-letter body must be bytes or UTF-8 text")
     if len(raw_body) > MAX_MESSAGE_BODY_BYTES:
         raise RabbitDeadLetterUnsafe("dead-letter body exceeds the safe limit")
     try:
@@ -275,7 +287,11 @@ def _validate_json_tree(value: object, *, depth: int, remaining_nodes: list[int]
         if len(value) > MAX_STRING_LENGTH:
             raise RabbitDeadLetterUnsafe("dead-letter JSON string exceeds the safe limit")
         return
-    if value is None or isinstance(value, bool | int | float):
+    if value is None or isinstance(value, bool | int):
+        return
+    if isinstance(value, float):
+        if not math.isfinite(value):
+            raise RabbitDeadLetterUnsafe("dead-letter JSON contains a non-finite number")
         return
     if isinstance(value, list):
         if len(value) > MAX_CONTAINER_ITEMS:
