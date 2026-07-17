@@ -9,6 +9,11 @@ from cryptography.fernet import Fernet
 from pydantic import Field, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
+from app.core.llm_endpoint import (
+    normalize_llm_base_url,
+    normalized_llm_allowed_base_urls,
+)
+
 PROTECTED_ENVS = {"production", "prod", "staging"}
 DEFAULT_DEV_ENCRYPTION_KEY = "RZ1Sw_27VrN9c5Cfsq01qiwViwT6y7jDCuXYn7tgGJY="
 PLACEHOLDER_SECRETS = {
@@ -24,6 +29,9 @@ PLACEHOLDER_SECRETS = {
 PLACEHOLDER_IDENTIFIERS = {"", "knowledge", "minioadmin"}
 LOCAL_APP_BASE_HOSTS = {"localhost", "127.0.0.1", "::1"}
 MAX_IN_MEMORY_UPLOAD_BYTES = 200 * 1024 * 1024
+DEFAULT_SMTP_PORT = 587
+DEFAULT_SMTP_TIMEOUT_SECONDS = 10.0
+MAX_SMTP_TIMEOUT_SECONDS = 300.0
 
 
 class Settings(BaseSettings):
@@ -42,7 +50,6 @@ class Settings(BaseSettings):
     )
 
     celery_broker_url: str = "amqp://knowledge:knowledge_password@rabbitmq:5672//"
-    celery_result_backend: str = "redis://redis:6379/0"
     cache_redis_url: str = "redis://redis:6379/1"
 
     minio_endpoint: str = "minio:9000"
@@ -50,6 +57,7 @@ class Settings(BaseSettings):
     minio_secret_key: str = "knowledge_password"
     minio_bucket: str = "knowledge-files"
     minio_secure: bool = False
+    minio_ca_cert_file: str = ""
     upload_max_file_size_bytes: int = Field(
         default=50 * 1024 * 1024,
         ge=1,
@@ -84,25 +92,34 @@ class Settings(BaseSettings):
     auth_password_reset_rate_limit_per_hour: int = 3
     auth_resend_verification_rate_limit_per_hour: int = 3
 
+    smtp_host: str = ""
+    smtp_port: int = Field(default=DEFAULT_SMTP_PORT, ge=1, le=65535)
+    smtp_user: str = ""
+    smtp_password: str = ""
+    smtp_from: str = ""
+    smtp_tls: bool = True
+    smtp_ca_cert_file: str = ""
+    smtp_timeout_seconds: float = Field(
+        default=DEFAULT_SMTP_TIMEOUT_SECONDS,
+        gt=0,
+        le=MAX_SMTP_TIMEOUT_SECONDS,
+    )
+
     ai_analysis_enabled: bool = True
     allow_external_llm: bool = False
     llm_provider: str = "disabled"
     llm_base_url: str = ""
+    llm_allowed_base_urls: str = ""
     llm_api_key: str = ""
     llm_model: str = ""
-    embedding_provider: str = "disabled"
-    embedding_base_url: str = ""
-    embedding_api_key: str = ""
-    embedding_model: str = ""
-    ai_request_timeout: float = 60.0
-    ai_max_retry_count: int = 2
+    ai_request_timeout: int = Field(default=60, ge=1, le=240)
+    ai_max_retry_count: int = Field(default=2, ge=0, le=10)
     ai_allow_sync_when_analysis_failed: bool = True
     enable_summary: bool = True
     enable_auto_category: bool = True
     enable_tag_generation: bool = True
     enable_sensitive_detection: bool = True
     enable_quality_score: bool = False
-    enable_ocr: bool = False
     enable_similarity_detection: bool = False
 
     ragflow_base_url: str = "http://ragflow:9380"
@@ -125,6 +142,10 @@ class Settings(BaseSettings):
             msg = "RAGFLOW_ALLOWED_DATASET_IDS must be configured when RAGFlow is enabled"
             raise ValueError(msg)
 
+        smtp_configured = _validate_smtp_configuration(self)
+        _validate_llm_seed_configuration(self)
+        normalized_llm_allowed_base_urls(self.llm_allowed_base_urls)
+
         if not _requires_protected_secret_validation(self.app_env, self.app_base_url):
             return self
 
@@ -137,13 +158,23 @@ class Settings(BaseSettings):
         _ensure_non_placeholder_url_password("DATABASE_URL", self.database_url)
         _ensure_non_placeholder_url_password("ALEMBIC_DATABASE_URL", self.alembic_database_url)
         _ensure_non_placeholder_url_password("CELERY_BROKER_URL", self.celery_broker_url)
-        _ensure_non_placeholder_url_password("CELERY_RESULT_BACKEND", self.celery_result_backend)
         _ensure_non_placeholder_url_password("CACHE_REDIS_URL", self.cache_redis_url)
         _ensure_non_placeholder_identifier("MINIO_ACCESS_KEY", self.minio_access_key)
         _ensure_non_placeholder_secret("MINIO_SECRET_KEY", self.minio_secret_key)
         if not self.minio_secure:
             msg = "MINIO_SECURE must be true in protected environments"
             raise ValueError(msg)
+        if not self.minio_ca_cert_file.strip():
+            msg = "MINIO_CA_CERT_FILE must be configured in protected environments"
+            raise ValueError(msg)
+        if not smtp_configured:
+            msg = "SMTP must be configured in protected environments"
+            raise ValueError(msg)
+        if not self.smtp_tls:
+            msg = "SMTP_TLS must be enabled in protected environments"
+            raise ValueError(msg)
+        if self.smtp_user.strip():
+            _ensure_non_placeholder_secret("SMTP_PASSWORD", self.smtp_password)
         try:
             Fernet(self.encryption_key.encode("utf-8"))
         except ValueError as exc:
@@ -156,6 +187,73 @@ class Settings(BaseSettings):
 @lru_cache
 def get_settings() -> Settings:
     return Settings()
+
+
+def _validate_smtp_configuration(settings: Settings) -> bool:
+    host = settings.smtp_host.strip()
+    username = settings.smtp_user.strip()
+    password_configured = bool(settings.smtp_password)
+    sender = settings.smtp_from.strip() or username
+    requested = bool(
+        host
+        or username
+        or password_configured
+        or settings.smtp_from.strip()
+        or settings.smtp_ca_cert_file.strip()
+        or settings.smtp_port != DEFAULT_SMTP_PORT
+        or settings.smtp_timeout_seconds != DEFAULT_SMTP_TIMEOUT_SECONDS
+        or not settings.smtp_tls
+    )
+    if not requested:
+        return False
+    if bool(username) != password_configured:
+        msg = "SMTP_USER and SMTP_PASSWORD must be configured together"
+        raise ValueError(msg)
+    if not host or not sender:
+        msg = "SMTP_HOST and SMTP_FROM or SMTP_USER must be configured together"
+        raise ValueError(msg)
+    if settings.smtp_ca_cert_file.strip() and not settings.smtp_tls:
+        msg = "SMTP_CA_CERT_FILE requires SMTP_TLS=true"
+        raise ValueError(msg)
+    return True
+
+
+def _validate_llm_seed_configuration(settings: Settings) -> None:
+    provider_type = settings.llm_provider.strip().lower() or "disabled"
+    allowed_provider_types = {
+        "openai_compatible",
+        "local_openai_compatible",
+        "ollama",
+        "vllm",
+        "lmstudio",
+        "custom",
+        "mock",
+        "disabled",
+    }
+    if provider_type not in allowed_provider_types:
+        raise ValueError("LLM_PROVIDER is not supported")
+    protected = _requires_protected_secret_validation(settings.app_env, settings.app_base_url)
+    if provider_type == "disabled":
+        return
+    if provider_type == "mock":
+        if protected:
+            raise ValueError("LLM_PROVIDER=mock is forbidden in protected environments")
+        return
+
+    raw_base_url = settings.llm_base_url.strip()
+    model = settings.llm_model.strip()
+    if not raw_base_url or not model:
+        raise ValueError("LLM_BASE_URL and LLM_MODEL are required when LLM_PROVIDER is enabled")
+    invalid_base_url = False
+    try:
+        base_url = normalize_llm_base_url(raw_base_url)
+    except ValueError:
+        invalid_base_url = True
+        base_url = ""
+    if invalid_base_url:
+        raise ValueError("LLM_BASE_URL must be a safe absolute HTTP(S) endpoint")
+    if base_url not in normalized_llm_allowed_base_urls(settings.llm_allowed_base_urls):
+        raise ValueError("LLM_BASE_URL must exactly match LLM_ALLOWED_BASE_URLS")
 
 
 def _normalized_csv_values(raw_value: str) -> set[str]:

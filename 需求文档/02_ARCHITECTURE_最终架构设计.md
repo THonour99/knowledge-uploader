@@ -12,7 +12,7 @@ Browser
 Nginx ── React 静态资源
   │
 FastAPI modular monolith ── PostgreSQL 16（业务、审计、outbox）
-  │                    ├── Redis（限流、短缓存、分布式锁、result backend）
+  │                    ├── Redis（限流、短缓存、分布式锁）
   │                    └── MinIO（所有正式原件）
   │ event_outbox
 Outbox Dispatcher ── RabbitMQ ── worker-document / worker-ai /

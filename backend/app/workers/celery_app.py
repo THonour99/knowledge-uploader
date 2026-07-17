@@ -13,7 +13,6 @@ settings = get_settings()
 celery_app = Celery(
     "knowledge_uploader",
     broker=settings.celery_broker_url,
-    backend=settings.celery_result_backend,
 )
 celery_app.conf.task_default_queue = "document_queue"
 celery_app.conf.task_default_exchange = TASK_EXCHANGE.name
@@ -22,8 +21,8 @@ celery_app.conf.task_default_routing_key = "document_queue"
 celery_app.conf.task_create_missing_queues = False
 celery_app.conf.task_queues = task_queues()
 celery_app.conf.task_serializer = "json"
-celery_app.conf.result_serializer = "json"
 celery_app.conf.accept_content = ["json"]
+celery_app.conf.task_ignore_result = True
 celery_app.conf.task_routes = {
     "document.*": {"queue": "document_queue", "routing_key": "document_queue"},
     "ai.*": {"queue": "ai_queue", "routing_key": "ai_queue"},
