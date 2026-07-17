@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from collections.abc import Iterable
+from typing import Final
 
 from kombu import Connection, Exchange, Queue
 
@@ -17,6 +18,16 @@ TASK_QUEUE_NAMES: tuple[str, ...] = (
     "ragflow_queue",
     "notification_queue",
 )
+TOPOLOGY_CONNECT_ATTEMPT_TIMEOUT_SECONDS: Final = 5
+TOPOLOGY_CONNECT_MAX_RETRIES: Final = 10
+TOPOLOGY_CONNECT_INTERVAL_START_SECONDS: Final = 1
+TOPOLOGY_CONNECT_INTERVAL_STEP_SECONDS: Final = 1
+TOPOLOGY_CONNECT_INTERVAL_MAX_SECONDS: Final = 5
+TOPOLOGY_CONNECT_TOTAL_TIMEOUT_SECONDS: Final = 45
+
+
+class RabbitmqTopologyError(RuntimeError):
+    """Sanitized startup failure safe to expose through container stderr."""
 
 
 def task_queues() -> tuple[Queue, ...]:
@@ -49,11 +60,37 @@ def dead_letter_queues() -> tuple[Queue, ...]:
     )
 
 
+def _log_connection_retry(error: BaseException, interval: float) -> None:
+    logger.warning(
+        "rabbitmq_topology_connection_retry",
+        error_type=type(error).__name__,
+        retry_in_seconds=float(interval),
+    )
+
+
 def declare_topology(broker_url: str) -> None:
-    with Connection(broker_url) as connection:
-        channel = connection.channel()
-        _declare_entities(channel, (TASK_EXCHANGE, TASK_DEAD_LETTER_EXCHANGE))
-        _declare_entities(channel, (*task_queues(), *dead_letter_queues()))
+    failure_type: str | None = None
+    try:
+        with Connection(
+            broker_url,
+            connect_timeout=TOPOLOGY_CONNECT_ATTEMPT_TIMEOUT_SECONDS,
+        ) as connection:
+            connection.ensure_connection(
+                errback=_log_connection_retry,
+                max_retries=TOPOLOGY_CONNECT_MAX_RETRIES,
+                interval_start=TOPOLOGY_CONNECT_INTERVAL_START_SECONDS,
+                interval_step=TOPOLOGY_CONNECT_INTERVAL_STEP_SECONDS,
+                interval_max=TOPOLOGY_CONNECT_INTERVAL_MAX_SECONDS,
+                timeout=TOPOLOGY_CONNECT_TOTAL_TIMEOUT_SECONDS,
+            )
+            channel = connection.channel()
+            _declare_entities(channel, (TASK_EXCHANGE, TASK_DEAD_LETTER_EXCHANGE))
+            _declare_entities(channel, (*task_queues(), *dead_letter_queues()))
+    except Exception as error:
+        failure_type = type(error).__name__
+    if failure_type is not None:
+        logger.error("rabbitmq_topology_declaration_failed", error_type=failure_type)
+        raise RabbitmqTopologyError("RabbitMQ topology declaration failed") from None
 
 
 def _declare_entities(channel: object, entities: Iterable[Exchange | Queue]) -> None:
