@@ -2,7 +2,9 @@ from __future__ import annotations
 
 import math
 import time
+from collections.abc import Awaitable
 from dataclasses import dataclass
+from typing import cast
 
 from redis.asyncio import from_url
 
@@ -28,7 +30,7 @@ class EmailDeliveryMetricsSnapshot:
 async def record_email_delivery_result(*, redis_url: str, result: str) -> None:
     if result not in EMAIL_DELIVERY_RESULTS:
         raise ValueError("email delivery result is invalid")
-    client = from_url(  # type: ignore[no-untyped-call]
+    client = from_url(
         redis_url,
         encoding="utf-8",
         decode_responses=True,
@@ -46,13 +48,16 @@ async def record_email_delivery_result(*, redis_url: str, result: str) -> None:
 
 
 async def read_email_delivery_metrics(*, redis_url: str) -> EmailDeliveryMetricsSnapshot:
-    client = from_url(  # type: ignore[no-untyped-call]
+    client = from_url(
         redis_url,
         encoding="utf-8",
         decode_responses=True,
     )
     try:
-        raw_values = await client.hgetall(EMAIL_DELIVERY_METRICS_KEY)
+        raw_values = await cast(
+            Awaitable[dict[str, str]],
+            client.hgetall(EMAIL_DELIVERY_METRICS_KEY),
+        )
     finally:
         await client.aclose()
     if not isinstance(raw_values, dict):
