@@ -19,7 +19,7 @@
 | `scheduler` | Celery Beat 定时任务 |
 | `postgres` | 业务数据库 |
 | `rabbitmq` | Celery Broker |
-| `redis` | 缓存、锁、限流、Celery result backend |
+| `redis` | 缓存、锁、限流 |
 | `minio` | 文件对象存储 |
 
 ## 本地端口
@@ -66,18 +66,27 @@ Copy-Item docker-compose.override.yml.example docker-compose.override.yml
 | 应用 | `APP_ENV`, `APP_BASE_URL`, `JWT_SECRET`, `ENCRYPTION_KEY` |
 | 数据库 | `POSTGRES_DB`, `POSTGRES_USER`, `POSTGRES_PASSWORD`, `DATABASE_URL`, `ALEMBIC_DATABASE_URL` |
 | RabbitMQ | `RABBITMQ_USER`, `RABBITMQ_PASSWORD`, `CELERY_BROKER_URL` |
-| Redis | `REDIS_PASSWORD`, `CELERY_RESULT_BACKEND`, `CACHE_REDIS_URL` |
-| MinIO | `MINIO_ENDPOINT`, `MINIO_ACCESS_KEY`, `MINIO_SECRET_KEY`, `MINIO_BUCKET`, `MINIO_SECURE` |
+| Redis | `REDIS_PASSWORD`, `CACHE_REDIS_URL` |
+| MinIO | `MINIO_ENDPOINT`, `MINIO_ACCESS_KEY`, `MINIO_SECRET_KEY`, `MINIO_BUCKET`, `MINIO_SECURE`, `MINIO_CA_CERT_FILE` |
 | 上传 | `UPLOAD_MAX_FILE_SIZE_BYTES`, `UPLOAD_RATE_LIMIT_PER_MINUTE`, `UPLOAD_ALLOWED_EXTENSIONS`, `UPLOAD_ALLOWED_MIME_TYPES` |
 | 认证 | `ALLOWED_EMAIL_DOMAINS`, `LOGIN_MAX_FAILED_ATTEMPTS`, `LOGIN_LOCK_MINUTES`, `AUTH_*_RATE_LIMIT_PER_HOUR` |
 | RAGFlow | `RAGFLOW_BASE_URL`, `RAGFLOW_ALLOWED_BASE_URLS`, `RAGFLOW_API_KEY`, `RAGFLOW_ALLOWED_DATASET_IDS` |
-| AI | `AI_ANALYSIS_ENABLED`, `ALLOW_EXTERNAL_LLM`, `LLM_PROVIDER`, `LLM_BASE_URL`, `LLM_API_KEY`, `LLM_MODEL` |
-| SMTP | `SMTP_HOST`, `SMTP_PORT`, `SMTP_USER`, `SMTP_PASSWORD`, `SMTP_FROM`, `SMTP_TLS` |
-| 指标 | `OUTBOX_METRICS_PORT`, `OPERATIONAL_METRICS_PORT`, `OPERATIONAL_METRICS_INTERVAL_SECONDS` |
+| AI | `AI_ANALYSIS_ENABLED`, `ALLOW_EXTERNAL_LLM`, `LLM_PROVIDER`, `LLM_BASE_URL`, `LLM_ALLOWED_BASE_URLS`, `LLM_API_KEY`, `LLM_MODEL` |
+| SMTP | `SMTP_HOST`, `SMTP_PORT`, `SMTP_USER`, `SMTP_PASSWORD`, `SMTP_FROM`, `SMTP_TLS`, `SMTP_CA_CERT_FILE`, `SMTP_TIMEOUT_SECONDS` |
+| 指标 | `OUTBOX_METRICS_PORT`, `OPERATIONAL_METRICS_PORT`, `OPERATIONAL_METRICS_INTERVAL_SECONDS`, `PROMETHEUS_CONFIG_FILE`, `PROMETHEUS_TLS_DIR` |
 
-`APP_ENV=production`、`prod` 或 `staging` 时，启动校验会拒绝占位 `JWT_SECRET`、默认 `ENCRYPTION_KEY`、默认数据库 / RabbitMQ / Redis / MinIO 凭据和 `MINIO_SECURE=false`。
+`APP_ENV=production`、`prod` 或 `staging` 时，启动校验会拒绝占位 `JWT_SECRET`、默认 `ENCRYPTION_KEY`、默认数据库 / RabbitMQ / Redis / MinIO 凭据、`MINIO_SECURE=false` 和空的 `MINIO_CA_CERT_FILE`。受保护环境必须配置 SMTP 且必须启用 TLS：必须同时具备 `SMTP_HOST` 与 `SMTP_FROM`（或 `SMTP_USER`）；用户名与密码必须成对出现，认证 relay 的 `SMTP_PASSWORD` 还必须是非占位密钥；仅配置 host + from 的匿名 TLS relay 不要求密码。端口范围为 `1..65535`，超时范围为 `(0, 300]` 秒。
 
 如果 `APP_ENV` 漏配但 `APP_BASE_URL` 已经是非本机地址（例如 `https://knowledge.company.com` 或内网生产 IP），同样按受保护环境执行密钥校验，防止生产或 staging 误用 development 默认值。
+
+### TLS 信任链
+
+- `MINIO_CA_CERT_FILE` 指向后端容器内只读挂载的 PEM CA bundle。安全 MinIO 客户端会保留 SDK 的 5 分钟连接/读取超时、连接池大小 10，以及对 `500/502/503/504` 的 5 次退避重试；CA 文件缺失或无效时在客户端构造或 readiness 阶段安全失败，响应不回显宿主路径。
+- `SMTP_CA_CERT_FILE` 可指定企业 SMTP CA bundle。587 端口使用 STARTTLS，465 端口使用隐式 TLS；CA 文件缺失或无效会被归类为不可重试的配置错误，错误信息不回显路径。配置 CA 时禁止关闭 `SMTP_TLS`。
+- 企业 RAGFlow HTTPS CA 应加入后端容器信任链（例如只读挂载并设置 `SSL_CERT_FILE`）。禁止使用 `--insecure`、`CERT_NONE` 或关闭证书校验来通过联调。
+- 更新 CA 或服务器证书后必须重启 `backend-api`、全部 worker、dispatcher、scheduler 和指标采集容器，确保所有长驻进程加载同一信任链。
+
+隔离基础设施门禁会生成一次性 CA 和 MinIO、RAGFlow、SMTP、Gateway 四张服务器证书，并实际验证 HTTPS/STARTTLS、证书主机名、MinIO readiness、Prometheus 通过受信 CA 抓取 MinIO 的真实 target-up、上传审核同步链路，以及 RabbitMQ、Redis、MinIO、RAGFlow 的逐依赖故障恢复。Redis 场景必须在缓存仍停止时观察到带重试计数的持久化 Celery 消息；MinIO/RAGFlow 场景必须先持久化失败任务，再显式重试，并证明远端只创建一个文档。无论在开发机还是 DGX 上，本地 runner 的原始 `status` 与 `full_compose_e2e` 都固定为 `development_passed`；只有受保护的 DGX verifier 在同一实机复验 ARM64、干净工作树、镜像 ID、证据摘要与原始 OCI 来源后，才能生成独立的 `dgx-spark-evidence.json status=passed`，最终发布通过只由受保护聚合与授权流程产生。
 
 ### 指标采集参数
 
@@ -91,6 +100,8 @@ Copy-Item docker-compose.override.yml.example docker-compose.override.yml
 `outbox-dispatcher:9101` 和 `operational-metrics:9102`。修改任一监听端口时必须在同一次
 发布中同步修改 target 并运行 Prometheus 规则测试；否则采集目标会 Down。两个端口只能在
 Compose 私网内访问，不得发布到公网或绕过 Nginx 暴露。
+
+开发环境继续使用 `ops/observability/prometheus.yml`，其中 MinIO 仅用于本地 HTTP 联调。staging/production 必须额外叠加 `docker-compose.observability.protected.yml`，显式把 `PROMETHEUS_CONFIG_FILE` 指向 `ops/observability/prometheus.protected.yml`，并把只含公开 CA bundle `ca.crt` 的 `PROMETHEUS_TLS_DIR` 只读挂载到 Prometheus。受保护配置固定使用 `https://minio:9000`、`server_name: minio` 且禁止跳过证书校验；仅有 promtool 语法通过不构成上线证据，基础设施 E2E 还必须从 Prometheus targets API 证明该 target 为 `up`。
 
 ## RAGFlow
 
@@ -160,6 +171,7 @@ LLM_PROVIDER=local_openai_compatible
 LLM_BASE_URL=http://<internal-llm-host>/v1
 LLM_MODEL=<model>
 ALLOW_EXTERNAL_LLM=false
+LLM_ALLOWED_BASE_URLS=http://<internal-llm-host>/v1
 ```
 
 如确需外部 OpenAI-compatible 服务，必须在系统管理员确认后开启：
@@ -170,8 +182,11 @@ LLM_PROVIDER=openai_compatible
 LLM_BASE_URL=https://<provider>/v1
 LLM_API_KEY=<secret>
 LLM_MODEL=<model>
+LLM_ALLOWED_BASE_URLS=https://<provider>/v1
 ```
 
+
+`LLM_BASE_URL` 必须在逗号分隔的 `LLM_ALLOWED_BASE_URLS` 中精确匹配。系统会统一主机大小写、IDNA、默认端口和末尾斜杠，但不会放宽路径前缀；例如 `/v1` 不会授权 `/v1/admin`。外部地址必须同时开启环境硬门禁和数据库开关并使用 HTTPS；内部地址仅允许标记为内部 Provider 的 RFC1918/ULA 地址。每次调用都会重新解析全部 DNS 结果，拒绝回环、链路本地、组播、保留、云元数据及私网/公网混合答案，并把实际连接固定到已验证 IP，同时保留原主机名用于 TLS SNI。Provider 单次超时范围为 1–240 秒。
 AI Provider Key 会加密入库，日志和前端响应只允许出现脱敏值。
 
 ## 数据库迁移

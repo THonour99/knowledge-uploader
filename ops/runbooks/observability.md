@@ -15,6 +15,8 @@ textfile exporter。公网 Nginx
 必须通过 `ALERTMANAGER_CONFIG_FILE` 挂载由 secret manager 管理的真实 receiver 配置，并保存
 一次测试告警从 firing 到 resolved 的通知证据；缺少任一项时 protected release gate 必须失败。
 
+staging/production 还必须叠加 `docker-compose.observability.protected.yml`，显式设置 `PROMETHEUS_CONFIG_FILE=./ops/observability/prometheus.protected.yml` 和 `PROMETHEUS_TLS_DIR=<只含 ca.crt 的目录>`。MinIO 抓取必须显示为 `https://minio:9000/minio/v2/metrics/cluster`，`server_name=minio`，且 `/api/v1/targets` 中 `job=minio` 的 health 必须为 `up`；禁止通过 HTTP 或 `insecure_skip_verify` 规避证书问题。
+
 指标标签只允许方法、路由模板、状态类别、固定任务/服务族和固定结果。禁止增加用户 ID、
 文件 ID、邮箱、原始 URL、token、prompt、异常文本或对象 key。
 

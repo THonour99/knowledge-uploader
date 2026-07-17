@@ -1,0 +1,5 @@
+services:
+  prometheus:
+    volumes:
+      - "${PROMETHEUS_CONFIG_FILE:?PROMETHEUS_CONFIG_FILE is required}:/etc/prometheus/prometheus.yml:ro"
+      - "${PROMETHEUS_TLS_DIR:?PROMETHEUS_TLS_DIR is required}:/etc/prometheus/tls:ro"

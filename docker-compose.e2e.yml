@@ -2,6 +2,10 @@ name: knowledge-uploader-e2e
 
 x-e2e-tls-environment: &e2e-tls-environment
   SSL_CERT_FILE: /e2e-certs/ca.crt
+  MINIO_CA_CERT_FILE: /e2e-certs/ca.crt
+  SMTP_CA_CERT_FILE: /e2e-certs/ca.crt
+  SMTP_TLS: "true"
+  RAGFLOW_BASE_URL: https://mock-ragflow:9380
 
 x-e2e-backend-volumes: &e2e-backend-volumes
   - "${E2E_CERT_DIR:?E2E_CERT_DIR is required}/ca.crt:/e2e-certs/ca.crt:ro"
@@ -9,7 +13,21 @@ x-e2e-backend-volumes: &e2e-backend-volumes
 services:
   nginx:
     ports: !override
-      - "127.0.0.1:${NGINX_HTTP_PORT:-28080}:80"
+      - "127.0.0.1:${NGINX_HTTPS_PORT:?NGINX_HTTPS_PORT is required}:443"
+    environment:
+      SSL_CERT_FILE: /e2e-certs/ca.crt
+    volumes: !override
+      - ./nginx/nginx.conf:/etc/nginx/nginx.conf:ro
+      - ./ops/e2e/nginx-tls.conf:/etc/nginx/conf.d/default.conf:ro
+      - "${E2E_CERT_DIR:?E2E_CERT_DIR is required}/ca.crt:/e2e-certs/ca.crt:ro"
+      - "${E2E_CERT_DIR:?E2E_CERT_DIR is required}/gateway.crt:/e2e-certs/gateway.crt:ro"
+      - "${E2E_CERT_DIR:?E2E_CERT_DIR is required}/gateway.key:/e2e-certs/gateway.key:ro"
+    healthcheck:
+      test: ["CMD-SHELL", "nginx -t"]
+      interval: 5s
+      timeout: 5s
+      retries: 12
+      start_period: 3s
 
   mock-ragflow:
     image: "${BACKEND_IMAGE:?BACKEND_IMAGE is required}"
@@ -20,8 +38,15 @@ services:
       E2E_RAGFLOW_API_KEY: "${RAGFLOW_API_KEY:?RAGFLOW_API_KEY is required}"
       E2E_RAGFLOW_DATASET_ID: "${RAGFLOW_ALLOWED_DATASET_IDS:?RAGFLOW_ALLOWED_DATASET_IDS is required}"
       E2E_PROBE_TOKEN: "${E2E_PROBE_TOKEN:?E2E_PROBE_TOKEN is required}"
+      E2E_TLS_CERT_FILE: /e2e-certs/ragflow.crt
+      E2E_TLS_KEY_FILE: /e2e-certs/ragflow.key
+      E2E_RAGFLOW_STATE_FILE: /e2e-state/state.json
     volumes:
       - ./ops/e2e/mock_ragflow.py:/e2e/mock_ragflow.py:ro
+      - "${E2E_CERT_DIR:?E2E_CERT_DIR is required}/ca.crt:/e2e-certs/ca.crt:ro"
+      - "${E2E_CERT_DIR:?E2E_CERT_DIR is required}/ragflow.crt:/e2e-certs/ragflow.crt:ro"
+      - "${E2E_CERT_DIR:?E2E_CERT_DIR is required}/ragflow.key:/e2e-certs/ragflow.key:ro"
+      - e2e-ragflow-state:/e2e-state
     ports:
       - "127.0.0.1:${E2E_RAGFLOW_HOST_PORT:?E2E_RAGFLOW_HOST_PORT is required}:9380"
     networks:
@@ -32,7 +57,7 @@ services:
         - CMD
         - python
         - -c
-        - "import urllib.request; urllib.request.urlopen('http://127.0.0.1:9380/health', timeout=3).read()"
+        - "import ssl, urllib.request; context=ssl.create_default_context(cafile='/e2e-certs/ca.crt'); urllib.request.urlopen('https://127.0.0.1:9380/health', context=context, timeout=3).read()"
       interval: 5s
       timeout: 5s
       retries: 12
@@ -45,8 +70,13 @@ services:
       - /e2e/mock_smtp.py
     environment:
       E2E_PROBE_TOKEN: "${E2E_PROBE_TOKEN:?E2E_PROBE_TOKEN is required}"
+      E2E_TLS_CERT_FILE: /e2e-certs/smtp.crt
+      E2E_TLS_KEY_FILE: /e2e-certs/smtp.key
     volumes:
       - ./ops/e2e/mock_smtp.py:/e2e/mock_smtp.py:ro
+      - "${E2E_CERT_DIR:?E2E_CERT_DIR is required}/ca.crt:/e2e-certs/ca.crt:ro"
+      - "${E2E_CERT_DIR:?E2E_CERT_DIR is required}/smtp.crt:/e2e-certs/smtp.crt:ro"
+      - "${E2E_CERT_DIR:?E2E_CERT_DIR is required}/smtp.key:/e2e-certs/smtp.key:ro"
     ports:
       - "127.0.0.1:${E2E_SMTP_STATE_HOST_PORT:?E2E_SMTP_STATE_HOST_PORT is required}:8080"
     networks:
@@ -57,24 +87,46 @@ services:
         - CMD
         - python
         - -c
-        - "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8080/health', timeout=3).read()"
+        - "import ssl, urllib.request; context=ssl.create_default_context(cafile='/e2e-certs/ca.crt'); urllib.request.urlopen('https://127.0.0.1:8080/health', context=context, timeout=3).read()"
       interval: 5s
       timeout: 5s
       retries: 12
       start_period: 3s
 
   minio:
+    environment:
+      MINIO_PROMETHEUS_AUTH_TYPE: public
     volumes:
       - "${E2E_CERT_DIR:?E2E_CERT_DIR is required}/minio.crt:/root/.minio/certs/public.crt:ro"
       - "${E2E_CERT_DIR:?E2E_CERT_DIR is required}/minio.key:/root/.minio/certs/private.key:ro"
+      - "${E2E_CERT_DIR:?E2E_CERT_DIR is required}/ca.crt:/root/.minio/certs/CAs/e2e-ca.crt:ro"
     healthcheck:
       test:
         - CMD-SHELL
-        - "curl --fail --silent --show-error --insecure https://127.0.0.1:9000/minio/health/live >/dev/null"
+        - "curl --fail --silent --show-error --cacert /root/.minio/certs/CAs/e2e-ca.crt https://127.0.0.1:9000/minio/health/live >/dev/null"
       interval: 5s
       timeout: 5s
       retries: 20
       start_period: 5s
+
+  prometheus:
+    image: "${PROMETHEUS_IMAGE:?PROMETHEUS_IMAGE is required}"
+    command:
+      - --config.file=/etc/prometheus/prometheus.yml
+      - --storage.tsdb.path=/prometheus
+    ports:
+      - "127.0.0.1:${E2E_PROMETHEUS_HOST_PORT:?E2E_PROMETHEUS_HOST_PORT is required}:9090"
+    volumes:
+      - ./ops/observability/prometheus.protected.yml:/etc/prometheus/prometheus.yml:ro
+      - ./ops/observability/alerts.yml:/etc/prometheus/alerts.yml:ro
+      - "${E2E_CERT_DIR:?E2E_CERT_DIR is required}/ca.crt:/etc/prometheus/tls/ca.crt:ro"
+      - prometheus-e2e-data:/prometheus
+    depends_on:
+      minio:
+        condition: service_healthy
+    networks:
+      - knowledge-uploader
+    restart: "no"
 
   backend-api:
     environment: *e2e-tls-environment
@@ -120,3 +172,7 @@ services:
   scheduler:
     environment: *e2e-tls-environment
     volumes: *e2e-backend-volumes
+
+volumes:
+  e2e-ragflow-state:
+  prometheus-e2e-data:

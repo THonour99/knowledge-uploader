@@ -19,7 +19,7 @@ services:
     ports:
       - "127.0.0.1:${PROMETHEUS_HOST_PORT:-19090}:9090"
     volumes:
-      - ./ops/observability/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - ${PROMETHEUS_CONFIG_FILE:-./ops/observability/prometheus.yml}:/etc/prometheus/prometheus.yml:ro
       - ./ops/observability/alerts.yml:/etc/prometheus/alerts.yml:ro
       - prometheus-data:/prometheus
     depends_on:

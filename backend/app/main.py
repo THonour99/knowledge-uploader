@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import ssl
 from collections.abc import Awaitable, Callable
 from typing import NotRequired, TypedDict
 from urllib.request import urlopen
@@ -185,9 +186,15 @@ async def _check_minio() -> None:
 
 def _check_minio_sync() -> None:
     settings = get_settings()
+    context = (
+        ssl.create_default_context(cafile=settings.minio_ca_cert_file.strip() or None)
+        if settings.minio_secure
+        else None
+    )
     with urlopen(
         _minio_health_url(settings.minio_endpoint, secure=settings.minio_secure),
         timeout=settings.dependency_check_timeout_seconds,
+        context=context,
     ) as response:
         if response.status >= 400:
             msg = "MinIO health endpoint returned an error"

@@ -7,6 +7,7 @@ in memory and are never included in returned evidence or exception messages.
 from __future__ import annotations
 
 import json
+import ssl
 import time
 import uuid
 from dataclasses import dataclass, field
@@ -46,10 +47,53 @@ class ReplayTarget:
     file_name: str
 
 
+DRAFT_REVIEW_FACT_FIELDS = (
+    "submitted_at",
+    "review_due_at",
+    "claimed_by",
+    "claimed_at",
+    "claim_expires_at",
+)
+
+
+def _require_explicit_draft(file: dict[str, object]) -> None:
+    _require(file.get("status") == "uploaded", "upload did not remain an explicit draft")
+    _require(
+        all(file.get(field) is None for field in DRAFT_REVIEW_FACT_FIELDS),
+        "draft contains persisted review submission facts",
+    )
+
+
+def _is_review_approval_notification(item: object, *, file_id: uuid.UUID) -> bool:
+    if not isinstance(item, dict) or item.get("type") != "review_approved":
+        return False
+    metadata = item.get("metadata")
+    return (
+        isinstance(metadata, dict)
+        and metadata.get("resource_type") == "file"
+        and metadata.get("resource_id") == str(file_id)
+    )
+
+
+def _remote_documents_with_id(documents: list[object], document_id: str) -> list[dict[str, object]]:
+    return [
+        document
+        for document in documents
+        if isinstance(document, dict) and document.get("id") == document_id
+    ]
+
+
 class JsonApiClient:
-    def __init__(self, base_url: str, *, timeout_seconds: float = 20.0) -> None:
+    def __init__(
+        self,
+        base_url: str,
+        *,
+        ca_cert_file: str,
+        timeout_seconds: float = 20.0,
+    ) -> None:
         self._base_url = base_url.rstrip("/")
         self._timeout_seconds = timeout_seconds
+        self._ssl_context = ssl.create_default_context(cafile=ca_cert_file)
 
     def json(
         self,
@@ -172,7 +216,11 @@ class JsonApiClient:
     ) -> object:
         request = Request(url, method="GET", headers=headers)
         try:
-            with urlopen(request, timeout=self._timeout_seconds) as response:
+            with urlopen(
+                request,
+                timeout=self._timeout_seconds,
+                context=self._ssl_context,
+            ) as response:
                 status = response.status
                 body = response.read()
         except (HTTPError, URLError, TimeoutError) as error:
@@ -233,7 +281,11 @@ class JsonApiClient:
     ) -> tuple[int, Message, bytes]:
         request = Request(f"{self._base_url}{path}", data=body, method=method, headers=headers)
         try:
-            with urlopen(request, timeout=self._timeout_seconds) as response:
+            with urlopen(
+                request,
+                timeout=self._timeout_seconds,
+                context=self._ssl_context,
+            ) as response:
                 status = response.status
                 response_headers = response.headers
                 response_body = response.read()
@@ -270,14 +322,18 @@ class InfrastructureBusinessProbe:
         ragflow_internal_base_url: str,
         ragflow_api_key: str,
         dataset_id: str,
+        ca_cert_file: str,
         timeout_seconds: float = 120.0,
     ) -> None:
-        self._client = JsonApiClient(api_base_url)
+        self._client = JsonApiClient(api_base_url, ca_cert_file=ca_cert_file)
         self._mock_ragflow_state_url = mock_ragflow_state_url
         self._mock_smtp_state_url = mock_smtp_state_url
         self._probe_token = probe_token
         self._run_id = run_id
         self._admin_email = admin_email
+        self._email_domain = admin_email.rpartition("@")[2]
+        if not self._email_domain:
+            raise InfrastructureProbeError("admin email domain is missing")
         self._admin_password = admin_password
         self._employee_password = employee_password
         self._ragflow_internal_base_url = ragflow_internal_base_url
@@ -293,12 +349,13 @@ class InfrastructureBusinessProbe:
                 "PUT",
                 "/api/admin/configs/security",
                 token=admin.token,
-                payload={"items": {"security.allowed_email_domains": ["e2e.invalid"]}},
+                payload={"items": {"security.allowed_email_domains": [self._email_domain]}},
             ),
             "security config",
         )
         _require(
-            _config_value(security_config, "security.allowed_email_domains") == ["e2e.invalid"],
+            _config_value(security_config, "security.allowed_email_domains")
+            == [self._email_domain],
             "security email-domain allowlist was not applied",
         )
         persisted_security_config = _mapping(
@@ -311,7 +368,7 @@ class InfrastructureBusinessProbe:
         )
         _require(
             _config_value(persisted_security_config, "security.allowed_email_domains")
-            == ["e2e.invalid"],
+            == [self._email_domain],
             "security email-domain allowlist was not persisted",
         )
         department = _mapping(
@@ -326,8 +383,8 @@ class InfrastructureBusinessProbe:
         )
         department_id = _uuid_value(department.get("id"), "department id")
 
-        employee_email = f"employee-{suffix}@e2e.invalid"
-        department_admin_email = f"reviewer-{suffix}@e2e.invalid"
+        employee_email = f"employee-{suffix}@{self._email_domain}"
+        department_admin_email = f"reviewer-{suffix}@{self._email_domain}"
         for name, email in (
             ("E2E Employee", employee_email),
             ("E2E Department Admin", department_admin_email),
@@ -434,8 +491,12 @@ class InfrastructureBusinessProbe:
         primary_content = f"Knowledge Uploader real infrastructure probe {self._run_id}\n".encode()
         primary = self._upload_draft(employee, primary_name, primary_content)
         primary_id = _uuid_value(primary.get("id"), "primary file id")
-        _require(primary.get("status") == "uploaded", "upload did not remain an explicit draft")
-        _require(primary.get("review_status") == "none", "draft unexpectedly entered review")
+        _require_explicit_draft(primary)
+        self._require_not_in_review_queue(
+            department_admin,
+            file_id=primary_id,
+            search=primary_name,
+        )
 
         headers, ranged_content = self._client.binary(
             f"/api/files/{primary_id}/content?disposition=inline",
@@ -533,6 +594,9 @@ class InfrastructureBusinessProbe:
             "audit_loop": "passed",
             "email_verification_floor": "passed",
             "mock_smtp_delivery": "passed",
+            "gateway_https": "passed",
+            "ragflow_https": "passed",
+            "smtp_starttls": "passed",
         }
 
     def create_replay_target(self, state: BusinessProbeState) -> ReplayTarget:
@@ -550,6 +614,174 @@ class InfrastructureBusinessProbe:
             dataset_mapping_id=state.dataset_mapping_id,
         )
         return ReplayTarget(file_id=file_id, file_name=file_name)
+
+    def create_fault_target(
+        self,
+        state: BusinessProbeState,
+        *,
+        dependency: str,
+    ) -> ReplayTarget:
+        if dependency not in {"rabbitmq", "redis", "minio", "ragflow"}:
+            raise InfrastructureProbeError("unsupported fault dependency")
+        suffix = self._run_id.hex[:12]
+        file_name = f"e2e-fault-{dependency}-{suffix}.txt"
+        content = f"Dependency recovery target {dependency} {self._run_id}\n".encode()
+        uploaded = self._upload_draft(state.employee, file_name, content)
+        file_id = _uuid_value(uploaded.get("id"), "fault target file id")
+        self._submit_review(state.employee, file_id)
+        self._claim_and_approve(
+            state.department_admin,
+            file_id=file_id,
+            search=file_name,
+            category_id=state.category_id,
+            dataset_mapping_id=state.dataset_mapping_id,
+        )
+        return ReplayTarget(file_id=file_id, file_name=file_name)
+
+    def ragflow_upload_count(self) -> int:
+        state = self._mock_state()
+        return _int_value(state.get("upload_count"), "mock upload count")
+
+    def require_remote_unchanged(
+        self,
+        _target: ReplayTarget,
+        *,
+        baseline_upload_count: int,
+    ) -> None:
+        mock_state = self._mock_state()
+        upload_count = _int_value(mock_state.get("upload_count"), "mock upload count")
+        _require(upload_count == baseline_upload_count, "remote upload occurred during outage")
+
+    def fault_database_diagnostics(
+        self,
+        state: BusinessProbeState,
+        target: ReplayTarget,
+    ) -> dict[str, object]:
+        file = _mapping(
+            self._client.json(
+                "GET",
+                f"/api/files/{target.file_id}",
+                token=state.employee.token,
+            ),
+            "fault diagnostic file",
+        )
+        tasks = _mapping(
+            self._client.json(
+                "GET",
+                f"/api/tasks?file_id={target.file_id}",
+                token=state.admin.token,
+            ),
+            "fault diagnostic tasks",
+        )
+        items = tasks.get("items")
+        task_items = (
+            [item for item in items if isinstance(item, dict)] if isinstance(items, list) else []
+        )
+        status_counts: dict[str, int] = {}
+        for item in task_items:
+            status = item.get("status")
+            if isinstance(status, str) and status in {
+                "queued",
+                "running",
+                "succeeded",
+                "failed",
+                "canceled",
+            }:
+                status_counts[status] = status_counts.get(status, 0) + 1
+        return {
+            "file_status": str(file.get("status", "unknown"))[:40],
+            "remote_document_id_present": bool(file.get("ragflow_document_id")),
+            "sync_task_count": len(task_items),
+            "sync_task_status_counts": status_counts,
+        }
+
+    def wait_for_failed_sync_task(
+        self,
+        state: BusinessProbeState,
+        target: ReplayTarget,
+    ) -> uuid.UUID:
+        deadline = time.monotonic() + self._timeout_seconds
+        while time.monotonic() < deadline:
+            file = _mapping(
+                self._client.json(
+                    "GET",
+                    f"/api/files/{target.file_id}",
+                    token=state.employee.token,
+                ),
+                "fault file detail",
+            )
+            tasks = _mapping(
+                self._client.json(
+                    "GET",
+                    f"/api/tasks?file_id={target.file_id}",
+                    token=state.admin.token,
+                ),
+                "fault task list",
+            )
+            items = tasks.get("items")
+            failed = (
+                [
+                    item
+                    for item in items
+                    if isinstance(item, dict)
+                    and item.get("task_type") == "ragflow_upload"
+                    and item.get("status") == "failed"
+                ]
+                if isinstance(items, list)
+                else []
+            )
+            if file.get("status") == "failed" and len(failed) == 1:
+                return _uuid_value(failed[0].get("id"), "failed sync task id")
+            time.sleep(0.5)
+        raise InfrastructureProbeError("dependency outage did not persist a failed sync task")
+
+    def retry_failed_sync_task(
+        self,
+        state: BusinessProbeState,
+        *,
+        task_id: uuid.UUID,
+    ) -> str:
+        retried = _mapping(
+            self._client.json(
+                "POST",
+                f"/api/tasks/{task_id}/retry",
+                token=state.admin.token,
+                payload={},
+            ),
+            "fault task retry",
+        )
+        _require(retried.get("status") == "queued", "failed sync task was not queued")
+        return "queued"
+
+    def verify_fault_restored(
+        self,
+        state: BusinessProbeState,
+        target: ReplayTarget,
+        *,
+        baseline_upload_count: int,
+    ) -> dict[str, object]:
+        parsed = self._wait_for_file(state.employee, target.file_id, expected_status="parsed")
+        _require(parsed.get("ragflow_dataset_id") == self._dataset_id, "fault target changed")
+        mock_state = self._mock_state()
+        upload_count = _int_value(mock_state.get("upload_count"), "mock upload count")
+        documents = mock_state.get("documents")
+        if not isinstance(documents, list):
+            raise InfrastructureProbeError("mock documents are missing")
+        remote_document_id = parsed.get("ragflow_document_id")
+        if not isinstance(remote_document_id, str) or not remote_document_id.strip():
+            raise InfrastructureProbeError("fault target did not persist remote document identity")
+        matching_documents = _remote_documents_with_id(documents, remote_document_id)
+        upload_delta = upload_count - baseline_upload_count
+        _require(upload_delta == 1, "fault recovery repeated the remote upload")
+        _require(len(matching_documents) == 1, "fault recovery did not converge on one identity")
+        return {
+            "target_file_id": str(target.file_id),
+            "remote_upload_delta": upload_delta,
+            "remote_document_count": len(matching_documents),
+            "terminal_state": "parsed",
+            "event_loss_detected": False,
+            "duplicate_remote_document": False,
+        }
 
     def replay_next_dead_letter(
         self,
@@ -756,6 +988,26 @@ class InfrastructureBusinessProbe:
         _require(approved.get("sync_decision") == "sync", "approval lost explicit sync decision")
         _require(approved.get("review_status") == "approved", "review was not approved")
 
+    def _require_not_in_review_queue(
+        self,
+        actor: ProbeCredentials,
+        *,
+        file_id: uuid.UUID,
+        search: str,
+    ) -> None:
+        query = urlencode({"queue": "unclaimed", "q": search, "page": 1, "page_size": 5})
+        review_page = _mapping(
+            self._client.json("GET", f"/api/review/files?{query}", token=actor.token),
+            "draft review queue exclusion",
+        )
+        items = review_page.get("items")
+        if not isinstance(items, list):
+            raise InfrastructureProbeError("review queue items are missing")
+        _require(
+            not any(isinstance(item, dict) and item.get("id") == str(file_id) for item in items),
+            "draft appeared in department review queue before submission",
+        )
+
     def _wait_for_file(
         self,
         actor: ProbeCredentials,
@@ -798,10 +1050,9 @@ class InfrastructureBusinessProbe:
             items = data.get("items")
             if isinstance(items, list):
                 for item in items:
-                    if not isinstance(item, dict):
-                        continue
-                    metadata = item.get("metadata")
-                    if isinstance(metadata, dict) and metadata.get("file_id") == str(file_id):
+                    if isinstance(item, dict) and _is_review_approval_notification(
+                        item, file_id=file_id
+                    ):
                         return _uuid_value(item.get("id"), "notification id")
             time.sleep(0.5)
         raise InfrastructureProbeError("review notification was not persisted")

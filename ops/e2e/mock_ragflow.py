@@ -5,14 +5,16 @@ from __future__ import annotations
 import json
 import os
 import re
+import ssl
 import threading
 import uuid
 from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from pathlib import Path
 from urllib.parse import parse_qs, urlsplit
 
 MAX_REQUEST_BYTES = 10 * 1024 * 1024
-FILENAME_PATTERN = re.compile(br'filename="([^"\r\n]{1,255})"')
+FILENAME_PATTERN = re.compile(rb'filename="([^"\r\n]{1,255})"')
 
 API_KEY = os.environ.get("E2E_RAGFLOW_API_KEY", "")
 DATASET_ID = os.environ.get("E2E_RAGFLOW_DATASET_ID", "")
@@ -26,6 +28,76 @@ _UPLOAD_COUNT = 0
 _METADATA_UPDATE_COUNT = 0
 _PARSE_COUNT = 0
 _AUTHORIZATION_FAILURES = 0
+
+
+def _state_file() -> Path | None:
+    value = os.environ.get("E2E_RAGFLOW_STATE_FILE", "").strip()
+    return Path(value) if value else None
+
+
+def _load_persistent_state() -> None:
+    path = _state_file()
+    if path is None or not path.exists():
+        return
+    try:
+        raw = json.loads(path.read_text(encoding="utf-8"))
+        documents = raw["documents"]
+        upload_count = raw["upload_count"]
+        metadata_update_count = raw["metadata_update_count"]
+        parse_count = raw["parse_count"]
+        authorization_failures = raw["authorization_failures"]
+    except (OSError, KeyError, TypeError, ValueError, json.JSONDecodeError) as error:
+        raise RuntimeError("mock RAGFlow persistent state is invalid") from error
+    if (
+        not isinstance(documents, list)
+        or not all(isinstance(document, dict) for document in documents)
+        or not all(
+            isinstance(value, int) and not isinstance(value, bool) and value >= 0
+            for value in (
+                upload_count,
+                metadata_update_count,
+                parse_count,
+                authorization_failures,
+            )
+        )
+    ):
+        raise RuntimeError("mock RAGFlow persistent state is invalid")
+    global _DOCUMENTS
+    global _UPLOAD_COUNT
+    global _METADATA_UPDATE_COUNT
+    global _PARSE_COUNT
+    global _AUTHORIZATION_FAILURES
+    loaded_documents: dict[str, dict[str, object]] = {}
+    for document in documents:
+        document_id = document.get("id")
+        if not isinstance(document_id, str) or not document_id:
+            raise RuntimeError("mock RAGFlow persistent state is invalid")
+        loaded_documents[document_id] = dict(document)
+    _DOCUMENTS = loaded_documents
+    _UPLOAD_COUNT = upload_count
+    _METADATA_UPDATE_COUNT = metadata_update_count
+    _PARSE_COUNT = parse_count
+    _AUTHORIZATION_FAILURES = authorization_failures
+
+
+def _save_persistent_state_locked() -> None:
+    path = _state_file()
+    if path is None:
+        return
+    payload = {
+        "documents": [dict(document) for document in _DOCUMENTS.values()],
+        "upload_count": _UPLOAD_COUNT,
+        "metadata_update_count": _METADATA_UPDATE_COUNT,
+        "parse_count": _PARSE_COUNT,
+        "authorization_failures": _AUTHORIZATION_FAILURES,
+    }
+    path.parent.mkdir(parents=True, exist_ok=True)
+    temporary = path.with_suffix(f"{path.suffix}.tmp")
+    temporary.write_text(
+        json.dumps(payload, ensure_ascii=False, sort_keys=True),
+        encoding="utf-8",
+    )
+    temporary.replace(path)
 
 
 class MockRagflowHandler(BaseHTTPRequestHandler):
@@ -95,24 +167,33 @@ class MockRagflowHandler(BaseHTTPRequestHandler):
             with _LOCK:
                 _DOCUMENTS[document_id] = document
                 _UPLOAD_COUNT += 1
+                _save_persistent_state_locked()
             self._ragflow([document])
             return
         if parsed.path == f"/api/v1/datasets/{DATASET_ID}/chunks":
             payload = self._json_body()
-            document_ids = payload.get("document_ids")
-            if not isinstance(document_ids, list) or not all(
-                isinstance(item, str) for item in document_ids
-            ):
+            raw_document_ids = payload.get("document_ids")
+            if not isinstance(raw_document_ids, list):
                 self._json(HTTPStatus.BAD_REQUEST, {"code": 400, "message": "invalid ids"})
                 return
+            document_ids: list[str] = []
+            for item in raw_document_ids:
+                if not isinstance(item, str):
+                    self._json(
+                        HTTPStatus.BAD_REQUEST,
+                        {"code": 400, "message": "invalid ids"},
+                    )
+                    return
+                document_ids.append(item)
             global _PARSE_COUNT
             with _LOCK:
                 for document_id in document_ids:
-                    document = _DOCUMENTS.get(document_id)
-                    if document is not None:
-                        document["run"] = "DONE"
-                        document["progress"] = 1.0
+                    stored_document = _DOCUMENTS.get(document_id)
+                    if stored_document is not None:
+                        stored_document["run"] = "DONE"
+                        stored_document["progress"] = 1.0
                 _PARSE_COUNT += 1
+                _save_persistent_state_locked()
             self._ragflow({})
             return
         self._json(HTTPStatus.NOT_FOUND, {"code": 404, "message": "not found"})
@@ -136,6 +217,7 @@ class MockRagflowHandler(BaseHTTPRequestHandler):
                     document["name"] = name
                 document["metadata_updated"] = isinstance(payload.get("meta_fields"), dict)
                 _METADATA_UPDATE_COUNT += 1
+                _save_persistent_state_locked()
             self._ragflow({})
             return
         self._json(HTTPStatus.NOT_FOUND, {"code": 404, "message": "not found"})
@@ -152,6 +234,7 @@ class MockRagflowHandler(BaseHTTPRequestHandler):
                     for document_id in document_ids:
                         if isinstance(document_id, str):
                             _DOCUMENTS.pop(document_id, None)
+                    _save_persistent_state_locked()
             self._ragflow({})
             return
         self._json(HTTPStatus.NOT_FOUND, {"code": 404, "message": "not found"})
@@ -162,6 +245,7 @@ class MockRagflowHandler(BaseHTTPRequestHandler):
             return True
         with _LOCK:
             _AUTHORIZATION_FAILURES += 1
+            _save_persistent_state_locked()
         self._json(HTTPStatus.UNAUTHORIZED, {"code": 401, "message": "unauthorized"})
         return False
 
@@ -198,7 +282,17 @@ class MockRagflowHandler(BaseHTTPRequestHandler):
 
 
 def main() -> None:
+    with _LOCK:
+        _load_persistent_state()
     server = ThreadingHTTPServer(("0.0.0.0", 9380), MockRagflowHandler)
+    certificate = os.environ.get("E2E_TLS_CERT_FILE", "").strip()
+    private_key = os.environ.get("E2E_TLS_KEY_FILE", "").strip()
+    if not certificate or not private_key:
+        raise RuntimeError("mock RAGFlow TLS certificate and key are required")
+    context = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
+    context.minimum_version = ssl.TLSVersion.TLSv1_2
+    context.load_cert_chain(certificate, private_key)
+    server.socket = context.wrap_socket(server.socket, server_side=True)
     server.serve_forever()
 
 

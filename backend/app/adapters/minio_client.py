@@ -1,12 +1,18 @@
 from __future__ import annotations
 
+import os
+import ssl
 from io import BytesIO
+from pathlib import Path
 from typing import Protocol, cast
 
 import anyio
+import certifi
 from minio import Minio
 from minio.error import MinioException, S3Error
+from urllib3 import PoolManager
 from urllib3.exceptions import HTTPError as Urllib3HTTPError
+from urllib3.util import Retry, Timeout
 
 from app.core.config import Settings
 
@@ -29,6 +35,11 @@ PERMANENT_S3_ERROR_CODES: frozenset[str] = frozenset(
     }
 )
 STREAM_CHUNK_SIZE = 64 * 1024
+MINIO_HTTP_TIMEOUT_SECONDS = 5 * 60
+MINIO_HTTP_POOL_SIZE = 10
+MINIO_HTTP_RETRY_COUNT = 5
+MINIO_HTTP_RETRY_BACKOFF_FACTOR = 0.2
+MINIO_HTTP_RETRY_STATUSES = (500, 502, 503, 504)
 
 
 class _ObjectResponse(Protocol):
@@ -96,11 +107,40 @@ def is_transient_storage_error(error: BaseException) -> bool:
 
 class MinioDocumentStorage:
     def __init__(self, settings: Settings) -> None:
+        http_client: PoolManager | None = None
+        if settings.minio_secure:
+            ca_cert_file = (
+                settings.minio_ca_cert_file.strip()
+                or os.environ.get("SSL_CERT_FILE", "").strip()
+                or certifi.where()
+            )
+            try:
+                if not Path(ca_cert_file).is_file():
+                    raise OSError
+                ssl.create_default_context(cafile=ca_cert_file)
+            except (OSError, ssl.SSLError, ValueError):
+                msg = "MinIO CA certificate file is unavailable or invalid"
+                raise ValueError(msg) from None
+            http_client = PoolManager(
+                timeout=Timeout(
+                    connect=MINIO_HTTP_TIMEOUT_SECONDS,
+                    read=MINIO_HTTP_TIMEOUT_SECONDS,
+                ),
+                maxsize=MINIO_HTTP_POOL_SIZE,
+                cert_reqs="CERT_REQUIRED",
+                ca_certs=ca_cert_file,
+                retries=Retry(
+                    total=MINIO_HTTP_RETRY_COUNT,
+                    backoff_factor=MINIO_HTTP_RETRY_BACKOFF_FACTOR,
+                    status_forcelist=list(MINIO_HTTP_RETRY_STATUSES),
+                ),
+            )
         self._client = Minio(
             settings.minio_endpoint,
             access_key=settings.minio_access_key,
             secret_key=settings.minio_secret_key,
             secure=settings.minio_secure,
+            http_client=http_client,
         )
 
     async def put_object(

@@ -6,6 +6,7 @@ import asyncio
 import json
 import os
 import re
+import ssl
 import threading
 from email import policy
 from email.message import Message
@@ -40,9 +41,7 @@ class MailState:
     def record(self, raw_message: bytes, envelope_recipients: list[str]) -> None:
         message = BytesParser(policy=policy.default).parsebytes(raw_message)
         recipients = {
-            address.lower()
-            for _name, address in getaddresses(message.get_all("to", []))
-            if address
+            address.lower() for _name, address in getaddresses(message.get_all("to", [])) if address
         }
         recipients.update(address.lower() for address in envelope_recipients if address)
         body_parts: list[str] = []
@@ -82,8 +81,14 @@ def _smtp_path(command: str) -> str:
     return address
 
 
-async def handle_smtp(reader: asyncio.StreamReader, writer: asyncio.StreamWriter) -> None:
+async def handle_smtp(
+    reader: asyncio.StreamReader,
+    writer: asyncio.StreamWriter,
+    *,
+    tls_context: ssl.SSLContext | None = None,
+) -> None:
     recipients: list[str] = []
+    tls_active = False
     await _write_line(writer, "220 mock-smtp ESMTP ready")
     try:
         while True:
@@ -96,8 +101,21 @@ async def handle_smtp(reader: asyncio.StreamReader, writer: asyncio.StreamWriter
             command = raw_line.decode("utf-8", errors="replace").strip()
             verb = command.split(" ", 1)[0].split(":", 1)[0].upper()
             if verb in {"EHLO", "HELO"}:
-                writer.write(b"250-mock-smtp\r\n250 SIZE 2097152\r\n")
+                if tls_context is not None and not tls_active:
+                    writer.write(b"250-mock-smtp\r\n" b"250-STARTTLS\r\n" b"250 SIZE 2097152\r\n")
+                else:
+                    writer.write(b"250-mock-smtp\r\n250 SIZE 2097152\r\n")
                 await writer.drain()
+            elif verb == "STARTTLS":
+                if tls_context is None or tls_active:
+                    await _write_line(writer, "454 TLS not available")
+                    continue
+                await _write_line(writer, "220 ready to start TLS")
+                await writer.start_tls(tls_context)
+                tls_active = True
+                recipients = []
+            elif tls_context is not None and not tls_active and verb in {"MAIL", "RCPT", "DATA"}:
+                await _write_line(writer, "530 must issue STARTTLS first")
             elif verb == "MAIL":
                 recipients = []
                 await _write_line(writer, "250 sender accepted")
@@ -171,24 +189,50 @@ class StateHandler(BaseHTTPRequestHandler):
         return
 
 
-def run_http_server(probe_token: str) -> ThreadingHTTPServer:
+def run_http_server(
+    probe_token: str,
+    *,
+    tls_context: ssl.SSLContext | None = None,
+) -> ThreadingHTTPServer:
     handler = type(
         "BoundStateHandler",
         (StateHandler,),
         {"state": STATE, "probe_token": probe_token},
     )
     server = ThreadingHTTPServer(("0.0.0.0", 8080), handler)
+    if tls_context is not None:
+        server.socket = tls_context.wrap_socket(server.socket, server_side=True)
     threading.Thread(target=server.serve_forever, daemon=True).start()
     return server
+
+
+def _server_tls_context_from_env() -> ssl.SSLContext:
+    certificate = os.environ.get("E2E_TLS_CERT_FILE", "").strip()
+    private_key = os.environ.get("E2E_TLS_KEY_FILE", "").strip()
+    if not certificate or not private_key:
+        raise RuntimeError("mock SMTP TLS certificate and key are required")
+    context = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
+    context.minimum_version = ssl.TLSVersion.TLSv1_2
+    context.load_cert_chain(certificate, private_key)
+    return context
 
 
 async def main() -> None:
     probe_token = os.environ.get("E2E_PROBE_TOKEN", "").strip()
     if not probe_token:
         raise RuntimeError("E2E_PROBE_TOKEN is required")
-    http_server = run_http_server(probe_token)
+    tls_context = _server_tls_context_from_env()
+    http_server = run_http_server(probe_token, tls_context=tls_context)
     try:
-        smtp_server = await asyncio.start_server(handle_smtp, "0.0.0.0", 1025)
+        smtp_server = await asyncio.start_server(
+            lambda reader, writer: handle_smtp(
+                reader,
+                writer,
+                tls_context=tls_context,
+            ),
+            "0.0.0.0",
+            1025,
+        )
         async with smtp_server:
             await smtp_server.serve_forever()
     finally:

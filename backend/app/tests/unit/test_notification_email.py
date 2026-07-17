@@ -37,6 +37,41 @@ class FakeSmtp:
         self.message = message
 
 
+class FakeSmtpSsl:
+    instances: ClassVar[list[FakeSmtpSsl]] = []
+
+    def __init__(
+        self,
+        host: str,
+        port: int,
+        timeout: float,
+        context: object,
+    ) -> None:
+        self.host = host
+        self.port = port
+        self.timeout = timeout
+        self.context = context
+        self.starttls_calls = 0
+        self.login_args: tuple[str, str] | None = None
+        self.message: EmailMessage | None = None
+        FakeSmtpSsl.instances.append(self)
+
+    def __enter__(self) -> FakeSmtpSsl:
+        return self
+
+    def __exit__(self, _exc_type: object, _exc: object, _traceback: object) -> None:
+        return None
+
+    def starttls(self, *, context: object) -> None:
+        self.starttls_calls += 1
+
+    def login(self, username: str, password: str) -> None:
+        self.login_args = (username, password)
+
+    def send_message(self, message: EmailMessage) -> None:
+        self.message = message
+
+
 @pytest.mark.asyncio
 async def test_smtp_adapter_sends_message_with_starttls(monkeypatch: pytest.MonkeyPatch) -> None:
     FakeSmtp.instances = []
@@ -69,6 +104,65 @@ async def test_smtp_adapter_sends_message_with_starttls(monkeypatch: pytest.Monk
     assert message["To"] == "user@company.test"
     assert message["Subject"] == "subject"
     assert message.get_content().strip() == "body"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("username", "password", "expected_login"),
+    (
+        ("mailer", "secret", ("mailer", "secret")),
+        ("", "", None),
+    ),
+)
+async def test_smtp_adapter_uses_implicit_tls_on_port_465(
+    monkeypatch: pytest.MonkeyPatch,
+    username: str,
+    password: str,
+    expected_login: tuple[str, str] | None,
+) -> None:
+    FakeSmtpSsl.instances = []
+    expected_context = object()
+    observed_ca_files: list[str | None] = []
+
+    def create_default_context(*, cafile: str | None = None) -> object:
+        observed_ca_files.append(cafile)
+        return expected_context
+
+    def reject_plain_smtp(*_args: object, **_kwargs: object) -> object:
+        raise AssertionError("port 465 must not use plaintext SMTP or STARTTLS")
+
+    monkeypatch.setattr(
+        "app.adapters.email.smtp.ssl.create_default_context",
+        create_default_context,
+    )
+    monkeypatch.setattr("app.adapters.email.smtp.smtplib.SMTP_SSL", FakeSmtpSsl)
+    monkeypatch.setattr("app.adapters.email.smtp.smtplib.SMTP", reject_plain_smtp)
+
+    adapter = SmtpEmailAdapter(
+        SmtpEmailConfig(
+            host="smtp.company.test",
+            port=465,
+            username=username,
+            password=password,
+            sender="noreply@company.test",
+            use_tls=True,
+            ca_cert_file="/run/secrets/company-ca.pem",
+            timeout_seconds=3,
+        )
+    )
+
+    await adapter.send("user@company.test", "subject", "body")
+
+    assert observed_ca_files == ["/run/secrets/company-ca.pem"]
+    assert len(FakeSmtpSsl.instances) == 1
+    smtp = FakeSmtpSsl.instances[0]
+    assert smtp.host == "smtp.company.test"
+    assert smtp.port == 465
+    assert smtp.timeout == 3
+    assert smtp.context is expected_context
+    assert smtp.starttls_calls == 0
+    assert smtp.login_args == expected_login
+    assert smtp.message is not None
 
 
 def test_send_email_task_uses_mocked_adapter(monkeypatch: pytest.MonkeyPatch) -> None:
