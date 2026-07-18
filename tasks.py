@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import io
 import os
 import subprocess
 import sys
@@ -10,8 +11,38 @@ from invoke.context import Context
 from invoke.tasks import task
 
 
-def _compose(c: Context, args: str) -> None:
-    c.run(f"docker compose {args}", pty=False)
+def _compose(c: Context, args: str, *, env: dict[str, str] | None = None) -> None:
+    c.run(f"docker compose {args}", pty=False, env=env)
+
+
+def _frontend_run(c: Context, script: str) -> None:
+    for stream in (sys.stdout, sys.stderr):
+        if isinstance(stream, io.TextIOWrapper):
+            stream.reconfigure(encoding="utf-8", errors="replace")
+    c.run(f"npm --prefix frontend run {script}", pty=False, encoding="utf-8")
+
+
+def _backend_dev_run(
+    c: Context,
+    command: str,
+    *,
+    build: bool = False,
+    mount_repo_contracts: bool = False,
+) -> None:
+    """Run a backend development command with the image target that owns test tools."""
+    build_flag = "--build " if build else ""
+    contract_mounts = ""
+    if mount_repo_contracts:
+        contract_mounts = (
+            "--volume ./docker-compose.yml:/docker-compose.yml:ro "
+            "--volume ./nginx/default.conf:/nginx/default.conf:ro "
+            "--volume ./frontend/nginx.conf:/frontend/nginx.conf:ro "
+        )
+    _compose(
+        c,
+        f"run --rm {build_flag}{contract_mounts}backend-api {command}",
+        env={"BACKEND_BUILD_TARGET": "development"},
+    )
 
 
 @task
@@ -47,13 +78,13 @@ def test_backend(c: Context, k: str = "") -> None:
     pytest_cmd = "pytest"
     if k:
         pytest_cmd += f' -k "{k}"'
-    _compose(c, f"run --rm backend-api {pytest_cmd}")
+    _backend_dev_run(c, pytest_cmd, build=True, mount_repo_contracts=True)
 
 
 @task(name="test-frontend")
 def test_frontend(c: Context) -> None:
     """运行前端 Vitest 非 watch 测试。"""
-    c.run("npm --prefix frontend run test:run", pty=False)
+    _frontend_run(c, "test:run")
 
 
 @task
@@ -66,15 +97,15 @@ def test(c: Context, k: str = "") -> None:
 @task(name="lint-backend")
 def lint_backend(c: Context) -> None:
     """运行后端 ruff、模块边界检查和 mypy。"""
-    _compose(c, "run --rm backend-api ruff check app")
+    _backend_dev_run(c, "ruff check app", build=True)
     c.run("python scripts/check_module_boundaries.py", pty=False)
-    _compose(c, "run --rm backend-api mypy app")
+    _backend_dev_run(c, "mypy app")
 
 
 @task(name="lint-frontend")
 def lint_frontend(c: Context) -> None:
     """运行前端 ESLint。"""
-    c.run("npm --prefix frontend run lint", pty=False)
+    _frontend_run(c, "lint")
 
 
 @task
@@ -87,13 +118,13 @@ def lint(c: Context) -> None:
 @task(name="fmt-backend")
 def fmt_backend(c: Context) -> None:
     """格式化后端代码。"""
-    _compose(c, "run --rm backend-api ruff format app")
+    _backend_dev_run(c, "ruff format app", build=True)
 
 
 @task(name="fmt-frontend")
 def fmt_frontend(c: Context) -> None:
     """格式化前端代码。"""
-    c.run("npm --prefix frontend run format", pty=False)
+    _frontend_run(c, "format")
 
 
 @task
