@@ -83,6 +83,12 @@ Copy-Item docker-compose.override.yml.example docker-compose.override.yml
 
 如果 `APP_ENV` 漏配但 `APP_BASE_URL` 已经是非本机地址（例如 `https://knowledge.company.com` 或内网生产 IP），同样按受保护环境执行密钥校验，防止生产或 staging 误用 development 默认值。
 
+`COST-002` 未定版期间，`staging`/`production` 的启动硬门禁要求
+`ALLOW_EXTERNAL_LLM=false`，发现 `ALLOW_EXTERNAL_LLM=true` 必须在进程启动时拒绝，不能由系统
+管理员确认、数据库开关或环境豁免放宽。已批准的内部非计费 Provider 同样使用
+`ALLOW_EXTERNAL_LLM=false`；`development` 只允许为受控开发联调临时开启，不能作为 protected
+环境配置或发布证据。
+
 ### TLS 信任链
 
 - protected overlay 的 `MINIO_TLS_DIR` 必须恰好提供 `public.crt`、`private.key`、`ca.crt`；`public.crt` 的 SAN 必须包含 Compose 服务名 `DNS:minio`，健康检查固定通过 CA 访问 `https://minio:9000/minio/health/cluster`，不得使用 `-k` / `--insecure`。`private.key` 只挂入 MinIO。
@@ -170,7 +176,7 @@ ALLOW_EXTERNAL_LLM=false
 LLM_PROVIDER=disabled
 ```
 
-如需接入企业内部模型，推荐：
+如需接入已批准的企业内部非计费模型，必须保持外部调用门禁关闭：
 
 ```env
 LLM_PROVIDER=local_openai_compatible
@@ -180,17 +186,10 @@ ALLOW_EXTERNAL_LLM=false
 LLM_ALLOWED_BASE_URLS=http://<internal-llm-host>/v1
 ```
 
-如确需外部 OpenAI-compatible 服务，必须在系统管理员确认后开启：
-
-```env
-ALLOW_EXTERNAL_LLM=true
-LLM_PROVIDER=openai_compatible
-LLM_BASE_URL=https://<provider>/v1
-LLM_API_KEY=<secret>
-LLM_MODEL=<model>
-LLM_ALLOWED_BASE_URLS=https://<provider>/v1
-```
-
+`COST-002` 未定版期间不存在“管理员确认即可开启”的例外。`development` 可在受控开发联调中
+临时使用 `ALLOW_EXTERNAL_LLM=true`，但该结果不能作为 staging、production 或发布验收证据；
+`staging`/`production` 配置 `ALLOW_EXTERNAL_LLM=true` 必须启动失败。外部计费 Provider 只有在
+`COST-002` 定版、运行时门禁与验收证据同步更新后才能开放，不能通过手工配置绕过。
 
 `LLM_BASE_URL` 必须在逗号分隔的 `LLM_ALLOWED_BASE_URLS` 中精确匹配。系统会统一主机大小写、IDNA、默认端口和末尾斜杠，但不会放宽路径前缀；例如 `/v1` 不会授权 `/v1/admin`。外部地址必须同时开启环境硬门禁和数据库开关并使用 HTTPS；内部地址仅允许标记为内部 Provider 的 RFC1918/ULA 地址。每次调用都会重新解析全部 DNS 结果，拒绝回环、链路本地、组播、保留、云元数据及私网/公网混合答案，并把实际连接固定到已验证 IP，同时保留原主机名用于 TLS SNI。Provider 单次超时范围为 1–240 秒。
 AI Provider Key 会加密入库，日志和前端响应只允许出现脱敏值。

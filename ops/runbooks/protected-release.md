@@ -37,6 +37,19 @@ artifact id/digest + provenance checksum + OCI archive/index/platform manifest/c
 | DGX 实机包 | `.github/workflows/dgx-spark-device.yml` | infrastructure、DLQ、DGX、`dgx-oci-consumption.json`、主 CI provenance、DGX trust summary |
 | 外部运维包 | `.github/workflows/protected-external-evidence.yml` | alert delivery、DR 策略与演练、email、Alertmanager、promtool |
 
+### 真实外部服务覆盖
+
+| 验收项 | 当前 source/evidence schema | 最终发布绑定 | 当前判定 |
+|---|---|---|---|
+| `EXT-SMTP-001` | `knowledge-uploader.smtp-delivery-source.v1` / `knowledge-uploader.smtp-delivery-evidence.v1` | 已由 external collector、protected checker 与 deployment authorization 绑定 | 契约已实现，真实 protected-environment receipt 待执行 |
+| `EXT-WEBHOOK-001` | `knowledge-uploader.alertmanager-webhook-source.v1` / `knowledge-uploader.alertmanager-webhook-evidence.v1` | 已由 external collector、protected checker 与 deployment authorization 绑定 | 契约已实现，真实 receiver receipt 待执行 |
+| `EXT-LLM-001` | 尚无可信 Provider attestation schema | 尚无独立受保护 workflow 或 authorization 绑定 | 可信 attestation/workflow 尚未实现，当前发布阻断；仅批准的内部非计费 Provider 可在契约完成后执行，外部计费仍受 `COST-002` 阻断 |
+| `EXT-RAGFLOW-001` | 尚无可信 endpoint attestation schema | 尚无独立受保护 workflow 或 authorization 绑定 | 必须补齐 HTTPS/SPKI 验证与环境所有者签名的 endpoint attestation，当前发布阻断 |
+
+LLM 与 RAGFlow 的可信 attestation/workflow 尚未实现。不得把
+`PROTECTED_EVIDENCE_SOURCE_DIR` 中自行放置的 JSON、基础设施 E2E 的 mock 服务或普通本地日志
+当成这两项真实外部验收；未来证据必须由独立受保护 workflow 产生并进入最终 authorization。
+
 
 ### 外部源收据 v1（严格契约）
 

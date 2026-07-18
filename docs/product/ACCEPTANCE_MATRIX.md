@@ -36,6 +36,9 @@
 | E2E-002 | 故障恢复 | 分别中断 broker/Redis/MinIO/RAGFlow 替身后恢复 | 无丢事件/重复远端文档；状态可恢复 | 待执行 |
 | DLQ-001 | 毒消息 | 固定失败超过 max attempts | 进入 DLQ、告警、可安全查看/重放 | 待执行 |
 | OBS-001 | 指标告警 | 制造 outbox 积压、worker 离线、SLA 超时、同步失败 | 指标可抓取；告警在约定窗口触发并有 runbook | 待执行 |
+| EXT-SMTP-001 | 真实 SMTP 投递 | 在同一 protected environment 完成注册验证与密码重置投递，由独立 SMTP probe 生成 source receipt | `smtp-delivery-source.v1`/`smtp-delivery-evidence.v1` 通过 exact-key、身份、新鲜度与隐私校验，并绑定最终发布授权 | 待执行（schema 与发布绑定已实现；真实收据待补） |
+| EXT-WEBHOOK-001 | 真实告警 Webhook | 触发 firing/resolved 告警，由独立 Alertmanager Webhook receiver 生成 source receipt | `alertmanager-webhook-source.v1`/`alertmanager-webhook-evidence.v1` 绑定真实 receiver、投递结果与最终发布授权 | 待执行（schema 与发布绑定已实现；真实收据待补） |
+| EXT-RAGFLOW-001 | 真实 RAGFlow 外部链路 | 独立受保护 workflow 在隔离 Dataset 完成上传、解析、幂等重试与清理；验证 HTTPS/SPKI，并取得环境所有者签名的 endpoint attestation | 收据绑定 exact Git SHA/environment/workflow run、受控 endpoint 与 Dataset；密钥/原文不入证据；mock 或 source-dir 自填 JSON 不能替代 | 未完成（发布阻断；可信 attestation/workflow 尚未实现） |
 | REL-001 | 不可变制品链 | 主 CI build-once OCI；伪造 run/ref/artifact/digest；DGX 与部署消费同一 digest | 代码契约拒绝重建/tag/跨 run；真实 CI/DGX/registry/deploy 留证 | 进行中（离线契约已通过；物理证据待执行） |
 | ARM-001 | ARM64 实机 | DGX Spark 下载主 CI 的 arm64 OCI manifest（禁止重建），完整启动并跑 smoke/E2E | digest/config ID 一致；原生依赖、health/ready/E2E 通过 | 待执行 |
 | DR-001 | PostgreSQL 恢复 | 备份后新增数据，再恢复到隔离环境 | 收据绑定策略 SHA；RPO ≤ 300s、RTO ≤ 600s；自报 target 不宽于策略；迁移版本/行数/关键 hash 校验；篡改策略、摘要或证据必须拒绝发布 | 待执行 |
@@ -45,7 +48,8 @@
 
 | ID | 验收场景 | 执行要点 | 预期 | 当前 |
 |---|---|---|---|---|
-| AI-001 | 真 LLM 分析 | 协议替身断言请求；成功/畸形/429/超时 | 结构化结果、模型/prompt 版本、token/成本与失败类别完整 | 待执行 |
+| AI-001 | LLM 协议与失败分类 | 协议替身断言请求；成功/畸形/429/超时 | 结构化结果、模型/prompt 版本、token/成本与失败类别完整；不作为真实 Provider 证据 | 待执行 |
+| EXT-LLM-001 | 真实 LLM Provider | 仅对已批准的内部非计费真实 Provider 执行独立受保护验收；验证 endpoint 身份、模型响应、用量与成本状态，证据不含 prompt/原文/密钥 | 可信 provider attestation/workflow 与 exact Git SHA/environment 绑定；mock 或 source-dir 自填 JSON 不能替代；任何外部计费 Provider 仍须先通过 `COST-002` | 未完成（发布阻断；可信 attestation/workflow 尚未实现） |
 | VER-001 | 版本替代 | v2 替代 v1，模拟新同步成功/失败与旧清理失败 | 无环；切换原子可恢复；历史可追溯 | 待执行 |
 | EXP-001 | 到期负责人 | 临期/到期/换负责人/禁用用户 | 通知正确；工作台可下钻；不静默删除 | 待执行 |
 | VIEW-001 | 保存视图 | 保存、共享权限、删除、字段演进 | 只存查询定义；越域条件不能扩权 | 待执行 |
@@ -58,7 +62,7 @@
 
 ## 最低发布判定
 
-- P0 全部通过；P1 中 `CFG/E2E/DLQ/OBS/ARM/DR` 不允许豁免。
+- P0 全部通过；`CFG/E2E/DLQ/OBS/ARM/DR`、`REL-001`、`EXT-SMTP-001`、`EXT-WEBHOOK-001`、`EXT-LLM-001`、`EXT-RAGFLOW-001` 均不允许豁免。
 - `COST-002` 当前阻断任何会产生真实可计费 LLM 调用的候选发布；只有预算契约定版并附完整验收证据后才能解除，不能以实现方自行假设或人工口头承诺替代。
 - 单元测试通过不能替代真实基础设施 E2E；buildx 能构建不能替代 ARM64 实机运行。
 - 浏览器全 mock E2E 只能作为 UI 回归，不能作为主链证据。

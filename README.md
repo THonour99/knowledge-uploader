@@ -19,7 +19,7 @@
 - 规则与真实 LLM 分析、成本四态、文档版本/替代、到期负责人、保存视图及容量/成本可视化。
 - 用户管理、权限控制、审计日志、日志脱敏、DLQ 与可观测性基础能力。
 
-仍阻断阶段 9 的项目包括：真实全栈基础设施与故障恢复 E2E、受保护 MinIO 指标鉴权的最终证据、DGX Spark ARM64 实机、PostgreSQL + MinIO 配对备份恢复、真实 SMTP/Webhook/LLM/RAGFlow 外部联调，以及尚未定版的可计费 LLM 月度预算契约（`COST-002`）。验收证据将在完成后归档到 `docs/phase-reports/<version>/`；目录、报告或单元测试存在本身都不代表通过。
+仍阻断阶段 9 的项目包括：真实全栈基础设施与故障恢复 E2E、受保护 MinIO 指标鉴权的最终证据、DGX Spark ARM64 实机、PostgreSQL + MinIO 配对备份恢复、真实 SMTP（`EXT-SMTP-001`）、Webhook（`EXT-WEBHOOK-001`）、LLM（`EXT-LLM-001`）和 RAGFlow（`EXT-RAGFLOW-001`）外部联调，以及尚未定版的可计费 LLM 月度预算契约（`COST-002`）。验收证据将在完成后归档到 `docs/phase-reports/<version>/`；目录、报告或单元测试存在本身都不代表通过。
 
 ## 快速启动
 
