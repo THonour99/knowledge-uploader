@@ -3,10 +3,13 @@ from __future__ import annotations
 import copy
 import hashlib
 import importlib.util
+import os
+import subprocess
 import sys
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from types import ModuleType
+from uuid import uuid4
 
 import pytest
 import yaml
@@ -24,6 +27,12 @@ def _load_acceptance() -> ModuleType:
 
 
 acceptance = _load_acceptance()
+
+
+@pytest.fixture(autouse=True)
+def _allow_unit_test_runtime(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(acceptance, "_require_isolated_runtime", lambda: None)
+
 
 SHA = "a" * 40
 
@@ -96,6 +105,10 @@ def _valid_evidence(now: datetime) -> dict[str, object]:
             "git_replace_refs_absent": True,
             "git_grafts_absent": True,
             "git_hidden_index_flags_absent": True,
+            "git_info_exclude_inactive": True,
+            "git_global_excludes_disabled": True,
+            "untracked_execution_inputs_absent": True,
+            "minimum_git_version": "2.36.0",
             "sources_match_commit_blobs": True,
         },
         "source_sha256": acceptance._source_hashes(),
@@ -141,6 +154,12 @@ def test_static_contract_covers_real_windows_resolutions_and_runbooks() -> None:
     assert {item["name"] for item in contract} == set(acceptance.ALERT_BY_NAME)
     assert {item["configured_for_seconds"] for item in contract} == {120, 300, 600}
     assert all(item["runbook_anchor_present"] is True for item in contract)
+    assert acceptance.ACCEPTANCE_ENTRY_PATH in acceptance.SOURCE_PATHS
+    assert acceptance.ACCEPTANCE_LAUNCHER_PATH in acceptance.SOURCE_PATHS
+    runbook = acceptance.RUNBOOK_PATH.read_text(encoding="utf-8")
+    assert (
+        "python -I -S -X utf8 scripts/acceptance_launcher.py observability" in runbook
+    )
 
 
 def test_static_contract_rejects_duplicate_target_alert(
@@ -627,3 +646,109 @@ def test_evidence_mutations_do_not_alias_the_fixture() -> None:
     mutated["status"] = "failed"
 
     assert original["status"] == "candidate_passed"
+
+
+def _fresh_external_prefix(label: str) -> Path:
+    base = (
+        Path(os.environ.get("SYSTEMDRIVE", "C:") + os.sep) / "tmp"
+        if os.name == "nt"
+        else Path("/tmp")
+    )
+    return base / f"ku-{label}-pycache-{uuid4().hex}"
+
+
+@pytest.mark.parametrize(
+    "entry_name",
+    ("run_observability_acceptance.py", "observability_acceptance.py"),
+)
+def test_observability_entries_require_trusted_launcher_and_clean_runtime(
+    entry_name: str,
+) -> None:
+    root = Path(__file__).parents[2]
+    script = root / "scripts" / entry_name
+    launcher = root / "scripts" / "acceptance_launcher.py"
+    unsafe = subprocess.run(
+        [sys.executable, str(script), "--isolation-probe"],
+        cwd=root,
+        env=dict(os.environ),
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        check=False,
+    )
+    assert unsafe.returncode != 0
+    assert "isolated mode (-I) is required" in unsafe.stderr
+
+    direct_prefix = _fresh_external_prefix(f"{entry_name}-direct")
+    direct_command = [
+        sys.executable,
+        "-I",
+        "-S",
+        "-X",
+        "utf8",
+        "-X",
+        f"pycache_prefix={direct_prefix}",
+        str(script),
+        "--isolation-probe",
+    ]
+    direct = subprocess.run(
+        direct_command,
+        cwd=root,
+        env=dict(os.environ),
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        check=False,
+    )
+    assert direct.returncode != 0
+    assert "trusted acceptance launcher is required" in direct.stderr
+
+    preseeded_prefix = _fresh_external_prefix(f"{entry_name}-preseeded")
+    preseeded_prefix.mkdir(parents=True)
+    (preseeded_prefix / "payload.pyc").write_bytes(b"untrusted")
+    preseeded_command = direct_command.copy()
+    preseeded_command[6] = f"pycache_prefix={preseeded_prefix}"
+    preseeded = subprocess.run(
+        preseeded_command,
+        cwd=root,
+        env=dict(os.environ),
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        check=False,
+    )
+    assert preseeded.returncode != 0
+    assert "trusted acceptance launcher is required" in preseeded.stderr
+
+    runtime_parent = _fresh_external_prefix(f"{entry_name}-launcher-parent")
+    runtime_parent.mkdir(parents=True)
+    environment = dict(os.environ)
+    environment.update(
+        {
+            "TEMP": str(runtime_parent),
+            "TMP": str(runtime_parent),
+            "TMPDIR": str(runtime_parent),
+        }
+    )
+    launched = subprocess.run(
+        [
+            sys.executable,
+            "-I",
+            "-S",
+            "-X",
+            "utf8",
+            str(launcher),
+            "observability",
+            "--isolation-probe",
+        ],
+        cwd=root,
+        env=environment,
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        check=False,
+    )
+    assert launched.returncode == 0, launched.stderr
+    assert "Python isolation verified" in launched.stdout
+    assert list(runtime_parent.iterdir()) == []
+    runtime_parent.rmdir()

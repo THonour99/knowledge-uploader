@@ -1,17 +1,54 @@
+# ruff: noqa: E402, PTH118, PTH120 -- isolation precedes imports.
+
 """Candidate-bound local OBS-001 Prometheus acceptance implementation."""
 
 from __future__ import annotations
 
+import importlib.util
+import os
+import sys
+
+
+def _load_acceptance_entry() -> object:
+    module_path = os.path.join(os.path.dirname(__file__), "acceptance_entry.py")
+    spec = importlib.util.spec_from_file_location(
+        "knowledge_uploader_observability_acceptance_entry",
+        module_path,
+    )
+    if spec is None or spec.loader is None:
+        raise RuntimeError("acceptance entry helper loader unavailable")
+    module = importlib.util.module_from_spec(spec)
+    sys.modules[spec.name] = module
+    spec.loader.exec_module(module)
+    return module
+
+
+_acceptance_entry = _load_acceptance_entry()
+_LAUNCHER_CLAIM_CONSUMED = False
+
+if __name__ == "__main__":
+    _repository = os.path.realpath(os.path.join(os.path.dirname(__file__), os.pardir))
+    try:
+        _acceptance_entry.consume_launcher_claim(_repository)
+        _LAUNCHER_CLAIM_CONSUMED = True
+    except RuntimeError as _claim_error:
+        raise SystemExit(f"observability acceptance refused: {_claim_error}") from _claim_error
+    import site
+
+    site.main()
+    if sys.argv[1:] == ["--isolation-probe"]:
+        sys.stdout.write("observability Python isolation verified\n")
+        raise SystemExit(0)
+
+
 import argparse
 import hashlib
 import json
-import os
 import re
 import secrets
 import shutil
 import socket
 import subprocess
-import sys
 import tempfile
 import time
 import urllib.error
@@ -21,18 +58,52 @@ from collections.abc import Sequence
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
-from typing import cast
+from types import ModuleType
+from typing import Protocol, cast
 
 import yaml  # type: ignore[import-untyped]
 
 ROOT = Path(__file__).resolve().parents[1]
-if str(ROOT) not in sys.path:
-    sys.path.insert(0, str(ROOT))
 
-from scripts.acceptance_git import AcceptanceGitError, verify_git_snapshot  # noqa: E402
+
+class _GitSnapshot(Protocol):
+    head: str
+    status: str
+
+
+class _VerifyGitSnapshot(Protocol):
+    def __call__(
+        self,
+        repo_root: Path,
+        *,
+        expected_sha: str,
+        relative_paths: tuple[Path, ...],
+        source_sha256: dict[str, str],
+    ) -> _GitSnapshot: ...
+
+
+def _load_acceptance_git() -> ModuleType:
+    module_path = ROOT / "scripts" / "acceptance_git.py"
+    spec = importlib.util.spec_from_file_location(
+        "knowledge_uploader_observability_acceptance_git",
+        module_path,
+    )
+    if spec is None or spec.loader is None:
+        raise RuntimeError("acceptance Git helper loader unavailable")
+    module = importlib.util.module_from_spec(spec)
+    sys.modules[spec.name] = module
+    spec.loader.exec_module(module)
+    return module
+
+
+_acceptance_git = _load_acceptance_git()
+AcceptanceGitError = cast(type[RuntimeError], _acceptance_git.AcceptanceGitError)
+verify_git_snapshot = cast(_VerifyGitSnapshot, _acceptance_git.verify_git_snapshot)
 
 RUNNER_PATH = ROOT / "scripts" / "run_observability_acceptance.py"
 ACCEPTANCE_GIT_PATH = ROOT / "scripts" / "acceptance_git.py"
+ACCEPTANCE_ENTRY_PATH = ROOT / "scripts" / "acceptance_entry.py"
+ACCEPTANCE_LAUNCHER_PATH = ROOT / "scripts" / "acceptance_launcher.py"
 COMPOSE_PATH = ROOT / "ops" / "observability" / "acceptance.compose.yml"
 ALERTS_PATH = ROOT / "ops" / "observability" / "alerts.yml"
 ALERT_TEST_PATH = ROOT / "ops" / "observability" / "alerts.test.yml"
@@ -81,6 +152,13 @@ class ObservabilityAcceptanceError(RuntimeError):
     def __init__(self, step: str) -> None:
         super().__init__(step)
         self.step = step
+
+
+def _require_isolated_runtime() -> None:
+    if not _LAUNCHER_CLAIM_CONSUMED:
+        raise ObservabilityAcceptanceError("launcher_claim")
+    if _acceptance_entry.runtime_isolation_error(str(ROOT)) is not None:
+        raise ObservabilityAcceptanceError("python_isolation")
 
 
 @dataclass(frozen=True)
@@ -169,6 +247,8 @@ REQUIRED_PHASES = frozenset(
 )
 SOURCE_PATHS = (
     ACCEPTANCE_GIT_PATH,
+    ACCEPTANCE_ENTRY_PATH,
+    ACCEPTANCE_LAUNCHER_PATH,
     COMPOSE_PATH,
     ALERTS_PATH,
     ALERT_TEST_PATH,
@@ -994,6 +1074,10 @@ def evidence_errors(
         or candidate.get("git_replace_refs_absent") is not True
         or candidate.get("git_grafts_absent") is not True
         or candidate.get("git_hidden_index_flags_absent") is not True
+        or candidate.get("git_info_exclude_inactive") is not True
+        or candidate.get("git_global_excludes_disabled") is not True
+        or candidate.get("untracked_execution_inputs_absent") is not True
+        or candidate.get("minimum_git_version") != "2.36.0"
         or candidate.get("sources_match_commit_blobs") is not True
     ):
         errors.append("candidate")
@@ -1107,6 +1191,7 @@ def _execute(
     resolution_timeout_seconds: int,
     poll_seconds: float,
 ) -> int:
+    _require_isolated_runtime()
     expected_sha = _validate_expected_sha(expected_sha)
     output_dir = _validate_output_dir(output_dir)
     minimum_firing_timeout = max(item.configured_for_seconds for item in ALERT_CONTRACTS) + 30
@@ -1351,6 +1436,10 @@ def _execute(
             "git_replace_refs_absent": True,
             "git_grafts_absent": True,
             "git_hidden_index_flags_absent": True,
+            "git_info_exclude_inactive": True,
+            "git_global_excludes_disabled": True,
+            "untracked_execution_inputs_absent": True,
+            "minimum_git_version": "2.36.0",
             "sources_match_commit_blobs": True,
             "status_command": (
                 "git --no-replace-objects status --porcelain=v1 --untracked-files=all"
@@ -1402,6 +1491,7 @@ def _execute(
 
 
 def _verify(*, expected_sha: str, evidence_dir: Path) -> int:
+    _require_isolated_runtime()
     expected_sha = _validate_expected_sha(expected_sha)
     _assert_candidate(candidate_identity(expected_sha), expected_sha)
     resolved = evidence_dir.resolve()

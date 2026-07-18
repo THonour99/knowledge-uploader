@@ -2,12 +2,16 @@
 
 from __future__ import annotations
 
+import os
 import re
 import subprocess
+import sys
 from pathlib import Path
 from urllib.parse import unquote
+from uuid import uuid4
 
 import pytest
+import scripts.acceptance_launcher as acceptance_launcher
 import scripts.check_baseline_contract as baseline_contract
 from scripts.check_baseline_contract import (
     BaselineContractError,
@@ -413,15 +417,32 @@ def test_candidate_evidence_runner_rejects_ambiguous_identity_and_stays_local(
 
     def fake_pytest_run(
         command: list[str],
-        **_kwargs: object,
+        **kwargs: object,
     ) -> subprocess.CompletedProcess[str]:
-        assert command[3:8] == [
+        assert command[1:10] == [
+            "-I",
+            "-S",
+            "-X",
+            "utf8",
+            "-X",
+            command[6],
+            "-c",
+            baseline_contract.PYTEST_BOOTSTRAP,
             "-q",
-            "-o",
-            "xfail_strict=true",
-            "-p",
-            "scripts.check_baseline_contract",
         ]
+        assert command[6].startswith("pycache_prefix=")
+        assert "-c" in command
+        assert command[command.index("--rootdir") + 1] == str(ROOT)
+        assert "--runxfail" in command
+        assert "-p" not in command
+        environment = kwargs["env"]
+        assert isinstance(environment, dict)
+        normalized_environment = {str(key).upper(): value for key, value in environment.items()}
+        assert "PYTEST_ADDOPTS" not in normalized_environment
+        assert "PYTEST_PLUGINS" not in normalized_environment
+        assert normalized_environment["PYTEST_DISABLE_PLUGIN_AUTOLOAD"] == "1"
+        assert normalized_environment["KNOWLEDGE_UPLOADER_ACCEPTANCE_TOKEN"]
+        assert Path(normalized_environment["KNOWLEDGE_UPLOADER_ACCEPTANCE_MARKER"]).is_file()
         assert command[-len(expected_nodes) :] == list(expected_nodes)
         junit_path = Path(command[command.index("--junitxml") + 1])
         temporary_junit_paths.append(junit_path)
@@ -456,13 +477,23 @@ def test_candidate_evidence_runner_rejects_ambiguous_identity_and_stays_local(
     assert 'parser.add_argument("--output-dir", type=Path, required=True)' in runner
     assert '"external_release_status": "not_evaluated"' in runner
     assert "verify_git_snapshot" in runner
+    assert "spec_from_file_location" in runner
+    assert "from scripts.acceptance_git import" not in runner
     provenance = _read(ROOT / "scripts" / "acceptance_git.py")
     assert '"--untracked-files=all"' in provenance
     assert "--no-replace-objects" in provenance
     assert "core.hooksPath" in provenance
     assert "Git index hiding flags are forbidden" in provenance
     assert "executed sources do not match candidate commit blobs" in provenance
+    assert baseline_contract.PYTEST_CONFIG in baseline_contract.SOURCE_FILES
+    assert baseline_contract.ACCEPTANCE_ENTRY_SCRIPT in baseline_contract.SOURCE_FILES
+    assert baseline_contract.ACCEPTANCE_LAUNCHER_SCRIPT in baseline_contract.SOURCE_FILES
+    assert "untracked or ignored Python execution inputs are forbidden" in provenance
+    assert "Git 2.36 or newer is required" in provenance
     assert "最终整合后的 SHA 尚未绑定" in evidence
+    assert (
+        "python -I -S -X utf8 scripts/acceptance_launcher.py baseline" in evidence
+    )
     assert "external_release_status=not_evaluated" in evidence
 
 
@@ -571,3 +602,171 @@ def test_base_001_records_progress_without_self_certifying_completion() -> None:
     assert "`13 passed`" in evidence
     assert "不得提前改成“通过”" in evidence
     assert "不替代受保护 CI、真实基础设施、外部服务、DGX ARM64、告警或灾备证据" in evidence
+
+
+def _fresh_external_prefix(label: str) -> Path:
+    base = (
+        Path(os.environ.get("SYSTEMDRIVE", "C:") + os.sep) / "tmp"
+        if os.name == "nt"
+        else Path("/tmp")
+    )
+    return base / f"ku-{label}-pycache-{uuid4().hex}"
+
+
+def test_baseline_entry_requires_trusted_launcher_and_cleans_runtime() -> None:
+    script = ROOT / "scripts" / "check_baseline_contract.py"
+    launcher = ROOT / "scripts" / "acceptance_launcher.py"
+    unsafe = subprocess.run(
+        [sys.executable, str(script), "--help"],
+        cwd=ROOT,
+        env=dict(os.environ),
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        check=False,
+    )
+    assert unsafe.returncode != 0
+    assert "isolated mode (-I) is required" in unsafe.stderr
+
+    direct_prefix = _fresh_external_prefix("baseline-direct")
+    direct_command = [
+        sys.executable,
+        "-I",
+        "-S",
+        "-X",
+        "utf8",
+        "-X",
+        f"pycache_prefix={direct_prefix}",
+        str(script),
+        "--help",
+    ]
+    direct = subprocess.run(
+        direct_command,
+        cwd=ROOT,
+        env=dict(os.environ),
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        check=False,
+    )
+    assert direct.returncode != 0
+    assert "trusted acceptance launcher is required" in direct.stderr
+
+    preseeded_prefix = _fresh_external_prefix("baseline-preseeded")
+    preseeded_prefix.mkdir(parents=True)
+    (preseeded_prefix / "payload.pyc").write_bytes(b"untrusted")
+    preseeded_command = direct_command.copy()
+    preseeded_command[6] = f"pycache_prefix={preseeded_prefix}"
+    preseeded = subprocess.run(
+        preseeded_command,
+        cwd=ROOT,
+        env=dict(os.environ),
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        check=False,
+    )
+    assert preseeded.returncode != 0
+    assert "trusted acceptance launcher is required" in preseeded.stderr
+
+    runtime_parent = _fresh_external_prefix("baseline-launcher-parent")
+    runtime_parent.mkdir(parents=True)
+    environment = dict(os.environ)
+    environment.update(
+        {
+            "TEMP": str(runtime_parent),
+            "TMP": str(runtime_parent),
+            "TMPDIR": str(runtime_parent),
+        }
+    )
+    launched = subprocess.run(
+        [
+            sys.executable,
+            "-I",
+            "-S",
+            "-X",
+            "utf8",
+            str(launcher),
+            "baseline",
+            "--help",
+        ],
+        cwd=ROOT,
+        env=environment,
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        check=False,
+    )
+    assert launched.returncode == 0, launched.stderr
+    assert "--expected-git-sha" in launched.stdout
+    assert list(runtime_parent.iterdir()) == []
+    runtime_parent.rmdir()
+
+def test_baseline_pytest_environment_is_minimal_and_drops_secret_sentinels(
+    tmp_path: Path,
+) -> None:
+    environment = baseline_contract._pytest_environment(
+        {
+            "PATH": "trusted-path",
+            "PATHEXT": ".EXE",
+            "PYTEST_ADDOPTS": "-p hostile",
+            "PYTEST_PLUGINS": "hostile_plugin",
+            "PYTHONPATH": "hostile-import-root",
+            "APP_ENV": "production",
+            "DOCKER_CONFIG": "secret-docker-config",
+            "AWS_SECRET_ACCESS_KEY": "secret-sentinel",
+            "NPM_TOKEN": "secret-sentinel",
+        },
+        runtime_dir=tmp_path,
+    )
+
+    assert environment["PATH"] == "trusted-path"
+    assert environment["PATHEXT"] == ".EXE"
+    assert environment["APP_ENV"] == "test"
+    assert environment["PYTHONUTF8"] == "1"
+    assert environment["PYTEST_DISABLE_PLUGIN_AUTOLOAD"] == "1"
+    assert environment["TEMP"] == str(tmp_path.resolve())
+    for forbidden in (
+        "PYTEST_ADDOPTS",
+        "PYTEST_PLUGINS",
+        "PYTHONPATH",
+        "DOCKER_CONFIG",
+        "AWS_SECRET_ACCESS_KEY",
+        "NPM_TOKEN",
+    ):
+        assert forbidden not in environment
+
+
+def test_launcher_child_environment_is_minimal_and_drops_secret_sentinels(
+    tmp_path: Path,
+) -> None:
+    runtime = tmp_path / "launcher-runtime"
+    runtime.mkdir()
+    environment = acceptance_launcher._child_environment(
+        {
+            "PATH": "trusted-path",
+            "PATHEXT": ".EXE",
+            "AWS_SECRET_ACCESS_KEY": "secret-sentinel",
+            "NPM_TOKEN": "secret-sentinel",
+            "DOCKER_HOST": "tcp://hostile.invalid",
+            "PYTHONPATH": "hostile-import-root",
+        },
+        token="a" * 64,
+        marker=str(runtime / acceptance_launcher.CLAIM_FILENAME),
+        runtime=str(runtime),
+    )
+    assert environment["PATH"] == "trusted-path"
+    assert environment["COMPOSE_DISABLE_ENV_FILE"] == "1"
+    assert environment["DOCKER_CONFIG"] == str(runtime / "docker")
+    for forbidden in (
+        "AWS_SECRET_ACCESS_KEY",
+        "NPM_TOKEN",
+        "DOCKER_HOST",
+        "PYTHONPATH",
+    ):
+        assert forbidden not in environment
+
+
+def test_baseline_internal_entry_requires_consumed_launcher_claim() -> None:
+    with pytest.raises(BaselineContractError, match="consumed launcher claim"):
+        baseline_contract._require_isolated_runtime()

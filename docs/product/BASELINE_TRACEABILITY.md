@@ -72,7 +72,7 @@ python -m pytest ops/tests/test_baseline_document_contract.py -q
 
 ```powershell
 $sha = (git rev-parse HEAD).Trim()
-python scripts/check_baseline_contract.py `
+python -I -S -X utf8 scripts/acceptance_launcher.py baseline `
   --expected-git-sha $sha `
   --output-dir "C:\tmp\knowledge-uploader-baseline-$sha"
 ```

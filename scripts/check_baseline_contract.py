@@ -1,27 +1,94 @@
-# ruff: noqa: RUF001 -- contract strings intentionally mirror Chinese authority documents.
+# ruff: noqa: E402, PTH118, PTH120, RUF001 -- isolation precedes imports.
 
 """Verify BASE-001 locally and bind its evidence to an exact clean Git commit."""
 
 from __future__ import annotations
 
+import importlib.util
+import os
+import sys
+
+
+def _load_acceptance_entry() -> object:
+    module_path = os.path.join(os.path.dirname(__file__), "acceptance_entry.py")
+    spec = importlib.util.spec_from_file_location(
+        "knowledge_uploader_baseline_acceptance_entry",
+        module_path,
+    )
+    if spec is None or spec.loader is None:
+        raise RuntimeError("acceptance entry helper loader unavailable")
+    module = importlib.util.module_from_spec(spec)
+    sys.modules[spec.name] = module
+    spec.loader.exec_module(module)
+    return module
+
+
+_acceptance_entry = _load_acceptance_entry()
+_LAUNCHER_CLAIM_CONSUMED = False
+
+if __name__ == "__main__":
+    _repository = os.path.realpath(os.path.join(os.path.dirname(__file__), os.pardir))
+    try:
+        _acceptance_entry.consume_launcher_claim(_repository)
+        _LAUNCHER_CLAIM_CONSUMED = True
+    except RuntimeError as _claim_error:
+        raise SystemExit(f"baseline contract refused: {_claim_error}") from _claim_error
+    import site
+
+    site.main()
+
+
 import argparse
 import hashlib
 import json
 import re
+import secrets
 import subprocess
-import sys
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
 from tempfile import TemporaryDirectory
+from types import ModuleType
 from typing import Final, Protocol, cast
 from xml.etree import ElementTree
 
 ROOT = Path(__file__).resolve().parents[1]
-if str(ROOT) not in sys.path:
-    sys.path.insert(0, str(ROOT))
 
-from scripts.acceptance_git import AcceptanceGitError, verify_git_snapshot  # noqa: E402
+
+class _GitSnapshot(Protocol):
+    head: str
+    tree: str
+    status: str
+
+
+class _VerifyGitSnapshot(Protocol):
+    def __call__(
+        self,
+        repo_root: Path,
+        *,
+        expected_sha: str,
+        relative_paths: tuple[Path, ...],
+        source_sha256: dict[str, str],
+    ) -> _GitSnapshot: ...
+
+
+def _load_acceptance_git() -> ModuleType:
+    module_path = ROOT / "scripts" / "acceptance_git.py"
+    spec = importlib.util.spec_from_file_location(
+        "knowledge_uploader_baseline_acceptance_git",
+        module_path,
+    )
+    if spec is None or spec.loader is None:
+        raise RuntimeError("acceptance Git helper loader unavailable")
+    module = importlib.util.module_from_spec(spec)
+    sys.modules[spec.name] = module
+    spec.loader.exec_module(module)
+    return module
+
+
+_acceptance_git = _load_acceptance_git()
+AcceptanceGitError = cast(type[RuntimeError], _acceptance_git.AcceptanceGitError)
+verify_git_snapshot = cast(_VerifyGitSnapshot, _acceptance_git.verify_git_snapshot)
 
 STATE_API_SPEC = Path("需求文档/05_DATABASE_API_SPEC_数据库与API规范.md")
 BASELINE_TEST = Path("ops/tests/test_baseline_document_contract.py")
@@ -45,6 +112,33 @@ BASELINE_TEST_NODES: Final[tuple[str, ...]] = tuple(
 )
 THIS_SCRIPT = Path("scripts/check_baseline_contract.py")
 ACCEPTANCE_GIT_SCRIPT = Path("scripts/acceptance_git.py")
+ACCEPTANCE_ENTRY_SCRIPT = Path("scripts/acceptance_entry.py")
+ACCEPTANCE_LAUNCHER_SCRIPT = Path("scripts/acceptance_launcher.py")
+PYTEST_CONFIG = Path("pyproject.toml")
+PYTEST_BOOTSTRAP: Final = """
+import importlib.util
+import os
+import runpy
+import site
+import sys
+
+entry_path = os.path.join(os.getcwd(), "scripts", "acceptance_entry.py")
+entry_spec = importlib.util.spec_from_file_location(
+    "knowledge_uploader_baseline_pytest_entry",
+    entry_path,
+)
+if entry_spec is None or entry_spec.loader is None:
+    raise SystemExit("baseline pytest entry helper loader unavailable")
+entry_module = importlib.util.module_from_spec(entry_spec)
+sys.modules[entry_spec.name] = entry_module
+entry_spec.loader.exec_module(entry_module)
+try:
+    entry_module.consume_launcher_claim(os.getcwd())
+except RuntimeError as error:
+    raise SystemExit(f"baseline pytest refused: {error}") from error
+site.main()
+runpy.run_module("pytest", run_name="__main__")
+"""
 TICK = chr(96)
 
 AUTHORITY_DOCUMENTS: Final = (
@@ -67,7 +161,17 @@ AUTHORITY_DOCUMENTS: Final = (
     Path("docs/product/BASELINE_TRACEABILITY.md"),
 )
 SOURCE_FILES: Final = tuple(
-    dict.fromkeys((*AUTHORITY_DOCUMENTS, THIS_SCRIPT, ACCEPTANCE_GIT_SCRIPT, BASELINE_TEST))
+    dict.fromkeys(
+        (
+            *AUTHORITY_DOCUMENTS,
+            PYTEST_CONFIG,
+            THIS_SCRIPT,
+            ACCEPTANCE_GIT_SCRIPT,
+            ACCEPTANCE_ENTRY_SCRIPT,
+            ACCEPTANCE_LAUNCHER_SCRIPT,
+            BASELINE_TEST,
+        )
+    )
 )
 GIT_SHA_PATTERN: Final = re.compile(r"[0-9a-f]{40}")
 TRANSITION_EXPRESSION: Final = re.compile(
@@ -98,6 +202,45 @@ INLINE_ENDPOINT: Final = re.compile(
 
 class BaselineContractError(RuntimeError):
     """A fail-closed baseline verification error."""
+
+
+def _require_isolated_runtime() -> None:
+    if not _LAUNCHER_CLAIM_CONSUMED:
+        raise BaselineContractError("a consumed launcher claim is required")
+    error = _acceptance_entry.runtime_isolation_error(str(ROOT))
+    if error is not None:
+        raise BaselineContractError(error)
+
+
+MINIMAL_HOST_ENVIRONMENT_KEYS: Final = frozenset(
+    {"PATH", "PATHEXT", "SYSTEMROOT", "WINDIR", "COMSPEC", "SYSTEMDRIVE"}
+)
+
+
+def _pytest_environment(source: dict[str, str], *, runtime_dir: Path) -> dict[str, str]:
+    normalized: dict[str, tuple[str, str]] = {}
+    for key, value in source.items():
+        upper = key.upper()
+        if upper not in MINIMAL_HOST_ENVIRONMENT_KEYS:
+            continue
+        if upper in normalized:
+            raise BaselineContractError("ambiguous host environment key")
+        normalized[upper] = (key, value)
+    if "PATH" not in normalized:
+        raise BaselineContractError("host PATH is required for baseline pytest")
+    environment = {original: value for original, value in normalized.values()}
+    external_runtime = str(runtime_dir.resolve())
+    environment.update(
+        {
+            "TEMP": external_runtime,
+            "TMP": external_runtime,
+            "TMPDIR": external_runtime,
+            "PYTHONUTF8": "1",
+            "PYTEST_DISABLE_PLUGIN_AUTOLOAD": "1",
+            "APP_ENV": "test",
+        }
+    )
+    return environment
 
 
 class _PytestItem(Protocol):
@@ -1183,24 +1326,60 @@ def _validate_baseline_junit(junit_path: Path) -> tuple[int, tuple[str, ...]]:
 
 def _run_baseline_tests() -> tuple[str, int, int, tuple[str, ...]]:
     with TemporaryDirectory(prefix="knowledge-uploader-baseline-") as temporary_dir:
-        junit_path = Path(temporary_dir) / "baseline-pytest.xml"
+        runtime_dir = Path(temporary_dir).resolve()
+        if runtime_dir == ROOT.resolve() or runtime_dir.is_relative_to(ROOT.resolve()):
+            raise BaselineContractError("baseline pytest runtime must be outside the repository")
+        pycache_prefix = runtime_dir / "pycache"
+        if pycache_prefix.exists():
+            raise BaselineContractError("baseline pytest pycache prefix must be fresh")
+        claim_token = secrets.token_hex(32)
+        claim_marker = runtime_dir / str(_acceptance_entry.CLAIM_FILENAME)
+        marker_descriptor = os.open(
+            claim_marker,
+            os.O_CREAT | os.O_EXCL | os.O_WRONLY,
+            0o600,
+        )
+        try:
+            os.write(marker_descriptor, claim_token.encode("ascii"))
+            os.fsync(marker_descriptor)
+        finally:
+            os.close(marker_descriptor)
+        pytest_config = runtime_dir / "pytest.ini"
+        pytest_config.write_text("[pytest]\n", encoding="utf-8", newline="\n")
+        junit_path = runtime_dir / "baseline-pytest.xml"
         command = [
             sys.executable,
-            "-m",
-            "pytest",
+            "-I",
+            "-S",
+            "-X",
+            "utf8",
+            "-X",
+            f"pycache_prefix={pycache_prefix}",
+            "-c",
+            PYTEST_BOOTSTRAP,
             "-q",
-            "-o",
-            "xfail_strict=true",
-            "-p",
-            "scripts.check_baseline_contract",
+            "-c",
+            str(pytest_config),
+            "--rootdir",
+            str(ROOT),
+            "--runxfail",
             "--junitxml",
             str(junit_path),
             *BASELINE_TEST_NODES,
         ]
+        environment = _pytest_environment(dict(os.environ), runtime_dir=runtime_dir)
+        environment.update(
+            {
+                str(_acceptance_entry.CLAIM_TOKEN_ENV): claim_token,
+                str(_acceptance_entry.CLAIM_MARKER_ENV): str(claim_marker),
+                str(_acceptance_entry.CLAIM_RUNTIME_ENV): str(runtime_dir),
+            }
+        )
         try:
             completed = subprocess.run(
                 command,
                 cwd=ROOT,
+                env=environment,
                 capture_output=True,
                 text=True,
                 encoding="utf-8",
@@ -1210,13 +1389,21 @@ def _run_baseline_tests() -> tuple[str, int, int, tuple[str, ...]]:
             )
         except (OSError, subprocess.TimeoutExpired) as error:
             raise BaselineContractError("baseline pytest execution failed") from error
+        finally:
+            try:
+                claim_marker.unlink(missing_ok=True)
+            except OSError as error:
+                raise BaselineContractError("baseline pytest claim cleanup failed") from error
         if completed.returncode != 0:
             raise BaselineContractError("baseline pytest did not pass")
+        if pytest_config.read_text(encoding="utf-8") != "[pytest]\n":
+            raise BaselineContractError("baseline pytest config changed during execution")
         passed_count, observed_nodes = _validate_baseline_junit(junit_path)
         display_command = (
-            "python -m pytest -q -o xfail_strict=true "
-            "-p scripts.check_baseline_contract --junitxml=<temporary-junit> "
-            + " ".join(BASELINE_TEST_NODES)
+            "python -I -S -X utf8 -X pycache_prefix=<fresh-external-path> "
+            "-c <trusted-bootstrap> -q "
+            "-c <temporary-pytest-config> --rootdir <repository> --runxfail "
+            "--junitxml=<temporary-junit> " + " ".join(BASELINE_TEST_NODES)
         )
         log = (
             f"$ {display_command}\n"
@@ -1263,6 +1450,7 @@ def collect_candidate_evidence(
     expected_git_sha: str,
     output_dir: Path,
 ) -> tuple[Path, Path]:
+    _require_isolated_runtime()
     head, tree = verify_candidate_identity(expected_git_sha)
     source_before = _source_digests(ROOT)
     state_report = audit_state_claims(ROOT)
@@ -1297,12 +1485,17 @@ def collect_candidate_evidence(
         "git_replace_refs_absent": True,
         "git_grafts_absent": True,
         "git_hidden_index_flags_absent": True,
+        "git_info_exclude_inactive": True,
+        "git_global_excludes_disabled": True,
+        "untracked_execution_inputs_absent": True,
+        "minimum_git_version": "2.36.0",
         "sources_match_commit_blobs": True,
         "pytest": {
             "command": (
-                "python -m pytest <13 explicit nodeids> -q -o xfail_strict=true "
-                "-p scripts.check_baseline_contract "
-                "--junitxml=<temporary-junit>"
+                "python -I -S -X utf8 -X pycache_prefix=<fresh-external-path> "
+                "-c <trusted-bootstrap> "
+                "<13 explicit nodeids> -q -c <temporary-pytest-config> "
+                "--rootdir <repository> --runxfail --junitxml=<temporary-junit>"
             ),
             "passed_count": passed_count,
             "expected_node_count": len(BASELINE_TEST_NODES),

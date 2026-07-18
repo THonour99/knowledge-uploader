@@ -20,7 +20,7 @@ OBS-001 本机运行时验收使用唯一 Compose project、node-exporter textfi
 和 RAGFlow failure rate 四个规则从 pending 到 firing，再写入健康指标并观察 resolved。执行时必须
 绑定完整、干净的候选 SHA，证据目录必须位于仓库外且不存在：
 
-    python scripts/run_observability_acceptance.py --expected-git-sha <40位SHA> --output-dir <仓库外新目录>
+    python -I -S -X utf8 scripts/acceptance_launcher.py observability --expected-git-sha <40位SHA> --output-dir <仓库外新目录>
 
 本机验收编排只允许以下两份批准的官方 manifest 引用，禁止回退为可变 tag：
 
