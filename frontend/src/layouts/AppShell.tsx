@@ -33,7 +33,7 @@ export function AppShell() {
   const userId = useAuthStore((state) => state.user?.id);
   const setUser = useAuthStore((state) => state.setUser);
   const [isMobile, setIsMobile] = useState(
-    () => typeof window !== "undefined" && window.matchMedia("(max-width: 767px)").matches,
+    () => typeof window !== "undefined" && window.matchMedia("(max-width: 768px)").matches,
   );
   const profileQuery = useQuery({
     queryKey: ["auth", "me", userId],
@@ -61,7 +61,7 @@ export function AppShell() {
   }, [setCollapsed]);
 
   useEffect(() => {
-    const mediaQuery = window.matchMedia("(max-width: 767px)");
+    const mediaQuery = window.matchMedia("(max-width: 768px)");
     const syncMobile = () => {
       setIsMobile(mediaQuery.matches);
       if (!mediaQuery.matches) {

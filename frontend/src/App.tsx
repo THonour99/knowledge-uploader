@@ -24,7 +24,7 @@ export function SessionApplication({ children }: SessionApplicationProps) {
     <AntdApp key={sessionGeneration}>
       <QueryClientProvider client={queryClient}>
         <div className="app-root" style={themeCssVariables as CSSProperties}>
-          {children ?? <RouterProvider router={router} />}
+          {children ?? <RouterProvider router={router} future={{ v7_startTransition: true }} />}
         </div>
       </QueryClientProvider>
     </AntdApp>

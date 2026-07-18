@@ -2460,7 +2460,7 @@ a {
   border-radius: var(--ku-radius-control);
   font-weight: 600;
 }
-@media (max-width: 767px) {
+@media (max-width: 768px) {
   .top-header__menu-button {
     display: inline-flex;
   }
