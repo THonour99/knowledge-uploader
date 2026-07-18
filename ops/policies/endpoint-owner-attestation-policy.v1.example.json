@@ -1,0 +1,39 @@
+{
+  "schema": "knowledge-uploader.endpoint-owner-trust-policy.v1",
+  "version": 1,
+  "policy_id": "test-only-endpoint-owner-policy-v1",
+  "max_attestation_lifetime_seconds": 900,
+  "max_attestation_age_seconds": 900,
+  "keys": [
+    {
+      "key_id": "test-only-llm-owner-rfc8032-1",
+      "algorithm": "Ed25519",
+      "public_key_base64url": "11qYAYKxCrfVS_7TyWQHOg7hcvPapiMlrwIaaPcHURo",
+      "service_kind": "llm",
+      "environment": "test",
+      "repository": "example/knowledge-uploader",
+      "allowed_operations": [
+        "chat.completions.create"
+      ],
+      "not_before": "2026-01-01T00:00:00Z",
+      "expires_at": "2030-01-01T00:00:00Z"
+    },
+    {
+      "key_id": "test-only-ragflow-owner-rfc8032-2",
+      "algorithm": "Ed25519",
+      "public_key_base64url": "PUAXw-hDiVqStwqnTRt-vJyYLM8uxJaMwM1V8Sr0Zgw",
+      "service_kind": "ragflow",
+      "environment": "test",
+      "repository": "example/knowledge-uploader",
+      "allowed_operations": [
+        "documents.list",
+        "documents.upload",
+        "documents.update",
+        "documents.parse",
+        "documents.delete"
+      ],
+      "not_before": "2026-01-01T00:00:00Z",
+      "expires_at": "2030-01-01T00:00:00Z"
+    }
+  ]
+}

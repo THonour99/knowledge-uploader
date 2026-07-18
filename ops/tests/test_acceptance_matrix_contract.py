@@ -52,9 +52,10 @@ def test_ai_001_is_protocol_only_and_external_contracts_remain_explicit() -> Non
     assert "真 LLM" not in ai_row
     assert "内部非计费" in llm_row
     assert "COST-002" in llm_row
-    expected_status = f"未完成{chr(0xFF08)}发布阻断"
     for external_row in (llm_row, ragflow_row):
-        assert expected_status in external_row
+        assert "待执行" in external_row
+        assert "发布绑定已实现" in external_row
+        assert "真实受保护证据待补" in external_row
     for requirement in ("独立受保护 workflow", "HTTPS/SPKI", "环境所有者签名"):
         assert requirement in ragflow_row
 

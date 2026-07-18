@@ -422,8 +422,12 @@ def test_check_evidence_invokes_resolved_external_llm_contract(
             evidence_root=tmp_path,
             alertmanager_config=tmp_path / "alertmanager.yml",
             backend_api_host="127.0.0.1",
+            repository="example/knowledge-uploader",
             git_sha=TEST_GIT_SHA,
             environment="staging",
+            llm_owner_policy_sha256="1" * 64,
+            ragflow_owner_policy_sha256="2" * 64,
+            application_deployment_policy_sha256="3" * 64,
         )
 
 
@@ -819,8 +823,7 @@ def test_protected_contract_rejects_workflow_decoy_or_step_override(
         )
     else:
         marker = (
-            b"      - name: Build backend OCI layout once with SBOM and provenance\n"
-            b"        run: |"
+            b"      - name: Build backend OCI layout once with SBOM and provenance\n        run: |"
         )
         replacement = (
             b"      - name: Build backend OCI layout once with SBOM and provenance\n"
@@ -837,7 +840,7 @@ def test_protected_contract_rejects_workflow_decoy_or_step_override(
 
 def test_release_evidence_scanner_rejects_semantic_jwt_but_not_dotted_noise() -> None:
     gate = _load_gate()
-    semantic_jwt = b"eyJhbGciOiJIUzI1NiJ9." b"eyJzdWIiOiJtaW5pby1tZXRyaWNzIn0." b"eA"
+    semantic_jwt = b"eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiJtaW5pby1tZXRyaWNzIn0.eA"
 
     def token(claims: dict[str, object]) -> bytes:
         def segment(value: dict[str, object]) -> bytes:
@@ -1361,6 +1364,101 @@ def test_external_projection_rejects_unknown_checksum_and_run_mix() -> None:
             collector_run_attempt=1,
             now=now,
         )
+
+
+def test_artifact_supplied_owner_policies_cannot_replace_protected_trust_anchors() -> None:
+    gate = _load_gate()
+    attacker_policy = b'{"keys":["attacker-controlled"]}\n'
+
+    assert gate._llm_live_evidence_errors(
+        {"llm-owner-trust-policy.json": attacker_policy},
+        protected_trust={},
+        repository="example/knowledge-uploader",
+        git_sha=TEST_GIT_SHA,
+        environment="staging",
+        expected_owner_policy_sha256="0" * 64,
+        now=datetime(2026, 7, 18, 8, 0, tzinfo=UTC),
+    ) == ["LLM live evidence failed independent release validation"]
+    assert gate._ragflow_live_evidence_errors(
+        {
+            "ragflow-owner-trust-policy.json": attacker_policy,
+            "application-deployment-owner-trust-policy.json": attacker_policy,
+        },
+        protected_trust={},
+        repository="example/knowledge-uploader",
+        git_sha=TEST_GIT_SHA,
+        environment="staging",
+        expected_owner_policy_sha256="1" * 64,
+        expected_deployment_policy_sha256="2" * 64,
+        now=datetime(2026, 7, 18, 8, 0, tzinfo=UTC),
+    ) == ["RAGFlow live evidence failed independent release validation"]
+
+
+@pytest.mark.parametrize("tampered_source", ["proof", "janitor"])
+def test_ragflow_embedded_sources_are_rehashed_before_contract_validation(
+    tampered_source: str,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    gate = _load_gate()
+    original_proof: dict[str, object] = {"schema": "probe.v1", "status": "passed"}
+    original_janitor: dict[str, object] = {"schema": "janitor.v1", "status": "passed"}
+    proof = json.loads(json.dumps(original_proof))
+    janitor = json.loads(json.dumps(original_janitor))
+    if tampered_source == "proof":
+        proof["status"] = "tampered"
+    else:
+        janitor["status"] = "tampered"
+    evidence = {
+        "probe_sha256": gate._canonical_lf_sha256(original_proof),
+        "janitor_sha256": gate._canonical_lf_sha256(original_janitor),
+        "proof": proof,
+        "independent_cleanup": janitor,
+    }
+    evidence_payload = (
+        json.dumps(
+            evidence,
+            ensure_ascii=True,
+            allow_nan=False,
+            sort_keys=True,
+            separators=(",", ":"),
+        ).encode("utf-8")
+        + b"\n"
+    )
+    checksum = (f"{gate._sha256_bytes(evidence_payload)}  ragflow-live-evidence.json\n").encode(
+        "ascii"
+    )
+    owner_policy_payload = b'{"policy":"owner"}\n'
+    deployment_policy_payload = b'{"policy":"deployment"}\n'
+    monkeypatch.setattr(gate, "_validated_workflow_trust", lambda *_args, **_kwargs: {})
+    monkeypatch.setattr(
+        gate,
+        "_bind_live_trust_to_protected",
+        lambda **_kwargs: (
+            {"run_id": 707, "run_attempt": 3},
+            {"run_id": 101, "run_attempt": 2},
+        ),
+    )
+
+    def unexpected_collect(*_args: object, **_kwargs: object) -> object:
+        raise AssertionError("tampered embedded evidence reached contract validation")
+
+    monkeypatch.setattr(gate.ragflow_live_contract, "collect_evidence", unexpected_collect)
+
+    assert gate._ragflow_live_evidence_errors(
+        {
+            "ragflow-live-evidence.json": evidence_payload,
+            "ragflow-live-evidence.json.sha256": checksum,
+            "ragflow-owner-trust-policy.json": owner_policy_payload,
+            "application-deployment-owner-trust-policy.json": deployment_policy_payload,
+        },
+        protected_trust={},
+        repository="example/knowledge-uploader",
+        git_sha=TEST_GIT_SHA,
+        environment="staging",
+        expected_owner_policy_sha256=gate._sha256_bytes(owner_policy_payload),
+        expected_deployment_policy_sha256=gate._sha256_bytes(deployment_policy_payload),
+        now=datetime(2026, 7, 18, 8, 0, tzinfo=UTC),
+    ) == ["RAGFlow live evidence failed independent release validation"]
 
 
 def _write_protected_gate_inventory(gate: ModuleType, root: Path) -> None:

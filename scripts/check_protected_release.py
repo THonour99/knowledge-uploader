@@ -20,17 +20,30 @@ import uuid
 from collections.abc import Mapping
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, cast
 from urllib.parse import urlsplit
 
 import yaml  # type: ignore[import-untyped]
 
 if TYPE_CHECKING:
     from scripts.alertmanager_secret_scan import sensitive_http_header_paths
+
+    from scripts import llm_live_evidence_contract as llm_live_contract
+    from scripts import ragflow_live_evidence_contract as ragflow_live_contract
+    from scripts import release_workflow_trust as workflow_trust_gate
 else:
     try:
         from scripts.alertmanager_secret_scan import sensitive_http_header_paths
-    except ModuleNotFoundError:  # pragma: no cover - direct script execution
+
+        from scripts import llm_live_evidence_contract as llm_live_contract
+        from scripts import ragflow_live_evidence_contract as ragflow_live_contract
+        from scripts import release_workflow_trust as workflow_trust_gate
+    except ModuleNotFoundError as error:  # pragma: no cover - direct script execution
+        if error.name != "scripts":
+            raise
+        ragflow_live_contract = importlib.import_module("ragflow_live_evidence_contract")
+        workflow_trust_gate = importlib.import_module("release_workflow_trust")
+        llm_live_contract = importlib.import_module("llm_live_evidence_contract")
         sensitive_http_header_paths = importlib.import_module(
             "alertmanager_secret_scan"
         ).sensitive_http_header_paths
@@ -48,12 +61,31 @@ RELEASE_GATE_EVIDENCE_FILENAMES = (
     "infrastructure-e2e.json",
     "dgx-spark-evidence.json",
 )
+LIVE_RELEASE_EVIDENCE_FILENAMES = frozenset(
+    {
+        "llm-live-evidence.json",
+        "llm-owner-attestation.json",
+        "llm-owner-trust-policy.json",
+        "llm-live-workflow-trust.json",
+        "llm-live-workflow-trust.json.sha256",
+        "ragflow-live-evidence.json",
+        "ragflow-live-evidence.json.sha256",
+        "ragflow-owner-attestation.json",
+        "ragflow-owner-trust-policy.json",
+        "application-deployment-owner-attestation.json",
+        "application-deployment-owner-trust-policy.json",
+        "ragflow-live-workflow-trust.json",
+        "ragflow-live-workflow-trust.json.sha256",
+    }
+)
 REQUIRED_RELEASE_GATE_EVIDENCE = frozenset(
     {
         DR_RELEASE_POLICY_EVIDENCE,
         "alertmanager.yml",
         "release-workflow-trust.json",
+        "release-workflow-trust.json.sha256",
         *RELEASE_GATE_EVIDENCE_FILENAMES,
+        *LIVE_RELEASE_EVIDENCE_FILENAMES,
     }
 )
 DR_RELEASE_POLICY_KEYS = frozenset(
@@ -246,6 +278,9 @@ CONTRACT_INPUT_PATHS = frozenset(
 )
 WORKFLOW_TRUST_SCHEMA = "knowledge-uploader.release-workflow-trust.v1"
 EXTERNAL_WORKFLOW = ".github/workflows/protected-external-evidence.yml"
+LLM_LIVE_WORKFLOW = ".github/workflows/protected-llm-evidence.yml"
+RAGFLOW_LIVE_WORKFLOW = ".github/workflows/protected-ragflow-evidence.yml"
+LLM_LIVE_EVIDENCE_SCHEMA = "knowledge-uploader.llm-live-evidence.v1"
 OUTPUT_COMMON_KEYS = frozenset(
     {
         "schema",
@@ -405,6 +440,18 @@ SECRET_VALUE_PATTERN = re.compile(
 def _mapping(value: object, label: str) -> dict[str, Any]:
     if not isinstance(value, dict):
         raise RuntimeError(f"{label} must be a JSON object")
+    return value
+
+
+def _sequence(value: object, label: str) -> list[Any]:
+    if not isinstance(value, list):
+        raise RuntimeError(f"{label} must be a list")
+    return value
+
+
+def _text(value: object, label: str) -> str:
+    if not isinstance(value, str) or not value.strip():
+        raise RuntimeError(f"{label} must be non-empty text")
     return value
 
 
@@ -639,6 +686,20 @@ def _canonical_sha256(value: object) -> str:
     return _sha256_bytes(payload)
 
 
+def _canonical_lf_sha256(value: object) -> str:
+    payload = (
+        json.dumps(
+            value,
+            ensure_ascii=True,
+            sort_keys=True,
+            separators=(",", ":"),
+            allow_nan=False,
+        ).encode("utf-8")
+        + b"\n"
+    )
+    return _sha256_bytes(payload)
+
+
 def _timestamp(value: object, label: str) -> datetime:
     if not isinstance(value, str):
         raise RuntimeError(f"{label} must be an ISO timestamp")
@@ -680,6 +741,475 @@ def _exact_keys(value: dict[str, Any], expected: frozenset[str], label: str) -> 
         raise RuntimeError(f"{label} schema mismatch")
 
 
+def _verify_checksum_payload(
+    payload: bytes,
+    checksum_payload: bytes,
+    *,
+    target_name: str,
+    context: str,
+) -> None:
+    expected = f"{_sha256_bytes(payload)}  {target_name}\n".encode("ascii")
+    if checksum_payload != expected:
+        raise RuntimeError(f"{context} checksum is invalid")
+
+
+def _validated_workflow_trust(
+    payloads: Mapping[str, bytes],
+    *,
+    trust_filename: str,
+    checksum_filename: str,
+    checksum_target_name: str,
+    current_role: str,
+    repository: str,
+    git_sha: str,
+    now: datetime,
+) -> dict[str, Any]:
+    trust_payload = payloads[trust_filename]
+    _verify_checksum_payload(
+        trust_payload,
+        payloads[checksum_filename],
+        target_name=checksum_target_name,
+        context=current_role,
+    )
+    trust = _parse_evidence_payload(trust_payload, trust_filename)
+    try:
+        validated = workflow_trust_gate.validate_trust_summary(
+            trust,
+            expected_repository=repository,
+            expected_git_sha=git_sha,
+            expected_current_role=current_role,
+            now=now,
+        )
+    except workflow_trust_gate.TrustError as error:
+        raise RuntimeError(f"{current_role} workflow trust is invalid") from error
+    return dict(validated)
+
+
+def _evidence_role_record(
+    trust: Mapping[str, object],
+    role: str,
+) -> dict[str, Any]:
+    records = [
+        _mapping(value, f"workflow trust {role} evidence")
+        for value in _sequence(trust.get("evidence_runs"), "workflow trust evidence_runs")
+        if isinstance(value, dict) and value.get("role") == role
+    ]
+    if len(records) != 1:
+        raise RuntimeError(f"workflow trust {role} evidence identity is ambiguous")
+    return records[0]
+
+
+def _bind_live_trust_to_protected(
+    *,
+    protected_trust: Mapping[str, object],
+    live_trust: Mapping[str, object],
+    role: str,
+    workflow_path: str,
+) -> tuple[dict[str, Any], dict[str, Any]]:
+    if live_trust.get("repository") != protected_trust.get("repository") or live_trust.get(
+        "release_ref"
+    ) != protected_trust.get("release_ref"):
+        raise RuntimeError(f"{role} workflow trust release identity mismatch")
+    protected_main = _mapping(protected_trust.get("main_ci"), "protected workflow trust main_ci")
+    live_main = _mapping(live_trust.get("main_ci"), f"{role} workflow trust main_ci")
+    if live_main != protected_main:
+        raise RuntimeError(f"{role} workflow trust main CI binding mismatch")
+    protected_run = _evidence_role_record(protected_trust, role)
+    live_run = _mapping(live_trust.get("current"), f"{role} workflow trust current")
+    stable_fields = {
+        "role",
+        "run_id",
+        "run_attempt",
+        "workflow_path",
+        "event",
+        "head_sha",
+        "head_branch",
+        "created_at",
+    }
+    if (
+        protected_run.get("workflow_path") != workflow_path
+        or live_run.get("workflow_path") != workflow_path
+        or any(protected_run.get(field) != live_run.get(field) for field in stable_fields)
+    ):
+        raise RuntimeError(f"{role} workflow trust run identity mismatch")
+    return protected_run, live_main
+
+
+def _llm_live_evidence_errors(
+    payloads: Mapping[str, bytes],
+    *,
+    protected_trust: Mapping[str, object],
+    repository: str,
+    git_sha: str,
+    environment: str,
+    expected_owner_policy_sha256: str,
+    now: datetime,
+) -> list[str]:
+    from scripts import verify_endpoint_owner_attestation as endpoint_attestation
+
+    try:
+        if (
+            SHA256_PATTERN.fullmatch(expected_owner_policy_sha256) is None
+            or _sha256_bytes(payloads["llm-owner-trust-policy.json"])
+            != expected_owner_policy_sha256
+        ):
+            raise RuntimeError("LLM owner policy trust anchor mismatch")
+        live_trust = _validated_workflow_trust(
+            payloads,
+            trust_filename="llm-live-workflow-trust.json",
+            checksum_filename="llm-live-workflow-trust.json.sha256",
+            checksum_target_name="release-workflow-trust.json",
+            current_role="llm_live",
+            repository=repository,
+            git_sha=git_sha,
+            now=now,
+        )
+        protected_run, live_main = _bind_live_trust_to_protected(
+            protected_trust=protected_trust,
+            live_trust=live_trust,
+            role="llm_live",
+            workflow_path=LLM_LIVE_WORKFLOW,
+        )
+        evidence = _parse_evidence_payload(
+            payloads["llm-live-evidence.json"],
+            "llm-live-evidence.json",
+        )
+        if evidence.get("schema") != LLM_LIVE_EVIDENCE_SCHEMA:
+            raise RuntimeError("LLM live evidence schema is unsupported")
+        owner = _mapping(evidence.get("owner_attestation"), "LLM owner binding")
+        workflow = _mapping(evidence.get("workflow"), "LLM workflow binding")
+        main_ci = _mapping(evidence.get("main_ci"), "LLM main CI binding")
+        identities = _mapping(evidence.get("identities"), "LLM identity binding")
+        nonce = _text(owner.get("nonce"), "LLM evidence nonce")
+        context = llm_live_contract.ProbeContext(
+            environment=environment,
+            repository=repository,
+            git_sha=git_sha,
+            nonce=nonce,
+            workflow_run_id=_positive_integer(
+                protected_run.get("run_id"),
+                "LLM workflow run_id",
+            ),
+            workflow_run_attempt=_positive_integer(
+                protected_run.get("run_attempt"),
+                "LLM workflow run_attempt",
+            ),
+            main_ci_run_id=_positive_integer(live_main.get("run_id"), "LLM main run_id"),
+            main_ci_run_attempt=_positive_integer(
+                live_main.get("run_attempt"),
+                "LLM main run_attempt",
+            ),
+        )
+        probe_receipt = dict(evidence)
+        probe_receipt["schema"] = llm_live_contract.PROBE_SCHEMA
+        llm_live_contract.validate_probe_receipt(
+            probe_receipt,
+            expected_context=context,
+            now=now,
+        )
+        if (
+            workflow.get("trust_summary_sha256")
+            != _sha256_bytes(payloads["llm-live-workflow-trust.json"])
+            or main_ci.get("run_id") != live_main.get("run_id")
+            or main_ci.get("run_attempt") != live_main.get("run_attempt")
+        ):
+            raise RuntimeError("LLM evidence workflow trust binding mismatch")
+
+        attestation_payload = payloads["llm-owner-attestation.json"]
+        policy_payload = payloads["llm-owner-trust-policy.json"]
+        if owner.get("attestation_sha256") != _sha256_bytes(attestation_payload) or owner.get(
+            "policy_sha256"
+        ) != _sha256_bytes(policy_payload):
+            raise RuntimeError("LLM owner proof digest mismatch")
+        attestation_document = _parse_evidence_payload(
+            attestation_payload,
+            "llm-owner-attestation.json",
+        )
+        policy_document = _parse_evidence_payload(
+            policy_payload,
+            "llm-owner-trust-policy.json",
+        )
+        endpoint_attestation.verify_attestation(
+            attestation_document,
+            policy_document,
+            expected=endpoint_attestation.ExpectedContext(
+                service_kind="llm",
+                environment=environment,
+                repository=repository,
+                git_sha=git_sha,
+                workflow_run_id=_positive_integer(
+                    protected_run.get("run_id"),
+                    "LLM workflow run_id",
+                ),
+                workflow_run_attempt=_positive_integer(
+                    protected_run.get("run_attempt"),
+                    "LLM workflow run_attempt",
+                ),
+                endpoint_identity_sha256=_text(
+                    identities.get("endpoint_sha256"),
+                    "LLM endpoint identity",
+                ),
+                tls_spki_sha256=_text(
+                    identities.get("tls_spki_sha256"),
+                    "LLM TLS SPKI identity",
+                ),
+                nonce=nonce,
+                provider_identity_sha256=_text(
+                    identities.get("provider_sha256"),
+                    "LLM provider identity",
+                ),
+                model_identity_sha256=_text(
+                    identities.get("requested_model_sha256"),
+                    "LLM model identity",
+                ),
+            ),
+            now=now,
+        )
+    except (
+        RuntimeError,
+        ValueError,
+        llm_live_contract.LLMLiveProbeError,
+        endpoint_attestation.AttestationVerificationError,
+    ):
+        return ["LLM live evidence failed independent release validation"]
+    return []
+
+
+def _attestation_nonce(document: Mapping[str, object], context: str) -> str:
+    payload = _mapping(document.get("payload"), f"{context} payload")
+    return _text(payload.get("nonce"), f"{context} nonce")
+
+
+def _ragflow_live_evidence_errors(
+    payloads: Mapping[str, bytes],
+    *,
+    protected_trust: Mapping[str, object],
+    repository: str,
+    git_sha: str,
+    environment: str,
+    expected_owner_policy_sha256: str,
+    expected_deployment_policy_sha256: str,
+    now: datetime,
+) -> list[str]:
+    from scripts import verify_application_deployment_attestation as deployment_attestation
+    from scripts import verify_endpoint_owner_attestation as endpoint_attestation
+
+    try:
+        if (
+            SHA256_PATTERN.fullmatch(expected_owner_policy_sha256) is None
+            or SHA256_PATTERN.fullmatch(expected_deployment_policy_sha256) is None
+            or _sha256_bytes(payloads["ragflow-owner-trust-policy.json"])
+            != expected_owner_policy_sha256
+            or _sha256_bytes(payloads["application-deployment-owner-trust-policy.json"])
+            != expected_deployment_policy_sha256
+        ):
+            raise RuntimeError("RAGFlow owner policy trust anchor mismatch")
+        live_trust = _validated_workflow_trust(
+            payloads,
+            trust_filename="ragflow-live-workflow-trust.json",
+            checksum_filename="ragflow-live-workflow-trust.json.sha256",
+            checksum_target_name="release-workflow-trust.json",
+            current_role="ragflow_live",
+            repository=repository,
+            git_sha=git_sha,
+            now=now,
+        )
+        protected_run, live_main = _bind_live_trust_to_protected(
+            protected_trust=protected_trust,
+            live_trust=live_trust,
+            role="ragflow_live",
+            workflow_path=RAGFLOW_LIVE_WORKFLOW,
+        )
+        evidence_payload = payloads["ragflow-live-evidence.json"]
+        _verify_checksum_payload(
+            evidence_payload,
+            payloads["ragflow-live-evidence.json.sha256"],
+            target_name="ragflow-live-evidence.json",
+            context="RAGFlow live evidence",
+        )
+        evidence = _parse_evidence_payload(evidence_payload, "ragflow-live-evidence.json")
+        proof = _mapping(evidence.get("proof"), "RAGFlow live proof")
+        janitor = _mapping(evidence.get("independent_cleanup"), "RAGFlow live janitor")
+        probe_sha256 = _text(evidence.get("probe_sha256"), "RAGFlow probe digest")
+        janitor_sha256 = _text(evidence.get("janitor_sha256"), "RAGFlow janitor digest")
+        if (
+            _canonical_lf_sha256(proof) != probe_sha256
+            or _canonical_lf_sha256(janitor) != janitor_sha256
+        ):
+            raise RuntimeError("RAGFlow embedded source digest mismatch")
+        reconstructed = ragflow_live_contract.collect_evidence(
+            proof,
+            janitor,
+            probe_sha256=probe_sha256,
+            janitor_sha256=janitor_sha256,
+            expected_repository=repository,
+            expected_git_sha=git_sha,
+            expected_environment=environment,
+            expected_run_id=_positive_integer(
+                protected_run.get("run_id"),
+                "RAGFlow workflow run_id",
+            ),
+            expected_run_attempt=_positive_integer(
+                protected_run.get("run_attempt"),
+                "RAGFlow workflow run_attempt",
+            ),
+            expected_main_run_id=_positive_integer(
+                live_main.get("run_id"),
+                "RAGFlow main run_id",
+            ),
+            expected_main_run_attempt=_positive_integer(
+                live_main.get("run_attempt"),
+                "RAGFlow main run_attempt",
+            ),
+        )
+        if reconstructed != evidence:
+            raise RuntimeError("RAGFlow final evidence reconstruction mismatch")
+
+        proof_trust = _mapping(proof.get("trust"), "RAGFlow proof trust binding")
+        proof_main = _mapping(proof.get("main_ci"), "RAGFlow proof main CI")
+        proof_identities = _mapping(proof.get("identities"), "RAGFlow proof identities")
+        owner_binding = _mapping(
+            proof.get("owner_attestation"),
+            "RAGFlow owner attestation binding",
+        )
+        deployment_binding = _mapping(
+            proof.get("deployment_attestation"),
+            "application deployment attestation binding",
+        )
+        main_artifacts = _mapping(live_main.get("artifacts"), "RAGFlow main artifacts")
+        bundle_artifact = _mapping(main_artifacts.get("bundle"), "RAGFlow main bundle artifact")
+        if (
+            proof_trust.get("workflow_trust_sha256")
+            != _sha256_bytes(payloads["ragflow-live-workflow-trust.json"])
+            or proof_main.get("bundle_artifact_id") != bundle_artifact.get("id")
+            or proof_main.get("bundle_artifact_digest") != bundle_artifact.get("digest")
+        ):
+            raise RuntimeError("RAGFlow workflow or main artifact binding mismatch")
+
+        owner_attestation_payload = payloads["ragflow-owner-attestation.json"]
+        owner_policy_payload = payloads["ragflow-owner-trust-policy.json"]
+        if owner_binding.get("attestation_sha256") != _sha256_bytes(
+            owner_attestation_payload
+        ) or owner_binding.get("policy_sha256") != _sha256_bytes(owner_policy_payload):
+            raise RuntimeError("RAGFlow owner proof digest mismatch")
+        owner_document = _parse_evidence_payload(
+            owner_attestation_payload,
+            "ragflow-owner-attestation.json",
+        )
+        owner_policy = _parse_evidence_payload(
+            owner_policy_payload,
+            "ragflow-owner-trust-policy.json",
+        )
+        nonce = _attestation_nonce(owner_document, "RAGFlow owner attestation")
+        if owner_binding.get("nonce_sha256") != _sha256_bytes(nonce.encode("utf-8")):
+            raise RuntimeError("RAGFlow owner nonce binding mismatch")
+        endpoint_attestation.verify_attestation(
+            owner_document,
+            owner_policy,
+            expected=endpoint_attestation.ExpectedContext(
+                service_kind="ragflow",
+                environment=environment,
+                repository=repository,
+                git_sha=git_sha,
+                workflow_run_id=_positive_integer(
+                    protected_run.get("run_id"),
+                    "RAGFlow workflow run_id",
+                ),
+                workflow_run_attempt=_positive_integer(
+                    protected_run.get("run_attempt"),
+                    "RAGFlow workflow run_attempt",
+                ),
+                endpoint_identity_sha256=_text(
+                    proof_identities.get("endpoint_identity_sha256"),
+                    "RAGFlow endpoint identity",
+                ),
+                tls_spki_sha256=_text(
+                    proof_identities.get("tls_spki_sha256"),
+                    "RAGFlow TLS SPKI identity",
+                ),
+                nonce=nonce,
+                dataset_identity_sha256=_text(
+                    proof_identities.get("dataset_identity_sha256"),
+                    "RAGFlow Dataset identity",
+                ),
+            ),
+            now=now,
+        )
+
+        deployment_attestation_payload = payloads["application-deployment-owner-attestation.json"]
+        deployment_policy_payload = payloads["application-deployment-owner-trust-policy.json"]
+        if deployment_binding.get("attestation_sha256") != _sha256_bytes(
+            deployment_attestation_payload
+        ) or deployment_binding.get("policy_sha256") != _sha256_bytes(deployment_policy_payload):
+            raise RuntimeError("application deployment proof digest mismatch")
+        deployment_document = _parse_evidence_payload(
+            deployment_attestation_payload,
+            "application-deployment-owner-attestation.json",
+        )
+        deployment_policy = _parse_evidence_payload(
+            deployment_policy_payload,
+            "application-deployment-owner-trust-policy.json",
+        )
+        if _attestation_nonce(deployment_document, "application deployment") != nonce:
+            raise RuntimeError("application deployment nonce binding mismatch")
+        deployment_attestation.verify_application_deployment_attestation(
+            deployment_document,
+            deployment_policy,
+            expected=deployment_attestation.ExpectedDeploymentContext(
+                environment=environment,
+                repository=repository,
+                git_sha=git_sha,
+                nonce=nonce,
+                workflow_run_id=_positive_integer(
+                    protected_run.get("run_id"),
+                    "application deployment workflow run_id",
+                ),
+                workflow_run_attempt=_positive_integer(
+                    protected_run.get("run_attempt"),
+                    "application deployment workflow run_attempt",
+                ),
+                app_endpoint_identity_sha256=_text(
+                    proof_identities.get("app_endpoint_identity_sha256"),
+                    "application endpoint identity",
+                ),
+                app_tls_spki_sha256=_text(
+                    proof_identities.get("app_tls_spki_sha256"),
+                    "application TLS SPKI identity",
+                ),
+                main_ci_run_id=_positive_integer(
+                    proof_main.get("run_id"),
+                    "deployment main run_id",
+                ),
+                main_ci_run_attempt=_positive_integer(
+                    proof_main.get("run_attempt"),
+                    "deployment main run_attempt",
+                ),
+                main_bundle_artifact_id=_positive_integer(
+                    proof_main.get("bundle_artifact_id"),
+                    "deployment bundle artifact id",
+                ),
+                main_bundle_artifact_digest=_text(
+                    proof_main.get("bundle_artifact_digest"),
+                    "deployment bundle artifact digest",
+                ),
+                deployment_identity_sha256=_text(
+                    deployment_binding.get("deployment_identity_sha256"),
+                    "deployment identity",
+                ),
+            ),
+            now=now,
+        )
+    except (
+        RuntimeError,
+        ValueError,
+        ragflow_live_contract.EvidenceContractError,
+        endpoint_attestation.AttestationVerificationError,
+        deployment_attestation.DeploymentAttestationVerificationError,
+    ):
+        return ["RAGFlow live evidence failed independent release validation"]
+    return []
+
+
 def _external_collector_identity(
     trust: dict[str, Any],
     *,
@@ -698,7 +1228,12 @@ def _external_collector_identity(
         for record in evidence_runs
         if isinstance(record, dict)
     ]
-    if {record.get("role") for record in records} != {"dgx", "external"}:
+    if {record.get("role") for record in records} != {
+        "dgx",
+        "external",
+        "llm_live",
+        "ragflow_live",
+    }:
         raise RuntimeError("workflow trust evidence role inventory is incomplete")
     external_matches = [record for record in records if record.get("role") == "external"]
     if len(external_matches) != 1:
@@ -2392,8 +2927,11 @@ def _minio_token_validator_contract_errors(
         bool(backend_build_entries)
         and all(
             isinstance(job.get("env"), dict)
-            and job["env"].get("MINIO_MC_IMAGE") == MINIO_MC_IMAGE
-            and (not isinstance(step.get("env"), dict) or "MINIO_MC_IMAGE" not in step["env"])
+            and cast(dict[str, object], job["env"]).get("MINIO_MC_IMAGE") == MINIO_MC_IMAGE
+            and (
+                not isinstance(step.get("env"), dict)
+                or "MINIO_MC_IMAGE" not in cast(dict[str, object], step["env"])
+            )
             and _backend_build_uses_pinned_mc(run)
             for job, step, run in backend_build_entries
         ),
@@ -2740,10 +3278,8 @@ def _minio_compose_contract_errors(
     )
     protected_minio_volumes = _service_volumes(protected_minio)
     expected_tls_mounts = {
-        "${MINIO_TLS_DIR:?MINIO_TLS_DIR is required}/public.crt:"
-        "/root/.minio/certs/public.crt:ro",
-        "${MINIO_TLS_DIR:?MINIO_TLS_DIR is required}/private.key:"
-        "/root/.minio/certs/private.key:ro",
+        "${MINIO_TLS_DIR:?MINIO_TLS_DIR is required}/public.crt:/root/.minio/certs/public.crt:ro",
+        "${MINIO_TLS_DIR:?MINIO_TLS_DIR is required}/private.key:/root/.minio/certs/private.key:ro",
         "${MINIO_TLS_DIR:?MINIO_TLS_DIR is required}/ca.crt:"
         "/root/.minio/certs/CAs/protected-ca.crt:ro",
     }
@@ -2778,15 +3314,14 @@ def _minio_compose_contract_errors(
             }
             and _service_volumes(protected_init)
             == [
-                "${MINIO_TLS_DIR:?MINIO_TLS_DIR is required}/ca.crt:"
-                "/run/secrets/minio-ca/ca.crt:ro"
+                "${MINIO_TLS_DIR:?MINIO_TLS_DIR is required}/ca.crt:/run/secrets/minio-ca/ca.crt:ro"
             ],
             f"protected {init_name} does not verify the MinIO CA",
             errors,
         )
 
     expected_client_volume = (
-        "${MINIO_TLS_DIR:?MINIO_TLS_DIR is required}/ca.crt:" f"{MINIO_CA_CONTAINER_FILE}:ro"
+        f"${{MINIO_TLS_DIR:?MINIO_TLS_DIR is required}}/ca.crt:{MINIO_CA_CONTAINER_FILE}:ro"
     )
     for service_name in PROTECTED_MINIO_CLIENT_SERVICES:
         service = _compose_service(protected_services, service_name)
@@ -2807,7 +3342,7 @@ def _minio_compose_contract_errors(
         == {
             "${PROMETHEUS_CONFIG_FILE:?PROMETHEUS_CONFIG_FILE is required}:"
             "/etc/prometheus/prometheus.yml:ro",
-            "${MINIO_TLS_DIR:?MINIO_TLS_DIR is required}/ca.crt:" "/etc/prometheus/tls/ca.crt:ro",
+            "${MINIO_TLS_DIR:?MINIO_TLS_DIR is required}/ca.crt:/etc/prometheus/tls/ca.crt:ro",
         },
         "protected Prometheus config and MinIO CA mounts are incomplete",
         errors,
@@ -2905,7 +3440,7 @@ def check_contract(
             ":/etc/prometheus/prometheus.yml:ro"
         )
         in protected_volumes
-        and ("${MINIO_TLS_DIR:?MINIO_TLS_DIR is required}/ca.crt" ":/etc/prometheus/tls/ca.crt:ro")
+        and ("${MINIO_TLS_DIR:?MINIO_TLS_DIR is required}/ca.crt:/etc/prometheus/tls/ca.crt:ro")
         in protected_volumes,
         "protected Prometheus config and MinIO CA mounts are not required read-only",
         errors,
@@ -3076,8 +3611,12 @@ def check_evidence(
     evidence_root: Path,
     alertmanager_config: Path,
     backend_api_host: str,
+    repository: str,
     git_sha: str,
     environment: str,
+    llm_owner_policy_sha256: str,
+    ragflow_owner_policy_sha256: str,
+    application_deployment_policy_sha256: str,
     evidence_payloads: dict[str, bytes] | None = None,
     contract_payloads: Mapping[str, bytes] | None = None,
     now: datetime | None = None,
@@ -3177,9 +3716,38 @@ def check_evidence(
     errors.extend(_alertmanager_receiver_errors(config_payload))
     errors.extend(_alertmanager_inline_secret_errors(config_payload))
 
-    trust = _parse_evidence_payload(
-        payloads["release-workflow-trust.json"],
-        "release-workflow-trust.json",
+    trust = _validated_workflow_trust(
+        payloads,
+        trust_filename="release-workflow-trust.json",
+        checksum_filename="release-workflow-trust.json.sha256",
+        checksum_target_name="release-workflow-trust.json",
+        current_role="protected_release",
+        repository=repository,
+        git_sha=git_sha,
+        now=timestamp,
+    )
+    errors.extend(
+        _llm_live_evidence_errors(
+            payloads,
+            protected_trust=trust,
+            repository=repository,
+            git_sha=git_sha,
+            environment=environment,
+            expected_owner_policy_sha256=llm_owner_policy_sha256,
+            now=timestamp,
+        )
+    )
+    errors.extend(
+        _ragflow_live_evidence_errors(
+            payloads,
+            protected_trust=trust,
+            repository=repository,
+            git_sha=git_sha,
+            environment=environment,
+            expected_owner_policy_sha256=ragflow_owner_policy_sha256,
+            expected_deployment_policy_sha256=application_deployment_policy_sha256,
+            now=timestamp,
+        )
     )
     collector_run_id, collector_run_attempt = _external_collector_identity(
         trust,
@@ -3462,8 +4030,12 @@ def check_evidence(
 def validate_evidence_payloads(
     payloads: dict[str, bytes],
     *,
+    repository: str,
     git_sha: str,
     environment: str,
+    llm_owner_policy_sha256: str,
+    ragflow_owner_policy_sha256: str,
+    application_deployment_policy_sha256: str,
     contract_payloads: Mapping[str, bytes] | None = None,
     now: datetime | None = None,
 ) -> list[str]:
@@ -3473,8 +4045,12 @@ def validate_evidence_payloads(
         evidence_root=Path(),
         alertmanager_config=Path("alertmanager.yml"),
         backend_api_host="127.0.0.1",
+        repository=repository,
         git_sha=git_sha,
         environment=environment,
+        llm_owner_policy_sha256=llm_owner_policy_sha256,
+        ragflow_owner_policy_sha256=ragflow_owner_policy_sha256,
+        application_deployment_policy_sha256=application_deployment_policy_sha256,
         evidence_payloads=payloads,
         contract_payloads=contract_payloads,
         now=now,
@@ -3487,6 +4063,10 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--evidence-dir", type=Path)
     parser.add_argument("--alertmanager-config", type=Path)
     parser.add_argument("--backend-api-host", default="127.0.0.1")
+    parser.add_argument("--repository")
+    parser.add_argument("--llm-owner-policy-sha256")
+    parser.add_argument("--ragflow-owner-policy-sha256")
+    parser.add_argument("--application-deployment-policy-sha256")
     parser.add_argument("--git-sha")
     parser.add_argument("--environment", choices=("staging", "production"))
     return parser
@@ -3500,12 +4080,16 @@ def main() -> int:
         if (
             args.evidence_dir is None
             or args.alertmanager_config is None
+            or args.repository is None
+            or args.llm_owner_policy_sha256 is None
+            or args.ragflow_owner_policy_sha256 is None
+            or args.application_deployment_policy_sha256 is None
             or args.git_sha is None
             or args.environment is None
         ):
             sys.stderr.write(
                 "ERROR: protected gate requires evidence dir, Alertmanager config, "
-                "git SHA, and environment\n"
+                "repository, owner policy digests, git SHA, and environment\n"
             )
             return 2
         try:
@@ -3513,8 +4097,12 @@ def main() -> int:
                 evidence_root=args.evidence_dir.resolve(),
                 alertmanager_config=args.alertmanager_config,
                 backend_api_host=args.backend_api_host,
+                repository=args.repository,
                 git_sha=args.git_sha,
                 environment=args.environment,
+                llm_owner_policy_sha256=args.llm_owner_policy_sha256,
+                ragflow_owner_policy_sha256=args.ragflow_owner_policy_sha256,
+                application_deployment_policy_sha256=(args.application_deployment_policy_sha256),
             )
         except RuntimeError as error:
             sys.stderr.write(f"ERROR: {error}\n")

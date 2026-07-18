@@ -70,8 +70,8 @@ Copy-Item docker-compose.override.yml.example docker-compose.override.yml
 | MinIO | `MINIO_ENDPOINT`, `MINIO_ROOT_USER`, `MINIO_ROOT_PASSWORD`, `MINIO_ACCESS_KEY`, `MINIO_SECRET_KEY`, `MINIO_BUCKET`, `MINIO_SECURE`, `MINIO_CA_CERT_FILE` |
 | 上传 | `UPLOAD_MAX_FILE_SIZE_BYTES`, `UPLOAD_RATE_LIMIT_PER_MINUTE`, `UPLOAD_ALLOWED_EXTENSIONS`, `UPLOAD_ALLOWED_MIME_TYPES` |
 | 认证 | `ALLOWED_EMAIL_DOMAINS`, `LOGIN_MAX_FAILED_ATTEMPTS`, `LOGIN_LOCK_MINUTES`, `AUTH_*_RATE_LIMIT_PER_HOUR` |
-| RAGFlow | `RAGFLOW_BASE_URL`, `RAGFLOW_ALLOWED_BASE_URLS`, `RAGFLOW_API_KEY`, `RAGFLOW_ALLOWED_DATASET_IDS` |
-| AI | `AI_ANALYSIS_ENABLED`, `ALLOW_EXTERNAL_LLM`, `LLM_PROVIDER`, `LLM_BASE_URL`, `LLM_ALLOWED_BASE_URLS`, `LLM_API_KEY`, `LLM_MODEL` |
+| RAGFlow | `RAGFLOW_BASE_URL`, `RAGFLOW_ALLOWED_BASE_URLS`, `RAGFLOW_TLS_SPKI_PINS`, `RAGFLOW_API_KEY`, `RAGFLOW_ALLOWED_DATASET_IDS` |
+| AI | `AI_ANALYSIS_ENABLED`, `ALLOW_EXTERNAL_LLM`, `LLM_PROVIDER`, `LLM_BASE_URL`, `LLM_ALLOWED_BASE_URLS`, `LLM_TLS_SPKI_PINS`, `LLM_API_KEY`, `LLM_MODEL` |
 | SMTP | `SMTP_HOST`, `SMTP_PORT`, `SMTP_USER`, `SMTP_PASSWORD`, `SMTP_FROM`, `SMTP_TLS`, `SMTP_CA_CERT_FILE`, `SMTP_TIMEOUT_SECONDS` |
 | 指标 | `OUTBOX_METRICS_PORT`, `OPERATIONAL_METRICS_PORT`, `OPERATIONAL_METRICS_INTERVAL_SECONDS`, `PROMETHEUS_CONFIG_FILE`, `MINIO_TLS_DIR` |
 
@@ -94,7 +94,7 @@ Copy-Item docker-compose.override.yml.example docker-compose.override.yml
 - protected overlay 的 `MINIO_TLS_DIR` 必须恰好提供 `public.crt`、`private.key`、`ca.crt`；`public.crt` 的 SAN 必须包含 Compose 服务名 `DNS:minio`，健康检查固定通过 CA 访问 `https://minio:9000/minio/health/cluster`，不得使用 `-k` / `--insecure`。`private.key` 只挂入 MinIO。
 - `MINIO_CA_CERT_FILE` 指向后端容器内只读挂载的 PEM CA bundle。安全 MinIO 客户端会保留 SDK 的 5 分钟连接/读取超时、连接池大小 10，以及对 `500/502/503/504` 的 5 次退避重试；CA 文件缺失或无效时在客户端构造或 readiness 阶段安全失败，响应不回显宿主路径。
 - `SMTP_CA_CERT_FILE` 可指定企业 SMTP CA bundle。587 端口使用 STARTTLS，465 端口使用隐式 TLS；CA 文件缺失或无效会被归类为不可重试的配置错误，错误信息不回显路径。配置 CA 时禁止关闭 `SMTP_TLS`。
-- 企业 RAGFlow HTTPS CA 应加入后端容器信任链（例如只读挂载并设置 `SSL_CERT_FILE`）。禁止使用 `--insecure`、`CERT_NONE` 或关闭证书校验来通过联调。
+- 企业 RAGFlow/LLM HTTPS CA 应加入后端容器信任链（例如只读挂载并设置 `SSL_CERT_FILE`）。protected 环境还必须为完整 endpoint 配置对应的 SPKI SHA-256 pin；pin 校验不能替代 CA、证书主机名或 SNI 校验。禁止使用 `--insecure`、`CERT_NONE` 或关闭证书校验来通过联调。
 - 更新 CA 或服务器证书后必须重启 `backend-api`、全部 worker、dispatcher、scheduler 和指标采集容器，确保所有长驻进程加载同一信任链。
 
 隔离基础设施门禁会生成一次性 CA 和 MinIO、RAGFlow、SMTP、Gateway 四张服务器证书，并实际验证 HTTPS/STARTTLS、证书主机名、MinIO readiness、Prometheus 通过受信 CA 抓取 MinIO 的真实 target-up、上传审核同步链路，以及 RabbitMQ、Redis、MinIO、RAGFlow 的逐依赖故障恢复。Redis 场景必须在缓存仍停止时观察到带重试计数的持久化 Celery 消息；MinIO/RAGFlow 场景必须先持久化失败任务，再显式重试，并证明远端只创建一个文档。无论在开发机还是 DGX 上，本地 runner 的原始 `status` 与 `full_compose_e2e` 都固定为 `development_passed`；只有受保护的 DGX verifier 在同一实机复验 ARM64、干净工作树、镜像 ID、证据摘要与原始 OCI 来源后，才能生成独立的 `dgx-spark-evidence.json status=passed`，最终发布通过只由受保护聚合与授权流程产生。
@@ -117,13 +117,30 @@ Compose 私网内访问，不得发布到公网或绕过 Nginx 暴露。
 
 ## RAGFlow
 
-联调目标：
+仅限 `development` 本地联调的 HTTP 目标（不能作为 protected 发布证据）：
 
 ```env
-RAGFLOW_BASE_URL=http://192.168.4.46:8092
+RAGFLOW_BASE_URL=http://ragflow:9380
+RAGFLOW_ALLOWED_BASE_URLS=
+RAGFLOW_TLS_SPKI_PINS=
 RAGFLOW_API_KEY=<只放在后端环境>
 RAGFLOW_ALLOWED_DATASET_IDS=<新建测试 Dataset id>
 ```
+
+Protected RAGFlow 配置示例：
+
+```env
+RAGFLOW_BASE_URL=https://ragflow.corp.example/api
+RAGFLOW_ALLOWED_BASE_URLS=https://ragflow.corp.example/api
+RAGFLOW_TLS_SPKI_PINS={"https://ragflow.corp.example/api":["sha256/<base64-spki-sha256>"]}
+RAGFLOW_API_KEY=<只放在后端 secret manager>
+RAGFLOW_ALLOWED_DATASET_IDS=<隔离的目标 Dataset id>
+```
+
+示例中的 pin 是占位符，必须替换为该 endpoint 证书公钥 SPKI 的真实 32 字节 SHA-256
+base64 摘要。protected 环境只接受 HTTPS，并要求 `RAGFLOW_BASE_URL`、环境 allowlist 和
+`RAGFLOW_TLS_SPKI_PINS` 的 JSON key 精确指向同一 scheme/hostname/port/path；缺 pin、错 pin
+或只配置 CA 均 fail closed。同一 pin 禁止跨 hostname 复用。
 
 规则：
 
@@ -176,15 +193,32 @@ ALLOW_EXTERNAL_LLM=false
 LLM_PROVIDER=disabled
 ```
 
-如需接入已批准的企业内部非计费模型，必须保持外部调用门禁关闭：
+仅限 `development` 本地联调的 HTTP Provider：
 
 ```env
 LLM_PROVIDER=local_openai_compatible
-LLM_BASE_URL=http://<internal-llm-host>/v1
+LLM_BASE_URL=http://llm:8000/v1
 LLM_MODEL=<model>
 ALLOW_EXTERNAL_LLM=false
-LLM_ALLOWED_BASE_URLS=http://<internal-llm-host>/v1
+LLM_ALLOWED_BASE_URLS=http://llm:8000/v1
+LLM_TLS_SPKI_PINS=
 ```
+
+Protected 内部非计费 LLM 配置示例：
+
+```env
+LLM_PROVIDER=local_openai_compatible
+LLM_BASE_URL=https://llm.corp.example/v1
+LLM_ALLOWED_BASE_URLS=https://llm.corp.example/v1
+LLM_TLS_SPKI_PINS={"https://llm.corp.example/v1":["sha256/<base64-spki-sha256>"]}
+LLM_MODEL=<已批准的精确模型 id>
+ALLOW_EXTERNAL_LLM=false
+```
+
+示例中的 pin 是占位符，必须替换为目标 endpoint 的真实 SPKI SHA-256 base64 摘要。
+protected 环境缺少精确 endpoint pin、使用 HTTP 或 pin 不匹配时必须 fail closed；同一 pin
+禁止跨 hostname 复用。数据库 Provider 只能从环境 allowlist 与 pin 映射既有交集中选择，
+不能通过保存新的 base URL 扩大网络信任边界。
 
 `COST-002` 未定版期间不存在“管理员确认即可开启”的例外。`development` 可在受控开发联调中
 临时使用 `ALLOW_EXTERNAL_LLM=true`，但该结果不能作为 staging、production 或发布验收证据；
@@ -263,12 +297,15 @@ docker compose -f docker-compose.yml -f docker-compose.arm64.yml build
 [保护发布证据门禁](../ops/runbooks/protected-release.md)。没有最终 validated artifact
 时，不得把阶段 9 或 ARM64/灾备验收项改为完成。
 
-候选镜像采用 build-once OCI artifact：只允许主 CI 在默认分支测试成功后构建；DGX 与部署
-下载同一 artifact id/digest，并复验 OCI index、平台 manifest/config、SBOM、provenance、
-base image 和 lockfile checksum。DGX/部署端禁止 `docker build`，相同 Git SHA、Docker image
-ID 或本地 tag 不能替代制品 digest。protected gate 生成的 30 分钟 deployment authorization
-只是一份 fail-closed 交接契约；仓库尚无获授权的生产部署 workflow 或真实 registry 证据，
-因此发布、DGX 与部署状态仍按验收矩阵保留待执行。
+候选镜像采用 build-once OCI artifact：只允许主 CI 在默认分支测试成功后构建；DGX 按 exact
+main artifact ID/digest 消费，protected gate 也按同一 ID 下载并完整复验两个 OCI archives，
+再把这些原始字节连同证据和短期 authorization 封装进 final validated artifact。部署端的
+`release_oci.py verify-deployment` 必须在线核验 exact protected run/attempt 与 final artifact
+ID/digest，按 exact ID 下载，令原始 ZIP SHA-256 同时匹配 GitHub metadata 和独立部署锚点，
+安全解压后再复验 OCI index、平台 manifest/config、SBOM、provenance、base image 和 lockfile
+checksum。DGX/部署端禁止 `docker build`，相同 Git SHA、Docker image ID、本地 sidecar 或 tag
+都不能替代服务端 artifact digest。仓库仍无获授权的生产部署 workflow 或真实 registry/部署
+证据，因此发布、DGX 与部署状态继续按验收矩阵保留待执行。
 
 CI 的 Python、Node、Nginx base 与 Prometheus/Alertmanager 校验器均使用官方多架构
 manifest-list digest；tag 只保留作可读版本说明。外部证据同时携带并由最终 gate 比对校验器

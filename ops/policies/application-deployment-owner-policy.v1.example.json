@@ -1,0 +1,22 @@
+{
+  "schema": "knowledge-uploader.application-deployment-owner-trust-policy.v1",
+  "version": 1,
+  "policy_id": "test-only-application-deployment-owner-policy-v1",
+  "max_attestation_lifetime_seconds": 900,
+  "max_attestation_age_seconds": 900,
+  "keys": [
+    {
+      "key_id": "test-only-application-deployment-owner-rfc8032-3",
+      "algorithm": "Ed25519",
+      "public_key_base64url": "_FHNjmIYoaONpH7QAjDwWAgW7RO6MwOsXeuRFUiQgCU",
+      "owner_role": "application_deployment_owner",
+      "environment": "test",
+      "repository": "example/knowledge-uploader",
+      "permissions": [
+        "confirm.application-deployment"
+      ],
+      "not_before": "2026-01-01T00:00:00Z",
+      "expires_at": "2030-01-01T00:00:00Z"
+    }
+  ]
+}

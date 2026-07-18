@@ -36,6 +36,8 @@ artifact id/digest + provenance checksum + OCI archive/index/platform manifest/c
 | 主 CI 制品包 | `.github/workflows/knowledge-uploader.yml` | OCI archives、`release-oci-provenance.*` |
 | DGX 实机包 | `.github/workflows/dgx-spark-device.yml` | infrastructure、DLQ、DGX、`dgx-oci-consumption.json`、主 CI provenance、DGX trust summary |
 | 外部运维包 | `.github/workflows/protected-external-evidence.yml` | alert delivery、DR 策略与演练、email、Alertmanager、promtool |
+| LLM 在线证据包 | `.github/workflows/protected-llm-evidence.yml` | hash-only LLM receipt、endpoint owner attestation/policy、该 run 的 trust summary/checksum |
+| RAGFlow 在线证据包 | `.github/workflows/protected-ragflow-evidence.yml` | 上传/解析/幂等/独立清理证据、endpoint 与 application deployment owner attestation/policy、该 run 的 trust summary/checksum |
 
 ### 真实外部服务覆盖
 
@@ -43,12 +45,12 @@ artifact id/digest + provenance checksum + OCI archive/index/platform manifest/c
 |---|---|---|---|
 | `EXT-SMTP-001` | `knowledge-uploader.smtp-delivery-source.v1` / `knowledge-uploader.smtp-delivery-evidence.v1` | 已由 external collector、protected checker 与 deployment authorization 绑定 | 契约已实现，真实 protected-environment receipt 待执行 |
 | `EXT-WEBHOOK-001` | `knowledge-uploader.alertmanager-webhook-source.v1` / `knowledge-uploader.alertmanager-webhook-evidence.v1` | 已由 external collector、protected checker 与 deployment authorization 绑定 | 契约已实现，真实 receiver receipt 待执行 |
-| `EXT-LLM-001` | 尚无可信 Provider attestation schema | 尚无独立受保护 workflow 或 authorization 绑定 | 可信 attestation/workflow 尚未实现，当前发布阻断；仅批准的内部非计费 Provider 可在契约完成后执行，外部计费仍受 `COST-002` 阻断 |
-| `EXT-RAGFLOW-001` | 尚无可信 endpoint attestation schema | 尚无独立受保护 workflow 或 authorization 绑定 | 必须补齐 HTTPS/SPKI 验证与环境所有者签名的 endpoint attestation，当前发布阻断 |
+| `EXT-LLM-001` | `knowledge-uploader.llm-live-evidence.v1` + `knowledge-uploader.endpoint-owner-attestation.v1` | `llm_live` 独立受保护 workflow、exact run/attempt、artifact id/digest 与最终 authorization 已绑定 | 可信契约已实现；真实 protected-environment 内部非计费 Provider 证据待执行，任何外部计费调用仍受 `COST-002` 阻断 |
+| `EXT-RAGFLOW-001` | `knowledge-uploader.ragflow-live-evidence.v1` + endpoint/application-deployment owner attestation v1 | `ragflow_live` 独立受保护 workflow、exact run/attempt、main bundle、artifact id/digest 与最终 authorization 已绑定 | 可信契约已实现；真实隔离 Dataset、HTTPS/SPKI、上传/解析/幂等/独立清理证据待执行 |
 
-LLM 与 RAGFlow 的可信 attestation/workflow 尚未实现。不得把
-`PROTECTED_EVIDENCE_SOURCE_DIR` 中自行放置的 JSON、基础设施 E2E 的 mock 服务或普通本地日志
-当成这两项真实外部验收；未来证据必须由独立受保护 workflow 产生并进入最终 authorization。
+这两项的代码契约与发布绑定已经实现，但仓库仍没有可证明真实执行成功的 protected-environment
+artifact，因此状态仍为 **PENDING**。不得把 `PROTECTED_EVIDENCE_SOURCE_DIR` 中自行放置的 JSON、
+基础设施 E2E 的 mock 服务、普通本地日志或单测结果当成真实外部验收。
 
 
 ### 外部源收据 v1（严格契约）
@@ -126,7 +128,7 @@ exact `head_sha`、run attempt、success、时间窗口和 artifact digest。所
 GitHub `verification.verified=true` 的受保护 annotated semver tag 运行；任意 dispatch ref、
 lightweight/未签名 tag、失败/取消/缺失主 CI 均拒绝。
 
-四个信任链 workflow 的远程 action 只允许 `actions/*` 与 `docker/*` 审核清单，并固定到从
+六个信任链 workflow 的远程 action 只允许 `actions/*` 与 `docker/*` 审核清单，并固定到从
 官方仓库 tag ref 核验的完整 40-hex commit。workflow 默认只有 `contents: read`；需要查询 run
 时才增加 `actions: read`。当前 OCI artifact 路径不请求 `id-token: write`、`packages: write`，
 也不声称存在 registry push 或外部签名。
@@ -144,6 +146,33 @@ manifest）、架构错配或检查期间缓存身份变化都会失败。文档
 `packages: write`。DGX、protected gate 与部署必须验证 issuer、repository、workflow path、
 protected ref、Git SHA、subject digest，不能退回 tag 或重新构建。
 
+## 受保护变量、密钥与签名时点
+
+LLM 与 RAGFlow 证据只能在专用 self-hosted runner 上运行。先 dispatch 对应 workflow，让 GitHub
+生成 exact `run_id`/`run_attempt`，在 environment approval 仍等待时由所有者签署短期证明，再更新
+受保护文件/secret，最后批准 job。签名 payload 必须包含 repository、Git SHA、environment、该证据
+workflow 的 exact run id/attempt 与一次性 nonce；重跑会改变 attempt，不得复用旧 nonce/签名，必须
+重新 dispatch 并生成新证明。若 GitHub/environment secret 后端或组织审批策略无法保证在 run 创建后、
+job 获批前安全投递这些证明，则该 workflow 不可执行，状态必须保持 **PENDING**，不得批准或授权发布。
+
+- LLM secrets：`PROTECTED_LLM_BASE_URL`、`PROTECTED_LLM_API_KEY`、`PROTECTED_LLM_MODEL`；
+  variables：`PROTECTED_LLM_TLS_SPKI_PIN`、`PROTECTED_LLM_OWNER_ATTESTATION_PATH`、
+  `PROTECTED_LLM_OWNER_POLICY_PATH`、`PROTECTED_LLM_OWNER_POLICY_SHA256`。endpoint owner 还要签署
+  endpoint/SPKI/provider/model 的哈希。
+- RAGFlow secrets：`KU_APP_BASE_URL`、员工/管理员验收账号、`KU_RAGFLOW_BASE_URL`、
+  `KU_RAGFLOW_API_KEY`、`APPLICATION_DEPLOYMENT_ATTESTATION_JSON`；variables：
+  `KU_APP_TLS_SPKI_PIN`、`KU_DATASET_MAPPING_ID`、`KU_RAGFLOW_DATASET_ID`、
+  `KU_RAGFLOW_TLS_SPKI_PIN`、`RAGFLOW_OWNER_ATTESTATION_PATH`、`RAGFLOW_OWNER_POLICY_PATH`、
+  `RAGFLOW_OWNER_POLICY_SHA256`、`APPLICATION_DEPLOYMENT_IDENTITY_SHA256`、
+  `APPLICATION_DEPLOYMENT_OWNER_POLICY_PATH`、`APPLICATION_DEPLOYMENT_OWNER_POLICY_SHA256`。
+  RAGFlow endpoint owner 签署 endpoint/SPKI/Dataset 哈希；application deployment owner 用同一 nonce
+  签署应用 endpoint/SPKI、main CI run/attempt、bundle artifact id/digest 与 deployment identity。
+
+attestation/policy 文件只能位于受保护 runner 的受控路径；私钥、API key、URL、账号、prompt、文档
+原文与原始响应不得上传。发布 artifact 只保留公钥策略、签名证明和哈希身份。
+三个 owner policy SHA-256 必须由受保护环境独立配置；live workflow、最终门禁和授权交接都以这些
+外部锚点重算原始 policy 文件，禁止从待验证 artifact 或其内嵌字段反向接受策略摘要。
+
 ## 一次发布的执行顺序
 
 1. 候选 commit 合入受保护默认分支，等待 `Knowledge Uploader CI` 整个 run 成功；记录 main CI
@@ -160,51 +189,81 @@ protected ref、Git SHA、subject digest，不能退回 tag 或重新构建。
    完成真实演练，再运行 `Protected external evidence collector`。其 artifact 名固定为
    `protected-release-external-evidence-<SHA>-<run>-<attempt>`，不接受用户自选名称；校验器
    镜像必须保持 workflow 中的完整 manifest-list digest，不得改成 tag 或平台子 manifest。
-5. 手动运行 `Protected release evidence gate`，输入 main CI、DGX、外部证据各自的 run id 与
-   attempt。在线 trust summary 固定三份来源 artifact 的 id/digest，下载步骤只消费这些 ID；
-   门禁随后要求 main/DGX provenance 逐字节一致，白名单复制证据，运行
-   `check_protected_release.py`。生成授权时 `release_oci.py authorize` 不复用前一步的
-   成功结论：它会再次执行四份 receipt 的 exact-key 与完整语义校验。每份外部 JSON 和
-   `alertmanager.yml` 都以 `lstat -> O_NOFOLLOW open -> fstat -> read -> fstat/lstat` 单次
-   稳定读取；解析、语义判断与 authorization 的 `evidence_sha256` 只使用该次读取的同一
-   内存 payload。任何 symlink、inode/size/mtime 变化、路径交换或解析错误均固定失败且不回显
-   原始证据。随后才生成 30 分钟有效的 `release-authorization.json`。
-6. 最终 artifact 名为
-   `protected-release-validated-<SHA>-<environment>-<release-run>-<attempt>`。授权文件记录原始
-   main CI bundle artifact id/digest、DGX/外部 artifact id/digest、每个 OCI digest、四个
-   workflow run id/attempt 与全部证据 checksum。
+5. 按上一节签名时点运行 `Protected LLM live evidence`；只允许批准的内部非计费 Provider，
+   artifact 名固定为 `protected-llm-evidence-<SHA>-<run>-<attempt>`。记录 run id/attempt 与 GitHub
+   返回的 immutable artifact id/digest。
+6. 使用新的 nonce 和两位所有者证明运行 `Protected RAGFlow live evidence`，在隔离 Dataset 完成
+   应用上传、审核、解析、幂等重试和独立清理；artifact 名固定为
+   `protected-ragflow-evidence-<SHA>-<run>-<attempt>`。记录 run id/attempt 与 artifact id/digest。
+7. 手动运行 `Protected release evidence gate`，输入 main CI 以及 `dgx`、`external`、`llm_live`、
+   `ragflow_live` 四个 evidence role 的 exact run id/attempt。信任顺序固定为
+   `main_ci -> dgx -> external -> llm_live -> ragflow_live -> protected_release`。在线 trust summary
+   固定主 provenance 与四份证据 artifact 的 id/digest，下载步骤只消费这些 ID；门禁要求
+   main/DGX provenance 逐字节一致，按白名单复制证据，并独立重验 live trust checksum、owner
+   签名、workflow run/attempt、main bundle、HTTPS/SPKI 哈希、RAGFlow 嵌入 source digest 与清理。
+   生成授权时 `release_oci.py authorize` 会再次执行全部语义校验。所有文件都稳定读取，解析与
+   authorization 的 `evidence_sha256` 使用同一内存 payload；symlink、读取期间变化、未知文件、
+   nonce/run replay 或摘要不一致均失败且不回显原始证据。随后才生成 30 分钟有效的
+   `release-authorization.json`。
+8. 最终 artifact 名为
+   `protected-release-validated-<SHA>-<environment>-<release-run>-<attempt>`。授权文件记录 main
+   bundle/provenance 与四份 evidence artifact 的 exact id/digest、六个互不相同的 workflow run
+   id/attempt、每个 OCI digest 与全部证据 checksum；这六个 artifact id/digest 也必须全局唯一。
 
 通用运维证据新鲜度仍为两小时；OCI provenance 最长八小时；deployment authorization 只有
 30 分钟。保留期不会延长授权有效期，过期必须重新执行真实证据和门禁，不得编辑时间戳。
 
 ## 部署交接契约
 
-仓库当前没有获授权的生产部署 workflow，也没有可证明已使用的 OCI registry；因此这里只
-提供 fail-closed 交接接口，不宣称部署完成。部署执行器必须通过 authorization 中的
-`source_artifact.artifact_id` 从记录的 main CI run 下载原 bundle，而不是按 tag 搜索或重建；
-下载后先执行：
+仓库当前没有获授权的生产部署 workflow，也没有可证明已使用的 OCI registry；因此这里实现
+fail-closed 的**在线来源认证与部署交接 CLI**，但不宣称生产部署已经执行。protected-release
+workflow 在上传完成后把 repository/run/attempt/final artifact ID 与 digest 写入 GitHub run
+summary。发布负责人必须把这些坐标固定到受控部署变更记录；`validated artifact digest` 必须是
+独立于下载目录和 authorization sidecar 的输入，禁止从待验证的本地文件反推。
+
+部署机使用仅具目标仓库 Actions read 与 Contents read 权限的短期 `GH_TOKEN`，并确保 `--bundle-dir` 尚不存在：
 
 ```powershell
 python scripts/release_oci.py verify-deployment `
-  --authorization artifacts/release-authorization.json `
-  --bundle-dir release-oci `
+  --bundle-dir release-validated `
   --repository <owner/name> `
+  --repository-id <github-repository-id> `
   --git-sha <full-sha> `
-  --environment production
+  --git-ref refs/heads/main `
+  --environment production `
+  --protected-run-id <protected-release-run-id> `
+  --protected-run-attempt <exact-attempt> `
+  --validated-artifact-id <final-artifact-id> `
+  --validated-artifact-digest sha256:<final-artifact-digest> `
+  --llm-owner-policy-sha256 $env:PROTECTED_LLM_OWNER_POLICY_SHA256 `
+  --ragflow-owner-policy-sha256 $env:RAGFLOW_OWNER_POLICY_SHA256 `
+  --application-deployment-policy-sha256 `
+    $env:APPLICATION_DEPLOYMENT_OWNER_POLICY_SHA256
 ```
 
-该命令复验 authorization checksum/TTL、protected ref、run 唯一性、artifact/provenance 身份，
-稳定重读 authorization 中列出的全部证据并逐一核对 `evidence_sha256`，同时重新哈希两个 OCI
-archives、index、manifest、config、SBOM、provenance 与 base materials。因此授权后替换外部
-receipt/config 会在部署交接时失败。
+该入口按以下顺序 fail closed：
+
+1. 在线核验 repository name/ID、受保护默认分支（或指向同一 SHA 的 GitHub verified annotated
+   tag）、exact protected-release run ID/attempt、workflow path、SHA/ref、`workflow_dispatch`
+   event 以及 `completed/success`；
+2. 要求 run artifact 列表完整且 final artifact 精确名称唯一，并用 artifact detail endpoint
+   再核对调用方固定的 ID、GitHub 返回的 `sha256:` digest、来源 run、有效期与大小；
+3. 只从 `/actions/artifacts/<exact-id>/zip` 下载；下载流有 16 GiB 硬上限，原始 ZIP 字节数和
+   SHA-256 必须同时等于 GitHub metadata 与调用方独立 digest 锚点；GitHub 未返回 digest 时
+   直接失败，不把本地 sidecar 当作服务端保证；
+4. 在临时目录限额解压，拒绝绝对路径、`..`、反斜杠/盘符、Windows 保留名、大小写重名、
+   symlink/special file、加密条目、异常压缩方法、超量条目和解压膨胀；失败不会留下目标目录；
+5. 在进入本地 OCI 交接验证前，先确认解出的 authorization 绑定同一个 protected run/attempt、
+   repository、SHA、ref 与 environment；随后复验 authorization checksum/TTL、六个 run 的
+   唯一性、所有 evidence checksum、owner policy 独立锚点，以及两个 OCI archives/index/
+   manifest/config/SBOM/provenance/base materials。
+
 随后才可运行 `release_oci.py load-arm64`，并在启动后核对容器 `.Image`/本地 image ID 等于授权
 中的 config digest。任一 digest 不同立即停止；禁止用同 SHA 重建、`:latest` 或本地 tag 兜底。
 
-本地 sidecar checksum 只能证明文件传输一致性，不能证明 authorization 来自 GitHub 的
-protected workflow。未来生产部署执行器必须在调用上述命令之前，通过 GitHub API 在线核验
-exact protected-release run id/attempt、成功状态、protected ref 以及 validated artifact 的
-server artifact id/digest，或验证等价的 OIDC 签名/attestation。仓库尚无该部署执行器，因此
-这一来源认证仍为 **PENDING**，不得把 `verify-deployment` 单独当成生产授权。
+来源认证机制已经实现并有离线伪造测试；真实 production environment 审批、上述 CLI 的线上
+调用、registry/部署动作与运行后证据仍为 **PENDING**。run summary 只发布坐标，不证明环境审批
+已经发生，也不得替代 GitHub API 在线结果或受控部署变更记录。
 
 ## 本地证据检查
 
@@ -225,8 +284,10 @@ invoke ship `
 ## 当前证据状态与失败处置
 
 - 代码契约与离线伪造用例已实现；真实 GitHub main-CI OCI artifact、DGX load/Compose、registry
-  push、production deployment、真实 SMTP/告警接收人与隔离 DR 演练仍为 **PENDING**。
+  push、production deployment、真实 SMTP/告警/隔离 DR、LLM 与 RAGFlow live evidence 仍为
+  **PENDING**；不能因 workflow/schema 已实现而改为通过。
 - DGX 流程失败：保留 run 日志；确认 E2E 清理后使用新的 DGX run，禁止设备端重建。
 - 外部收集失败：修复真实演练或源目录，不要修改 JSON 伪造 `passed`。
-- protected gate 失败：按 main/DGX/external run 身份或 digest 定位；禁止合并/重传证据绕过来源。
+- protected gate 失败：按 main/DGX/external/LLM/RAGFlow run、attempt、artifact id/digest 或 owner
+  attestation 定位；禁止合并、重传、复用 nonce 或编辑证据绕过来源。
 - 未执行物理证据时，验收矩阵 `E2E/DLQ/OBS/ARM/DR` 必须继续为“待执行”。

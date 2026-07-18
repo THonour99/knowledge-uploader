@@ -12,6 +12,8 @@ TRUSTED_WORKFLOWS = (
     ROOT / ".github/workflows/dgx-spark-device.yml",
     ROOT / ".github/workflows/protected-release.yml",
     ROOT / ".github/workflows/protected-external-evidence.yml",
+    ROOT / ".github/workflows/protected-llm-evidence.yml",
+    ROOT / ".github/workflows/protected-ragflow-evidence.yml",
 )
 QEMU_BINFMT_IMAGE_ALLOWLIST = frozenset(
     {

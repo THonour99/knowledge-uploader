@@ -14,7 +14,9 @@ if TYPE_CHECKING:
 else:
     try:
         from scripts import release_oci
-    except ModuleNotFoundError:  # pragma: no cover - direct script execution
+    except ModuleNotFoundError as error:  # pragma: no cover - direct script execution
+        if error.name != "scripts":
+            raise
         release_oci = importlib.import_module("release_oci")
 
 
@@ -27,6 +29,7 @@ class ExternalEvidenceBinding:
     source_schema: str
     collector: str
     workflow: str
+    support_filenames: frozenset[str] = frozenset()
 
 
 REQUIRED_EXTERNAL_GATE_IDS: Final[frozenset[str]] = frozenset(
@@ -52,10 +55,39 @@ EXTERNAL_GATE_BINDINGS: Final[dict[str, ExternalEvidenceBinding | None]] = {
         collector="alertmanager-webhook-receiver",
         workflow=".github/workflows/protected-external-evidence.yml",
     ),
-    # Do not replace these with a repository-local receipt. Each gate remains
-    # unbound until an independent protected workflow and trusted attestation exist.
-    "EXT-LLM-001": None,
-    "EXT-RAGFLOW-001": None,
+    "EXT-LLM-001": ExternalEvidenceBinding(
+        filename="llm-live-evidence.json",
+        evidence_schema="knowledge-uploader.llm-live-evidence.v1",
+        source_schema="knowledge-uploader.endpoint-owner-attestation.v1",
+        collector="protected-llm-evidence",
+        workflow=".github/workflows/protected-llm-evidence.yml",
+        support_filenames=frozenset(
+            {
+                "llm-owner-attestation.json",
+                "llm-owner-trust-policy.json",
+                "llm-live-workflow-trust.json",
+                "llm-live-workflow-trust.json.sha256",
+            }
+        ),
+    ),
+    "EXT-RAGFLOW-001": ExternalEvidenceBinding(
+        filename="ragflow-live-evidence.json",
+        evidence_schema="knowledge-uploader.ragflow-live-evidence.v1",
+        source_schema="knowledge-uploader.endpoint-owner-attestation.v1",
+        collector="protected-ragflow-evidence",
+        workflow=".github/workflows/protected-ragflow-evidence.yml",
+        support_filenames=frozenset(
+            {
+                "ragflow-live-evidence.json.sha256",
+                "ragflow-owner-attestation.json",
+                "ragflow-owner-trust-policy.json",
+                "application-deployment-owner-attestation.json",
+                "application-deployment-owner-trust-policy.json",
+                "ragflow-live-workflow-trust.json",
+                "ragflow-live-workflow-trust.json.sha256",
+            }
+        ),
+    ),
 }
 
 
@@ -81,10 +113,12 @@ def contract_errors() -> list[str]:
         )
         if release_oci.EXTERNAL_EVIDENCE_CONTRACTS.get(binding.filename) != expected_contract:
             errors.append(f"{gate_id} evidence contract is not authorization-bound")
-        if binding.filename not in release_oci.REQUIRED_RELEASE_EVIDENCE:
+        authorization_files = {binding.filename, *binding.support_filenames}
+        if not authorization_files <= release_oci.REQUIRED_RELEASE_EVIDENCE:
             errors.append(f"{gate_id} evidence is absent from the authorization inventory")
-        if binding.workflow != release_oci.EXTERNAL_WORKFLOW:
-            errors.append(f"{gate_id} evidence is not produced by the trusted external workflow")
+        expected_workflow = release_oci.AUTHORIZATION_EVIDENCE_WORKFLOWS.get(binding.filename)
+        if binding.workflow != expected_workflow:
+            errors.append(f"{gate_id} evidence is not produced by its trusted workflow")
     return errors
 
 

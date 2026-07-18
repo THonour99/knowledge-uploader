@@ -216,7 +216,7 @@ def test_protected_workflow_verifies_provenance_and_prevents_bundle_overwrite() 
     assert environment["DGX_RUN_ATTEMPT"] == "${{ inputs.dgx_run_attempt }}"
     assert environment["EXTERNAL_RUN_ID"] == "${{ inputs.external_evidence_run_id }}"
     assert environment["EXTERNAL_RUN_ATTEMPT"] == ("${{ inputs.external_evidence_run_attempt }}")
-    _order, steps = _steps_by_name(job)
+    order, steps = _steps_by_name(job)
     trust_step = steps["Verify protected ref and all workflow run provenance"]
     assert trust_step.get("id") == "release-trust"
     provenance = str(steps["Verify protected ref and all workflow run provenance"].get("run"))
@@ -248,12 +248,22 @@ def test_protected_workflow_verifies_provenance_and_prevents_bundle_overwrite() 
     ):
         assert input_name not in all_runs
 
+    verification_name = "Verify main OCI bundle and DGX provenance copies"
+    verification = str(steps[verification_name].get("run"))
+    assert order.index(verification_name) < order.index(
+        "Assemble non-overlapping digest-bound evidence bundle"
+    )
+    assert verification.count("python scripts/release_oci.py verify") == 2
+    assert "--bundle-dir evidence/main-bundle" in verification
+    assert "--require-archives" in verification
+    assert "--bundle-dir evidence/main-provenance" in verification
+    assert "python scripts/release_workflow_trust.py verify" in verification
+    assert "--current-role dgx" in verification
     assembly = str(steps["Assemble non-overlapping digest-bound evidence bundle"].get("run"))
     assert "evidence/dgx" in assembly
     assert "evidence/external" in assembly
     assert "evidence/main-provenance" in assembly
     assert "cross-bundle evidence collision" in assembly
-    assert "main/DGX provenance mismatch" in assembly
     assert "shutil.copyfile" in assembly
 
 
@@ -321,10 +331,14 @@ def test_protected_workflow_requires_real_mail_configuration() -> None:
     )
     _order, steps = _steps_by_name(job)
     dependency_install = str(steps["Install gate parser dependency"].get("run")).strip()
-    assert dependency_install == (
-        "python -m pip install --require-hashes --only-binary=:all: "
-        "-r ops/requirements-protected-evidence.txt"
+    assert dependency_install.startswith(
+        "python -m pip install --require-hashes --only-binary=:all:"
     )
+    for requirements_file in (
+        "ops/requirements-protected-evidence.txt",
+        "ops/requirements-protected-llm-evidence.txt",
+    ):
+        assert f"-r {requirements_file}" in dependency_install
 
 
 def test_external_evidence_workflow_uses_protected_self_hosted_runner() -> None:

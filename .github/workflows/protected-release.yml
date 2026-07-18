@@ -35,6 +35,22 @@ on:
         description: Exact attempt number of the successful external evidence run
         required: true
         type: string
+      llm_evidence_run_id:
+        description: Successful protected LLM live evidence workflow run ID
+        required: true
+        type: string
+      llm_evidence_run_attempt:
+        description: Exact attempt number of the protected LLM live evidence run
+        required: true
+        type: string
+      ragflow_evidence_run_id:
+        description: Successful protected RAGFlow live evidence workflow run ID
+        required: true
+        type: string
+      ragflow_evidence_run_attempt:
+        description: Exact attempt number of the protected RAGFlow live evidence run
+        required: true
+        type: string
 
 permissions:
   contents: read
@@ -43,10 +59,11 @@ permissions:
 jobs:
   verify-protected-release:
     runs-on: ubuntu-24.04
-    timeout-minutes: 20
+    timeout-minutes: 45
     environment:
       name: ${{ inputs.environment }}
     env:
+      PYTHONPATH: ${{ github.workspace }}:${{ github.workspace }}/backend
       APP_ENV: ${{ inputs.environment }}
       ALLOW_EXTERNAL_LLM: "false"
       BACKEND_API_HOST: 127.0.0.1
@@ -66,6 +83,14 @@ jobs:
       DGX_RUN_ATTEMPT: ${{ inputs.dgx_run_attempt }}
       EXTERNAL_RUN_ID: ${{ inputs.external_evidence_run_id }}
       EXTERNAL_RUN_ATTEMPT: ${{ inputs.external_evidence_run_attempt }}
+      LLM_LIVE_RUN_ID: ${{ inputs.llm_evidence_run_id }}
+      LLM_LIVE_RUN_ATTEMPT: ${{ inputs.llm_evidence_run_attempt }}
+      RAGFLOW_LIVE_RUN_ID: ${{ inputs.ragflow_evidence_run_id }}
+      RAGFLOW_LIVE_RUN_ATTEMPT: ${{ inputs.ragflow_evidence_run_attempt }}
+      LLM_OWNER_POLICY_SHA256: ${{ vars.PROTECTED_LLM_OWNER_POLICY_SHA256 }}
+      RAGFLOW_OWNER_POLICY_SHA256: ${{ vars.RAGFLOW_OWNER_POLICY_SHA256 }}
+      APPLICATION_DEPLOYMENT_POLICY_SHA256: >-
+        ${{ vars.APPLICATION_DEPLOYMENT_OWNER_POLICY_SHA256 }}
     steps:
       - name: Checkout exact protected release revision
         uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
@@ -80,7 +105,9 @@ jobs:
 
       - name: Install gate parser dependency
         run: |
-          python -m pip install --require-hashes --only-binary=:all: -r ops/requirements-protected-evidence.txt
+          python -m pip install --require-hashes --only-binary=:all: \
+            -r ops/requirements-protected-evidence.txt \
+            -r ops/requirements-protected-llm-evidence.txt
 
       - name: Verify protected ref and all workflow run provenance
         id: release-trust
@@ -101,6 +128,8 @@ jobs:
             --main-run-attempt "${MAIN_CI_RUN_ATTEMPT}" \
             --evidence-run "dgx:${DGX_RUN_ID}:${DGX_RUN_ATTEMPT}:.github/workflows/dgx-spark-device.yml" \
             --evidence-run "external:${EXTERNAL_RUN_ID}:${EXTERNAL_RUN_ATTEMPT}:.github/workflows/protected-external-evidence.yml" \
+            --evidence-run "llm_live:${LLM_LIVE_RUN_ID}:${LLM_LIVE_RUN_ATTEMPT}:.github/workflows/protected-llm-evidence.yml" \
+            --evidence-run "ragflow_live:${RAGFLOW_LIVE_RUN_ID}:${RAGFLOW_LIVE_RUN_ATTEMPT}:.github/workflows/protected-ragflow-evidence.yml" \
             --github-output "${GITHUB_OUTPUT}" \
             --output evidence/protected-trust/release-workflow-trust.json
 
@@ -112,6 +141,14 @@ jobs:
           github-token: ${{ secrets.GITHUB_TOKEN }}
           run-id: ${{ inputs.main_ci_run_id }}
 
+
+      - name: Download exact main CI OCI bundle
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          artifact-ids: ${{ steps.release-trust.outputs.main_bundle_artifact_id }}
+          path: evidence/main-bundle
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          run-id: ${{ inputs.main_ci_run_id }}
       - name: Download DGX-bound infrastructure evidence
         uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
         with:
@@ -128,8 +165,31 @@ jobs:
           github-token: ${{ secrets.GITHUB_TOKEN }}
           run-id: ${{ inputs.external_evidence_run_id }}
 
-      - name: Verify main and DGX provenance copies
+      - name: Download protected LLM live evidence
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          artifact-ids: ${{ steps.release-trust.outputs.llm_live_artifact_id }}
+          path: evidence/llm-live
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          run-id: ${{ inputs.llm_evidence_run_id }}
+
+      - name: Download protected RAGFlow live evidence
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          artifact-ids: ${{ steps.release-trust.outputs.ragflow_live_artifact_id }}
+          path: evidence/ragflow-live
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          run-id: ${{ inputs.ragflow_evidence_run_id }}
+
+      - name: Verify main OCI bundle and DGX provenance copies
         run: |
+          python scripts/release_oci.py verify \
+            --bundle-dir evidence/main-bundle \
+            --repository "${GITHUB_REPOSITORY}" \
+            --git-sha "${GITHUB_SHA}" \
+            --workflow-run-id "${MAIN_CI_RUN_ID}" \
+            --workflow-run-attempt "${MAIN_CI_RUN_ATTEMPT}" \
+            --require-archives
           python scripts/release_oci.py verify \
             --bundle-dir evidence/main-provenance \
             --repository "${GITHUB_REPOSITORY}" \
@@ -162,6 +222,23 @@ jobs:
               "email-delivery.json",
               "promtool.json",
           }
+          llm_required = {
+              "llm-live-evidence.json",
+              "llm-owner-attestation.json",
+              "llm-owner-trust-policy.json",
+              "release-workflow-trust.json",
+              "release-workflow-trust.json.sha256",
+          }
+          ragflow_required = {
+              "ragflow-live-evidence.json",
+              "ragflow-live-evidence.json.sha256",
+              "ragflow-owner-attestation.json",
+              "ragflow-owner-trust-policy.json",
+              "application-deployment-owner-attestation.json",
+              "application-deployment-owner-trust-policy.json",
+              "release-workflow-trust.json",
+              "release-workflow-trust.json.sha256",
+          }
 
           def validate(root: Path, required: set[str], forbidden: set[str]) -> None:
               missing = sorted(
@@ -179,24 +256,53 @@ jobs:
                       f"cross-bundle evidence collision in {root}: " + ", ".join(collisions)
                   )
 
+          def validate_exact(root: Path, required: set[str]) -> None:
+              if root.is_symlink() or not root.is_dir():
+                  raise SystemExit(f"missing or unsafe evidence directory: {root}")
+              entries = {entry.name: entry for entry in root.iterdir()}
+              missing = sorted(required - set(entries))
+              extra = sorted(set(entries) - required)
+              unsafe = sorted(
+                  name
+                  for name, entry in entries.items()
+                  if entry.is_symlink() or not entry.is_file()
+              )
+              if missing or extra or unsafe:
+                  raise SystemExit(
+                      f"exact evidence inventory mismatch in {root}: "
+                      f"missing={missing}, extra={extra}, unsafe={unsafe}"
+                  )
+
           dgx_root = Path("evidence/dgx")
           external_root = Path("evidence/external")
+          llm_root = Path("evidence/llm-live")
+          ragflow_root = Path("evidence/ragflow-live")
           main_provenance = Path("evidence/main-provenance")
+          main_bundle = Path("evidence/main-bundle")
           dgx_provenance = dgx_root / "release-oci"
           protected_trust = Path("evidence/protected-trust")
           validate(dgx_root, dgx_required, external_required)
           validate(external_root, external_required, dgx_required)
-          for name in ("release-oci-provenance.json", "release-oci-provenance.sha256"):
+          validate_exact(llm_root, llm_required)
+          validate_exact(ragflow_root, ragflow_required)
+          provenance_names = {
+              "release-oci-provenance.json",
+              "release-oci-provenance.sha256",
+          }
+          bundle_names = provenance_names | {"backend.oci.tar", "frontend.oci.tar"}
+          validate_exact(main_bundle, bundle_names)
+          validate_exact(main_provenance, provenance_names)
+          for name in sorted(provenance_names):
               main_path = main_provenance / name
+              bundle_path = main_bundle / name
               dgx_path = dgx_provenance / name
               if (
-                  not main_path.is_file()
-                  or main_path.is_symlink()
-                  or not dgx_path.is_file()
+                  not dgx_path.is_file()
                   or dgx_path.is_symlink()
+                  or main_path.read_bytes() != bundle_path.read_bytes()
                   or main_path.read_bytes() != dgx_path.read_bytes()
               ):
-                  raise SystemExit(f"main/DGX provenance mismatch: {name}")
+                  raise SystemExit(f"main bundle/provenance/DGX mismatch: {name}")
           for name in ("release-workflow-trust.json", "release-workflow-trust.json.sha256"):
               path = protected_trust / name
               if not path.is_file() or path.is_symlink():
@@ -212,8 +318,32 @@ jobs:
               shutil.copyfile(dgx_root / name, output / name)
           for name in sorted(external_required):
               shutil.copyfile(external_root / name, output / name)
-          for name in ("release-oci-provenance.json", "release-oci-provenance.sha256"):
-              shutil.copyfile(main_provenance / name, output / name)
+          live_trust_names = {
+              "release-workflow-trust.json",
+              "release-workflow-trust.json.sha256",
+          }
+          for name in sorted(llm_required - live_trust_names):
+              shutil.copyfile(llm_root / name, output / name)
+          for source, destination in (
+              ("release-workflow-trust.json", "llm-live-workflow-trust.json"),
+              (
+                  "release-workflow-trust.json.sha256",
+                  "llm-live-workflow-trust.json.sha256",
+              ),
+          ):
+              shutil.copyfile(llm_root / source, output / destination)
+          for name in sorted(ragflow_required - live_trust_names):
+              shutil.copyfile(ragflow_root / name, output / name)
+          for source, destination in (
+              ("release-workflow-trust.json", "ragflow-live-workflow-trust.json"),
+              (
+                  "release-workflow-trust.json.sha256",
+                  "ragflow-live-workflow-trust.json.sha256",
+              ),
+          ):
+              shutil.copyfile(ragflow_root / source, output / destination)
+          for name in sorted(provenance_names):
+              shutil.copyfile(main_bundle / name, output / name)
           for name in ("release-workflow-trust.json", "release-workflow-trust.json.sha256"):
               shutil.copyfile(protected_trust / name, output / name)
           gate_required = {
@@ -227,6 +357,20 @@ jobs:
               "infrastructure-e2e.json",
               "dgx-spark-evidence.json",
               "release-workflow-trust.json",
+              "release-workflow-trust.json.sha256",
+              "llm-live-evidence.json",
+              "llm-owner-attestation.json",
+              "llm-owner-trust-policy.json",
+              "llm-live-workflow-trust.json",
+              "llm-live-workflow-trust.json.sha256",
+              "ragflow-live-evidence.json",
+              "ragflow-live-evidence.json.sha256",
+              "ragflow-owner-attestation.json",
+              "ragflow-owner-trust-policy.json",
+              "application-deployment-owner-attestation.json",
+              "application-deployment-owner-trust-policy.json",
+              "ragflow-live-workflow-trust.json",
+              "ragflow-live-workflow-trust.json.sha256",
           }
           for name in sorted(gate_required):
               shutil.copyfile(output / name, gate_output / name)
@@ -238,6 +382,11 @@ jobs:
             --evidence-dir evidence/protected-gate \
             --alertmanager-config evidence/protected-gate/alertmanager.yml \
             --backend-api-host 127.0.0.1 \
+            --repository "${GITHUB_REPOSITORY}" \
+            --llm-owner-policy-sha256 "${LLM_OWNER_POLICY_SHA256}" \
+            --ragflow-owner-policy-sha256 "${RAGFLOW_OWNER_POLICY_SHA256}" \
+            --application-deployment-policy-sha256 \
+              "${APPLICATION_DEPLOYMENT_POLICY_SHA256}" \
             --git-sha "${GITHUB_SHA}" \
             --environment "${RELEASE_ENVIRONMENT}"
 
@@ -257,10 +406,38 @@ jobs:
             --workflow-trust artifacts/release-workflow-trust.json \
             --output artifacts/release-authorization.json \
             --repository "${GITHUB_REPOSITORY}" \
+            --llm-owner-policy-sha256 "${LLM_OWNER_POLICY_SHA256}" \
+            --ragflow-owner-policy-sha256 "${RAGFLOW_OWNER_POLICY_SHA256}" \
+            --application-deployment-policy-sha256 \
+              "${APPLICATION_DEPLOYMENT_POLICY_SHA256}" \
             --git-sha "${GITHUB_SHA}" \
             --environment "${RELEASE_ENVIRONMENT}"
 
+      - name: Attach and verify exact OCI archives for deployment
+        run: |
+          python - <<'PY'
+          import shutil
+          from pathlib import Path
+
+          source_root = Path("evidence/main-bundle")
+          destination_root = Path("artifacts")
+          for name in ("backend.oci.tar", "frontend.oci.tar"):
+              source = source_root / name
+              destination = destination_root / name
+              if source.is_symlink() or not source.is_file() or destination.exists():
+                  raise SystemExit(f"unsafe final OCI archive handoff: {name}")
+              shutil.copyfile(source, destination)
+          PY
+          python scripts/release_oci.py verify \
+            --bundle-dir artifacts \
+            --repository "${GITHUB_REPOSITORY}" \
+            --git-sha "${GITHUB_SHA}" \
+            --workflow-run-id "${MAIN_CI_RUN_ID}" \
+            --workflow-run-attempt "${MAIN_CI_RUN_ATTEMPT}" \
+            --require-archives
+
       - name: Preserve the validated evidence and authorization bundle
+        id: validated-artifact
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
           name: protected-release-validated-${{ github.sha }}-${{ inputs.environment }}-${{ github.run_id }}-${{ github.run_attempt }}
@@ -270,3 +447,37 @@ jobs:
           compression-level: 0
           overwrite: false
           include-hidden-files: false
+
+      - name: Publish exact deployment source coordinates
+        env:
+          VALIDATED_ARTIFACT_ID: ${{ steps.validated-artifact.outputs.artifact-id }}
+          VALIDATED_ARTIFACT_DIGEST: ${{ steps.validated-artifact.outputs.artifact-digest }}
+          VALIDATED_ARTIFACT_NAME: protected-release-validated-${{ github.sha }}-${{ inputs.environment }}-${{ github.run_id }}-${{ github.run_attempt }}
+          VALIDATED_REPOSITORY_ID: ${{ github.repository_id }}
+        run: |
+          python - <<'PY'
+          import os
+          import re
+          from pathlib import Path
+
+          artifact_id = os.environ["VALIDATED_ARTIFACT_ID"]
+          artifact_digest = os.environ["VALIDATED_ARTIFACT_DIGEST"]
+          if re.fullmatch(r"[1-9][0-9]*", artifact_id) is None:
+              raise SystemExit("upload-artifact did not return a valid artifact ID")
+          if re.fullmatch(r"[0-9a-f]{64}", artifact_digest) is None:
+              raise SystemExit("upload-artifact did not return a valid SHA-256 digest")
+          summary = Path(os.environ["GITHUB_STEP_SUMMARY"])
+          summary.write_text(
+              "### Exact deployment source coordinates\n\n"
+              f"- repository: `{os.environ['GITHUB_REPOSITORY']}`\n"
+              f"- repository id: `{os.environ['VALIDATED_REPOSITORY_ID']}`\n"
+              f"- git ref: `{os.environ['GITHUB_REF']}`\n"
+              f"- git sha: `{os.environ['GITHUB_SHA']}`\n"
+              f"- protected run id: `{os.environ['GITHUB_RUN_ID']}`\n"
+              f"- protected run attempt: `{os.environ['GITHUB_RUN_ATTEMPT']}`\n"
+              f"- artifact name: `{os.environ['VALIDATED_ARTIFACT_NAME']}`\n"
+              f"- artifact id: `{artifact_id}`\n"
+              f"- artifact digest: `sha256:{artifact_digest}`\n",
+              encoding="utf-8",
+          )
+          PY

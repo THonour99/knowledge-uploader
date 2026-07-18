@@ -14,6 +14,7 @@ import importlib
 import json
 import os
 import re
+import shutil
 import stat
 import subprocess
 import sys
@@ -32,8 +33,20 @@ if TYPE_CHECKING:
 else:
     try:
         from scripts import check_protected_release as protected_release_gate
-    except ModuleNotFoundError:  # pragma: no cover - direct script execution
+    except ModuleNotFoundError as error:  # pragma: no cover - direct script execution
+        if error.name != "scripts":
+            raise
         protected_release_gate = importlib.import_module("check_protected_release")
+
+if TYPE_CHECKING:
+    from scripts import release_workflow_trust as workflow_trust
+else:
+    try:
+        from scripts import release_workflow_trust as workflow_trust
+    except ModuleNotFoundError as error:  # pragma: no cover - direct script execution
+        if error.name != "scripts":
+            raise
+        workflow_trust = importlib.import_module("release_workflow_trust")
 
 SCHEMA: Final = "knowledge-uploader.release-oci.v1"
 DGX_BINDING_SCHEMA: Final = "knowledge-uploader.dgx-oci-binding.v1"
@@ -44,6 +57,20 @@ MAIN_WORKFLOW: Final = ".github/workflows/knowledge-uploader.yml"
 DGX_WORKFLOW: Final = ".github/workflows/dgx-spark-device.yml"
 PROTECTED_WORKFLOW: Final = ".github/workflows/protected-release.yml"
 EXTERNAL_WORKFLOW: Final = ".github/workflows/protected-external-evidence.yml"
+LLM_LIVE_WORKFLOW: Final = ".github/workflows/protected-llm-evidence.yml"
+RAGFLOW_LIVE_WORKFLOW: Final = ".github/workflows/protected-ragflow-evidence.yml"
+EVIDENCE_WORKFLOWS: Final = {
+    "dgx": DGX_WORKFLOW,
+    "external": EXTERNAL_WORKFLOW,
+    "llm_live": LLM_LIVE_WORKFLOW,
+    "ragflow_live": RAGFLOW_LIVE_WORKFLOW,
+}
+EVIDENCE_ARTIFACT_PREFIXES: Final = {
+    "dgx": "dgx-spark-evidence",
+    "external": "protected-release-external-evidence",
+    "llm_live": "protected-llm-evidence",
+    "ragflow_live": "protected-ragflow-evidence",
+}
 DR_RELEASE_POLICY_INPUT_PATH: Final = "ops/policies/dr-release-policy.json"
 REQUIRED_INPUT_PATHS: Final = frozenset(
     {
@@ -86,6 +113,19 @@ REQUIRED_RELEASE_EVIDENCE: Final = frozenset(
         CHECKSUM_FILENAME,
         "release-workflow-trust.json",
         "release-workflow-trust.json.sha256",
+        "llm-live-evidence.json",
+        "llm-owner-attestation.json",
+        "llm-owner-trust-policy.json",
+        "llm-live-workflow-trust.json",
+        "llm-live-workflow-trust.json.sha256",
+        "ragflow-live-evidence.json",
+        "ragflow-live-evidence.json.sha256",
+        "ragflow-owner-attestation.json",
+        "ragflow-owner-trust-policy.json",
+        "application-deployment-owner-attestation.json",
+        "application-deployment-owner-trust-policy.json",
+        "ragflow-live-workflow-trust.json",
+        "ragflow-live-workflow-trust.json.sha256",
     }
 )
 EXTERNAL_EVIDENCE_CONTRACTS: Final = {
@@ -109,6 +149,22 @@ EXTERNAL_EVIDENCE_CONTRACTS: Final = {
         "knowledge-uploader.observability-validator-source.v1",
         "observability-validator",
     ),
+    "llm-live-evidence.json": (
+        "knowledge-uploader.llm-live-evidence.v1",
+        "knowledge-uploader.endpoint-owner-attestation.v1",
+        "protected-llm-evidence",
+    ),
+    "ragflow-live-evidence.json": (
+        "knowledge-uploader.ragflow-live-evidence.v1",
+        "knowledge-uploader.endpoint-owner-attestation.v1",
+        "protected-ragflow-evidence",
+    ),
+}
+AUTHORIZATION_EVIDENCE_WORKFLOWS: Final = {
+    "alertmanager-notification.json": EXTERNAL_WORKFLOW,
+    "email-delivery.json": EXTERNAL_WORKFLOW,
+    "llm-live-evidence.json": LLM_LIVE_WORKFLOW,
+    "ragflow-live-evidence.json": RAGFLOW_LIVE_WORKFLOW,
 }
 
 
@@ -241,6 +297,13 @@ def _digest(value: object, context: str) -> str:
     text = _text(value, context)
     if SHA256_PATTERN.fullmatch(text) is None:
         raise ContractError(f"{context} must be a sha256 digest")
+    return text
+
+
+def _hex_sha256(value: object, context: str) -> str:
+    text = _text(value, context)
+    if HEX_SHA256_PATTERN.fullmatch(text) is None:
+        raise ContractError(f"{context} must be a hexadecimal SHA-256 digest")
     return text
 
 
@@ -1671,9 +1734,9 @@ def _trust_release_roles(
         role = _text(record.get("role"), "release workflow trust evidence role")
         if role in evidence:
             raise ContractError("release workflow trust contains duplicate evidence roles")
-        expected_workflow = DGX_WORKFLOW if role == "dgx" else EXTERNAL_WORKFLOW
+        expected_workflow = EVIDENCE_WORKFLOWS.get(role)
         if (
-            role not in {"dgx", "external"}
+            expected_workflow is None
             or record.get("workflow_path") != expected_workflow
             or record.get("event") != "workflow_dispatch"
             or record.get("status") != "completed"
@@ -1685,7 +1748,7 @@ def _trust_release_roles(
             record.get("run_attempt"),
             f"release workflow trust {role}.run_attempt",
         )
-        prefix = "dgx-spark-evidence" if role == "dgx" else "protected-release-external-evidence"
+        prefix = EVIDENCE_ARTIFACT_PREFIXES[role]
         record["artifact"] = _validate_trust_artifact(
             artifact_value,
             context=f"release workflow trust {role}.artifact",
@@ -1693,7 +1756,7 @@ def _trust_release_roles(
             expected_run_id=run_id,
         )
         evidence[role] = record
-    if set(evidence) != {"dgx", "external"}:
+    if set(evidence) != set(EVIDENCE_WORKFLOWS):
         raise ContractError("release workflow trust evidence inventory is incomplete")
     run_ids = {
         _positive_integer(current.get("run_id"), "release workflow trust.current.run_id"),
@@ -1703,7 +1766,7 @@ def _trust_release_roles(
             for role, record in evidence.items()
         ),
     }
-    if len(run_ids) != 4:
+    if len(run_ids) != 2 + len(EVIDENCE_WORKFLOWS):
         raise ContractError("release workflow trust reuses a workflow run across roles")
     return current, main, evidence
 
@@ -1778,10 +1841,24 @@ def authorize_release(
     repository: str,
     git_sha: str,
     environment: str,
+    llm_owner_policy_sha256: str,
+    ragflow_owner_policy_sha256: str,
+    application_deployment_policy_sha256: str,
     now: datetime | None = None,
 ) -> Mapping[str, object]:
     timestamp = (now or datetime.now(UTC)).astimezone(UTC)
     sha = _git_sha(git_sha, "git_sha")
+    owner_policy_sha256 = {
+        "llm": _hex_sha256(llm_owner_policy_sha256, "LLM owner policy SHA-256"),
+        "ragflow": _hex_sha256(
+            ragflow_owner_policy_sha256,
+            "RAGFlow owner policy SHA-256",
+        ),
+        "application_deployment": _hex_sha256(
+            application_deployment_policy_sha256,
+            "application deployment policy SHA-256",
+        ),
+    }
     evidence_root = evidence_dir.resolve()
     expected_binding_path = evidence_root / "dgx-oci-consumption.json"
     expected_trust_path = evidence_root / "release-workflow-trust.json"
@@ -1803,8 +1880,12 @@ def authorize_release(
         }
         evidence_errors = protected_release_gate.validate_evidence_payloads(
             gate_evidence_payloads,
+            repository=repository,
             git_sha=sha,
             environment=environment,
+            llm_owner_policy_sha256=owner_policy_sha256["llm"],
+            ragflow_owner_policy_sha256=owner_policy_sha256["ragflow"],
+            application_deployment_policy_sha256=owner_policy_sha256["application_deployment"],
             contract_payloads=contract_payloads,
             now=timestamp,
         )
@@ -1923,12 +2004,16 @@ def authorize_release(
             "main_ci": main.get("run_id"),
             "dgx": evidence_runs["dgx"].get("run_id"),
             "external": evidence_runs["external"].get("run_id"),
+            "llm_live": evidence_runs["llm_live"].get("run_id"),
+            "ragflow_live": evidence_runs["ragflow_live"].get("run_id"),
             "protected_release": current.get("run_id"),
         },
         "workflow_run_attempts": {
             "main_ci": main.get("run_attempt"),
             "dgx": evidence_runs["dgx"].get("run_attempt"),
             "external": evidence_runs["external"].get("run_attempt"),
+            "llm_live": evidence_runs["llm_live"].get("run_attempt"),
+            "ragflow_live": evidence_runs["ragflow_live"].get("run_attempt"),
             "protected_release": current.get("run_attempt"),
         },
         "evidence_artifacts": {
@@ -1957,11 +2042,13 @@ def authorize_release(
             "artifact_name": bundle_artifact.get("name"),
             "artifact_digest": bundle_artifact.get("digest"),
             "provenance_artifact_id": provenance_artifact.get("id"),
+            "provenance_artifact_name": provenance_artifact.get("name"),
             "provenance_artifact_digest": provenance_artifact.get("digest"),
             "provenance_sha256": provenance_sha256,
         },
         "images": image_authorizations,
         "evidence_sha256": evidence_digests,
+        "owner_policy_sha256": owner_policy_sha256,
         "workflow_trust_sha256": trust_sha256,
         "deployment_policy": "download_exact_artifact_id_then_verify_oci_archives",
     }
@@ -1981,6 +2068,11 @@ def validate_deployment_handoff(
     repository: str,
     git_sha: str,
     environment: str,
+    llm_owner_policy_sha256: str,
+    ragflow_owner_policy_sha256: str,
+    application_deployment_policy_sha256: str,
+    expected_protected_run_id: int | None = None,
+    expected_protected_run_attempt: int | None = None,
     now: datetime | None = None,
 ) -> Mapping[str, object]:
     authorization_snapshot = _verified_json_snapshot(
@@ -2005,6 +2097,7 @@ def validate_deployment_handoff(
             "source_artifact",
             "images",
             "evidence_sha256",
+            "owner_policy_sha256",
             "workflow_trust_sha256",
             "deployment_policy",
         },
@@ -2044,14 +2137,21 @@ def validate_deployment_handoff(
     workflow_runs = _mapping(authorization.get("workflow_runs"), "authorization.workflow_runs")
     _exact_keys(
         workflow_runs,
-        {"main_ci", "dgx", "external", "protected_release"},
+        {
+            "main_ci",
+            "dgx",
+            "external",
+            "llm_live",
+            "ragflow_live",
+            "protected_release",
+        },
         "authorization.workflow_runs",
     )
     run_ids = {
         _positive_integer(value, f"authorization.workflow_runs.{name}")
         for name, value in workflow_runs.items()
     }
-    if len(run_ids) != 4:
+    if len(run_ids) != 2 + len(EVIDENCE_WORKFLOWS):
         raise ContractError("release authorization reuses a workflow run across trust roles")
     workflow_attempts = _mapping(
         authorization.get("workflow_run_attempts"),
@@ -2059,16 +2159,45 @@ def validate_deployment_handoff(
     )
     _exact_keys(
         workflow_attempts,
-        {"main_ci", "dgx", "external", "protected_release"},
+        {
+            "main_ci",
+            "dgx",
+            "external",
+            "llm_live",
+            "ragflow_live",
+            "protected_release",
+        },
         "authorization.workflow_run_attempts",
     )
     for role, attempt in workflow_attempts.items():
         _positive_integer(attempt, f"authorization.workflow_run_attempts.{role}")
+    if (expected_protected_run_id is None) != (expected_protected_run_attempt is None):
+        raise ContractError("expected protected run ID and attempt must be supplied together")
+    if expected_protected_run_id is not None and expected_protected_run_attempt is not None:
+        protected_run_id = _positive_integer(
+            expected_protected_run_id,
+            "expected_protected_run_id",
+        )
+        protected_run_attempt = _positive_integer(
+            expected_protected_run_attempt,
+            "expected_protected_run_attempt",
+        )
+        if (
+            workflow_runs.get("protected_release") != protected_run_id
+            or workflow_attempts.get("protected_release") != protected_run_attempt
+        ):
+            raise ContractError("authorization protected workflow source mismatch")
     evidence_artifacts = _mapping(
         authorization.get("evidence_artifacts"),
         "authorization.evidence_artifacts",
     )
-    _exact_keys(evidence_artifacts, {"dgx", "external"}, "authorization.evidence_artifacts")
+    _exact_keys(
+        evidence_artifacts,
+        set(EVIDENCE_WORKFLOWS),
+        "authorization.evidence_artifacts",
+    )
+    artifact_ids: list[int] = []
+    artifact_digests: list[str] = []
     for role, value in evidence_artifacts.items():
         artifact = _mapping(value, f"authorization.evidence_artifacts.{role}")
         _exact_keys(
@@ -2086,17 +2215,27 @@ def validate_deployment_handoff(
             "workflow_run_attempt"
         ) != workflow_attempts.get(role):
             raise ContractError(f"authorization {role} artifact run identity mismatch")
-        _positive_integer(
-            artifact.get("artifact_id"),
-            f"authorization.evidence_artifacts.{role}.artifact_id",
+        artifact_ids.append(
+            _positive_integer(
+                artifact.get("artifact_id"),
+                f"authorization.evidence_artifacts.{role}.artifact_id",
+            )
         )
-        _text(
+        artifact_name = _text(
             artifact.get("artifact_name"),
             f"authorization.evidence_artifacts.{role}.artifact_name",
         )
-        _digest(
-            artifact.get("artifact_digest"),
-            f"authorization.evidence_artifacts.{role}.artifact_digest",
+        expected_artifact_name = (
+            f"{EVIDENCE_ARTIFACT_PREFIXES[role]}-{sha}-"
+            f"{workflow_runs[role]}-{workflow_attempts[role]}"
+        )
+        if artifact_name != expected_artifact_name:
+            raise ContractError(f"authorization {role} artifact name mismatch")
+        artifact_digests.append(
+            _digest(
+                artifact.get("artifact_digest"),
+                f"authorization.evidence_artifacts.{role}.artifact_digest",
+            )
         )
     source_artifact = _mapping(authorization.get("source_artifact"), "source_artifact")
     _exact_keys(
@@ -2108,19 +2247,67 @@ def validate_deployment_handoff(
             "artifact_name",
             "artifact_digest",
             "provenance_artifact_id",
+            "provenance_artifact_name",
             "provenance_artifact_digest",
             "provenance_sha256",
         },
         "source_artifact",
     )
-    _positive_integer(source_artifact.get("artifact_id"), "source_artifact.artifact_id")
-    _positive_integer(
-        source_artifact.get("provenance_artifact_id"),
-        "source_artifact.provenance_artifact_id",
+    artifact_ids.extend(
+        (
+            _positive_integer(
+                source_artifact.get("artifact_id"),
+                "source_artifact.artifact_id",
+            ),
+            _positive_integer(
+                source_artifact.get("provenance_artifact_id"),
+                "source_artifact.provenance_artifact_id",
+            ),
+        )
     )
-    _text(source_artifact.get("artifact_name"), "source_artifact.artifact_name")
-    for field in ("artifact_digest", "provenance_artifact_digest", "provenance_sha256"):
-        _digest(source_artifact.get(field), f"source_artifact.{field}")
+    source_run_id = _positive_integer(
+        source_artifact.get("workflow_run_id"),
+        "source_artifact.workflow_run_id",
+    )
+    source_run_attempt = _positive_integer(
+        source_artifact.get("workflow_run_attempt"),
+        "source_artifact.workflow_run_attempt",
+    )
+    if source_run_id != workflow_runs.get("main_ci") or source_run_attempt != workflow_attempts.get(
+        "main_ci"
+    ):
+        raise ContractError("source artifact main CI run identity mismatch")
+    expected_source_suffix = f"{sha}-{source_run_id}-{source_run_attempt}"
+    if _text(source_artifact.get("artifact_name"), "source_artifact.artifact_name") != (
+        f"release-oci-bundle-{expected_source_suffix}"
+    ):
+        raise ContractError("source bundle artifact name mismatch")
+    if (
+        _text(
+            source_artifact.get("provenance_artifact_name"),
+            "source_artifact.provenance_artifact_name",
+        )
+        != f"release-oci-provenance-{expected_source_suffix}"
+    ):
+        raise ContractError("source provenance artifact name mismatch")
+    artifact_digests.extend(
+        (
+            _digest(
+                source_artifact.get("artifact_digest"),
+                "source_artifact.artifact_digest",
+            ),
+            _digest(
+                source_artifact.get("provenance_artifact_digest"),
+                "source_artifact.provenance_artifact_digest",
+            ),
+        )
+    )
+    _digest(source_artifact.get("provenance_sha256"), "source_artifact.provenance_sha256")
+    expected_artifact_count = 2 + len(EVIDENCE_WORKFLOWS)
+    if len(set(artifact_ids)) != expected_artifact_count:
+        raise ContractError("release authorization reuses a GitHub artifact ID")
+    if len(set(artifact_digests)) != expected_artifact_count:
+        raise ContractError("release authorization reuses a GitHub artifact digest")
     authorized_images = _mapping(authorization.get("images"), "authorization.images")
     _exact_keys(authorized_images, {"backend", "frontend"}, "authorization.images")
     evidence_digests = _mapping(
@@ -2131,6 +2318,44 @@ def validate_deployment_handoff(
         set(REQUIRED_RELEASE_EVIDENCE),
         "authorization.evidence_sha256",
     )
+    expected_owner_policy_sha256 = {
+        "llm": _hex_sha256(
+            llm_owner_policy_sha256,
+            "expected LLM owner policy SHA-256",
+        ),
+        "ragflow": _hex_sha256(
+            ragflow_owner_policy_sha256,
+            "expected RAGFlow owner policy SHA-256",
+        ),
+        "application_deployment": _hex_sha256(
+            application_deployment_policy_sha256,
+            "expected application deployment policy SHA-256",
+        ),
+    }
+    owner_policy_sha256 = _mapping(
+        authorization.get("owner_policy_sha256"),
+        "authorization.owner_policy_sha256",
+    )
+    _exact_keys(
+        owner_policy_sha256,
+        {"llm", "ragflow", "application_deployment"},
+        "authorization.owner_policy_sha256",
+    )
+    authorized_owner_policy_sha256 = {
+        role: _hex_sha256(
+            owner_policy_sha256.get(role),
+            f"authorization.owner_policy_sha256.{role}",
+        )
+        for role in expected_owner_policy_sha256
+    }
+    for role, expected_policy_sha256 in expected_owner_policy_sha256.items():
+        if authorized_owner_policy_sha256[role] != expected_policy_sha256:
+            raise ContractError(f"authorization {role} owner policy trust anchor mismatch")
+    policy_evidence = {
+        "llm": "llm-owner-trust-policy.json",
+        "ragflow": "ragflow-owner-trust-policy.json",
+        "application_deployment": "application-deployment-owner-trust-policy.json",
+    }
     deployment_snapshots = {
         name: _snapshot_bytes(
             bundle_dir / name,
@@ -2138,6 +2363,10 @@ def validate_deployment_handoff(
         )
         for name in sorted(REQUIRED_RELEASE_EVIDENCE)
     }
+    for role, filename in policy_evidence.items():
+        actual_policy_sha256 = deployment_snapshots[filename].sha256.removeprefix("sha256:")
+        if authorized_owner_policy_sha256[role] != actual_policy_sha256:
+            raise ContractError(f"deployment {role} owner policy trust anchor mismatch")
     for name, digest_value in evidence_digests.items():
         expected_digest = _digest(digest_value, f"authorization.evidence_sha256.{name}")
         actual_digest = deployment_snapshots[name].sha256
@@ -2250,16 +2479,27 @@ def _build_parser() -> argparse.ArgumentParser:
     authorize.add_argument("--workflow-trust", required=True, type=Path)
     authorize.add_argument("--output", required=True, type=Path)
     authorize.add_argument("--repository", required=True)
+    authorize.add_argument("--llm-owner-policy-sha256", required=True)
+    authorize.add_argument("--ragflow-owner-policy-sha256", required=True)
+    authorize.add_argument("--application-deployment-policy-sha256", required=True)
     authorize.add_argument("--git-sha", required=True)
     authorize.add_argument("--environment", choices=("staging", "production"), required=True)
 
     handoff = subparsers.add_parser(
         "verify-deployment",
-        help="Verify that deployment consumes the authorized OCI artifact bytes",
+        help="Download and verify the exact GitHub protected-release artifact",
     )
-    handoff.add_argument("--authorization", required=True, type=Path)
     handoff.add_argument("--bundle-dir", required=True, type=Path)
     handoff.add_argument("--repository", required=True)
+    handoff.add_argument("--repository-id", required=True, type=int)
+    handoff.add_argument("--git-ref", required=True)
+    handoff.add_argument("--protected-run-id", required=True, type=int)
+    handoff.add_argument("--protected-run-attempt", required=True, type=int)
+    handoff.add_argument("--validated-artifact-id", required=True, type=int)
+    handoff.add_argument("--validated-artifact-digest", required=True)
+    handoff.add_argument("--llm-owner-policy-sha256", required=True)
+    handoff.add_argument("--ragflow-owner-policy-sha256", required=True)
+    handoff.add_argument("--application-deployment-policy-sha256", required=True)
     handoff.add_argument("--git-sha", required=True)
     handoff.add_argument("--environment", choices=("staging", "production"), required=True)
     return parser
@@ -2329,20 +2569,61 @@ def main() -> int:
                 repository=arguments.repository,
                 git_sha=arguments.git_sha,
                 environment=arguments.environment,
+                llm_owner_policy_sha256=arguments.llm_owner_policy_sha256,
+                ragflow_owner_policy_sha256=arguments.ragflow_owner_policy_sha256,
+                application_deployment_policy_sha256=(
+                    arguments.application_deployment_policy_sha256
+                ),
             )
             sys.stdout.write("digest-bound deployment authorization issued\n")
         elif arguments.command == "verify-deployment":
-            validate_deployment_handoff(
-                authorization_path=arguments.authorization,
-                bundle_dir=arguments.bundle_dir,
+            token = os.environ.get("GH_TOKEN") or os.environ.get("GITHUB_TOKEN") or ""
+            source = workflow_trust.download_verified_deployment_source(
+                workflow_trust.GitHubClient(
+                    token=token,
+                    api_url=os.environ.get("GITHUB_API_URL", "https://api.github.com"),
+                ),
                 repository=arguments.repository,
+                repository_id=arguments.repository_id,
                 git_sha=arguments.git_sha,
+                git_ref=arguments.git_ref,
                 environment=arguments.environment,
+                workflow_run_id=arguments.protected_run_id,
+                workflow_run_attempt=arguments.protected_run_attempt,
+                artifact_id=arguments.validated_artifact_id,
+                artifact_digest=arguments.validated_artifact_digest,
+                output_dir=arguments.bundle_dir,
             )
-            sys.stdout.write("deployment handoff matches authorized OCI bytes\n")
+            try:
+                validate_deployment_handoff(
+                    authorization_path=source.authorization_path,
+                    bundle_dir=source.bundle_dir,
+                    repository=arguments.repository,
+                    git_sha=arguments.git_sha,
+                    environment=arguments.environment,
+                    llm_owner_policy_sha256=arguments.llm_owner_policy_sha256,
+                    ragflow_owner_policy_sha256=arguments.ragflow_owner_policy_sha256,
+                    application_deployment_policy_sha256=(
+                        arguments.application_deployment_policy_sha256
+                    ),
+                    expected_protected_run_id=source.workflow_run_id,
+                    expected_protected_run_attempt=source.workflow_run_attempt,
+                )
+            except BaseException:
+                try:
+                    shutil.rmtree(source.bundle_dir)
+                except FileNotFoundError:
+                    pass
+                raise
+            sys.stdout.write("GitHub deployment source and authorized OCI bytes verified\n")
         else:  # pragma: no cover - argparse enforces the command choices
             raise ContractError("unsupported command")
-    except (ContractError, OSError, subprocess.CalledProcessError) as error:
+    except (
+        ContractError,
+        workflow_trust.TrustError,
+        OSError,
+        subprocess.CalledProcessError,
+    ) as error:
         sys.stderr.write(f"release OCI gate failed: {error}\n")
         return 1
     return 0

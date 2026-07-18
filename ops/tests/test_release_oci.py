@@ -43,6 +43,20 @@ def _canonical_digest(value: object) -> str:
     return _digest(_json_bytes(value)).removeprefix("sha256:")
 
 
+def _owner_policy_arguments(module: ModuleType, root: Path) -> dict[str, str]:
+    return {
+        "llm_owner_policy_sha256": module._sha256_bytes(
+            (root / "llm-owner-trust-policy.json").read_bytes()
+        ).removeprefix("sha256:"),
+        "ragflow_owner_policy_sha256": module._sha256_bytes(
+            (root / "ragflow-owner-trust-policy.json").read_bytes()
+        ).removeprefix("sha256:"),
+        "application_deployment_policy_sha256": module._sha256_bytes(
+            (root / "application-deployment-owner-trust-policy.json").read_bytes()
+        ).removeprefix("sha256:"),
+    }
+
+
 def _descriptor(content: bytes, media_type: str) -> dict[str, object]:
     return {"mediaType": media_type, "digest": _digest(content), "size": len(content)}
 
@@ -829,11 +843,14 @@ def _write_valid_external_evidence(
         "alertmanager.yml": alertmanager_payload,
         "dr-release-policy.json": policy_payload,
     }
-    for index, (name, contract) in enumerate(
-        sorted(module.EXTERNAL_EVIDENCE_CONTRACTS.items()),
-        1,
-    ):
-        output_schema, source_schema, source_tool = contract
+    projected_names = (
+        "alertmanager-notification.json",
+        "dr-release.json",
+        "email-delivery.json",
+        "promtool.json",
+    )
+    for index, name in enumerate(projected_names, 1):
+        output_schema, source_schema, source_tool = module.EXTERNAL_EVIDENCE_CONTRACTS[name]
         source_run_id = f"00000000-0000-4000-8000-{index:012d}"
         receipt = receipts[name]
         source_evidence = {
@@ -1380,6 +1397,50 @@ def test_authorization_and_deployment_handoff_keep_the_exact_main_artifact(
                     "expires_at": (NOW + timedelta(days=1)).isoformat(),
                 },
             },
+            {
+                "role": "llm_live",
+                "run_id": 606,
+                "run_attempt": 2,
+                "workflow_path": module.LLM_LIVE_WORKFLOW,
+                "event": "workflow_dispatch",
+                "head_sha": TEST_SHA,
+                "head_branch": "main",
+                "status": "completed",
+                "conclusion": "success",
+                "created_at": (NOW - timedelta(minutes=15)).isoformat(),
+                "updated_at": (NOW - timedelta(minutes=10)).isoformat(),
+                "artifact": {
+                    "id": 905,
+                    "name": f"protected-llm-evidence-{TEST_SHA}-606-2",
+                    "digest": "sha256:" + "8" * 64,
+                    "size_in_bytes": 4096,
+                    "workflow_run_id": 606,
+                    "created_at": (NOW - timedelta(minutes=10)).isoformat(),
+                    "expires_at": (NOW + timedelta(days=1)).isoformat(),
+                },
+            },
+            {
+                "role": "ragflow_live",
+                "run_id": 707,
+                "run_attempt": 3,
+                "workflow_path": module.RAGFLOW_LIVE_WORKFLOW,
+                "event": "workflow_dispatch",
+                "head_sha": TEST_SHA,
+                "head_branch": "main",
+                "status": "completed",
+                "conclusion": "success",
+                "created_at": (NOW - timedelta(minutes=14)).isoformat(),
+                "updated_at": (NOW - timedelta(minutes=9)).isoformat(),
+                "artifact": {
+                    "id": 906,
+                    "name": f"protected-ragflow-evidence-{TEST_SHA}-707-3",
+                    "digest": "sha256:" + "9" * 64,
+                    "size_in_bytes": 4096,
+                    "workflow_run_id": 707,
+                    "created_at": (NOW - timedelta(minutes=9)).isoformat(),
+                    "expires_at": (NOW + timedelta(days=1)).isoformat(),
+                },
+            },
         ],
     }
     trust_path = bundle / "release-workflow-trust.json"
@@ -1398,12 +1459,23 @@ def test_authorization_and_deployment_handoff_keep_the_exact_main_artifact(
         if not path.exists():
             path.write_text(f"fixture:{name}\n", encoding="utf-8", newline="\n")
     external_payloads = _write_valid_external_evidence(module, bundle, now=NOW)
+    monkeypatch.setattr(
+        module.protected_release_gate,
+        "_llm_live_evidence_errors",
+        lambda *_args, **_kwargs: [],
+    )
+    monkeypatch.setattr(
+        module.protected_release_gate,
+        "_ragflow_live_evidence_errors",
+        lambda *_args, **_kwargs: [],
+    )
     internal_payloads = _write_valid_internal_evidence(
         module,
         bundle,
         metadata,
         now=NOW,
     )
+    protected_policy_anchors = _owner_policy_arguments(module, bundle)
     binding_dgx = binding["dgx"]
     assert isinstance(binding_dgx, dict)
     binding_dgx["infrastructure_evidence_sha256"] = module._sha256_bytes(
@@ -1438,6 +1510,7 @@ def test_authorization_and_deployment_handoff_keep_the_exact_main_artifact(
             repository=TEST_REPOSITORY,
             git_sha=TEST_SHA,
             environment="staging",
+            **_owner_policy_arguments(module, evidence),
             now=NOW,
         )
 
@@ -1477,12 +1550,13 @@ def test_authorization_and_deployment_handoff_keep_the_exact_main_artifact(
         repository=TEST_REPOSITORY,
         git_sha=TEST_SHA,
         environment="staging",
+        **_owner_policy_arguments(module, authorization_evidence),
         now=NOW,
     )
 
     authorization_payload = authorization_path.read_bytes()
     assert authorization_path.with_suffix(".json.sha256").read_text(encoding="utf-8") == (
-        f"{_digest(authorization_payload).removeprefix('sha256:')}  " f"{authorization_path.name}\n"
+        f"{_digest(authorization_payload).removeprefix('sha256:')}  {authorization_path.name}\n"
     )
     assert authorization["source_artifact"]["artifact_id"] == 901
     assert authorization["source_artifact"]["artifact_name"] == artifact["bundle_name"]
@@ -1490,9 +1564,13 @@ def test_authorization_and_deployment_handoff_keep_the_exact_main_artifact(
         "main_ci": 2,
         "dgx": 3,
         "external": 1,
+        "llm_live": 2,
+        "ragflow_live": 3,
         "protected_release": 1,
     }
-    assert authorization["evidence_artifacts"]["dgx"]["artifact_id"] == 903
+    assert {
+        role: value["artifact_id"] for role, value in authorization["evidence_artifacts"].items()
+    } == {"dgx": 903, "external": 904, "llm_live": 905, "ragflow_live": 906}
     evidence_sha256 = authorization["evidence_sha256"]
     assert isinstance(evidence_sha256, dict)
     for name, payload in external_payloads.items():
@@ -1505,6 +1583,7 @@ def test_authorization_and_deployment_handoff_keep_the_exact_main_artifact(
             repository=TEST_REPOSITORY,
             git_sha=TEST_SHA,
             environment="staging",
+            **protected_policy_anchors,
             now=NOW + timedelta(minutes=1),
         )
     external_path.write_bytes(validated_payload)
@@ -1514,6 +1593,162 @@ def test_authorization_and_deployment_handoff_keep_the_exact_main_artifact(
         "_email_delivery_evidence_errors",
         original_email_validator,
     )
+    authorized_artifacts = authorization["evidence_artifacts"]
+    authorized_source = authorization["source_artifact"]
+    assert isinstance(authorized_artifacts, dict)
+    assert isinstance(authorized_source, dict)
+    uniqueness_forgery_cases = (
+        (
+            "evidence-id",
+            "llm_live",
+            "artifact_id",
+            authorized_artifacts["ragflow_live"]["artifact_id"],
+            "reuses a GitHub artifact ID",
+        ),
+        (
+            "evidence-digest",
+            "external",
+            "artifact_digest",
+            authorized_artifacts["dgx"]["artifact_digest"],
+            "reuses a GitHub artifact digest",
+        ),
+        (
+            "source-id",
+            "llm_live",
+            "artifact_id",
+            authorized_source["artifact_id"],
+            "reuses a GitHub artifact ID",
+        ),
+        (
+            "source-digest",
+            "ragflow_live",
+            "artifact_digest",
+            authorized_source["provenance_artifact_digest"],
+            "reuses a GitHub artifact digest",
+        ),
+    )
+    for case_name, role, field, duplicate_value, error_pattern in uniqueness_forgery_cases:
+        forged_authorization = copy.deepcopy(authorization)
+        forged_artifacts = forged_authorization["evidence_artifacts"]
+        assert isinstance(forged_artifacts, dict)
+        forged_artifact = forged_artifacts[role]
+        assert isinstance(forged_artifact, dict)
+        forged_artifact[field] = duplicate_value
+        forged_path = bundle / f"forged-{case_name}-authorization.json"
+        forged_payload = module._write_json(forged_path, forged_authorization)
+        module._write_checksum(
+            forged_path.with_suffix(forged_path.suffix + ".sha256"),
+            filename=forged_path.name,
+            payload=forged_payload,
+        )
+        with pytest.raises(module.ContractError, match=error_pattern):
+            module.validate_deployment_handoff(
+                authorization_path=forged_path,
+                bundle_dir=bundle,
+                repository=TEST_REPOSITORY,
+                git_sha=TEST_SHA,
+                environment="staging",
+                **protected_policy_anchors,
+                now=NOW + timedelta(minutes=1),
+            )
+    source_forgery_cases = (
+        ("workflow_run_id", 808, "main CI run identity mismatch"),
+        ("workflow_run_attempt", 99, "main CI run identity mismatch"),
+        ("artifact_name", "release-oci-bundle-forged", "bundle artifact name mismatch"),
+        (
+            "provenance_artifact_name",
+            "release-oci-provenance-forged",
+            "provenance artifact name mismatch",
+        ),
+    )
+    for field, forged_value, error_pattern in source_forgery_cases:
+        forged_authorization = copy.deepcopy(authorization)
+        forged_source = forged_authorization["source_artifact"]
+        assert isinstance(forged_source, dict)
+        forged_source[field] = forged_value
+        forged_path = bundle / f"forged-source-{field}-authorization.json"
+        forged_payload = module._write_json(forged_path, forged_authorization)
+        module._write_checksum(
+            forged_path.with_suffix(forged_path.suffix + ".sha256"),
+            filename=forged_path.name,
+            payload=forged_payload,
+        )
+        with pytest.raises(module.ContractError, match=error_pattern):
+            module.validate_deployment_handoff(
+                authorization_path=forged_path,
+                bundle_dir=bundle,
+                repository=TEST_REPOSITORY,
+                git_sha=TEST_SHA,
+                environment="staging",
+                **protected_policy_anchors,
+                now=NOW + timedelta(minutes=1),
+            )
+    forged_policy_authorization = copy.deepcopy(authorization)
+    forged_policy_anchors = forged_policy_authorization["owner_policy_sha256"]
+    assert isinstance(forged_policy_anchors, dict)
+    forged_policy_anchors["llm"] = "0" * 64
+    forged_policy_path = bundle / "forged-owner-policy-authorization.json"
+    forged_policy_payload = module._write_json(
+        forged_policy_path,
+        forged_policy_authorization,
+    )
+    module._write_checksum(
+        forged_policy_path.with_suffix(forged_policy_path.suffix + ".sha256"),
+        filename=forged_policy_path.name,
+        payload=forged_policy_payload,
+    )
+    with pytest.raises(module.ContractError, match="owner policy trust anchor mismatch"):
+        module.validate_deployment_handoff(
+            authorization_path=forged_policy_path,
+            bundle_dir=bundle,
+            repository=TEST_REPOSITORY,
+            git_sha=TEST_SHA,
+            environment="staging",
+            **protected_policy_anchors,
+            now=NOW + timedelta(minutes=1),
+        )
+
+    # Recomputing the authorization sidecar and its internal evidence digest must not let
+    # an attacker replace the independently provisioned protected policy anchor.
+    llm_policy_path = bundle / "llm-owner-trust-policy.json"
+    original_llm_policy = llm_policy_path.read_bytes()
+    replacement_llm_policy = b'{"forged":"owner-policy"}\n'
+    replacement_llm_policy_digest = module._sha256_bytes(replacement_llm_policy)
+    replaced_bundle_authorization = copy.deepcopy(authorization)
+    replaced_bundle_anchors = replaced_bundle_authorization["owner_policy_sha256"]
+    replaced_bundle_evidence = replaced_bundle_authorization["evidence_sha256"]
+    assert isinstance(replaced_bundle_anchors, dict)
+    assert isinstance(replaced_bundle_evidence, dict)
+    replaced_bundle_anchors["llm"] = replacement_llm_policy_digest.removeprefix("sha256:")
+    replaced_bundle_evidence["llm-owner-trust-policy.json"] = replacement_llm_policy_digest
+    replaced_bundle_path = bundle / "forged-self-signed-policy-authorization.json"
+    replaced_bundle_payload = module._write_json(
+        replaced_bundle_path,
+        replaced_bundle_authorization,
+    )
+    module._write_checksum(
+        replaced_bundle_path.with_suffix(replaced_bundle_path.suffix + ".sha256"),
+        filename=replaced_bundle_path.name,
+        payload=replaced_bundle_payload,
+    )
+    llm_policy_path.write_bytes(replacement_llm_policy)
+    try:
+        with pytest.raises(
+            module.ContractError,
+            match="authorization llm owner policy trust anchor mismatch",
+        ):
+            module.validate_deployment_handoff(
+                authorization_path=replaced_bundle_path,
+                bundle_dir=bundle,
+                repository=TEST_REPOSITORY,
+                git_sha=TEST_SHA,
+                environment="staging",
+                **protected_policy_anchors,
+                now=NOW + timedelta(minutes=1),
+            )
+    finally:
+        llm_policy_path.write_bytes(original_llm_policy)
+
     original_evidence_validator = module.protected_release_gate.validate_evidence_payloads
     for index, evidence_name in enumerate(
         (
@@ -1534,8 +1769,12 @@ def test_authorization_and_deployment_handoff_keep_the_exact_main_artifact(
         def replace_internal_after_validation(
             payloads: dict[str, bytes],
             *,
+            repository: str,
             git_sha: str,
             environment: str,
+            llm_owner_policy_sha256: str,
+            ragflow_owner_policy_sha256: str,
+            application_deployment_policy_sha256: str,
             contract_payloads: dict[str, bytes] | None = None,
             now: datetime | None = None,
             target_path: Path = evidence_path,
@@ -1545,8 +1784,12 @@ def test_authorization_and_deployment_handoff_keep_the_exact_main_artifact(
             assert contract_payloads is not None
             errors = original_evidence_validator(
                 payloads,
+                repository=repository,
                 git_sha=git_sha,
                 environment=environment,
+                llm_owner_policy_sha256=llm_owner_policy_sha256,
+                ragflow_owner_policy_sha256=ragflow_owner_policy_sha256,
+                application_deployment_policy_sha256=(application_deployment_policy_sha256),
                 contract_payloads=contract_payloads,
                 now=now,
             )
@@ -1568,6 +1811,7 @@ def test_authorization_and_deployment_handoff_keep_the_exact_main_artifact(
             repository=TEST_REPOSITORY,
             git_sha=TEST_SHA,
             environment="staging",
+            **_owner_policy_arguments(module, internal_evidence),
             now=NOW,
         )
         internal_digests = internal_authorization["evidence_sha256"]
@@ -1581,6 +1825,7 @@ def test_authorization_and_deployment_handoff_keep_the_exact_main_artifact(
                 repository=TEST_REPOSITORY,
                 git_sha=TEST_SHA,
                 environment="staging",
+                **protected_policy_anchors,
                 now=NOW + timedelta(minutes=1),
             )
         evidence_path.write_bytes(original_payload)
@@ -1603,6 +1848,7 @@ def test_authorization_and_deployment_handoff_keep_the_exact_main_artifact(
             repository=TEST_REPOSITORY,
             git_sha=TEST_SHA,
             environment="staging",
+            **_owner_policy_arguments(module, invalid_evidence),
             now=NOW,
         )
     alertmanager_path.write_bytes(valid_alertmanager)
@@ -1619,6 +1865,7 @@ def test_authorization_and_deployment_handoff_keep_the_exact_main_artifact(
         repository=TEST_REPOSITORY,
         git_sha=TEST_SHA,
         environment="staging",
+        **_owner_policy_arguments(module, bundle),
     )
 
     def reject_authorization(**_kwargs: object) -> None:
@@ -1692,6 +1939,7 @@ def test_authorization_and_deployment_handoff_keep_the_exact_main_artifact(
             repository=TEST_REPOSITORY,
             git_sha=TEST_SHA,
             environment="staging",
+            **protected_policy_anchors,
             now=NOW + timedelta(minutes=1),
         )
         == authorization
@@ -1706,8 +1954,117 @@ def test_authorization_and_deployment_handoff_keep_the_exact_main_artifact(
             repository=TEST_REPOSITORY,
             git_sha=TEST_SHA,
             environment="staging",
+            **protected_policy_anchors,
             now=NOW + timedelta(minutes=1),
         )
+
+
+def test_verify_deployment_cli_requires_online_source_and_forwards_anchors(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    module = _load_module()
+    bundle = tmp_path / "bundle"
+    base = [
+        "verify-deployment",
+        "--bundle-dir",
+        str(bundle),
+        "--repository",
+        TEST_REPOSITORY,
+        "--repository-id",
+        "77",
+        "--git-ref",
+        "refs/heads/main",
+        "--protected-run-id",
+        "303",
+        "--protected-run-attempt",
+        "2",
+        "--validated-artifact-id",
+        "990",
+        "--validated-artifact-digest",
+        "sha256:" + "4" * 64,
+        "--git-sha",
+        TEST_SHA,
+        "--environment",
+        "staging",
+    ]
+    with pytest.raises(SystemExit):
+        module._build_parser().parse_args(base)
+    capsys.readouterr()
+
+    anchors = {
+        "llm_owner_policy_sha256": "1" * 64,
+        "ragflow_owner_policy_sha256": "2" * 64,
+        "application_deployment_policy_sha256": "3" * 64,
+    }
+    complete = [
+        *base,
+        "--llm-owner-policy-sha256",
+        anchors["llm_owner_policy_sha256"],
+        "--ragflow-owner-policy-sha256",
+        anchors["ragflow_owner_policy_sha256"],
+        "--application-deployment-policy-sha256",
+        anchors["application_deployment_policy_sha256"],
+    ]
+    with pytest.raises(SystemExit):
+        module._build_parser().parse_args(
+            [*complete, "--authorization", str(tmp_path / "forged.json")]
+        )
+    capsys.readouterr()
+    arguments = module._build_parser().parse_args(complete)
+    source_observed: dict[str, object] = {}
+    handoff_observed: dict[str, object] = {}
+    source = SimpleNamespace(
+        authorization_path=bundle / "release-authorization.json",
+        bundle_dir=bundle,
+        workflow_run_id=303,
+        workflow_run_attempt=2,
+    )
+    monkeypatch.setenv("GH_TOKEN", "token")
+    monkeypatch.setattr(
+        module,
+        "_build_parser",
+        lambda: SimpleNamespace(parse_args=lambda: arguments),
+    )
+    monkeypatch.setattr(
+        module.workflow_trust,
+        "GitHubClient",
+        lambda **_kwargs: SimpleNamespace(),
+    )
+    monkeypatch.setattr(
+        module.workflow_trust,
+        "download_verified_deployment_source",
+        lambda _client, **kwargs: source_observed.update(kwargs) or source,
+    )
+    monkeypatch.setattr(
+        module,
+        "validate_deployment_handoff",
+        lambda **kwargs: handoff_observed.update(kwargs),
+    )
+
+    assert module.main() == 0
+    assert source_observed["repository_id"] == 77
+    assert source_observed["workflow_run_id"] == 303
+    assert source_observed["artifact_id"] == 990
+    assert {name: handoff_observed[name] for name in anchors} == anchors
+    assert handoff_observed["expected_protected_run_id"] == 303
+    assert handoff_observed["expected_protected_run_attempt"] == 2
+    assert capsys.readouterr().out == (
+        "GitHub deployment source and authorized OCI bytes verified\n"
+    )
+
+    bundle.mkdir()
+    (bundle / "failed-verification.txt").write_text("unsafe", encoding="utf-8")
+
+    def reject_handoff(**_kwargs: object) -> None:
+        raise module.ContractError("downloaded handoff rejected")
+
+    monkeypatch.setattr(module, "validate_deployment_handoff", reject_handoff)
+
+    assert module.main() == 1
+    assert not bundle.exists()
+    assert "downloaded handoff rejected" in capsys.readouterr().err
 
 
 def test_load_json_rejects_duplicate_keys(tmp_path: Path) -> None:
@@ -1831,6 +2188,7 @@ def test_authorize_scans_all_release_evidence_raw_bytes(
             repository=TEST_REPOSITORY,
             git_sha=TEST_SHA,
             environment="staging",
+            **_owner_policy_arguments(module, evidence),
             now=NOW,
         )
     assert observed == set(module.REQUIRED_RELEASE_EVIDENCE)

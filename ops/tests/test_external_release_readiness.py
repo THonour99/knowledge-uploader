@@ -20,26 +20,53 @@ def _load_gate() -> ModuleType:
     return module
 
 
-def test_contract_only_accepts_explicitly_unbound_external_gates() -> None:
-    gate = _load_gate()
-
-    assert gate.contract_errors() == []
-    assert gate.main(["--contract-only"]) == 0
-
-
-def test_release_readiness_fails_closed_for_llm_and_ragflow(
+def test_contract_and_release_readiness_require_all_four_authorization_bindings(
     capsys: pytest.CaptureFixture[str],
 ) -> None:
     gate = _load_gate()
 
-    assert gate.main(["--require-ready"]) == 1
+    assert gate.contract_errors() == []
+    assert gate.readiness_errors() == []
+    assert gate.main(["--contract-only"]) == 0
+    assert gate.main(["--require-ready"]) == 0
 
     captured = capsys.readouterr()
-    assert captured.out == ""
-    assert captured.err == (
-        "external release readiness failed: unbound external release evidence gates: "
-        "EXT-LLM-001, EXT-RAGFLOW-001\n"
+    assert captured.err == ""
+    assert captured.out == (
+        "external release evidence binding contract is valid\n"
+        "external release evidence binding contract is valid\n"
     )
+
+
+def test_contract_entrypoint_does_not_import_runtime_or_crypto_dependencies() -> None:
+    root = Path(__file__).parents[2]
+    code = """
+import builtins
+import runpy
+import sys
+
+original_import = builtins.__import__
+
+def guarded_import(name, *args, **kwargs):
+    if name.split('.', 1)[0] in {'app', 'cryptography'}:
+        raise AssertionError(f'pure contract imported forbidden dependency: {name}')
+    return original_import(name, *args, **kwargs)
+
+builtins.__import__ = guarded_import
+sys.argv = ['check_external_release_readiness', '--contract-only']
+runpy.run_module('scripts.check_external_release_readiness', run_name='__main__')
+"""
+    result = subprocess.run(
+        [sys.executable, "-c", code],
+        cwd=root,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert result.stderr == ""
+    assert result.stdout == "external release evidence binding contract is valid\n"
 
 
 def test_bound_gate_must_reuse_authorization_evidence_contract(
@@ -57,16 +84,16 @@ def test_bound_gate_must_reuse_authorization_evidence_contract(
 
 def test_script_entrypoint_enforces_external_release_readiness() -> None:
     root = Path(__file__).parents[2]
-    script = root / "scripts/check_external_release_readiness.py"
+    module = "scripts.check_external_release_readiness"
     contract_only = subprocess.run(
-        [sys.executable, str(script), "--contract-only"],
+        [sys.executable, "-m", module, "--contract-only"],
         cwd=root,
         capture_output=True,
         text=True,
         check=False,
     )
     blocked = subprocess.run(
-        [sys.executable, str(script), "--require-ready"],
+        [sys.executable, "-m", module, "--require-ready"],
         cwd=root,
         capture_output=True,
         text=True,
@@ -76,9 +103,6 @@ def test_script_entrypoint_enforces_external_release_readiness() -> None:
     assert contract_only.returncode == 0
     assert contract_only.stdout == "external release evidence binding contract is valid\n"
     assert contract_only.stderr == ""
-    assert blocked.returncode == 1
-    assert blocked.stdout == ""
-    assert blocked.stderr == (
-        "external release readiness failed: unbound external release evidence gates: "
-        "EXT-LLM-001, EXT-RAGFLOW-001\n"
-    )
+    assert blocked.returncode == 0
+    assert blocked.stdout == "external release evidence binding contract is valid\n"
+    assert blocked.stderr == ""
