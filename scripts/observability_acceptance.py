@@ -11,6 +11,7 @@ import secrets
 import shutil
 import socket
 import subprocess
+import sys
 import tempfile
 import time
 import urllib.error
@@ -25,7 +26,13 @@ from typing import cast
 import yaml  # type: ignore[import-untyped]
 
 ROOT = Path(__file__).resolve().parents[1]
+if str(ROOT) not in sys.path:
+    sys.path.insert(0, str(ROOT))
+
+from scripts.acceptance_git import AcceptanceGitError, verify_git_snapshot  # noqa: E402
+
 RUNNER_PATH = ROOT / "scripts" / "run_observability_acceptance.py"
+ACCEPTANCE_GIT_PATH = ROOT / "scripts" / "acceptance_git.py"
 COMPOSE_PATH = ROOT / "ops" / "observability" / "acceptance.compose.yml"
 ALERTS_PATH = ROOT / "ops" / "observability" / "alerts.yml"
 ALERT_TEST_PATH = ROOT / "ops" / "observability" / "alerts.test.yml"
@@ -161,6 +168,7 @@ REQUIRED_PHASES = frozenset(
     }
 )
 SOURCE_PATHS = (
+    ACCEPTANCE_GIT_PATH,
     COMPOSE_PATH,
     ALERTS_PATH,
     ALERT_TEST_PATH,
@@ -228,26 +236,17 @@ def _validate_expected_sha(value: str) -> str:
     return normalized
 
 
-def _git_bytes(*arguments: str) -> bytes:
-    completed = subprocess.run(  # - fixed executable and arguments
-        ("git", *arguments),
-        cwd=ROOT,
-        check=False,
-        capture_output=True,
-    )
-    if completed.returncode != 0:
-        raise ObservabilityAcceptanceError("git_identity")
-    return bytes(completed.stdout)
-
-
-def candidate_identity() -> CandidateIdentity:
-    sha = _git_bytes("rev-parse", "HEAD").decode("ascii").strip().lower()
-    status = (
-        _git_bytes("status", "--porcelain=v1", "--untracked-files=all")
-        .decode("utf-8", errors="strict")
-        .strip()
-    )
-    return CandidateIdentity(git_sha=sha, porcelain_v1_all=status)
+def candidate_identity(expected_sha: str) -> CandidateIdentity:
+    try:
+        snapshot = verify_git_snapshot(
+            ROOT,
+            expected_sha=expected_sha,
+            relative_paths=tuple(path.relative_to(ROOT) for path in SOURCE_PATHS),
+            source_sha256=_source_hashes(),
+        )
+    except AcceptanceGitError as error:
+        raise ObservabilityAcceptanceError("git_identity") from error
+    return CandidateIdentity(git_sha=snapshot.head, porcelain_v1_all=snapshot.status)
 
 
 def _assert_candidate(identity: CandidateIdentity, expected_sha: str) -> None:
@@ -992,6 +991,10 @@ def evidence_errors(
         or candidate.get("worktree_clean_before") is not True
         or candidate.get("worktree_clean_after") is not True
         or candidate.get("candidate_unchanged") is not True
+        or candidate.get("git_replace_refs_absent") is not True
+        or candidate.get("git_grafts_absent") is not True
+        or candidate.get("git_hidden_index_flags_absent") is not True
+        or candidate.get("sources_match_commit_blobs") is not True
     ):
         errors.append("candidate")
 
@@ -1115,7 +1118,7 @@ def _execute(
     ):
         raise ObservabilityAcceptanceError("timeout_contract")
     static_contract = _static_contract()
-    before = candidate_identity()
+    before = candidate_identity(expected_sha)
     _assert_candidate(before, expected_sha)
 
     project = f"ku-obs-{expected_sha[:12]}-{secrets.token_hex(4)}"
@@ -1310,7 +1313,7 @@ def _execute(
     cleanup_passed = docker_cleanup_passed and host_runtime_dir_removed
     if not host_runtime_dir_removed and failure_step is None:
         failure_step = "host_runtime_cleanup"
-    after = candidate_identity()
+    after = candidate_identity(expected_sha)
     candidate_unchanged = after == before and after.clean and after.git_sha == expected_sha
     status = (
         "candidate_passed"
@@ -1345,7 +1348,13 @@ def _execute(
             "worktree_clean_before": before.clean,
             "worktree_clean_after": after.clean,
             "candidate_unchanged": candidate_unchanged,
-            "status_command": "git status --porcelain=v1 --untracked-files=all",
+            "git_replace_refs_absent": True,
+            "git_grafts_absent": True,
+            "git_hidden_index_flags_absent": True,
+            "sources_match_commit_blobs": True,
+            "status_command": (
+                "git --no-replace-objects status --porcelain=v1 --untracked-files=all"
+            ),
         },
         "source_sha256": _source_hashes(),
         "external_boundary": {
@@ -1394,7 +1403,7 @@ def _execute(
 
 def _verify(*, expected_sha: str, evidence_dir: Path) -> int:
     expected_sha = _validate_expected_sha(expected_sha)
-    _assert_candidate(candidate_identity(), expected_sha)
+    _assert_candidate(candidate_identity(expected_sha), expected_sha)
     resolved = evidence_dir.resolve()
     if resolved == ROOT.resolve() or resolved.is_relative_to(ROOT.resolve()):
         raise ObservabilityAcceptanceError("evidence_output_external")

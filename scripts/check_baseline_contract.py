@@ -18,6 +18,11 @@ from typing import Final, Protocol, cast
 from xml.etree import ElementTree
 
 ROOT = Path(__file__).resolve().parents[1]
+if str(ROOT) not in sys.path:
+    sys.path.insert(0, str(ROOT))
+
+from scripts.acceptance_git import AcceptanceGitError, verify_git_snapshot  # noqa: E402
+
 STATE_API_SPEC = Path("需求文档/05_DATABASE_API_SPEC_数据库与API规范.md")
 BASELINE_TEST = Path("ops/tests/test_baseline_document_contract.py")
 BASELINE_TEST_NAMES: Final[tuple[str, ...]] = (
@@ -39,6 +44,7 @@ BASELINE_TEST_NODES: Final[tuple[str, ...]] = tuple(
     f"{BASELINE_TEST.as_posix()}::{name}" for name in BASELINE_TEST_NAMES
 )
 THIS_SCRIPT = Path("scripts/check_baseline_contract.py")
+ACCEPTANCE_GIT_SCRIPT = Path("scripts/acceptance_git.py")
 TICK = chr(96)
 
 AUTHORITY_DOCUMENTS: Final = (
@@ -60,7 +66,9 @@ AUTHORITY_DOCUMENTS: Final = (
     Path("docs/product/ACCEPTANCE_MATRIX.md"),
     Path("docs/product/BASELINE_TRACEABILITY.md"),
 )
-SOURCE_FILES: Final = tuple(dict.fromkeys((*AUTHORITY_DOCUMENTS, THIS_SCRIPT, BASELINE_TEST)))
+SOURCE_FILES: Final = tuple(
+    dict.fromkeys((*AUTHORITY_DOCUMENTS, THIS_SCRIPT, ACCEPTANCE_GIT_SCRIPT, BASELINE_TEST))
+)
 GIT_SHA_PATTERN: Final = re.compile(r"[0-9a-f]{40}")
 TRANSITION_EXPRESSION: Final = re.compile(
     r"[a-z_]+(?:\|[a-z_]+)*(?:\s*(?:<->|->)\s*[a-z_]+(?:\|[a-z_]+)*)+"
@@ -423,8 +431,7 @@ QUERY_CONTRACTS: Final = (
         "GET",
         "/api/review/files",
         _fields(
-            "page page_size q queue extension tag_id department_id "
-            "sensitive_risk_level sort order"
+            "page page_size q queue extension tag_id department_id sensitive_risk_level sort order"
         ),
         enums=(
             ("queue", _fields("unclaimed mine due_soon overdue")),
@@ -933,7 +940,7 @@ def audit_api_contract(
     undocumented = sorted(runtime_operations - spec_endpoints)
     if missing or undocumented:
         raise BaselineContractError(
-            "05/runtime API operation drift: " f"missing={missing}, undocumented={undocumented}"
+            f"05/runtime API operation drift: missing={missing}, undocumented={undocumented}"
         )
 
     observed_non_schema = (
@@ -1098,37 +1105,17 @@ def _source_digests(root: Path) -> dict[str, str]:
     }
 
 
-def _run_git(arguments: list[str]) -> str:
-    try:
-        completed = subprocess.run(
-            ["git", *arguments],
-            cwd=ROOT,
-            capture_output=True,
-            text=True,
-            encoding="utf-8",
-            errors="replace",
-            timeout=30,
-            check=False,
-        )
-    except (OSError, subprocess.TimeoutExpired) as error:
-        raise BaselineContractError("git identity check failed") from error
-    if completed.returncode != 0:
-        raise BaselineContractError("git identity check failed")
-    return completed.stdout.strip()
-
-
 def verify_candidate_identity(expected_git_sha: str) -> tuple[str, str]:
-    normalized = expected_git_sha.strip().lower()
-    if GIT_SHA_PATTERN.fullmatch(normalized) is None:
-        raise BaselineContractError("expected Git SHA must be exactly 40 hexadecimal characters")
-    head = _run_git(["rev-parse", "HEAD"]).lower()
-    if head != normalized:
-        raise BaselineContractError("expected Git SHA does not match HEAD")
-    tree = _run_git(["rev-parse", "HEAD^{tree}"]).lower()
-    worktree_status = _run_git(["status", "--porcelain=v1", "--untracked-files=all"])
-    if worktree_status:
-        raise BaselineContractError("tracked and non-ignored untracked worktree must be clean")
-    return head, tree
+    try:
+        snapshot = verify_git_snapshot(
+            ROOT,
+            expected_sha=expected_git_sha,
+            relative_paths=SOURCE_FILES,
+            source_sha256=_source_digests(ROOT),
+        )
+    except AcceptanceGitError as error:
+        raise BaselineContractError(str(error)) from error
+    return snapshot.head, snapshot.tree
 
 
 def _junit_tag(element: ElementTree.Element) -> str:
@@ -1307,6 +1294,10 @@ def collect_candidate_evidence(
         "git_sha": head,
         "git_tree": tree,
         "worktree_clean": True,
+        "git_replace_refs_absent": True,
+        "git_grafts_absent": True,
+        "git_hidden_index_flags_absent": True,
+        "sources_match_commit_blobs": True,
         "pytest": {
             "command": (
                 "python -m pytest <13 explicit nodeids> -q -o xfail_strict=true "

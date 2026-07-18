@@ -93,6 +93,10 @@ def _valid_evidence(now: datetime) -> dict[str, object]:
             "worktree_clean_before": True,
             "worktree_clean_after": True,
             "candidate_unchanged": True,
+            "git_replace_refs_absent": True,
+            "git_grafts_absent": True,
+            "git_hidden_index_flags_absent": True,
+            "sources_match_commit_blobs": True,
         },
         "source_sha256": acceptance._source_hashes(),
         "external_boundary": {
@@ -316,6 +320,7 @@ def test_fixture_metrics_use_only_aggregate_fixed_labels() -> None:
 
 
 def test_candidate_guard_rejects_dirty_or_mismatched_sha() -> None:
+    assert acceptance.ACCEPTANCE_GIT_PATH in acceptance.SOURCE_PATHS
     with pytest.raises(acceptance.ObservabilityAcceptanceError):
         acceptance._assert_candidate(
             acceptance.CandidateIdentity(git_sha=SHA, porcelain_v1_all="?? unrelated"),
@@ -360,7 +365,7 @@ def test_execute_always_invokes_cleanup_when_interrupted(
     monkeypatch.setattr(
         acceptance,
         "candidate_identity",
-        lambda: acceptance.CandidateIdentity(git_sha=SHA, porcelain_v1_all=""),
+        lambda _expected_sha: acceptance.CandidateIdentity(git_sha=SHA, porcelain_v1_all=""),
     )
     monkeypatch.setattr(acceptance.tempfile, "mkdtemp", fake_mkdtemp)
     monkeypatch.setattr(acceptance, "_free_port", lambda: 19090)
@@ -422,7 +427,7 @@ def test_execute_cleans_runtime_when_setup_write_fails(
     monkeypatch.setattr(
         acceptance,
         "candidate_identity",
-        lambda: acceptance.CandidateIdentity(git_sha=SHA, porcelain_v1_all=""),
+        lambda _expected_sha: acceptance.CandidateIdentity(git_sha=SHA, porcelain_v1_all=""),
     )
     monkeypatch.setattr(acceptance.tempfile, "mkdtemp", fake_mkdtemp)
     monkeypatch.setattr(acceptance, "_atomic_write", fail_write)

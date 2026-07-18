@@ -212,9 +212,9 @@ def test_authority_documents_and_local_links_are_traceable() -> None:
             relative_target = unquote(target.split("#", maxsplit=1)[0])
             assert relative_target, f"empty local link in {document.relative_to(ROOT)}"
             resolved = (document.parent / relative_target).resolve()
-            assert resolved.is_relative_to(
-                root
-            ), f"local link escapes repository: {document.relative_to(ROOT)} -> {target}"
+            assert resolved.is_relative_to(root), (
+                f"local link escapes repository: {document.relative_to(ROOT)} -> {target}"
+            )
             assert resolved.exists(), f"broken local link: {document.relative_to(ROOT)} -> {target}"
 
 
@@ -236,9 +236,9 @@ def test_05_is_the_single_state_and_api_authority() -> None:
         IA: "05_DATABASE_API_SPEC_数据库与API规范.md",
     }
     for document, marker in references.items():
-        assert marker in _read(
-            document
-        ), f"missing 05 authority marker: {document.relative_to(ROOT)}"
+        assert marker in _read(document), (
+            f"missing 05 authority marker: {document.relative_to(ROOT)}"
+        )
 
 
 def test_cross_document_state_transitions_are_allowed_by_05() -> None:
@@ -333,16 +333,12 @@ def test_candidate_evidence_runner_rejects_ambiguous_identity_and_stays_local(
 
     expected_sha = "a" * 40
 
-    def fake_run_git(arguments: list[str]) -> str:
-        if arguments == ["rev-parse", "HEAD"]:
-            return expected_sha
-        if arguments == ["rev-parse", "HEAD^{tree}"]:
-            return "b" * 40
-        if arguments == ["status", "--porcelain=v1", "--untracked-files=all"]:
-            return "?? unexpected.py"
-        raise AssertionError(f"unexpected Git command: {arguments}")
+    def reject_dirty_candidate(*_args: object, **_kwargs: object) -> None:
+        raise baseline_contract.AcceptanceGitError(
+            "tracked and non-ignored untracked worktree must be clean"
+        )
 
-    monkeypatch.setattr(baseline_contract, "_run_git", fake_run_git)
+    monkeypatch.setattr(baseline_contract, "verify_git_snapshot", reject_dirty_candidate)
     with pytest.raises(BaselineContractError, match="non-ignored untracked"):
         baseline_contract.verify_candidate_identity(expected_sha)
 
@@ -459,8 +455,13 @@ def test_candidate_evidence_runner_rejects_ambiguous_identity_and_stays_local(
     assert 'parser.add_argument("--expected-git-sha", required=True)' in runner
     assert 'parser.add_argument("--output-dir", type=Path, required=True)' in runner
     assert '"external_release_status": "not_evaluated"' in runner
-    assert '"--untracked-files=all"' in runner
-    assert "tracked and non-ignored untracked worktree must be clean" in runner
+    assert "verify_git_snapshot" in runner
+    provenance = _read(ROOT / "scripts" / "acceptance_git.py")
+    assert '"--untracked-files=all"' in provenance
+    assert "--no-replace-objects" in provenance
+    assert "core.hooksPath" in provenance
+    assert "Git index hiding flags are forbidden" in provenance
+    assert "executed sources do not match candidate commit blobs" in provenance
     assert "最终整合后的 SHA 尚未绑定" in evidence
     assert "external_release_status=not_evaluated" in evidence
 
@@ -537,9 +538,9 @@ def test_stage_nine_is_consistently_declared_incomplete() -> None:
     for document in AUTHORITY_DOCUMENTS:
         for line in _read(document).splitlines():
             if re.search(r"阶段\s*9", line) and "完成" in line:
-                assert any(
-                    marker in line for marker in negative_context
-                ), f"positive stage-9 completion claim: {document.relative_to(ROOT)}: {line}"
+                assert any(marker in line for marker in negative_context), (
+                    f"positive stage-9 completion claim: {document.relative_to(ROOT)}: {line}"
+                )
 
 
 def test_acceptance_matrix_ids_and_statuses_are_well_formed() -> None:
