@@ -419,7 +419,7 @@ async def test_statistics_user_search_filters_before_pagination_case_insensitive
         password="password123",
     )
     headers = {"Authorization": f"Bearer {token}"}
-    common_params = {
+    common_params: dict[str, str | int] = {
         "page_size": 1,
         "sort_by": "last_upload_at",
         "sort_order": "asc",
