@@ -353,6 +353,7 @@ async def test_upload_stores_file_metadata_and_minio_object(
     assert audit_log.metadata_json["original_name"] == "Handbook.pdf"
     assert audit_log.metadata_json["size"] == len(PDF_BYTES)
     assert audit_log.metadata_json["duplicate"] is False
+    assert audit_log.metadata_json["submit_after_upload"] is False
 
 
 async def test_upload_api_cannot_bypass_runtime_disabled_gate(
@@ -536,6 +537,8 @@ async def test_upload_can_submit_after_upload_when_ai_is_skipped(
     assert saved_file.review_status == "pending"
     assert saved_file.ai_analysis_enabled_at_upload is False
     assert {log.action for log in audit_logs} == {"file.upload", "file.submit_review"}
+    upload_audit = next(log for log in audit_logs if log.action == "file.upload")
+    assert upload_audit.metadata_json["submit_after_upload"] is True
     submit_audit = next(log for log in audit_logs if log.action == "file.submit_review")
     assert submit_audit.actor_id == user_id
     assert submit_audit.metadata_json["previous_status"] == "uploaded"

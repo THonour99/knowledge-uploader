@@ -1,0 +1,52 @@
+name: knowledge-uploader-ai-mainchain-probe
+
+services:
+  mock-llm:
+    image: "${BACKEND_IMAGE:?BACKEND_IMAGE is required}"
+    command:
+      - python
+      - /ai-probe/mock_llm.py
+    environment:
+      AI_PROBE_LLM_API_KEY: "${AI_PROBE_LLM_API_KEY:?AI_PROBE_LLM_API_KEY is required}"
+      AI_PROBE_LLM_MODEL: "${AI_PROBE_LLM_MODEL:?AI_PROBE_LLM_MODEL is required}"
+      AI_PROBE_LLM_DELAY_MS: "${AI_PROBE_LLM_DELAY_MS:-500}"
+      AI_PROBE_STATE_TOKEN: "${AI_PROBE_STATE_TOKEN:?AI_PROBE_STATE_TOKEN is required}"
+    volumes:
+      - ./ops/e2e/mock_llm.py:/ai-probe/mock_llm.py:ro
+    networks:
+      - knowledge-uploader
+    restart: "no"
+    healthcheck:
+      test:
+        - CMD
+        - python
+        - -c
+        - "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8081/health', timeout=3).read()"
+      interval: 2s
+      timeout: 3s
+      retries: 30
+      start_period: 2s
+
+  backend-api:
+    environment:
+      AI_PROBE_ADMIN_EMAIL: "${AI_PROBE_ADMIN_EMAIL:?AI_PROBE_ADMIN_EMAIL is required}"
+      AI_PROBE_ADMIN_PASSWORD: "${AI_PROBE_ADMIN_PASSWORD:?AI_PROBE_ADMIN_PASSWORD is required}"
+      AI_PROBE_DATABASE_NAME: "${AI_PROBE_DATABASE_NAME:?AI_PROBE_DATABASE_NAME is required}"
+      AI_PROBE_EMPLOYEE_PASSWORD: "${AI_PROBE_EMPLOYEE_PASSWORD:?AI_PROBE_EMPLOYEE_PASSWORD is required}"
+      AI_PROBE_RUN_ID: "${AI_PROBE_RUN_ID:?AI_PROBE_RUN_ID is required}"
+      AI_PROBE_STATE_TOKEN: "${AI_PROBE_STATE_TOKEN:?AI_PROBE_STATE_TOKEN is required}"
+    volumes:
+      - ./scripts/ai_mainchain_probe.py:/ai-probe/ai_mainchain_probe.py:ro
+    depends_on:
+      mock-llm:
+        condition: service_healthy
+
+  outbox-dispatcher:
+    depends_on:
+      mock-llm:
+        condition: service_healthy
+
+  worker-ai:
+    depends_on:
+      mock-llm:
+        condition: service_healthy

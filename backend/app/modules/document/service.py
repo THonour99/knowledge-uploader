@@ -399,6 +399,9 @@ class DocumentService:
                     str(duplicate_file_id) if duplicate_file_id is not None else None
                 ),
                 "ai_analysis_enabled_at_upload": file.ai_analysis_enabled_at_upload,
+                "submit_after_upload": bool(
+                    (file.ai_config_snapshot or {}).get("submit_after_upload", False)
+                ),
             },
         )
 
