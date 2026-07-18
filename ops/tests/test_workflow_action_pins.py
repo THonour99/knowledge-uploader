@@ -13,6 +13,12 @@ TRUSTED_WORKFLOWS = (
     ROOT / ".github/workflows/protected-release.yml",
     ROOT / ".github/workflows/protected-external-evidence.yml",
 )
+QEMU_BINFMT_IMAGE_ALLOWLIST = frozenset(
+    {
+        "docker.io/tonistiigi/binfmt:latest@sha256:"
+        "400a4873b838d1b89194d982c45e5fb3cda4593fbfd7e08a02e76b03b21166f0"
+    }
+)
 ACTION_ALLOWLIST = {
     "actions/checkout": ("11bd71901bbe5b1630ceea73d27597364c9af683", "v4.2.2"),
     "actions/setup-python": ("a26af69be951a213d495a4c3e4e4022e16d87065", "v5.6.0"),
@@ -52,6 +58,57 @@ def test_action_allowlist_has_no_dead_or_unexercised_entry() -> None:
     }
 
     assert observed == set(ACTION_ALLOWLIST)
+
+
+def test_qemu_installer_images_are_digest_pinned() -> None:
+    expected = {
+        (".github/workflows/knowledge-uploader.yml", "lint-test-arm64"): "arm64",
+        (".github/workflows/knowledge-uploader.yml", "build-release-oci"): "amd64,arm64",
+    }
+    observed: set[tuple[str, str]] = set()
+    for workflow in TRUSTED_WORKFLOWS:
+        payload = yaml.load(workflow.read_text(encoding="utf-8"), Loader=yaml.BaseLoader)
+        assert isinstance(payload, dict)
+        jobs = payload.get("jobs")
+        assert isinstance(jobs, dict)
+        for job_name, job in jobs.items():
+            assert isinstance(job_name, str)
+            assert isinstance(job, dict)
+            environment = job.get("env", {})
+            assert isinstance(environment, dict)
+            steps = job.get("steps", [])
+            assert isinstance(steps, list)
+            for step_index, step in enumerate(steps):
+                assert isinstance(step, dict)
+                if not str(step.get("uses", "")).startswith("docker/setup-qemu-action@"):
+                    continue
+                location = (workflow.relative_to(ROOT).as_posix(), job_name)
+                assert location in expected
+                assert location not in observed
+                observed.add(location)
+
+                image = environment.get("QEMU_BINFMT_IMAGE")
+                assert isinstance(image, str)
+                assert re.fullmatch(
+                    r"docker\.io/tonistiigi/binfmt:[^@\s]+@sha256:[0-9a-f]{64}",
+                    image,
+                )
+                assert image in QEMU_BINFMT_IMAGE_ALLOWLIST
+
+                step_environment = step.get("env", {})
+                assert isinstance(step_environment, dict)
+                assert "QEMU_BINFMT_IMAGE" not in step_environment
+                for preceding_step in steps[:step_index]:
+                    assert isinstance(preceding_step, dict)
+                    run = str(preceding_step.get("run", ""))
+                    assert "QEMU_BINFMT_IMAGE" not in run
+
+                options = step.get("with")
+                assert isinstance(options, dict)
+                assert options.get("image") == "${{ env.QEMU_BINFMT_IMAGE }}"
+                assert options.get("platforms") == expected[location]
+
+    assert observed == set(expected)
 
 
 @pytest.mark.parametrize("workflow", TRUSTED_WORKFLOWS, ids=lambda path: path.name)
