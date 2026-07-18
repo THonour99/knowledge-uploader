@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import re
+import subprocess
 from pathlib import Path
 from urllib.parse import unquote
 
@@ -325,6 +326,7 @@ def test_05_api_methods_paths_and_critical_fields_match_runtime_openapi() -> Non
 
 def test_candidate_evidence_runner_rejects_ambiguous_identity_and_stays_local(
     monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
 ) -> None:
     with pytest.raises(BaselineContractError, match="exactly 40 hexadecimal"):
         verify_candidate_identity("deadbeef")
@@ -343,6 +345,111 @@ def test_candidate_evidence_runner_rejects_ambiguous_identity_and_stays_local(
     monkeypatch.setattr(baseline_contract, "_run_git", fake_run_git)
     with pytest.raises(BaselineContractError, match="non-ignored untracked"):
         baseline_contract.verify_candidate_identity(expected_sha)
+
+    expected_nodes = baseline_contract.BASELINE_TEST_NODES
+    assert len(expected_nodes) == 13
+
+    def write_junit(
+        path: Path,
+        *,
+        skipped_type: str | None = None,
+        skip_all: bool = False,
+        drop_last: bool = False,
+        duplicate_first: bool = False,
+    ) -> None:
+        names = [nodeid.rsplit("::", maxsplit=1)[1] for nodeid in expected_nodes]
+        if drop_last:
+            names.pop()
+        if duplicate_first:
+            names[0] = names[1]
+        skipped_indexes = (
+            set(range(len(names))) if skip_all else ({0} if skipped_type is not None else set())
+        )
+        testcases = []
+        for index, name in enumerate(names):
+            outcome = f'<skipped type="{skipped_type}" />' if index in skipped_indexes else ""
+            testcases.append(
+                '<testcase classname="ops.tests.test_baseline_document_contract" '
+                f'name="{name}">{outcome}</testcase>'
+            )
+        payload = (
+            '<?xml version="1.0" encoding="utf-8"?>'
+            "<testsuites>"
+            '<testsuite name="pytest" errors="0" failures="0" '
+            f'skipped="{len(skipped_indexes)}" tests="{len(expected_nodes)}">'
+            + "".join(testcases)
+            + "</testsuite></testsuites>"
+        )
+        path.write_text(payload, encoding="utf-8")
+
+    valid_junit = tmp_path / "valid.xml"
+    write_junit(valid_junit)
+    passed_count, observed_nodes = baseline_contract._validate_baseline_junit(valid_junit)
+    assert passed_count == 13
+    assert set(observed_nodes) == set(expected_nodes)
+
+    malformed_junit = tmp_path / "malformed.xml"
+    malformed_junit.write_text("<testsuites>", encoding="utf-8")
+    with pytest.raises(BaselineContractError, match="missing or invalid"):
+        baseline_contract._validate_baseline_junit(malformed_junit)
+
+    for skipped_type in ("pytest.skip", "pytest.xfail"):
+        skipped_junit = tmp_path / f"{skipped_type}.xml"
+        write_junit(skipped_junit, skipped_type=skipped_type)
+        with pytest.raises(BaselineContractError, match="exactly 13 expected nodes"):
+            baseline_contract._validate_baseline_junit(skipped_junit)
+
+    missing_junit = tmp_path / "missing.xml"
+    write_junit(missing_junit, drop_last=True)
+    with pytest.raises(BaselineContractError, match="testcase count"):
+        baseline_contract._validate_baseline_junit(missing_junit)
+
+    duplicate_junit = tmp_path / "duplicate.xml"
+    write_junit(duplicate_junit, duplicate_first=True)
+    with pytest.raises(BaselineContractError, match="node identity mismatch"):
+        baseline_contract._validate_baseline_junit(duplicate_junit)
+
+    temporary_junit_paths: list[Path] = []
+    simulate_all_skipped = False
+
+    def fake_pytest_run(
+        command: list[str],
+        **_kwargs: object,
+    ) -> subprocess.CompletedProcess[str]:
+        assert command[3:8] == [
+            "-q",
+            "-o",
+            "xfail_strict=true",
+            "-p",
+            "scripts.check_baseline_contract",
+        ]
+        assert command[-len(expected_nodes) :] == list(expected_nodes)
+        junit_path = Path(command[command.index("--junitxml") + 1])
+        temporary_junit_paths.append(junit_path)
+        write_junit(
+            junit_path,
+            skipped_type="pytest.skip" if simulate_all_skipped else None,
+            skip_all=simulate_all_skipped,
+        )
+        return subprocess.CompletedProcess(
+            command,
+            0,
+            stdout="SENSITIVE_STDOUT_MUST_NOT_BE_PERSISTED",
+            stderr="SENSITIVE_STDERR_MUST_NOT_BE_PERSISTED",
+        )
+
+    monkeypatch.setattr(baseline_contract.subprocess, "run", fake_pytest_run)
+    log, exit_code, passed_count, observed_nodes = baseline_contract._run_baseline_tests()
+    assert exit_code == 0
+    assert passed_count == 13
+    assert set(observed_nodes) == set(expected_nodes)
+    assert "SENSITIVE_" not in log
+    assert not temporary_junit_paths[-1].parent.exists()
+
+    simulate_all_skipped = True
+    with pytest.raises(BaselineContractError, match="exactly 13 expected nodes"):
+        baseline_contract._run_baseline_tests()
+    assert not temporary_junit_paths[-1].parent.exists()
 
     runner = _read(ROOT / "scripts" / "check_baseline_contract.py")
     evidence = _read(BASELINE_EVIDENCE)

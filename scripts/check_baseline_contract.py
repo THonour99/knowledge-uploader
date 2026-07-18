@@ -13,11 +13,31 @@ import sys
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import Final, cast
+from tempfile import TemporaryDirectory
+from typing import Final, Protocol, cast
+from xml.etree import ElementTree
 
 ROOT = Path(__file__).resolve().parents[1]
 STATE_API_SPEC = Path("需求文档/05_DATABASE_API_SPEC_数据库与API规范.md")
 BASELINE_TEST = Path("ops/tests/test_baseline_document_contract.py")
+BASELINE_TEST_NAMES: Final[tuple[str, ...]] = (
+    "test_authority_documents_and_local_links_are_traceable",
+    "test_05_is_the_single_state_and_api_authority",
+    "test_cross_document_state_transitions_are_allowed_by_05",
+    "test_nonstructured_state_claims_are_exhaustively_classified",
+    "test_unclassified_natural_language_state_claim_fails_closed",
+    "test_05_api_methods_paths_and_critical_fields_match_runtime_openapi",
+    "test_candidate_evidence_runner_rejects_ambiguous_identity_and_stays_local",
+    "test_state_catalog_and_visual_mapping_are_identical",
+    "test_readme_frontend_spec_and_ia_share_one_product_route_set",
+    "test_config_contract_declared_counts_match_unique_table_keys",
+    "test_stage_nine_is_consistently_declared_incomplete",
+    "test_acceptance_matrix_ids_and_statuses_are_well_formed",
+    "test_base_001_records_progress_without_self_certifying_completion",
+)
+BASELINE_TEST_NODES: Final[tuple[str, ...]] = tuple(
+    f"{BASELINE_TEST.as_posix()}::{name}" for name in BASELINE_TEST_NAMES
+)
 THIS_SCRIPT = Path("scripts/check_baseline_contract.py")
 TICK = chr(96)
 
@@ -70,6 +90,26 @@ INLINE_ENDPOINT: Final = re.compile(
 
 class BaselineContractError(RuntimeError):
     """A fail-closed baseline verification error."""
+
+
+class _PytestItem(Protocol):
+    def get_closest_marker(self, name: str) -> object | None: ...
+
+
+class _PytestSession(Protocol):
+    items: list[_PytestItem]
+
+
+def pytest_collection_finish(session: _PytestSession) -> None:
+    """Reject xfail markers so an explicit strict=False XPASS cannot self-certify."""
+    if any(item.get_closest_marker("xfail") is not None for item in session.items):
+        raise BaselineContractError("baseline pytest nodes must not carry xfail markers")
+
+
+def pytest_runtest_logreport(report: object) -> None:
+    """Reject dynamically applied xfail/XPASS outcomes that appear after collection."""
+    if getattr(report, "wasxfail", None) is not None:
+        raise BaselineContractError("baseline pytest nodes must not produce xfail or XPASS")
 
 
 Edge = tuple[str, str]
@@ -1091,38 +1131,114 @@ def verify_candidate_identity(expected_git_sha: str) -> tuple[str, str]:
     return head, tree
 
 
-def _run_baseline_tests() -> tuple[str, int]:
-    command = [
-        sys.executable,
-        "-m",
-        "pytest",
-        BASELINE_TEST.as_posix(),
-        "-q",
-    ]
+def _junit_tag(element: ElementTree.Element) -> str:
+    return element.tag.rsplit("}", maxsplit=1)[-1]
+
+
+def _required_junit_count(suite: ElementTree.Element, attribute: str) -> int:
+    raw_value = suite.get(attribute)
+    if raw_value is None or not raw_value.isdigit():
+        raise BaselineContractError(f"baseline pytest JUnit has invalid {attribute} count")
+    return int(raw_value)
+
+
+def _validate_baseline_junit(junit_path: Path) -> tuple[int, tuple[str, ...]]:
     try:
-        completed = subprocess.run(
-            command,
-            cwd=ROOT,
-            capture_output=True,
-            text=True,
-            encoding="utf-8",
-            errors="replace",
-            timeout=300,
-            check=False,
+        root = ElementTree.parse(junit_path).getroot()
+    except (OSError, ElementTree.ParseError) as error:
+        raise BaselineContractError("baseline pytest JUnit is missing or invalid") from error
+
+    suites = [child for child in root if _junit_tag(child) == "testsuite"]
+    if _junit_tag(root) != "testsuites" or len(suites) != 1:
+        raise BaselineContractError("baseline pytest JUnit must contain exactly one test suite")
+    suite = suites[0]
+    counts = {
+        attribute: _required_junit_count(suite, attribute)
+        for attribute in ("tests", "errors", "failures", "skipped")
+    }
+    expected_count = len(BASELINE_TEST_NODES)
+    if counts != {
+        "tests": expected_count,
+        "errors": 0,
+        "failures": 0,
+        "skipped": 0,
+    }:
+        raise BaselineContractError(
+            f"baseline pytest must pass exactly {expected_count} expected nodes without "
+            "skip, xfail, failure, or error"
         )
-    except (OSError, subprocess.TimeoutExpired) as error:
-        raise BaselineContractError("baseline pytest execution failed") from error
-    log = (
-        "$ python -m pytest ops/tests/test_baseline_document_contract.py -q\n"
-        f"exit_code={completed.returncode}\n"
-        "[stdout]\n"
-        f"{completed.stdout.rstrip()}\n"
-        "[stderr]\n"
-        f"{completed.stderr.rstrip()}\n"
-    )
-    if completed.returncode != 0:
-        raise BaselineContractError("baseline pytest did not pass")
-    return log, completed.returncode
+
+    testcases = [child for child in suite if _junit_tag(child) == "testcase"]
+    if len(testcases) != expected_count:
+        raise BaselineContractError("baseline pytest JUnit testcase count does not match summary")
+
+    observed_nodes: list[str] = []
+    for testcase in testcases:
+        classname = testcase.get("classname")
+        name = testcase.get("name")
+        if not classname or not name:
+            raise BaselineContractError("baseline pytest JUnit testcase identity is incomplete")
+        outcome_tags = {
+            _junit_tag(child)
+            for child in testcase
+            if _junit_tag(child) in {"error", "failure", "skipped"}
+        }
+        if outcome_tags:
+            raise BaselineContractError("baseline pytest JUnit testcase is not a pass")
+        observed_nodes.append(f"{classname.replace('.', '/')}.py::{name}")
+
+    if len(set(observed_nodes)) != expected_count or set(observed_nodes) != set(
+        BASELINE_TEST_NODES
+    ):
+        raise BaselineContractError("baseline pytest node identity mismatch")
+    return expected_count, tuple(observed_nodes)
+
+
+def _run_baseline_tests() -> tuple[str, int, int, tuple[str, ...]]:
+    with TemporaryDirectory(prefix="knowledge-uploader-baseline-") as temporary_dir:
+        junit_path = Path(temporary_dir) / "baseline-pytest.xml"
+        command = [
+            sys.executable,
+            "-m",
+            "pytest",
+            "-q",
+            "-o",
+            "xfail_strict=true",
+            "-p",
+            "scripts.check_baseline_contract",
+            "--junitxml",
+            str(junit_path),
+            *BASELINE_TEST_NODES,
+        ]
+        try:
+            completed = subprocess.run(
+                command,
+                cwd=ROOT,
+                capture_output=True,
+                text=True,
+                encoding="utf-8",
+                errors="replace",
+                timeout=300,
+                check=False,
+            )
+        except (OSError, subprocess.TimeoutExpired) as error:
+            raise BaselineContractError("baseline pytest execution failed") from error
+        if completed.returncode != 0:
+            raise BaselineContractError("baseline pytest did not pass")
+        passed_count, observed_nodes = _validate_baseline_junit(junit_path)
+        display_command = (
+            "python -m pytest -q -o xfail_strict=true "
+            "-p scripts.check_baseline_contract --junitxml=<temporary-junit> "
+            + " ".join(BASELINE_TEST_NODES)
+        )
+        log = (
+            f"$ {display_command}\n"
+            f"exit_code={completed.returncode}\n"
+            f"passed_count={passed_count}\n"
+            f"expected_node_count={len(BASELINE_TEST_NODES)}\n"
+            + "".join(f"nodeid={nodeid}\n" for nodeid in observed_nodes)
+        )
+    return log, completed.returncode, passed_count, observed_nodes
 
 
 def _prepare_output_dir(output_dir: Path) -> Path:
@@ -1164,7 +1280,12 @@ def collect_candidate_evidence(
     source_before = _source_digests(ROOT)
     state_report = audit_state_claims(ROOT)
     api_report = audit_api_contract(ROOT)
-    raw_log, exit_code = _run_baseline_tests()
+    (
+        raw_log,
+        exit_code,
+        passed_count,
+        observed_nodes,
+    ) = _run_baseline_tests()
     source_after = _source_digests(ROOT)
     if source_after != source_before:
         raise BaselineContractError("baseline sources changed during verification")
@@ -1187,7 +1308,14 @@ def collect_candidate_evidence(
         "git_tree": tree,
         "worktree_clean": True,
         "pytest": {
-            "command": "python -m pytest ops/tests/test_baseline_document_contract.py -q",
+            "command": (
+                "python -m pytest <13 explicit nodeids> -q -o xfail_strict=true "
+                "-p scripts.check_baseline_contract "
+                "--junitxml=<temporary-junit>"
+            ),
+            "passed_count": passed_count,
+            "expected_node_count": len(BASELINE_TEST_NODES),
+            "nodeids": list(observed_nodes),
             "exit_code": exit_code,
             "log_file": log_name,
             "log_sha256": hashlib.sha256(log_payload).hexdigest(),
