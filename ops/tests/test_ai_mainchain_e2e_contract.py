@@ -2,7 +2,9 @@ from __future__ import annotations
 
 import importlib.util
 import json
+import os
 import shutil
+import subprocess
 import sys
 import uuid
 from http import HTTPStatus
@@ -39,6 +41,30 @@ def mock_llm() -> ModuleType:
         "mock_llm_contract",
         ROOT / "ops" / "e2e" / "mock_llm.py",
     )
+
+
+def run_test_git(repo_root: Path, *args: str) -> str:
+    completed = subprocess.run(
+        ["git", *args],
+        cwd=repo_root,
+        env={key: value for key, value in os.environ.items() if not key.upper().startswith("GIT_")},
+        check=True,
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+    )
+    return completed.stdout.strip()
+
+
+def initialize_test_repository(repo_root: Path) -> str:
+    repo_root.mkdir()
+    run_test_git(repo_root, "init")
+    run_test_git(repo_root, "config", "user.email", "acceptance@example.com")
+    run_test_git(repo_root, "config", "user.name", "Acceptance Contract")
+    (repo_root / "payload.txt").write_text("original\n", encoding="utf-8")
+    run_test_git(repo_root, "add", "payload.txt")
+    run_test_git(repo_root, "commit", "-m", "original")
+    return run_test_git(repo_root, "rev-parse", "HEAD").lower()
 
 
 def stub_execute_runtime(
@@ -78,7 +104,7 @@ def stub_execute_runtime(
                 encoding="utf-8",
             )
             (candidate_root / runner.AI_COMPOSE.name).write_text(
-                'services:\n  mock-llm:\n    environment:\n'
+                "services:\n  mock-llm:\n    environment:\n"
                 '      AI_PROBE_LLM_API_KEY: "${AI_PROBE_LLM_API_KEY:?required}"\n',
                 encoding="utf-8",
             )
@@ -103,6 +129,11 @@ def stub_execute_runtime(
 
     monkeypatch.setattr(runner, "ephemeral_environment", fake_environment)
     monkeypatch.setattr(runner, "run_command", fake_run)
+    monkeypatch.setattr(
+        runner,
+        "verify_git_provenance_contract",
+        lambda *_args, **_kwargs: ROOT / ".git",
+    )
     monkeypatch.setattr(runner, "inspect_candidate_image", fake_inspect)
     monkeypatch.setattr(runner, "resolve_tree_revision", lambda *_args, **_kwargs: "f" * 40)
     monkeypatch.setattr(runner, "parse_probe_evidence", lambda _stdout: {"status": "passed"})
@@ -299,14 +330,13 @@ def test_all_detached_compose_interpolation_keys_are_removed_from_host_environme
     candidate_root = tmp_path / "candidate"
     candidate_root.mkdir()
     (candidate_root / "docker-compose.yml").write_text(
-        'services:\n  api:\n    environment:\n'
+        "services:\n  api:\n    environment:\n"
         '      RAGFLOW_API_KEY: "${RAGFLOW_API_KEY:-}"\n'
         '      SMTP_PASSWORD: "${SMTP_PASSWORD:-}"\n',
         encoding="utf-8",
     )
     (candidate_root / "docker-compose.ai-mainchain.yml").write_text(
-        'services:\n  api:\n    environment:\n'
-        '      LLM_API_KEY: "${LLM_API_KEY:?required}"\n',
+        'services:\n  api:\n    environment:\n      LLM_API_KEY: "${LLM_API_KEY:?required}"\n',
         encoding="utf-8",
     )
     keys = runner.compose_interpolation_keys(candidate_root)
@@ -325,11 +355,131 @@ def test_all_detached_compose_interpolation_keys_are_removed_from_host_environme
     assert removed == ["LLM_API_KEY", "RAGFLOW_API_KEY", "SMTP_PASSWORD"]
     assert "sentinel" not in json.dumps(removed)
 
+
+def test_replace_ref_is_rejected_and_cannot_replace_original_tree(
+    runner: ModuleType,
+    tmp_path: Path,
+) -> None:
+    repo_root = tmp_path / "replace-repo"
+    original = initialize_test_repository(repo_root)
+    original_tree = run_test_git(repo_root, "rev-parse", f"{original}^{{tree}}").lower()
+    (repo_root / "payload.txt").write_text("replacement\n", encoding="utf-8")
+    run_test_git(repo_root, "commit", "-am", "replacement")
+    replacement = run_test_git(repo_root, "rev-parse", "HEAD").lower()
+    replacement_tree = run_test_git(repo_root, "rev-parse", f"{replacement}^{{tree}}").lower()
+    assert replacement_tree != original_tree
+    run_test_git(repo_root, "replace", original, replacement)
+    assert run_test_git(repo_root, "rev-parse", f"{original}^{{tree}}").lower() == replacement_tree
+
+    hooks_path = tmp_path / "disabled-hooks"
+    hooks_path.mkdir()
+    environment, _removed = runner.sanitized_environment(dict(os.environ))
+    hardened_tree = runner.resolve_tree_revision(
+        environment,
+        original,
+        repo_root=repo_root,
+        step="original_tree",
+        hooks_path=hooks_path,
+    )
+    assert hardened_tree == original_tree
+    with pytest.raises(runner.AiMainchainE2EError) as blocked:
+        runner.verify_git_provenance_contract(
+            environment,
+            repo_root=repo_root,
+            hooks_path=hooks_path,
+        )
+    assert blocked.value.step == "git_replace_refs"
+
+
+def test_nonempty_common_dir_grafts_are_rejected_from_linked_worktree(
+    runner: ModuleType,
+    tmp_path: Path,
+) -> None:
+    repo_root = tmp_path / "grafts-repo"
+    revision = initialize_test_repository(repo_root)
+    linked_root = tmp_path / "linked"
+    run_test_git(repo_root, "worktree", "add", "--detach", str(linked_root), revision)
+    hooks_path = tmp_path / "disabled-hooks"
+    hooks_path.mkdir()
+    grafts_path = repo_root / ".git" / "info" / "grafts"
+    grafts_path.write_text(f"{revision} {revision}\n", encoding="utf-8")
+    environment, _removed = runner.sanitized_environment(dict(os.environ))
+    try:
+        with pytest.raises(runner.AiMainchainE2EError) as blocked:
+            runner.verify_git_provenance_contract(
+                environment,
+                repo_root=linked_root,
+                hooks_path=hooks_path,
+                step_prefix="linked_git",
+            )
+        assert blocked.value.step == "linked_git_grafts"
+    finally:
+        grafts_path.unlink()
+        run_test_git(repo_root, "worktree", "remove", "--force", str(linked_root))
+
+
+def test_hardened_worktree_commands_ignore_repository_hooks(
+    runner: ModuleType,
+    tmp_path: Path,
+) -> None:
+    repo_root = tmp_path / "hooks-repo"
+    revision = initialize_test_repository(repo_root)
+    malicious_hooks = tmp_path / "malicious-hooks"
+    malicious_hooks.mkdir()
+    sentinel = tmp_path / "hook-invoked"
+    hook = malicious_hooks / "post-checkout"
+    hook.write_text(
+        f"#!/bin/sh\nprintf invoked > '{sentinel.as_posix()}'\n",
+        encoding="utf-8",
+    )
+    hook.chmod(0o755)
+    run_test_git(repo_root, "config", "core.hooksPath", str(malicious_hooks))
+    disabled_hooks = tmp_path / "disabled-hooks"
+    disabled_hooks.mkdir()
+    candidate_root = tmp_path / "candidate"
+    environment, _removed = runner.sanitized_environment(dict(os.environ))
+
+    runner.run_command(
+        runner.hardened_git_command(
+            repo_root,
+            disabled_hooks,
+            "worktree",
+            "add",
+            "--detach",
+            str(candidate_root),
+            revision,
+        ),
+        environment=environment,
+        step="hardened_worktree_add",
+        timeout_seconds=60,
+    )
+    try:
+        assert not sentinel.exists()
+    finally:
+        runner.run_command(
+            runner.hardened_git_command(
+                repo_root,
+                disabled_hooks,
+                "worktree",
+                "remove",
+                "--force",
+                str(candidate_root),
+            ),
+            environment=environment,
+            step="hardened_worktree_remove",
+            timeout_seconds=60,
+        )
+    assert not sentinel.exists()
+
+
 def test_candidate_revision_requires_exact_clean_head(
     runner: ModuleType,
     monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
 ) -> None:
     revision = "b" * 40
+    hooks_path = tmp_path / "disabled-hooks"
+    hooks_path.mkdir()
     calls: list[tuple[str, list[str]]] = []
 
     def clean_run(
@@ -346,25 +496,29 @@ def test_candidate_revision_requires_exact_clean_head(
         return runner.RunResult(stdout="", stderr="")
 
     monkeypatch.setattr(runner, "run_command", clean_run)
-    assert runner.resolve_candidate_revision({}, revision) == revision
+    assert runner.resolve_candidate_revision({}, revision, hooks_path=hooks_path) == revision
     assert [step for step, _args in calls] == ["git_identity", "candidate_worktree"]
-    assert calls[1][1] == [
-        "git",
+    assert calls[1][1] == runner.hardened_git_command(
+        runner.ROOT,
+        hooks_path,
         "status",
         "--porcelain=v1",
         "--untracked-files=all",
-    ]
+    )
 
     with pytest.raises(runner.AiMainchainE2EError) as mismatch:
-        runner.resolve_candidate_revision({}, "c" * 40)
+        runner.resolve_candidate_revision({}, "c" * 40, hooks_path=hooks_path)
     assert mismatch.value.step == "git_identity"
 
 
 def test_candidate_revision_rejects_untracked_file(
     runner: ModuleType,
     monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
 ) -> None:
     revision = "b" * 40
+    hooks_path = tmp_path / "disabled-hooks"
+    hooks_path.mkdir()
 
     def dirty_run(
         _args: list[str],
@@ -382,7 +536,7 @@ def test_candidate_revision_rejects_untracked_file(
 
     monkeypatch.setattr(runner, "run_command", dirty_run)
     with pytest.raises(runner.AiMainchainE2EError) as dirty:
-        runner.resolve_candidate_revision({}, revision)
+        runner.resolve_candidate_revision({}, revision, hooks_path=hooks_path)
     assert dirty.value.step == "candidate_worktree"
 
 
@@ -532,7 +686,12 @@ def test_execute_runs_every_compose_phase_from_one_detached_snapshot(
     )
     assert fingerprint_roots == [candidate_root, candidate_root]
     assert not candidate_root.exists()
-    assert not any(args[:3] == ["git", "worktree", "prune"] for _step, args in calls)
+    git_calls = [args for _step, args in calls if args and args[0] == "git"]
+    assert git_calls
+    assert all(args[1] == "--no-replace-objects" for args in git_calls)
+    assert all(any(value.startswith("core.hooksPath=") for value in args) for args in git_calls)
+    assert all("core.fsmonitor=false" in args for args in git_calls)
+    assert not any("prune" in args for args in git_calls)
 
     evidence = json.loads(output.read_text(encoding="utf-8"))
     candidate = evidence["candidate"]
@@ -540,6 +699,10 @@ def test_execute_runs_every_compose_phase_from_one_detached_snapshot(
     assert candidate["git_tree_sha"] == "f" * 40
     assert candidate["detached_worktree_bound"] is True
     assert candidate["detached_worktree_removed"] is True
+    assert candidate["git_replace_objects_disabled"] is True
+    assert candidate["git_repository_hooks_disabled"] is True
+    assert candidate["git_replace_refs_absent"] is True
+    assert candidate["git_grafts_absent"] is True
     assert candidate["compose_files"] == [
         "docker-compose.yml",
         "docker-compose.ai-mainchain.yml",

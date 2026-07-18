@@ -152,6 +152,89 @@ def compose_interpolation_keys(candidate_root: Path) -> tuple[str, ...]:
     return tuple(sorted(keys))
 
 
+def hardened_git_command(repo_root: Path, hooks_path: Path, *args: str) -> list[str]:
+    try:
+        resolved_hooks_path = hooks_path.resolve(strict=True)
+        if (
+            not resolved_hooks_path.is_dir()
+            or resolved_hooks_path.is_symlink()
+            or any(resolved_hooks_path.iterdir())
+        ):
+            raise AiMainchainE2EError("git_hooks_guard")
+    except AiMainchainE2EError:
+        raise
+    except OSError as exc:
+        raise AiMainchainE2EError("git_hooks_guard") from exc
+    return [
+        "git",
+        "--no-replace-objects",
+        "-c",
+        f"core.hooksPath={resolved_hooks_path}",
+        "-c",
+        "core.fsmonitor=false",
+        "-C",
+        str(repo_root.resolve()),
+        *args,
+    ]
+
+
+def verify_git_provenance_contract(
+    environment: dict[str, str],
+    *,
+    repo_root: Path,
+    hooks_path: Path,
+    step_prefix: str = "git",
+) -> Path:
+    common_result = run_command(
+        hardened_git_command(
+            repo_root,
+            hooks_path,
+            "rev-parse",
+            "--path-format=absolute",
+            "--git-common-dir",
+        ),
+        environment=environment,
+        step=f"{step_prefix}_common_dir",
+        timeout_seconds=30,
+    )
+    common_dir_raw = common_result.stdout.strip()
+    try:
+        common_dir = Path(common_dir_raw)
+        if not common_dir.is_absolute():
+            raise OSError("git common dir is not absolute")
+        common_dir = common_dir.resolve(strict=True)
+        if not common_dir.is_dir():
+            raise OSError("git common dir is not a directory")
+    except OSError as exc:
+        raise AiMainchainE2EError(f"{step_prefix}_common_dir") from exc
+
+    replace_result = run_command(
+        hardened_git_command(
+            repo_root,
+            hooks_path,
+            "for-each-ref",
+            "--format=%(refname)",
+            "refs/replace",
+        ),
+        environment=environment,
+        step=f"{step_prefix}_replace_refs",
+        timeout_seconds=30,
+    )
+    if replace_result.stdout.strip():
+        raise AiMainchainE2EError(f"{step_prefix}_replace_refs")
+
+    grafts_path = common_dir / "info" / "grafts"
+    try:
+        grafts_metadata = grafts_path.lstat()
+    except FileNotFoundError:
+        return common_dir
+    except OSError as exc:
+        raise AiMainchainE2EError(f"{step_prefix}_grafts") from exc
+    if grafts_path.is_symlink() or not grafts_path.is_file() or grafts_metadata.st_size != 0:
+        raise AiMainchainE2EError(f"{step_prefix}_grafts")
+    return common_dir
+
+
 def free_host_port() -> int:
     with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as listener:
         listener.bind(("127.0.0.1", 0))
@@ -169,10 +252,10 @@ def resolve_candidate_revision(
     repo_root: Path = ROOT,
     identity_step: str = "git_identity",
     status_step: str = "candidate_worktree",
+    hooks_path: Path,
 ) -> str:
-    git_prefix = ["git"] if repo_root.resolve() == ROOT.resolve() else ["git", "-C", str(repo_root)]
     result = run_command(
-        [*git_prefix, "rev-parse", "HEAD"],
+        hardened_git_command(repo_root, hooks_path, "rev-parse", "HEAD"),
         environment=environment,
         step=identity_step,
         timeout_seconds=30,
@@ -186,7 +269,13 @@ def resolve_candidate_revision(
     ):
         raise AiMainchainE2EError(identity_step)
     worktree_status = run_command(
-        [*git_prefix, "status", "--porcelain=v1", "--untracked-files=all"],
+        hardened_git_command(
+            repo_root,
+            hooks_path,
+            "status",
+            "--porcelain=v1",
+            "--untracked-files=all",
+        ),
         environment=environment,
         step=status_step,
         timeout_seconds=30,
@@ -202,10 +291,10 @@ def resolve_tree_revision(
     *,
     repo_root: Path,
     step: str,
+    hooks_path: Path,
 ) -> str:
-    git_prefix = ["git"] if repo_root.resolve() == ROOT.resolve() else ["git", "-C", str(repo_root)]
     result = run_command(
-        [*git_prefix, "rev-parse", f"{revision}^{{tree}}"],
+        hardened_git_command(repo_root, hooks_path, "rev-parse", f"{revision}^{{tree}}"),
         environment=environment,
         step=step,
         timeout_seconds=30,
@@ -535,23 +624,31 @@ def remove_detached_worktree(
     candidate_root: Path,
     runtime_root: Path,
     environment: dict[str, str],
+    hooks_path: Path,
 ) -> None:
     try:
         listed_before = run_command(
-            ["git", "worktree", "list", "--porcelain"],
+            hardened_git_command(ROOT, hooks_path, "worktree", "list", "--porcelain"),
             environment=environment,
             step="candidate_worktree_cleanup_lookup",
             timeout_seconds=60,
         )
         if candidate_root.exists() or worktree_registered(listed_before.stdout, candidate_root):
             run_command(
-                ["git", "worktree", "remove", "--force", str(candidate_root)],
+                hardened_git_command(
+                    ROOT,
+                    hooks_path,
+                    "worktree",
+                    "remove",
+                    "--force",
+                    str(candidate_root),
+                ),
                 environment=environment,
                 step="candidate_worktree_remove",
                 timeout_seconds=300,
             )
         listed = run_command(
-            ["git", "worktree", "list", "--porcelain"],
+            hardened_git_command(ROOT, hooks_path, "worktree", "list", "--porcelain"),
             environment=environment,
             step="candidate_worktree_cleanup_check",
             timeout_seconds=60,
@@ -574,15 +671,29 @@ def execute(
     if output_path is not None and output_path.exists():
         raise AiMainchainE2EError("evidence_output_exists")
     tool_environment, removed_tool_environment = sanitized_environment(dict(os.environ))
-    revision = resolve_candidate_revision(tool_environment, requested_revision)
-    resolved_output = output_path or default_output_path(revision)
-    if resolved_output.exists():
-        raise AiMainchainE2EError("evidence_output_exists")
-
     run_id = uuid.uuid4()
     project = f"ku-ai-mainchain-{run_id.hex[:12]}"
     runtime_root = Path(tempfile.mkdtemp(prefix=f"{project}-"))
     candidate_root = runtime_root / "candidate"
+    hooks_path = runtime_root / "disabled-git-hooks"
+    try:
+        hooks_path.mkdir()
+        verify_git_provenance_contract(
+            tool_environment,
+            repo_root=ROOT,
+            hooks_path=hooks_path,
+        )
+        revision = resolve_candidate_revision(
+            tool_environment,
+            requested_revision,
+            hooks_path=hooks_path,
+        )
+        resolved_output = output_path or default_output_path(revision)
+        if resolved_output.exists():
+            raise AiMainchainE2EError("evidence_output_exists")
+    except Exception:
+        shutil.rmtree(runtime_root, ignore_errors=True)
+        raise
     environment = tool_environment
     removed_compose_environment = [
         key for key in removed_tool_environment if key.startswith("COMPOSE_")
@@ -600,30 +711,47 @@ def execute(
     compose_sha256: dict[str, str] = {}
     try:
         run_command(
-            ["git", "worktree", "add", "--detach", str(candidate_root), revision],
+            hardened_git_command(
+                ROOT,
+                hooks_path,
+                "worktree",
+                "add",
+                "--detach",
+                str(candidate_root),
+                revision,
+            ),
             environment=tool_environment,
             step="candidate_worktree_add",
             timeout_seconds=180,
         )
         worktree_added = True
+        verify_git_provenance_contract(
+            tool_environment,
+            repo_root=candidate_root,
+            hooks_path=hooks_path,
+            step_prefix="detached_git",
+        )
         detached_revision = resolve_candidate_revision(
             tool_environment,
             revision,
             repo_root=candidate_root,
             identity_step="detached_git_identity",
             status_step="detached_worktree",
+            hooks_path=hooks_path,
         )
         expected_tree = resolve_tree_revision(
             tool_environment,
             revision,
             repo_root=ROOT,
             step="expected_tree_identity",
+            hooks_path=hooks_path,
         )
         candidate_tree = resolve_tree_revision(
             tool_environment,
             detached_revision,
             repo_root=candidate_root,
             step="detached_tree_identity",
+            hooks_path=hooks_path,
         )
         if candidate_tree != expected_tree:
             raise AiMainchainE2EError("detached_tree_identity")
@@ -794,12 +922,19 @@ def execute(
                 cleanup_failures.append(exc)
         if worktree_added and candidate_root.is_dir():
             try:
+                verify_git_provenance_contract(
+                    tool_environment,
+                    repo_root=candidate_root,
+                    hooks_path=hooks_path,
+                    step_prefix="detached_git_after",
+                )
                 final_revision = resolve_candidate_revision(
                     tool_environment,
                     revision,
                     repo_root=candidate_root,
                     identity_step="detached_git_identity_after",
                     status_step="detached_worktree_after",
+                    hooks_path=hooks_path,
                 )
                 source_after = source_fingerprint(candidate_root)
                 final_tree = resolve_tree_revision(
@@ -807,6 +942,7 @@ def execute(
                     final_revision,
                     repo_root=candidate_root,
                     step="detached_tree_identity_after",
+                    hooks_path=hooks_path,
                 )
                 detached_unchanged = (
                     final_revision == revision
@@ -823,6 +959,7 @@ def execute(
                 candidate_root=candidate_root,
                 runtime_root=runtime_root,
                 environment=tool_environment,
+                hooks_path=hooks_path,
             )
         except AiMainchainE2EError as exc:
             cleanup_failures.append(exc)
@@ -852,6 +989,10 @@ def execute(
         "detached_worktree_bound": True,
         "detached_worktree_removed": True,
         "cleanup_completed": True,
+        "git_replace_objects_disabled": True,
+        "git_repository_hooks_disabled": True,
+        "git_replace_refs_absent": True,
+        "git_grafts_absent": True,
     }
     atomic_write_json(resolved_output, evidence)
     announce("passed")
