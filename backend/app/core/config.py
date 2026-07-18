@@ -151,6 +151,13 @@ class Settings(BaseSettings):
         if not _requires_protected_secret_validation(self.app_env, self.app_base_url):
             return self
 
+        if self.allow_external_llm:
+            msg = (
+                "ALLOW_EXTERNAL_LLM cannot be enabled in protected environments "
+                "until COST-002 is approved and implemented"
+            )
+            raise ValueError(msg)
+
         if "*" in _normalized_csv_values(self.uvicorn_forwarded_allow_ips):
             msg = "UVICORN_FORWARDED_ALLOW_IPS must not trust all proxies in protected environments"
             raise ValueError(msg)

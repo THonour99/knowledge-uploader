@@ -389,6 +389,50 @@ def test_enabled_llm_seed_accepts_complete_internal_endpoint_configuration() -> 
     assert settings.llm_model == "qwen-analysis"
 
 
+@pytest.mark.parametrize("app_env", ["staging", "production"])
+def test_protected_environment_rejects_external_llm_until_cost_002(app_env: str) -> None:
+    with pytest.raises(ValidationError, match="COST-002"):
+        Settings(
+            **_production_settings(
+                app_env=app_env,
+                allow_external_llm=True,
+                llm_provider="openai_compatible",
+                llm_base_url="https://llm.example.test/v1",
+                llm_model="analysis-model",
+                llm_allowed_base_urls="https://llm.example.test/v1",
+            )
+        )
+
+
+def test_development_allows_external_llm_gate() -> None:
+    settings = Settings(
+        app_env="development",
+        allow_external_llm=True,
+        llm_provider="openai_compatible",
+        llm_base_url="https://llm.example.test/v1",
+        llm_model="analysis-model",
+        llm_allowed_base_urls="https://llm.example.test/v1",
+    )
+
+    assert settings.allow_external_llm is True
+    assert settings.llm_provider == "openai_compatible"
+
+
+def test_protected_environment_allows_internal_llm_with_external_gate_disabled() -> None:
+    settings = Settings(
+        **_production_settings(
+            allow_external_llm=False,
+            llm_provider="local_openai_compatible",
+            llm_base_url="http://vllm:8000/v1",
+            llm_model="qwen-analysis",
+            llm_allowed_base_urls="http://vllm:8000/v1",
+        )
+    )
+
+    assert settings.allow_external_llm is False
+    assert settings.llm_provider == "local_openai_compatible"
+
+
 def test_protected_environment_rejects_mock_llm_at_startup() -> None:
     with pytest.raises(ValidationError, match="LLM_PROVIDER=mock"):
         Settings(**_production_settings(llm_provider="mock"))
