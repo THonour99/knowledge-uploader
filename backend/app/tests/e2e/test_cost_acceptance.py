@@ -114,7 +114,7 @@ def _headers(token: str) -> dict[str, str]:
     return {"Authorization": f"Bearer {token}"}
 
 
-async def _seed_governance_rows() -> tuple[UUID, UUID]:
+async def _seed_governance_rows() -> tuple[UUID, UUID, datetime]:
     from app.core.database import AsyncSessionFactory
     from app.modules.ai.models import AiUsageLog
     from app.modules.department.models import Department
@@ -297,7 +297,7 @@ async def _seed_governance_rows() -> tuple[UUID, UUID]:
             ]
         )
         await session.commit()
-        return department_a.id, department_b.id
+        return department_a.id, department_b.id, now
 
 
 async def test_cost_001_real_postgresql_api_sql_reconciliation_and_privacy() -> None:
@@ -307,7 +307,7 @@ async def test_cost_001_real_postgresql_api_sql_reconciliation_and_privacy() -> 
     from app.modules.document.models import File
     from app.modules.governance_metrics.models import RagflowApiCall, StorageCapacitySnapshot
 
-    department_a, department_b = await _seed_governance_rows()
+    department_a, department_b, seeded_at = await _seed_governance_rows()
     await _seed_user(
         email="cost-system@company.com",
         role="system_admin",
@@ -326,8 +326,8 @@ async def test_cost_001_real_postgresql_api_sql_reconciliation_and_privacy() -> 
         department_id=department_a,
         department="成本部A",
     )
-    recent_start = datetime.now(UTC) - timedelta(hours=1, minutes=30)
-    recent_end = datetime.now(UTC) + timedelta(minutes=1)
+    recent_start = seeded_at - timedelta(hours=1, minutes=30)
+    recent_end = seeded_at + timedelta(minutes=1)
     wide_start = recent_start - timedelta(hours=2)
     query: dict[str, str | int] = {
         "start_at": recent_start.isoformat(),
@@ -651,10 +651,7 @@ async def test_cost_001_real_postgresql_api_sql_reconciliation_and_privacy() -> 
         (department_b, "unknown_usage", 1),
         (department_b, "legacy_unverifiable", 1),
     }
-    assert (
-        day_usage.json()["data"]["items"][0]["dimension_key"]
-        == datetime.now(UTC).date().isoformat()
-    )
+    assert day_usage.json()["data"]["items"][0]["dimension_key"] == seeded_at.date().isoformat()
 
     ragflow_by_result = {row["dimension_key"]: row for row in ragflow_data["items"]}
     assert ragflow_by_result == {
@@ -688,6 +685,11 @@ async def test_cost_001_real_postgresql_api_sql_reconciliation_and_privacy() -> 
             unsupported_data,
             usage_data,
             ragflow_data,
+            wide_usage_data,
+            wide_ragflow_data,
+            day_usage.json()["data"],
+            stale.json()["data"],
+            unavailable.json()["data"],
             [audit.metadata_json for audit in audits],
         ]
     )
