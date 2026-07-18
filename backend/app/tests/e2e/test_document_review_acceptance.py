@@ -13,12 +13,12 @@ from collections.abc import AsyncGenerator, AsyncIterator
 from contextlib import asynccontextmanager
 from dataclasses import dataclass, field
 from importlib import import_module
-from uuid import UUID
+from uuid import UUID, uuid4
 
 import pytest
 from httpx import ASGITransport, AsyncClient, Response
 from redis.asyncio import from_url
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.tests.safety import require_safe_test_database_reset, require_safe_test_redis_reset
@@ -132,6 +132,7 @@ async def _api_client(storage: MemoryDocumentStorage) -> AsyncIterator[AsyncClie
         upload_allowed_extensions="txt",
         upload_allowed_mime_types="text/plain",
         ai_analysis_enabled=False,
+        ragflow_allowed_dataset_ids="document-review-acceptance-dataset",
     )
 
     async def override_session() -> AsyncGenerator[AsyncSession, None]:
@@ -234,7 +235,9 @@ async def _audit_actions(file_id: UUID) -> list[str]:
 async def test_doc_001_manual_submission_with_ai_disabled_has_no_ai_state_or_task() -> None:
     from app.core.database import AsyncSessionFactory
     from app.core.outbox import EventOutbox
+    from app.modules.ai.models import AiUsageLog, DocumentAnalysis
     from app.modules.document.models import File
+    from app.modules.ragflow.models import SyncTask
 
     storage = MemoryDocumentStorage()
     async with _api_client(storage) as client:
@@ -270,7 +273,25 @@ async def test_doc_001_manual_submission_with_ai_disabled_has_no_ai_state_or_tas
                 )
             ).scalars()
         )
+        analysis_count = await session.scalar(
+            select(func.count())
+            .select_from(DocumentAnalysis)
+            .where(DocumentAnalysis.file_id == file_id)
+        )
+        usage_count = await session.scalar(
+            select(func.count())
+            .select_from(AiUsageLog)
+            .join(DocumentAnalysis, AiUsageLog.analysis_id == DocumentAnalysis.id)
+            .where(DocumentAnalysis.file_id == file_id)
+        )
+        sync_task_count = await session.scalar(
+            select(func.count()).select_from(SyncTask).where(SyncTask.file_id == file_id)
+        )
     assert event_types == ["document.file.uploaded", "review.file.submitted"]
+    assert all(not event_type.startswith("ai.") for event_type in event_types)
+    assert analysis_count == 0
+    assert usage_count == 0
+    assert sync_task_count == 0
     assert await _audit_actions(file_id) == ["file.upload", "file.submit_review"]
 
 
@@ -401,6 +422,23 @@ async def test_rev_001_rejection_resubmission_and_approve_only_contract() -> Non
         assert rejected.status_code == 200, rejected.text
         assert rejected.json()["data"]["status"] == "rejected"
 
+        rejected_version = int(rejected.json()["data"]["review_version"])
+        revised = await client.patch(
+            f"/api/files/{file_id}",
+            headers=_headers(owner_token),
+            json={
+                "expected_version": rejected_version,
+                "title": "已修订的审核材料",
+                "description": "已补充批准日期",
+                "visibility": "department",
+            },
+        )
+        assert revised.status_code == 200, revised.text
+        assert revised.json()["data"]["status"] == "rejected"
+        assert revised.json()["data"]["title"] == "已修订的审核材料"
+        assert revised.json()["data"]["description"] == "已补充批准日期"
+        assert revised.json()["data"]["review_version"] == rejected_version + 1
+
         resubmitted = await client.post(
             f"/api/files/{file_id}/submit-review", headers=_headers(owner_token)
         )
@@ -445,24 +483,30 @@ async def test_rev_001_rejection_resubmission_and_approve_only_contract() -> Non
         events = list(
             (
                 await session.execute(
-                    select(EventOutbox.event_type)
+                    select(EventOutbox)
                     .where(EventOutbox.aggregate_id == str(file_id))
                     .order_by(EventOutbox.id)
                 )
             ).scalars()
         )
-    assert events == [
+    assert [event.event_type for event in events] == [
         "document.file.uploaded",
         "review.file.submitted",
         "review.file.rejected",
         "review.file.submitted",
         "review.file.approved",
     ]
+    rejected_event = next(event for event in events if event.event_type == "review.file.rejected")
+    assert rejected_event.payload["file_id"] == str(file_id)
+    assert rejected_event.payload["reason"] == "请补充批准日期"
+    assert rejected_event.payload["status"] == "rejected"
+    assert file.title == "已修订的审核材料"
     assert await _audit_actions(file_id) == [
         "file.upload",
         "file.submit_review",
         "file.review_claim",
         "file.reject",
+        "file.update_draft",
         "file.submit_review",
         "file.review_claim",
         "file.approve",
@@ -507,10 +551,20 @@ async def test_rev_002_concurrent_two_admin_decisions_allow_one_and_keep_one_aud
             client, email="race-admin-b@company.com", password="password123"
         )
         file_id = await _upload_and_submit(client, token=owner_token, name="race.txt")
-        claim = await client.post(
-            f"/api/review/files/{file_id}/claim", headers=_headers(admin_a_token)
-        )
-        assert claim.status_code == 200, claim.text
+
+        async def claim(token: str) -> Response:
+            return await client.post(f"/api/review/files/{file_id}/claim", headers=_headers(token))
+
+        claim_a, claim_b = await asyncio.gather(claim(admin_a_token), claim(admin_b_token))
+        claim_responses = [claim_a, claim_b]
+        assert sorted(response.status_code for response in claim_responses) == [200, 409]
+        winner_index = 0 if claim_a.status_code == 200 else 1
+        winner_token = [admin_a_token, admin_b_token][winner_index]
+        loser_token = [admin_a_token, admin_b_token][1 - winner_index]
+        claim_loser = claim_responses[1 - winner_index]
+        assert claim_loser.json()["error_code"] == "REVIEW_CLAIM_CONFLICT"
+        assert str(file_id) not in claim_loser.text
+        assert str([admin_a_id, admin_b_id][winner_index]) not in claim_loser.text
 
         async def decide(token: str) -> Response:
             return await client.post(
@@ -519,7 +573,7 @@ async def test_rev_002_concurrent_two_admin_decisions_allow_one_and_keep_one_aud
                 json={"sync_decision": "approve_only"},
             )
 
-        first, second = await asyncio.gather(decide(admin_a_token), decide(admin_b_token))
+        first, second = await asyncio.gather(decide(winner_token), decide(loser_token))
         responses = [first, second]
         assert sorted(response.status_code for response in responses) == [200, 409]
         conflict = next(response for response in responses if response.status_code == 409)
@@ -540,3 +594,204 @@ async def test_rev_002_concurrent_two_admin_decisions_allow_one_and_keep_one_aud
         )
     assert events.count("review.file.approved") == 1
     assert all(not event.startswith("ragflow.") for event in events)
+
+
+async def test_rev_001_sync_branch_records_explicit_decision_payload() -> None:
+    from app.core.database import AsyncSessionFactory
+    from app.core.outbox import EventOutbox
+    from app.modules.document.models import File
+
+    storage = MemoryDocumentStorage()
+    async with _api_client(storage) as client:
+        department_id = await _create_department(name="同步分支部", code="sync-branch")
+        await _create_user(
+            email="sync-owner@company.com",
+            password="password123",
+            role="employee",
+            department_id=department_id,
+            department_name="同步分支部",
+        )
+        reviewer_id = await _create_user(
+            email="sync-reviewer@company.com",
+            password="password123",
+            role="dept_admin",
+            department_id=department_id,
+            department_name="同步分支部",
+        )
+        await _create_user(
+            email="sync-system@company.com",
+            password="password123",
+            role="system_admin",
+            department_id=department_id,
+            department_name="同步分支部",
+        )
+        await _grant_managed_department(user_id=reviewer_id, department_id=department_id)
+        owner_token = await _login(client, email="sync-owner@company.com", password="password123")
+        reviewer_token = await _login(
+            client, email="sync-reviewer@company.com", password="password123"
+        )
+        system_token = await _login(client, email="sync-system@company.com", password="password123")
+        category = await client.post(
+            "/api/categories",
+            headers=_headers(system_token),
+            json={
+                "name": "同步验收分类",
+                "code": "sync-acceptance",
+                "default_visibility": "department",
+                "ai_analysis_enabled": False,
+            },
+        )
+        assert category.status_code == 201, category.text
+        category_id = str(category.json()["data"]["id"])
+        mapping = await client.post(
+            "/api/datasets",
+            headers=_headers(system_token),
+            json={
+                "name": "同步验收数据集",
+                "category_id": category_id,
+                "ragflow_dataset_id": "document-review-acceptance-dataset",
+                "ragflow_dataset_name": "Document Review Acceptance",
+                "enabled": True,
+            },
+        )
+        assert mapping.status_code == 201, mapping.text
+        mapping_id = str(mapping.json()["data"]["id"])
+        file_id = await _upload_and_submit(client, token=owner_token, name="sync.txt")
+        claim = await client.post(
+            f"/api/review/files/{file_id}/claim", headers=_headers(reviewer_token)
+        )
+        assert claim.status_code == 200, claim.text
+        missing = await client.post(
+            f"/api/files/{file_id}/approve",
+            headers=_headers(reviewer_token),
+            json={"sync_decision": "sync"},
+        )
+        assert missing.status_code == 422
+        pending = await client.get(f"/api/files/{file_id}", headers=_headers(owner_token))
+        assert pending.status_code == 200
+        assert pending.json()["data"]["status"] == "pending_review"
+        approved = await client.post(
+            f"/api/files/{file_id}/approve",
+            headers=_headers(reviewer_token),
+            json={
+                "sync_decision": "sync",
+                "category_id": category_id,
+                "dataset_mapping_id": mapping_id,
+            },
+        )
+        assert approved.status_code == 200, approved.text
+        assert approved.json()["data"]["status"] == "queued"
+        assert approved.json()["data"]["ragflow_dataset_id"] == "document-review-acceptance-dataset"
+
+    async with AsyncSessionFactory() as session:
+        file = await session.get(File, file_id)
+        assert file is not None and file.status == "queued"
+        event = (
+            await session.execute(
+                select(EventOutbox).where(
+                    EventOutbox.aggregate_id == str(file_id),
+                    EventOutbox.event_type == "review.file.approved",
+                )
+            )
+        ).scalar_one()
+    assert event.payload["sync_decision"] == "sync"
+    assert event.payload["dataset_mapping_id"] == mapping_id
+    assert event.payload["ragflow_dataset_id"] == "document-review-acceptance-dataset"
+
+
+async def test_sec_001_scope_negative_responses_do_not_disclose_files_or_totals() -> None:
+    from app.core.database import AsyncSessionFactory
+    from app.modules.audit.models import AuditLog
+
+    storage = MemoryDocumentStorage()
+    async with _api_client(storage) as client:
+        department_a = await _create_department(name="安全范围A", code="security-scope-a")
+        department_b = await _create_department(name="安全范围B", code="security-scope-b")
+        await _create_user(
+            email="sec-owner@company.com",
+            password="password123",
+            role="employee",
+            department_id=department_a,
+            department_name="安全范围A",
+        )
+        await _create_user(
+            email="sec-peer@company.com",
+            password="password123",
+            role="employee",
+            department_id=department_a,
+            department_name="安全范围A",
+        )
+        same_admin_id = await _create_user(
+            email="sec-admin-a@company.com",
+            password="password123",
+            role="dept_admin",
+            department_id=department_a,
+            department_name="安全范围A",
+        )
+        await _create_user(
+            email="sec-admin-b@company.com",
+            password="password123",
+            role="dept_admin",
+            department_id=department_b,
+            department_name="安全范围B",
+        )
+        await _grant_managed_department(user_id=same_admin_id, department_id=department_a)
+        owner_token = await _login(client, email="sec-owner@company.com", password="password123")
+        peer_token = await _login(client, email="sec-peer@company.com", password="password123")
+        same_admin_token = await _login(
+            client, email="sec-admin-a@company.com", password="password123"
+        )
+        other_admin_token = await _login(
+            client, email="sec-admin-b@company.com", password="password123"
+        )
+        file_id = await _upload_and_submit(client, token=owner_token, name="scope-secret.txt")
+        random_id = uuid4()
+        for token in (peer_token, same_admin_token, other_admin_token):
+            random_detail = await client.get(f"/api/files/{random_id}", headers=_headers(token))
+            random_content = await client.get(
+                f"/api/files/{random_id}/content", headers=_headers(token)
+            )
+            assert random_detail.status_code == random_content.status_code == 404
+        for token in (peer_token, other_admin_token):
+            detail = await client.get(f"/api/files/{file_id}", headers=_headers(token))
+            content = await client.get(f"/api/files/{file_id}/content", headers=_headers(token))
+            assert detail.status_code == content.status_code == 404
+        same_detail = await client.get(f"/api/files/{file_id}", headers=_headers(same_admin_token))
+        assert same_detail.status_code == 200
+        same_content = await client.get(
+            f"/api/files/{file_id}/content", headers=_headers(same_admin_token)
+        )
+        assert same_content.status_code == 200
+        peer_list = await client.get(
+            "/api/files?q=scope-secret&page=1&page_size=1", headers=_headers(peer_token)
+        )
+        assert peer_list.status_code == 200 and peer_list.json()["data"]["total"] == 0
+        scoped_list = await client.get(
+            "/api/review/files?q=scope-secret&page=1&page_size=1",
+            headers=_headers(same_admin_token),
+        )
+        hidden_list = await client.get(
+            "/api/review/files?q=scope-secret&page=1&page_size=1",
+            headers=_headers(other_admin_token),
+        )
+        assert scoped_list.status_code == hidden_list.status_code == 200
+        assert scoped_list.json()["data"]["total"] == 1
+        assert hidden_list.json()["data"]["total"] == 0
+        forbidden_claim = await client.post(
+            f"/api/review/files/{file_id}/claim", headers=_headers(other_admin_token)
+        )
+        assert forbidden_claim.status_code == 404
+
+    async with AsyncSessionFactory() as session:
+        audits = list(
+            (
+                await session.execute(
+                    select(AuditLog)
+                    .where(AuditLog.target_id == file_id)
+                    .order_by(AuditLog.created_at)
+                )
+            ).scalars()
+        )
+    assert any(
+        audit.action == "file.view_content" and audit.actor_id == same_admin_id for audit in audits
+    )
