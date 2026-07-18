@@ -40,7 +40,7 @@ RAGFLOW_UPLOAD_TASK = "ragflow_upload"
 RAGFLOW_STATUS_CHECK_TASK = "ragflow_status_check"
 RAGFLOW_DELETE_TASK = "ragflow_delete"
 VERSION_SWITCH_RECONCILABLE_TASKS = frozenset({RAGFLOW_UPLOAD_TASK, RAGFLOW_STATUS_CHECK_TASK})
-MANUAL_SYNC_SOURCE_STATUSES = {"approved", "failed"}
+MANUAL_SYNC_SOURCE_STATUSES = {"approved", "failed", "parsed"}
 MAX_ERROR_MESSAGE_LENGTH = 2000
 DELETE_CLEANUP_FAILURE_SOURCE_STATUSES = {"deleted"}
 RAGFLOW_SUCCESS_RUNS = {"3", "DONE"}
@@ -507,10 +507,25 @@ class RagflowTaskService:
         )
         if file.status not in MANUAL_SYNC_SOURCE_STATUSES or file.review_status != "approved":
             raise exceptions.file_not_syncable()
+        cleaned_reason = reason.strip() if reason is not None else ""
+        reconcile_existing_remote = file.status == "parsed"
+        if reconcile_existing_remote:
+            if not cleaned_reason:
+                raise exceptions.parsed_reconciliation_reason_required()
+            if file.ragflow_document_id is None or not file.ragflow_document_id.strip():
+                raise exceptions.parsed_remote_identity_missing()
+            expected_version_switch_status = (
+                "completed" if file.replaces_file_id is not None else "not_required"
+            )
+            if (
+                not file.is_current_version
+                or file.remote_visibility != "current"
+                or file.version_switch_status != expected_version_switch_status
+            ):
+                raise exceptions.parsed_version_not_current()
         if await self._sensitive_policy_blocks_sync(file):
             raise exceptions.sync_blocked_by_sensitive_policy()
         risk_level = await self._repository.get_file_sensitive_risk_level(file.id)
-        cleaned_reason = reason.strip() if reason is not None else ""
         if risk_level == "high":
             if await get_config("ragflow.allow_high_risk_sync") is not True:
                 raise exceptions.high_risk_sync_not_allowed()
@@ -519,6 +534,8 @@ class RagflowTaskService:
         mapping = await self._repository.get_dataset_mapping_for_update(dataset_mapping_id)
         if mapping is None or not mapping.enabled:
             raise exceptions.dataset_mapping_not_found()
+        if reconcile_existing_remote and file.category_id is None:
+            raise exceptions.dataset_mapping_category_mismatch()
         if file.category_id is not None and mapping.category_id != file.category_id:
             raise exceptions.dataset_mapping_category_mismatch()
         dataset_id = mapping.ragflow_dataset_id
@@ -528,12 +545,18 @@ class RagflowTaskService:
             raise exceptions.remote_document_dataset_change_not_allowed()
         if not await self._is_dataset_id_allowed(dataset_id):
             raise exceptions.dataset_not_allowed()
-        active_task = await self._repository.get_active_task(
-            file_id=file_id,
-            task_type=RAGFLOW_UPLOAD_TASK,
+        active_task_types = (
+            (RAGFLOW_UPLOAD_TASK, RAGFLOW_STATUS_CHECK_TASK)
+            if reconcile_existing_remote
+            else (RAGFLOW_UPLOAD_TASK,)
         )
-        if active_task is not None:
-            raise exceptions.task_conflict()
+        for active_task_type in active_task_types:
+            active_task = await self._repository.get_active_task(
+                file_id=file_id,
+                task_type=active_task_type,
+            )
+            if active_task is not None:
+                raise exceptions.task_conflict()
 
         settings = get_settings()
         lock_token = uuid.uuid4().hex
@@ -554,13 +577,22 @@ class RagflowTaskService:
         try:
             from_status = file.status
             previous_dataset_mapping_id = file.dataset_mapping_id
-            file.category_id = file.category_id or mapping.category_id
+            if not reconcile_existing_remote:
+                file.category_id = file.category_id or mapping.category_id
             file.dataset_mapping_id = mapping.id
             file.ragflow_dataset_id = dataset_id
             if file.status == "approved":
                 file.status = DocumentStateMachine.transition(file.status, "queued")
             file = await self._repository.update_file_sync_state(file)
-            task = await self.create_ragflow_upload_task(file_id)
+            if reconcile_existing_remote:
+                task = await self.create_ragflow_status_check_task(file_id)
+                await self._repository.add_log(
+                    task_id=task.id,
+                    status=task.status,
+                    message="existing ragflow document reconciliation queued",
+                )
+            else:
+                task = await self.create_ragflow_upload_task(file_id)
             await self._record_admin_audit(
                 current_user=current_user,
                 action="file.manual_sync",
@@ -570,6 +602,9 @@ class RagflowTaskService:
                 metadata_json={
                     "task_id": str(task.id),
                     "from_status": from_status,
+                    "sync_mode": (
+                        "reconcile_existing_remote" if reconcile_existing_remote else "manual_sync"
+                    ),
                     "dataset_mapping_id": str(mapping.id),
                     "ragflow_dataset_id": dataset_id,
                     "previous_dataset_mapping_id": (
@@ -673,7 +708,7 @@ class RagflowTaskService:
         self,
         task_id: uuid.UUID,
         *,
-        storage: RagflowObjectStorage,
+        storage: RagflowObjectStorage | None,
         ragflow_client: RagflowClient,
     ) -> SyncTask:
         task = await self._get_task_or_raise(task_id)
@@ -746,6 +781,8 @@ class RagflowTaskService:
                 message="ragflow unknown upload outcome reconciled",
             )
         if upload_result is None:
+            if storage is None:
+                raise RagflowSyncPreconditionError
             content = await storage.get_object(
                 bucket=file.bucket,
                 object_key=file.object_key,

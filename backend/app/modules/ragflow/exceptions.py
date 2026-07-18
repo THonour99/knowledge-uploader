@@ -168,3 +168,27 @@ def task_not_cancelable() -> RagflowTaskError:
         "task cannot be canceled",
         status.HTTP_400_BAD_REQUEST,
     )
+
+
+def parsed_reconciliation_reason_required() -> RagflowTaskError:
+    return RagflowTaskError(
+        ErrorCode.VALIDATION_ERROR,
+        "reason is required to reconcile a parsed ragflow document",
+        status.HTTP_422_UNPROCESSABLE_ENTITY,
+    )
+
+
+def parsed_remote_identity_missing() -> RagflowTaskError:
+    return RagflowTaskError(
+        ErrorCode.VALIDATION_ERROR,
+        "parsed file is missing its ragflow document identity",
+        status.HTTP_409_CONFLICT,
+    )
+
+
+def parsed_version_not_current() -> RagflowTaskError:
+    return RagflowTaskError(
+        ErrorCode.VALIDATION_ERROR,
+        "parsed file is not the stable current document version",
+        status.HTTP_409_CONFLICT,
+    )

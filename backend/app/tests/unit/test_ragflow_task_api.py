@@ -127,6 +127,7 @@ async def _create_file(
     hash_value: str = "b" * 64,
     department_id: UUID = UNASSIGNED_DEPARTMENT_ID,
     department: str | None = "QA",
+    category_id: UUID | None = None,
     dataset_mapping_id: UUID | None = None,
     ragflow_dataset_id: str | None = None,
     ragflow_document_id: str | None = None,
@@ -150,6 +151,7 @@ async def _create_file(
         object_key=f"uploads/{uploader_id}/file-phase4-handbook.pdf",
         uploader_id=uploader_id,
         department=department,
+        category_id=category_id,
         dataset_mapping_id=dataset_mapping_id,
         visibility="private",
         description="phase4 task target",
@@ -1147,7 +1149,7 @@ async def test_version_switch_reconcile_rejects_cross_type_active_sibling_withou
 
     token = await _create_admin_token(task_client)
     uploader_id = await _create_user(
-        email=(f"reconcile-cross-{target_type}-{sibling_type}-{sibling_status}" "@company.com"),
+        email=(f"reconcile-cross-{target_type}-{sibling_type}-{sibling_status}@company.com"),
         password="password123",
     )
     _predecessor_id, candidate_id, task_id = await _create_incomplete_version_switch_task(
@@ -1456,6 +1458,217 @@ class _BlockingReconcileClient(_FakeRagflowClient):
         self.reconcile_entered.set()
         await self.reconcile_release.wait()
         return None
+
+
+async def _mark_parsed_version_stable_current(file_id: UUID) -> None:
+    from app.core.database import AsyncSessionFactory
+    from app.modules.document.models import File
+
+    async with AsyncSessionFactory() as session:
+        file = await session.get(File, file_id)
+        assert file is not None
+        file.is_current_version = True
+        file.remote_visibility = "current"
+        file.version_switch_status = "not_required"
+        await session.commit()
+
+
+async def test_parsed_reconciliation_is_public_read_only_and_repeatable(
+    task_client: AsyncClient,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from app.core.database import AsyncSessionFactory
+    from app.modules.audit.models import AuditLog
+    from app.modules.document.models import File
+    from app.modules.ragflow import tasks
+    from app.modules.ragflow.models import SyncTask
+
+    token = await _create_admin_token(task_client)
+    uploader_id = await _create_user(
+        email="parsed-reconcile-repeatable@company.com",
+        password="password123",
+    )
+    category_id, mapping_id = await _create_category_and_mapping(
+        task_client,
+        token,
+        ragflow_dataset_id="ragflow-parsed-reconcile",
+        ragflow_dataset_name="Parsed reconciliation dataset",
+    )
+    file_id = await _create_file(
+        uploader_id=uploader_id,
+        status_value="parsed",
+        review_status="approved",
+        category_id=UUID(category_id),
+        dataset_mapping_id=UUID(mapping_id),
+        ragflow_dataset_id="ragflow-parsed-reconcile",
+        ragflow_document_id="existing-parsed-document",
+        ragflow_parse_status="DONE",
+    )
+    await _mark_parsed_version_stable_current(file_id)
+    storage = _FakeReadableStorage(b"must never be read for parsed reconciliation")
+    client = _FakeRagflowClient(
+        document_id="existing-parsed-document",
+        run_statuses=["DONE", "DONE"],
+    )
+    monkeypatch.setattr(tasks, "build_document_storage", lambda _settings: storage)
+
+    async def _fake_build_ragflow_client() -> object:
+        return client
+
+    monkeypatch.setattr(
+        tasks,
+        "build_ragflow_client_from_runtime_config",
+        _fake_build_ragflow_client,
+    )
+
+    task_ids: list[UUID] = []
+    for attempt in (1, 2):
+        response = await task_client.post(
+            f"/api/admin/files/{file_id}/sync",
+            headers={"Authorization": f"Bearer {token}"},
+            json={
+                "dataset_mapping_id": mapping_id,
+                "reason": f"read-only reconciliation attempt {attempt}",
+            },
+        )
+        assert response.status_code == 200
+        task_data = response.json()["data"]
+        assert task_data["task_type"] == "ragflow_status_check"
+        assert task_data["status"] == "queued"
+        task_id = UUID(task_data["id"])
+        task_ids.append(task_id)
+
+        async with AsyncSessionFactory() as session:
+            file_before_worker = await session.get(File, file_id)
+        assert file_before_worker is not None
+        assert file_before_worker.status == "parsed"
+        assert file_before_worker.ragflow_document_id == "existing-parsed-document"
+
+        await tasks.run_ragflow_upload_task_async(str(task_id))
+
+    async with AsyncSessionFactory() as session:
+        file = await session.get(File, file_id)
+        loaded_tasks = list(
+            (
+                await session.execute(select(SyncTask).where(SyncTask.id.in_(set(task_ids))))
+            ).scalars()
+        )
+        audits = list(
+            (
+                await session.execute(
+                    select(AuditLog)
+                    .where(
+                        AuditLog.action == "file.manual_sync",
+                        AuditLog.target_id == file_id,
+                    )
+                    .order_by(AuditLog.created_at.asc(), AuditLog.id.asc())
+                )
+            ).scalars()
+        )
+
+    assert task_ids[0] != task_ids[1]
+    assert len(loaded_tasks) == 2
+    assert all(task.task_type == "ragflow_status_check" for task in loaded_tasks)
+    assert all(task.status == "succeeded" for task in loaded_tasks)
+    assert file is not None
+    assert file.status == "parsed"
+    assert file.ragflow_document_id == "existing-parsed-document"
+    assert file.dataset_mapping_id == UUID(mapping_id)
+    assert file.ragflow_dataset_id == "ragflow-parsed-reconcile"
+    assert [audit.reason for audit in audits] == [
+        "read-only reconciliation attempt 1",
+        "read-only reconciliation attempt 2",
+    ]
+    assert all(audit.metadata_json["sync_mode"] == "reconcile_existing_remote" for audit in audits)
+    assert storage.reads == []
+    assert client.find_requests == []
+    assert client.uploads == []
+    assert client.metadata_updates == []
+    assert client.parse_requests == []
+    assert client.status_requests == [
+        ("ragflow-parsed-reconcile", "existing-parsed-document"),
+        ("ragflow-parsed-reconcile", "existing-parsed-document"),
+    ]
+
+
+async def test_parsed_reconciliation_fails_closed_when_remote_is_unstarted(
+    task_client: AsyncClient,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from app.core.database import AsyncSessionFactory
+    from app.modules.document.models import File
+    from app.modules.ragflow import tasks
+    from app.modules.ragflow.models import SyncTask
+
+    token = await _create_admin_token(task_client)
+    uploader_id = await _create_user(
+        email="parsed-reconcile-unstarted@company.com",
+        password="password123",
+    )
+    category_id, mapping_id = await _create_category_and_mapping(
+        task_client,
+        token,
+        ragflow_dataset_id="ragflow-parsed-unstarted",
+        ragflow_dataset_name="Parsed unstarted dataset",
+    )
+    file_id = await _create_file(
+        uploader_id=uploader_id,
+        status_value="parsed",
+        review_status="approved",
+        category_id=UUID(category_id),
+        dataset_mapping_id=UUID(mapping_id),
+        ragflow_dataset_id="ragflow-parsed-unstarted",
+        ragflow_document_id="unexpected-unstarted-document",
+        ragflow_parse_status="DONE",
+    )
+    await _mark_parsed_version_stable_current(file_id)
+    response = await task_client.post(
+        f"/api/admin/files/{file_id}/sync",
+        headers={"Authorization": f"Bearer {token}"},
+        json={
+            "dataset_mapping_id": mapping_id,
+            "reason": "detect remote state drift without mutating it",
+        },
+    )
+    assert response.status_code == 200
+    task_id = UUID(response.json()["data"]["id"])
+
+    storage = _FakeReadableStorage(b"must never be read for remote state drift")
+    client = _FakeRagflowClient(
+        document_id="unexpected-unstarted-document",
+        run_statuses=["UNSTART"],
+    )
+    monkeypatch.setattr(tasks, "build_document_storage", lambda _settings: storage)
+
+    async def _fake_build_ragflow_client() -> object:
+        return client
+
+    monkeypatch.setattr(
+        tasks,
+        "build_ragflow_client_from_runtime_config",
+        _fake_build_ragflow_client,
+    )
+
+    await tasks.run_ragflow_upload_task_async(str(task_id))
+
+    async with AsyncSessionFactory() as session:
+        file = await session.get(File, file_id)
+        task = await session.get(SyncTask, task_id)
+
+    assert task is not None
+    assert task.task_type == "ragflow_status_check"
+    assert task.status == "failed"
+    assert task.error_message == "RagflowSyncPreconditionError"
+    assert file is not None
+    assert file.status == "parsed"
+    assert file.ragflow_document_id == "unexpected-unstarted-document"
+    assert file.ragflow_parse_status == "DONE"
+    assert storage.reads == []
+    assert client.find_requests == []
+    assert client.uploads == []
+    assert client.metadata_updates == []
+    assert client.parse_requests == []
+    assert client.status_requests == [("ragflow-parsed-unstarted", "unexpected-unstarted-document")]
 
 
 async def test_ragflow_upload_worker_uploads_minio_object_and_parses_document(
@@ -3112,9 +3325,12 @@ async def test_stale_status_check_lease_is_reclaimed_and_completed(
         await session.refresh(task)
         task_id = task.id
 
-    storage = _FakeReadableStorage(b"must not be read")
     client = _FakeRagflowClient(document_id="stale-lease-doc", run_statuses=["DONE"])
-    monkeypatch.setattr(tasks, "build_document_storage", lambda _settings: storage)
+
+    def fail_if_storage_is_built(_settings: object) -> None:
+        raise AssertionError("status checks must not initialize MinIO storage")
+
+    monkeypatch.setattr(tasks, "build_document_storage", fail_if_storage_is_built)
 
     async def _fake_build_ragflow_client() -> object:
         return client
@@ -3134,7 +3350,6 @@ async def test_stale_status_check_lease_is_reclaimed_and_completed(
     assert loaded_task.status == "succeeded"
     assert loaded_file is not None
     assert loaded_file.status == "parsed"
-    assert storage.reads == []
     assert client.status_requests == [("ragflow-stale-lease", "stale-lease-doc")]
 
 

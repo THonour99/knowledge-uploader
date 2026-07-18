@@ -37,6 +37,14 @@ FileApproved(sync)
 
 上传前再次检查状态、敏感策略、映射与对象存在性。远端 id 一经取得立即持久化；重试时若已有远端 id，不重复上传，继续解析/查询。取消只允许尚未产生不可逆远端动作的阶段。
 
+已 `parsed` 文件的显式再次同步是只读身份/终态对账，不是状态回退或重新解析。管理员必须提交
+原 Dataset mapping 和原因；服务端验证已持久化的 Dataset/document ID 后创建
+`ragflow_status_check`。该任务只查询同一 document ID，成功终态则成功；任何非成功漂移均
+失败关闭，不读取 MinIO、不上传、不更新 metadata、不启动解析。文件必须是已完成版本切换的
+稳定当前版本（`is_current_version=true`、`remote_visibility=current`；初始版本
+`not_required`、替代版本 `completed`），主状态始终为 `parsed`。活跃上传/对账任务、
+非当前或切换未完成、目标不一致、远端 ID 缺失、敏感策略阻断或权限/部门越界均不得创建任务。
+
 ## 5. Metadata 与版本
 
 发送到 RAGFlow 的 metadata 至少含本地 `file_id`、版本 id、部门、分类、标签、上传人 id（非邮箱）、审核人 id、审核时间、敏感等级和内容 hash。不得发送内部对象 key、密钥、私人说明或不必要个人信息。

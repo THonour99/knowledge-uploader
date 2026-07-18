@@ -21,6 +21,7 @@ from app.workers.celery_app import celery_app
 from .exceptions import RagflowTaskAlreadyRunningError, RagflowTaskLeaseLostError
 from .repository import RagflowTaskRepository  # noqa: TID251 - same-module repository dependency
 from .service import (  # noqa: TID251 - same-module service dependency
+    RAGFLOW_UPLOAD_TASK,
     RagflowObjectStorage,
     RagflowTaskService,
 )
@@ -59,6 +60,8 @@ async def build_ragflow_client_from_runtime_config() -> RagflowClient:
         base_url=runtime_settings.base_url,
         api_key=runtime_settings.api_key,
         timeout_seconds=runtime_settings.timeout_seconds,
+        protected_environment=runtime_settings.protected_environment,
+        tls_spki_pins=runtime_settings.tls_spki_pins,
     )
 
 
@@ -443,10 +446,17 @@ async def _run_ragflow_upload_task(
             ):
                 raise RagflowTaskAlreadyRunningError
             return
+        claimed_task = await repository.get_task(sync_task_id)
+        if claimed_task is None:
+            raise RuntimeError("claimed RAGFlow task disappeared")
+        claimed_task_type = claimed_task.task_type
 
     async def execute_claimed_upload() -> None:
-        settings = get_settings()
-        storage = build_document_storage(settings)
+        storage = (
+            build_document_storage(get_settings())
+            if claimed_task_type == RAGFLOW_UPLOAD_TASK
+            else None
+        )
         ragflow_client = await build_ragflow_client_from_runtime_config()
         async with AsyncSessionFactory() as session:
             service = RagflowTaskService(
@@ -578,11 +588,7 @@ async def _run_ragflow_delete_task(
         )
         if not claimed:
             task = await repository.get_task(sync_task_id)
-            if (
-                task is not None
-                and task.task_type == "ragflow_delete"
-                and task.status == "running"
-            ):
+            if task is not None and task.task_type == "ragflow_delete" and task.status == "running":
                 raise RagflowTaskAlreadyRunningError
             return
 

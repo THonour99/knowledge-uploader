@@ -154,6 +154,23 @@ pending_review ──批准且 sync──> approved -> queued -> syncing
 
 `sync` 时 Dataset 缺失/禁用/越权返回 422，不得退化为仅批准；`approve_only` 时忽略 Dataset 是错误，应要求客户端不传并返回 422。响应返回 `status`、`sync_decision` 和可空 `sync_task_id`。
 
+已处于 `parsed` 的文件可由有权管理员复用
+`POST /api/admin/files/{file_id}/sync` 发起只读远端对账。请求必须提交原
+`dataset_mapping_id` 和去空白后 1–1000 字符的 `reason`；本地必须已有非空
+`ragflow_document_id`，且版本必须为 `is_current_version=true`、
+`remote_visibility=current` 的稳定当前版本：初始版本要求 `version_switch_status=not_required`，
+替代版本要求 `version_switch_status=completed`。mapping 仍须启用，分类和
+`ragflow_dataset_id` 与原目标完全一致。任何缺失、非当前版本或目标漂移都必须在创建任务前失败，
+不能重新上传或猜测远端身份；未完成的替代切换只能走专用版本对账入口。
+
+该分支创建 `task_type=ragflow_status_check`，文件主状态从请求开始到任务终态始终保持
+`parsed`，不得执行 `parsed -> queued|parsing|failed`。Worker 只按已持久化 Dataset/document
+ID 查询状态；远端仍为成功终态时任务成功，`UNSTART`、失败或其他状态漂移使任务失败且不调用
+上传、metadata 更新或启动解析。前一对账任务终态后可再次发起并得到新的只读任务；活跃的
+`ragflow_upload` 或 `ragflow_status_check` 存在时返回 409。任务创建仍使用
+`lock:sync:{file_id}`，管理员审计记录 actor、file、reason、原状态、mapping 与
+`sync_mode=reconcile_existing_remote`，不得记录 endpoint 或密钥。
+
 ## 7. 通知与工作台
 
 | 方法 | 路径 | 契约 |

@@ -128,6 +128,7 @@ async def _create_file(
     ragflow_document_id: str | None = "ragflow-r4-doc",
     category_id: UUID | None = None,
     dataset_mapping_id: UUID | None = None,
+    department_id: UUID | None = None,
 ) -> UUID:
     from app.core.database import AsyncSessionFactory
     from app.modules.document.models import File
@@ -152,15 +153,18 @@ async def _create_file(
         status=status_value,
         review_status=review_status,
         submitted_at=submitted_at,
-        review_due_at=(
-            submitted_at + timedelta(hours=24) if submitted_at is not None else None
-        ),
+        review_due_at=(submitted_at + timedelta(hours=24) if submitted_at is not None else None),
         category_id=category_id,
         dataset_mapping_id=dataset_mapping_id,
         ragflow_dataset_id=ragflow_dataset_id,
         ragflow_document_id=ragflow_document_id,
         ai_analysis_enabled_at_upload=False,
     )
+    if status_value == "parsed":
+        file.remote_visibility = "current"
+        file.version_switch_status = "not_required"
+    if department_id is not None:
+        file.department_id = department_id
     async with AsyncSessionFactory() as session:
         session.add(file)
         await session.commit()
@@ -789,6 +793,485 @@ async def test_admin_manual_sync_failed_file_creates_task(
     assert response.json()["data"]["status"] == "queued"
 
 
+async def test_admin_manual_sync_parsed_file_queues_read_only_reconciliation(
+    lifecycle_client: AsyncClient,
+) -> None:
+    from app.core.database import AsyncSessionFactory
+    from app.modules.audit.models import AuditLog
+    from app.modules.document.models import File
+
+    token = await _create_admin_token(lifecycle_client)
+    uploader_id = await _create_user(
+        email="r4-parsed-reconcile@company.com",
+        password="password123",
+    )
+    category_id, mapping_id = await _create_dataset_mapping()
+    file_id = await _create_file(
+        uploader_id=uploader_id,
+        status_value="parsed",
+        review_status="approved",
+        category_id=category_id,
+        dataset_mapping_id=mapping_id,
+        ragflow_dataset_id="ragflow-r4-dataset",
+        ragflow_document_id="parsed-remote-document",
+    )
+    reason = "operator verified the existing remote identity"
+
+    response = await lifecycle_client.post(
+        f"/api/admin/files/{file_id}/sync",
+        headers={"Authorization": f"Bearer {token}"},
+        json={
+            "dataset_mapping_id": str(mapping_id),
+            "reason": f"  {reason}  ",
+        },
+    )
+
+    assert response.status_code == 200
+    data = response.json()["data"]
+    assert data["file_id"] == str(file_id)
+    assert data["task_type"] == "ragflow_status_check"
+    assert data["status"] == "queued"
+    assert [log["message"] for log in data["logs"]] == [
+        "ragflow status check task queued",
+        "existing ragflow document reconciliation queued",
+    ]
+
+    async with AsyncSessionFactory() as session:
+        file = await session.get(File, file_id)
+        audit = (
+            await session.execute(
+                select(AuditLog).where(
+                    AuditLog.action == "file.manual_sync",
+                    AuditLog.target_id == file_id,
+                )
+            )
+        ).scalar_one()
+
+    assert file is not None
+    assert file.status == "parsed"
+    assert file.ragflow_document_id == "parsed-remote-document"
+    assert file.dataset_mapping_id == mapping_id
+    assert file.ragflow_dataset_id == "ragflow-r4-dataset"
+    assert audit.target_type == "file"
+    assert audit.reason == reason
+    assert audit.metadata_json["from_status"] == "parsed"
+    assert audit.metadata_json["sync_mode"] == "reconcile_existing_remote"
+    assert audit.metadata_json["dataset_mapping_id"] == str(mapping_id)
+    assert audit.metadata_json["ragflow_dataset_id"] == "ragflow-r4-dataset"
+    assert set(audit.metadata_json).isdisjoint({"endpoint", "base_url", "api_key"})
+
+
+async def test_parsed_reconciliation_fails_closed_on_ambiguous_remote_identity(
+    lifecycle_client: AsyncClient,
+) -> None:
+    from app.core.database import AsyncSessionFactory
+    from app.modules.audit.models import AuditLog
+    from app.modules.document.models import File
+    from app.modules.ragflow.models import SyncTask
+    from app.modules.review.models import DatasetMapping
+
+    token = await _create_admin_token(lifecycle_client)
+    uploader_id = await _create_user(
+        email="r4-parsed-reconcile-invalid@company.com",
+        password="password123",
+    )
+    category_id, mapping_id = await _create_dataset_mapping()
+    file_id = await _create_file(
+        uploader_id=uploader_id,
+        status_value="parsed",
+        review_status="approved",
+        category_id=category_id,
+        dataset_mapping_id=mapping_id,
+        ragflow_dataset_id="ragflow-r4-dataset",
+        ragflow_document_id=None,
+    )
+
+    missing_identity_response = await lifecycle_client.post(
+        f"/api/admin/files/{file_id}/sync",
+        headers={"Authorization": f"Bearer {token}"},
+        json={
+            "dataset_mapping_id": str(mapping_id),
+            "reason": "verify parsed document",
+        },
+    )
+    assert missing_identity_response.status_code == 409
+    assert (
+        missing_identity_response.json()["message"]
+        == "parsed file is missing its ragflow document identity"
+    )
+
+    async with AsyncSessionFactory() as session:
+        file = await session.get(File, file_id)
+        assert file is not None
+        file.ragflow_document_id = "existing-remote-document"
+        await session.commit()
+
+    missing_reason_response = await lifecycle_client.post(
+        f"/api/admin/files/{file_id}/sync",
+        headers={"Authorization": f"Bearer {token}"},
+        json={"dataset_mapping_id": str(mapping_id), "reason": "   "},
+    )
+    assert missing_reason_response.status_code == 422
+    assert (
+        missing_reason_response.json()["message"]
+        == "reason is required to reconcile a parsed ragflow document"
+    )
+
+    oversized_reason_response = await lifecycle_client.post(
+        f"/api/admin/files/{file_id}/sync",
+        headers={"Authorization": f"Bearer {token}"},
+        json={
+            "dataset_mapping_id": str(mapping_id),
+            "reason": "x" * 1001,
+        },
+    )
+    assert oversized_reason_response.status_code == 422
+
+    async with AsyncSessionFactory() as session:
+        file = await session.get(File, file_id)
+        assert file is not None
+        file.ragflow_dataset_id = "tampered-dataset"
+        await session.commit()
+    mismatched_dataset_response = await lifecycle_client.post(
+        f"/api/admin/files/{file_id}/sync",
+        headers={"Authorization": f"Bearer {token}"},
+        json={
+            "dataset_mapping_id": str(mapping_id),
+            "reason": "verify parsed document",
+        },
+    )
+    assert mismatched_dataset_response.status_code == 409
+
+    async with AsyncSessionFactory() as session:
+        file = await session.get(File, file_id)
+        assert file is not None
+        file.ragflow_dataset_id = "ragflow-r4-dataset"
+        replacement_mapping = DatasetMapping(
+            name="R4 replacement dataset",
+            category_id=category_id,
+            ragflow_dataset_id="replacement-dataset",
+            ragflow_dataset_name="R4 Replacement",
+            enabled=True,
+        )
+        session.add(replacement_mapping)
+        await session.commit()
+        await session.refresh(replacement_mapping)
+        replacement_mapping_id = replacement_mapping.id
+
+    mismatched_mapping_response = await lifecycle_client.post(
+        f"/api/admin/files/{file_id}/sync",
+        headers={"Authorization": f"Bearer {token}"},
+        json={
+            "dataset_mapping_id": str(replacement_mapping_id),
+            "reason": "verify parsed document",
+        },
+    )
+    assert mismatched_mapping_response.status_code == 409
+
+    async with AsyncSessionFactory() as session:
+        file = await session.get(File, file_id)
+        assert file is not None
+        file.category_id = None
+        await session.commit()
+
+    missing_category_response = await lifecycle_client.post(
+        f"/api/admin/files/{file_id}/sync",
+        headers={"Authorization": f"Bearer {token}"},
+        json={
+            "dataset_mapping_id": str(mapping_id),
+            "reason": "verify parsed document",
+        },
+    )
+    assert missing_category_response.status_code == 422
+    assert (
+        missing_category_response.json()["message"]
+        == "dataset mapping does not match file category"
+    )
+
+    async with AsyncSessionFactory() as session:
+        file = await session.get(File, file_id)
+        tasks = list(
+            (await session.execute(select(SyncTask).where(SyncTask.file_id == file_id))).scalars()
+        )
+        audits = list(
+            (
+                await session.execute(
+                    select(AuditLog).where(
+                        AuditLog.action == "file.manual_sync",
+                        AuditLog.target_id == file_id,
+                    )
+                )
+            ).scalars()
+        )
+
+    assert file is not None
+    assert file.status == "parsed"
+    assert file.category_id is None
+    assert file.ragflow_document_id == "existing-remote-document"
+    assert file.dataset_mapping_id == mapping_id
+    assert file.ragflow_dataset_id == "ragflow-r4-dataset"
+    assert tasks == []
+    assert audits == []
+
+
+async def test_parsed_reconciliation_rejects_active_status_check(
+    lifecycle_client: AsyncClient,
+) -> None:
+    from app.core.database import AsyncSessionFactory
+    from app.modules.audit.models import AuditLog
+    from app.modules.ragflow.models import SyncTask
+
+    token = await _create_admin_token(lifecycle_client)
+    uploader_id = await _create_user(
+        email="r4-parsed-reconcile-active@company.com",
+        password="password123",
+    )
+    category_id, mapping_id = await _create_dataset_mapping()
+    file_id = await _create_file(
+        uploader_id=uploader_id,
+        status_value="parsed",
+        review_status="approved",
+        category_id=category_id,
+        dataset_mapping_id=mapping_id,
+        ragflow_dataset_id="ragflow-r4-dataset",
+        ragflow_document_id="active-status-check-document",
+    )
+    async with AsyncSessionFactory() as session:
+        active_task = SyncTask(
+            file_id=file_id,
+            task_type="ragflow_status_check",
+            status="queued",
+            retry_count=0,
+            max_retry_count=3,
+        )
+        session.add(active_task)
+        await session.commit()
+        await session.refresh(active_task)
+        active_task_id = active_task.id
+
+    response = await lifecycle_client.post(
+        f"/api/admin/files/{file_id}/sync",
+        headers={"Authorization": f"Bearer {token}"},
+        json={
+            "dataset_mapping_id": str(mapping_id),
+            "reason": "must not overlap active reconciliation",
+        },
+    )
+
+    assert response.status_code == 409
+    assert response.json()["message"] == "another active ragflow synchronization task exists"
+    async with AsyncSessionFactory() as session:
+        tasks = list(
+            (await session.execute(select(SyncTask).where(SyncTask.file_id == file_id))).scalars()
+        )
+        audits = list(
+            (
+                await session.execute(
+                    select(AuditLog).where(
+                        AuditLog.action == "file.manual_sync",
+                        AuditLog.target_id == file_id,
+                    )
+                )
+            ).scalars()
+        )
+    assert [task.id for task in tasks] == [active_task_id]
+    assert audits == []
+
+
+async def test_parsed_reconciliation_rejects_noncurrent_and_incomplete_versions(
+    lifecycle_client: AsyncClient,
+) -> None:
+    from app.core.database import AsyncSessionFactory
+    from app.modules.audit.models import AuditLog
+    from app.modules.document.models import File
+    from app.modules.ragflow.models import SyncTask
+
+    token = await _create_admin_token(lifecycle_client)
+    uploader_id = await _create_user(
+        email="r4-parsed-reconcile-version-owner@company.com",
+        password="password123",
+    )
+    category_id, mapping_id = await _create_dataset_mapping()
+    predecessor_id = await _create_file(
+        uploader_id=uploader_id,
+        status_value="parsed",
+        review_status="approved",
+        hash_value="1" * 64,
+        category_id=category_id,
+        dataset_mapping_id=mapping_id,
+        ragflow_dataset_id="ragflow-r4-dataset",
+        ragflow_document_id="version-predecessor-document",
+    )
+    successor_id = await _create_file(
+        uploader_id=uploader_id,
+        status_value="parsed",
+        review_status="approved",
+        hash_value="2" * 64,
+        category_id=category_id,
+        dataset_mapping_id=mapping_id,
+        ragflow_dataset_id="ragflow-r4-dataset",
+        ragflow_document_id="version-successor-document",
+    )
+    async with AsyncSessionFactory() as session:
+        predecessor = await session.get(File, predecessor_id)
+        successor = await session.get(File, successor_id)
+        assert predecessor is not None and successor is not None
+        predecessor.is_current_version = False
+        predecessor.remote_visibility = "not_current"
+        await session.flush()
+        successor.series_id = predecessor.series_id
+        successor.version_number = 2
+        successor.replaces_file_id = predecessor.id
+        successor.replacement_remote_action = "archive"
+        successor.is_current_version = True
+        successor.remote_visibility = "current"
+        successor.version_switch_status = "completed"
+        await session.commit()
+
+    noncurrent_response = await lifecycle_client.post(
+        f"/api/admin/files/{predecessor_id}/sync",
+        headers={"Authorization": f"Bearer {token}"},
+        json={
+            "dataset_mapping_id": str(mapping_id),
+            "reason": "old initial version must stay immutable",
+        },
+    )
+    assert noncurrent_response.status_code == 409
+    assert (
+        noncurrent_response.json()["message"]
+        == "parsed file is not the stable current document version"
+    )
+
+    async with AsyncSessionFactory() as session:
+        predecessor = await session.get(File, predecessor_id)
+        successor = await session.get(File, successor_id)
+        assert predecessor is not None and successor is not None
+        successor.is_current_version = False
+        successor.remote_visibility = "candidate"
+        successor.version_switch_status = "pending"
+        await session.flush()
+        predecessor.is_current_version = True
+        predecessor.remote_visibility = "current"
+        await session.commit()
+
+    incomplete_response = await lifecycle_client.post(
+        f"/api/admin/files/{successor_id}/sync",
+        headers={"Authorization": f"Bearer {token}"},
+        json={
+            "dataset_mapping_id": str(mapping_id),
+            "reason": "incomplete replacement must use version reconciliation",
+        },
+    )
+    assert incomplete_response.status_code == 409
+    assert (
+        incomplete_response.json()["message"]
+        == "parsed file is not the stable current document version"
+    )
+
+    target_ids = {predecessor_id, successor_id}
+    async with AsyncSessionFactory() as session:
+        tasks = list(
+            (
+                await session.execute(select(SyncTask).where(SyncTask.file_id.in_(target_ids)))
+            ).scalars()
+        )
+        audits = list(
+            (
+                await session.execute(
+                    select(AuditLog).where(
+                        AuditLog.action == "file.manual_sync",
+                        AuditLog.target_id.in_(target_ids),
+                    )
+                )
+            ).scalars()
+        )
+    assert tasks == []
+    assert audits == []
+
+
+async def test_dept_admin_cannot_reconcile_parsed_file_outside_scope(
+    lifecycle_client: AsyncClient,
+) -> None:
+    from app.core.database import AsyncSessionFactory
+    from app.modules.audit.models import AuditLog
+    from app.modules.department.models import Department, UserManagedDepartment
+    from app.modules.ragflow.models import SyncTask
+
+    admin_id = await _create_user(
+        email="r4-parsed-reconcile-dept-admin@company.com",
+        password="password123",
+        role="dept_admin",
+    )
+    uploader_id = await _create_user(
+        email="r4-parsed-reconcile-other-owner@company.com",
+        password="password123",
+    )
+    async with AsyncSessionFactory() as session:
+        managed_department = Department(
+            name="R4 managed department",
+            code="r4-managed-reconcile",
+        )
+        other_department = Department(
+            name="R4 other department",
+            code="r4-other-reconcile",
+        )
+        session.add_all([managed_department, other_department])
+        await session.flush()
+        session.add(
+            UserManagedDepartment(
+                user_id=admin_id,
+                department_id=managed_department.id,
+            )
+        )
+        await session.commit()
+        other_department_id = other_department.id
+
+    token = await _login(
+        lifecycle_client,
+        email="r4-parsed-reconcile-dept-admin@company.com",
+        password="password123",
+    )
+    category_id, mapping_id = await _create_dataset_mapping()
+    file_id = await _create_file(
+        uploader_id=uploader_id,
+        status_value="parsed",
+        review_status="approved",
+        category_id=category_id,
+        dataset_mapping_id=mapping_id,
+        department_id=other_department_id,
+        ragflow_dataset_id="ragflow-r4-dataset",
+        ragflow_document_id="out-of-scope-remote-document",
+    )
+
+    response = await lifecycle_client.post(
+        f"/api/admin/files/{file_id}/sync",
+        headers={"Authorization": f"Bearer {token}"},
+        json={
+            "dataset_mapping_id": str(mapping_id),
+            "reason": "must remain out of scope",
+        },
+    )
+
+    assert response.status_code == 404
+    assert response.json()["message"] == "file not found"
+    async with AsyncSessionFactory() as session:
+        tasks = list(
+            (await session.execute(select(SyncTask).where(SyncTask.file_id == file_id))).scalars()
+        )
+        audits = list(
+            (
+                await session.execute(
+                    select(AuditLog).where(
+                        AuditLog.action == "file.manual_sync",
+                        AuditLog.target_id == file_id,
+                    )
+                )
+            ).scalars()
+        )
+    assert tasks == []
+    assert audits == []
+
+
 async def test_manual_sync_revalidates_mapping_after_concurrent_disable(
     lifecycle_client: AsyncClient,
 ) -> None:
@@ -812,9 +1295,7 @@ async def test_manual_sync_revalidates_mapping_after_concurrent_disable(
 
     async with AsyncSessionFactory() as lock_session:
         result = await lock_session.execute(
-            select(DatasetMapping)
-            .where(DatasetMapping.id == mapping_id)
-            .with_for_update()
+            select(DatasetMapping).where(DatasetMapping.id == mapping_id).with_for_update()
         )
         mapping = result.scalar_one()
         mapping.enabled = False
