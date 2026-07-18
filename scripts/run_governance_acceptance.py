@@ -38,6 +38,17 @@ PYTEST_SUMMARY_PATTERN = re.compile(
 TEST_DATABASE_NAME = "knowledge_uploader_governance_acceptance_test"
 TEST_REDIS_DB = "15"
 EVIDENCE_SCHEMA_VERSION = "governance-acceptance.v1"
+COMPOSE_SOURCE_ENVIRONMENT_KEYS = frozenset(
+    {
+        "COMPOSE_DISABLE_ENV_FILE",
+        "COMPOSE_ENV_FILES",
+        "COMPOSE_FILE",
+        "COMPOSE_PATH_SEPARATOR",
+        "COMPOSE_PROFILES",
+        "COMPOSE_PROJECT_DIRECTORY",
+        "COMPOSE_PROJECT_NAME",
+    }
+)
 
 Executor = Literal["backend_pytest", "frontend_vitest"]
 
@@ -293,6 +304,65 @@ ACCEPTANCE_PLAN: tuple[AcceptancePlan, ...] = (
 
 def _sha256(payload: bytes) -> str:
     return hashlib.sha256(payload).hexdigest()
+
+
+def _sanitized_environment(source: dict[str, str]) -> tuple[dict[str, str], list[str]]:
+    environment = dict(source)
+    removed = sorted(
+        {key.upper() for key in environment if key.upper() in COMPOSE_SOURCE_ENVIRONMENT_KEYS}
+    )
+    for key in tuple(environment):
+        if key.upper() in COMPOSE_SOURCE_ENVIRONMENT_KEYS:
+            environment.pop(key)
+    return environment, removed
+
+
+def _compose_prefix(
+    docker_executable: str,
+    project_name: str,
+    candidate_root: Path,
+) -> tuple[str, ...]:
+    return (
+        docker_executable,
+        "compose",
+        "--project-name",
+        project_name,
+        "--project-directory",
+        str(candidate_root),
+        "--file",
+        str(candidate_root / "docker-compose.yml"),
+    )
+
+
+def _file_sha256(path: Path) -> str | None:
+    try:
+        return _sha256(path.read_bytes())
+    except OSError:
+        return None
+
+
+def _config_digest(result: ProcessResult) -> str | None:
+    if result.returncode != 0 or not result.stdout.strip():
+        return None
+    return _sha256(result.stdout)
+
+
+def _compose_binding_passed(
+    *,
+    expected_source_sha256: str,
+    source_sha256_before: str | None,
+    source_sha256_after: str | None,
+    config_before: ProcessResult,
+    config_after: ProcessResult,
+) -> bool:
+    config_sha256_before = _config_digest(config_before)
+    config_sha256_after = _config_digest(config_after)
+    return (
+        source_sha256_before == expected_source_sha256
+        and source_sha256_after == expected_source_sha256
+        and config_sha256_before is not None
+        and config_sha256_after == config_sha256_before
+    )
 
 
 def _validate_expected_sha(value: str) -> str:
@@ -768,6 +838,7 @@ def _resource_check_passed(result: ProcessResult) -> bool:
 
 def _final_status(
     *,
+    compose_bound: bool,
     build_passed: bool,
     image_bound: bool,
     backend_passed: bool,
@@ -777,6 +848,7 @@ def _final_status(
 ) -> str:
     if all(
         (
+            compose_bound,
             build_passed,
             image_bound,
             backend_passed,
@@ -883,6 +955,9 @@ def _execute(*, repo_root: Path, expected_sha: str, output_dir: Path) -> int:
     )
     if not EXPECTED_SHA_PATTERN.fullmatch(expected_tree):
         raise GovernanceAcceptanceError("candidate Git tree identity is invalid")
+    expected_compose_source_sha256 = _sha256(
+        _git_bytes(repo_root, "show", f"{expected_sha}:docker-compose.yml")
+    )
 
     project_name, image_tag = _runtime_names(expected_sha)
     runtime_root = Path(tempfile.mkdtemp(prefix=f"{project_name}-"))
@@ -891,7 +966,7 @@ def _execute(*, repo_root: Path, expected_sha: str, output_dir: Path) -> int:
     reports_root.mkdir()
     backend_report_path = reports_root / "backend.junit.xml"
     frontend_report_path = reports_root / "frontend.vitest.json"
-    environment = os.environ.copy()
+    environment, removed_compose_environment = _sanitized_environment(dict(os.environ))
     environment.update(
         {
             "APP_ENV": "test",
@@ -900,7 +975,7 @@ def _execute(*, repo_root: Path, expected_sha: str, output_dir: Path) -> int:
             "VCS_REF": expected_sha,
         }
     )
-    compose = (docker_executable, "compose", "--project-name", project_name)
+    compose = _compose_prefix(docker_executable, project_name, candidate_root)
     phases: list[ProcessResult] = []
     backend_expected = _backend_nodes()
     frontend_expected = _frontend_report_nodes()
@@ -918,6 +993,8 @@ def _execute(*, repo_root: Path, expected_sha: str, output_dir: Path) -> int:
     )
     worktree_add = _not_run_result("candidate_worktree_add", "not_run")
     tree_inspect = _not_run_result("candidate_tree_identity", "not_run")
+    compose_config_before = _not_run_result("compose_config_before", "not_run")
+    compose_config_after = _not_run_result("compose_config_after", "not_run")
     build = _not_run_result("backend_image_build", "not_run")
     image_inspect = _not_run_result("backend_image_revision", "not_run")
     backend = _not_run_result("backend_governance_pytest", "not_run")
@@ -926,7 +1003,10 @@ def _execute(*, repo_root: Path, expected_sha: str, output_dir: Path) -> int:
     candidate_before: CandidateIdentity | None = None
     candidate_after: CandidateIdentity | None = None
     candidate_tree_hash: str | None = None
+    candidate_source_sha256_before: str | None = None
+    candidate_source_sha256_after: str | None = None
     candidate_bound = False
+    compose_bound = False
     candidate_targets_valid = False
     image_bound = False
     image_revision = ""
@@ -963,6 +1043,7 @@ def _execute(*, repo_root: Path, expected_sha: str, output_dir: Path) -> int:
                 timeout_seconds=30,
             )
             candidate_tree_hash = _result_ascii(tree_inspect)
+            candidate_source_sha256_before = _file_sha256(candidate_root / "docker-compose.yml")
         phases.append(tree_inspect)
         candidate_bound = (
             candidate_targets_valid
@@ -970,9 +1051,23 @@ def _execute(*, repo_root: Path, expected_sha: str, output_dir: Path) -> int:
             and candidate_before.git_sha == expected_sha
             and candidate_before.clean
             and candidate_tree_hash == expected_tree
+            and candidate_source_sha256_before == expected_compose_source_sha256
         )
 
         if candidate_bound:
+            compose_config_before = _run_process(
+                "compose_config_before",
+                (*compose, "config"),
+                cwd=candidate_root,
+                env=environment,
+                timeout_seconds=120,
+            )
+        else:
+            compose_config_before = _not_run_result("compose_config_before", "candidate_not_bound")
+        phases.append(compose_config_before)
+        compose_ready = candidate_bound and _config_digest(compose_config_before) is not None
+
+        if compose_ready:
             build = _run_process(
                 "backend_image_build",
                 (*compose, "build", "--pull=false", "backend-api"),
@@ -1040,7 +1135,7 @@ def _execute(*, repo_root: Path, expected_sha: str, output_dir: Path) -> int:
             backend = _not_run_result("backend_governance_pytest", "image_not_candidate_bound")
         phases.append(backend)
 
-        if candidate_bound:
+        if compose_ready:
             frontend_install = _run_process(
                 "frontend_npm_ci",
                 (
@@ -1089,6 +1184,18 @@ def _execute(*, repo_root: Path, expected_sha: str, output_dir: Path) -> int:
             frontend = _not_run_result("frontend_notification_vitest", "npm_ci_failed")
         phases.append(frontend)
         candidate_after = _safe_candidate_identity(candidate_root)
+        candidate_source_sha256_after = _file_sha256(candidate_root / "docker-compose.yml")
+        if candidate_bound:
+            compose_config_after = _run_process(
+                "compose_config_after",
+                (*compose, "config"),
+                cwd=candidate_root,
+                env=environment,
+                timeout_seconds=120,
+            )
+        else:
+            compose_config_after = _not_run_result("compose_config_after", "candidate_not_bound")
+        phases.append(compose_config_after)
     except Exception as exc:
         internal_error = True
         phases.append(
@@ -1204,6 +1311,13 @@ def _execute(*, repo_root: Path, expected_sha: str, output_dir: Path) -> int:
         and candidate_after.git_sha == expected_sha
         and candidate_after.clean
     )
+    compose_bound = _compose_binding_passed(
+        expected_source_sha256=expected_compose_source_sha256,
+        source_sha256_before=candidate_source_sha256_before,
+        source_sha256_after=candidate_source_sha256_after,
+        config_before=compose_config_before,
+        config_after=compose_config_after,
+    )
     image_removed = _resource_check_passed(image_absent)
     worktree_removed = candidate_fallback_remove.returncode == 0 and _worktree_absent(
         worktree_list, candidate_root
@@ -1220,7 +1334,11 @@ def _execute(*, repo_root: Path, expected_sha: str, output_dir: Path) -> int:
     )
     after = _safe_candidate_identity(repo_root)
     candidate_unchanged = (
-        after == before and candidate_tree_unchanged and candidate_bound and not internal_error
+        after == before
+        and candidate_tree_unchanged
+        and candidate_bound
+        and compose_bound
+        and not internal_error
     )
     build_passed = build.returncode == 0
     backend_passed = backend.returncode == 0 and backend_report.passed
@@ -1228,6 +1346,7 @@ def _execute(*, repo_root: Path, expected_sha: str, output_dir: Path) -> int:
         frontend_install.returncode == 0 and frontend.returncode == 0 and frontend_report.passed
     )
     status = _final_status(
+        compose_bound=compose_bound,
         build_passed=build_passed,
         image_bound=image_bound,
         backend_passed=backend_passed,
@@ -1236,7 +1355,12 @@ def _execute(*, repo_root: Path, expected_sha: str, output_dir: Path) -> int:
         candidate_unchanged=candidate_unchanged,
     )
     shared_gates_passed = (
-        candidate_bound and build_passed and image_bound and cleanup_passed and candidate_unchanged
+        candidate_bound
+        and compose_bound
+        and build_passed
+        and image_bound
+        and cleanup_passed
+        and candidate_unchanged
     )
     generated_at = datetime.now(UTC).isoformat()
     evidence: dict[str, object] = {
@@ -1259,6 +1383,15 @@ def _execute(*, repo_root: Path, expected_sha: str, output_dir: Path) -> int:
             "exact_targets_validated_in_detached_tree": candidate_targets_valid,
             "detached_worktree_clean_after": candidate_tree_unchanged,
             "detached_worktree_removed": worktree_removed,
+            "expected_compose_source_sha256": expected_compose_source_sha256,
+            "compose_source_sha256_before": candidate_source_sha256_before,
+            "compose_source_sha256_after": candidate_source_sha256_after,
+            "compose_config_sha256_before": _config_digest(compose_config_before),
+            "compose_config_sha256_after": _config_digest(compose_config_after),
+            "compose_binding_passed": compose_bound,
+            "compose_project_directory_bound": True,
+            "compose_files": ["docker-compose.yml"],
+            "compose_environment_keys_removed": removed_compose_environment,
         },
         "runtime_isolation": {
             "compose_project": project_name,

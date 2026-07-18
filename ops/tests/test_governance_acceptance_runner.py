@@ -82,6 +82,122 @@ def test_frontend_files_are_package_relative_and_scoped(runner: ModuleType) -> N
         )
 
 
+def test_compose_prefix_is_bound_to_detached_root_and_one_explicit_file(
+    runner: ModuleType,
+    tmp_path: Path,
+) -> None:
+    candidate_root = tmp_path / "candidate"
+    prefix = runner._compose_prefix("docker", "isolated", candidate_root)
+
+    assert prefix == (
+        "docker",
+        "compose",
+        "--project-name",
+        "isolated",
+        "--project-directory",
+        str(candidate_root),
+        "--file",
+        str(candidate_root / "docker-compose.yml"),
+    )
+
+
+def test_ambient_compose_file_cannot_replace_config_or_cleanup_source(
+    runner: ModuleType,
+    tmp_path: Path,
+) -> None:
+    candidate_root = tmp_path / "candidate"
+    rogue_compose = tmp_path / "rogue.yml"
+    environment, removed = runner._sanitized_environment(
+        {
+            "PATH": "kept",
+            "COMPOSE_FILE": str(rogue_compose),
+            "COMPOSE_PATH_SEPARATOR": ";",
+        }
+    )
+    prefix = runner._compose_prefix("docker", "isolated", candidate_root)
+    config_command = (*prefix, "config")
+    cleanup_command = (*prefix, "down", "--volumes", "--remove-orphans")
+
+    assert environment == {"PATH": "kept"}
+    assert removed == ["COMPOSE_FILE", "COMPOSE_PATH_SEPARATOR"]
+    assert str(rogue_compose) not in config_command
+    assert str(rogue_compose) not in cleanup_command
+    assert config_command[: len(prefix)] == prefix
+    assert cleanup_command[: len(prefix)] == prefix
+    assert config_command[config_command.index("--file") + 1] == str(
+        candidate_root / "docker-compose.yml"
+    )
+    assert cleanup_command[cleanup_command.index("--file") + 1] == str(
+        candidate_root / "docker-compose.yml"
+    )
+
+
+def test_compose_source_environment_is_removed_case_insensitively(runner: ModuleType) -> None:
+    sanitized, removed = runner._sanitized_environment(
+        {
+            "PATH": "kept",
+            "COMPOSE_FILE": "rogue.yml",
+            "compose_path_separator": ";",
+            "COMPOSE_PROFILES": "rogue",
+            "COMPOSE_ENV_FILES": "rogue.env",
+        }
+    )
+
+    assert sanitized == {"PATH": "kept"}
+    assert removed == [
+        "COMPOSE_ENV_FILES",
+        "COMPOSE_FILE",
+        "COMPOSE_PATH_SEPARATOR",
+        "COMPOSE_PROFILES",
+    ]
+    assert "rogue.yml" not in json.dumps(removed)
+
+
+def test_compose_binding_rejects_source_or_normalized_config_swap(runner: ModuleType) -> None:
+    def result(name: str, stdout: bytes, returncode: int = 0) -> object:
+        return runner.ProcessResult(
+            name=name,
+            command=("docker", "compose", "config"),
+            returncode=returncode,
+            stdout=stdout,
+            stderr=b"",
+            duration_ms=1,
+        )
+
+    expected_source = "a" * 64
+    before = result("before", b"services:\n  backend-api: {}\n")
+    after = result("after", b"services:\n  backend-api: {}\n")
+    assert runner._compose_binding_passed(
+        expected_source_sha256=expected_source,
+        source_sha256_before=expected_source,
+        source_sha256_after=expected_source,
+        config_before=before,
+        config_after=after,
+    )
+
+    assert not runner._compose_binding_passed(
+        expected_source_sha256=expected_source,
+        source_sha256_before=expected_source,
+        source_sha256_after="b" * 64,
+        config_before=before,
+        config_after=after,
+    )
+    assert not runner._compose_binding_passed(
+        expected_source_sha256=expected_source,
+        source_sha256_before=expected_source,
+        source_sha256_after=expected_source,
+        config_before=before,
+        config_after=result("after", b"services:\n  attacker: {}\n"),
+    )
+    assert not runner._compose_binding_passed(
+        expected_source_sha256=expected_source,
+        source_sha256_before=expected_source,
+        source_sha256_after=expected_source,
+        config_before=result("before", b"", returncode=1),
+        config_after=after,
+    )
+
+
 def test_runtime_names_are_unique_and_revision_scoped(
     runner: ModuleType,
     monkeypatch: pytest.MonkeyPatch,
@@ -254,6 +370,7 @@ def test_atomic_seal_writes_manifest_without_temporary_residue(
 
 def test_test_or_cleanup_failure_can_never_be_candidate_passed(runner: ModuleType) -> None:
     baseline = {
+        "compose_bound": True,
         "build_passed": True,
         "image_bound": True,
         "backend_passed": True,
@@ -407,3 +524,10 @@ def test_runner_contract_is_isolated_and_never_claims_external_llm(runner: Modul
     assert "candidate_worktree_remove" in source
     assert "runtime_report_tree_remove" in source
     assert "_validate_test_targets(candidate_root)" in source
+    assert '"--project-directory"' in source
+    assert '"--file"' in source
+    assert "compose_config_before" in source
+    assert "compose_config_after" in source
+    assert "compose_source_sha256_before" in source
+    assert "compose_binding_passed" in source
+    assert "compose_environment_keys_removed" in source
