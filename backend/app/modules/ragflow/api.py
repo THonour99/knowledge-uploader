@@ -15,8 +15,8 @@ from app.core.access_scope import ScopedAdminDep
 from app.core.database import get_session
 from app.core.deps import get_current_user
 from app.core.permissions import SystemAdminDep
+from app.core.ragflow_runtime import resolve_ragflow_runtime_settings
 from app.core.responses import success_response
-from app.core.runtime_config import get_config
 from app.modules.user.schemas import AuthUserRecord
 
 from .exceptions import RagflowTaskError
@@ -219,17 +219,13 @@ async def test_ragflow_connection(
     request: Request,
     current_user: SystemAdminDep,
 ) -> dict[str, object]:
-    base_url_value = await get_config("ragflow.base_url")
-    api_key_value = await get_config("ragflow.api_key")
-    timeout_value = await get_config("ragflow.sync_timeout_seconds")
-
-    base_url = str(base_url_value) if base_url_value is not None else ""
-    api_key = str(api_key_value) if api_key_value is not None else ""
-    timeout_seconds = float(timeout_value) if isinstance(timeout_value, int | float) else 30.0
+    runtime_settings = await resolve_ragflow_runtime_settings()
+    base_url = runtime_settings.base_url
+    api_key = runtime_settings.api_key
 
     logger.info(
         "ragflow_test_connection_started",
-        base_url=base_url,
+        endpoint_configured=bool(base_url),
         user_id=str(current_user.id),
     )
 
@@ -240,7 +236,9 @@ async def test_ragflow_connection(
         HttpRagflowClient(
             base_url=base_url,
             api_key=api_key,
-            timeout_seconds=timeout_seconds,
+            timeout_seconds=runtime_settings.timeout_seconds,
+            protected_environment=runtime_settings.protected_environment,
+            tls_spki_pins=runtime_settings.tls_spki_pins,
         )
     )
     try:
@@ -256,7 +254,7 @@ async def test_ragflow_connection(
         "ragflow_test_connection_finished",
         ok=ok,
         latency_ms=round(latency_ms, 1),
-        base_url=base_url,
+        endpoint_configured=bool(base_url),
         user_id=str(current_user.id),
     )
 

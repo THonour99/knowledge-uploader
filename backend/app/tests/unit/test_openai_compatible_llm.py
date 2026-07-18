@@ -7,6 +7,7 @@ import pytest
 
 from app.adapters.llm.base import LLMProviderError
 from app.adapters.llm.openai_compatible import MAX_PROVIDER_RESPONSE_BYTES, OpenAICompatibleProvider
+from app.adapters.llm.safe_transport import TLSSPKIPinningError
 
 pytestmark = pytest.mark.asyncio
 
@@ -130,6 +131,62 @@ async def test_http_statuses_map_to_sanitized_retry_policy(
     )
 
 
+class _PinFailureTransport(httpx.AsyncBaseTransport):
+    async def handle_async_request(self, request: httpx.Request) -> httpx.Response:
+        del request
+        try:
+            raise TLSSPKIPinningError("tls pin verification failed")
+        except TLSSPKIPinningError as exc:
+            raise httpx.ConnectError("tls pin verification failed") from exc
+
+
+async def test_spki_pin_failure_is_permanent_and_sanitized() -> None:
+    with pytest.raises(LLMProviderError) as raised:
+        await _provider(_PinFailureTransport()).complete("document-secret")
+
+    assert raised.value.category == "request_rejected"
+    assert raised.value.retryable is False
+    assert str(raised.value) == "request_rejected"
+    _assert_sanitized_exception(
+        raised.value,
+        "tls pin verification failed",
+        "llm.invalid",
+        "sk-local-test-secret",
+        "document-secret",
+    )
+
+
+async def test_configured_pin_cannot_be_bypassed_by_injected_transport() -> None:
+    transport_called = False
+
+    def handler(_request: httpx.Request) -> httpx.Response:
+        nonlocal transport_called
+        transport_called = True
+        return httpx.Response(200, json=_success_payload())
+
+    provider = OpenAICompatibleProvider(
+        base_url="https://llm.invalid/v1",
+        api_key="sk-local-test-secret",
+        model="requested-model",
+        timeout_seconds=2,
+        transport=httpx.MockTransport(handler),
+        resolver=StaticResolver(),
+        raw_allowed_base_urls="https://llm.invalid/v1",
+        allow_external=True,
+        raw_tls_spki_pins=(
+            '{"https://llm.invalid/v1":["sha256/AQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQE="]}'
+        ),
+        require_tls_spki_pin=True,
+    )
+
+    with pytest.raises(LLMProviderError) as raised:
+        await provider.complete("document-secret")
+
+    assert raised.value.category == "request_rejected"
+    assert raised.value.retryable is False
+    assert transport_called is False
+
+
 async def test_timeout_is_retryable_without_transport_message_leak() -> None:
     def handler(request: httpx.Request) -> httpx.Response:
         raise httpx.ReadTimeout("transport leaked secret", request=request)
@@ -211,9 +268,7 @@ async def test_resolver_failure_drops_original_exception_graph() -> None:
     class LeakingResolver:
         async def resolve(self, hostname: str, port: int) -> list[str]:
             del hostname, port
-            raise RuntimeError(
-                "Authorization: Bearer sk-resolver-secret; document=confidential"
-            )
+            raise RuntimeError("Authorization: Bearer sk-resolver-secret; document=confidential")
 
     provider = OpenAICompatibleProvider(
         base_url="https://llm.invalid/v1",

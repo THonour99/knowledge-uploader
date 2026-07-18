@@ -147,6 +147,54 @@ def _service_harness(
     return service, session, repository, audits
 
 
+async def test_provider_connectivity_uses_unified_deployed_environment_spki_policy(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    raw_pins = '{"https://llm.example/v1":["sha256/AQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQE="]}'
+    settings = Settings(
+        llm_allowed_base_urls="https://llm.example/v1",
+        llm_tls_spki_pins=raw_pins,
+    ).model_copy(update={"app_base_url": "https://knowledge.example.com"})
+    session = FakeSession()
+    session.transaction_open = False
+    service = AiConfigService(
+        session=cast(AsyncSession, session),
+        repository=cast(AiRepository, object()),
+        settings=settings,
+    )
+    captured: dict[str, object] = {}
+
+    class RecordingProvider:
+        def __init__(self, **kwargs: object) -> None:
+            captured.update(kwargs)
+
+        async def test_connection(self) -> LLMTestResult:
+            return LLMTestResult(status="success", latency_ms=1, message="ok")
+
+    monkeypatch.setattr(
+        "app.modules.ai.service.OpenAICompatibleProvider",
+        RecordingProvider,
+    )
+    result = await service._test_provider_connectivity(
+        ProviderTestSnapshot(
+            provider_id=uuid4(),
+            updated_at=datetime.now(UTC),
+            fingerprint="fingerprint",
+            provider_type="openai_compatible",
+            base_url="https://llm.example/v1",
+            api_key=None,
+            chat_model="analysis-model",
+            is_internal=True,
+            timeout_seconds=60,
+            effective_allow_external=False,
+        )
+    )
+
+    assert result.status == "success"
+    assert captured["require_tls_spki_pin"] is True
+    assert captured["raw_tls_spki_pins"] == raw_pins
+
+
 async def test_provider_test_discards_result_when_snapshot_becomes_stale(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

@@ -9,6 +9,7 @@ import pytest
 from sqlalchemy import Table
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.adapters.llm.openai_compatible import OpenAICompatibleProvider
 from app.core.config import Settings
 from app.modules.ai import exceptions
 from app.modules.ai.llm_analysis import (
@@ -362,6 +363,36 @@ def test_mock_provider_is_rejected_in_protected_environment() -> None:
         config_service._validate_provider_type("mock", is_internal=True)
     with pytest.raises(LLMAnalysisConfigurationError, match="mock provider"):
         analysis_service._build_llm_provider(provider, allow_external_llm=False)
+
+
+def test_analysis_provider_uses_unified_deployed_environment_spki_policy() -> None:
+    raw_pins = (
+        '{"https://vllm.internal/v1":["sha256/AQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQE="]}'
+    )
+    settings = Settings(
+        llm_allowed_base_urls="https://vllm.internal/v1",
+        llm_tls_spki_pins=raw_pins,
+    ).model_copy(update={"app_base_url": "https://knowledge.example.com"})
+    analysis_service = AiAnalysisService(
+        session=cast(AsyncSession, object()),
+        repository=cast(AiRepository, object()),
+        settings=settings,
+    )
+    provider = AiProvider(
+        name="internal provider",
+        provider_type="local_openai_compatible",
+        base_url="https://vllm.internal/v1",
+        chat_model="analysis-model",
+        is_internal=True,
+    )
+
+    client = cast(
+        OpenAICompatibleProvider,
+        analysis_service._build_llm_provider(provider, allow_external_llm=False),
+    )
+
+    assert client._require_tls_spki_pin is True
+    assert client._raw_tls_spki_pins == raw_pins
 
 
 def test_provider_model_runtime_limit_constraints_match_api_contract() -> None:

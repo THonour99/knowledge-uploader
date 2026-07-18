@@ -12,6 +12,13 @@ from .base import (
     RagflowSubmissionOutcomeUnknownError,
     RagflowUploadResult,
 )
+from .safe_transport import (
+    AsyncHostResolver,
+    RagflowEndpointSecurityError,
+    SystemHostResolver,
+    build_pinned_ragflow_transport,
+    resolve_and_authorize_ragflow_endpoint,
+)
 
 DEFAULT_TIMEOUT_SECONDS = 30.0
 RAGFLOW_RECONCILIATION_PAGE_SIZE = 100
@@ -25,11 +32,17 @@ class HttpRagflowClient:
         base_url: str,
         api_key: str,
         timeout_seconds: float = DEFAULT_TIMEOUT_SECONDS,
+        protected_environment: bool = False,
+        tls_spki_pins: frozenset[bytes] = frozenset(),
+        resolver: AsyncHostResolver | None = None,
         client: httpx.AsyncClient | None = None,
     ) -> None:
         self._base_url = base_url.rstrip("/")
         self._api_key = api_key
         self._timeout_seconds = timeout_seconds
+        self._protected_environment = protected_environment
+        self._tls_spki_pins = tls_spki_pins
+        self._resolver = resolver or SystemHostResolver()
         self._client = client
 
     async def ping(self) -> bool:
@@ -194,6 +207,10 @@ class HttpRagflowClient:
         if not self._api_key.strip():
             raise self._client_error("RAGFlow API key is not configured")
         url = f"{self._base_url}{path}"
+        if self._client is not None and (self._protected_environment or self._tls_spki_pins):
+            raise self._client_error(
+                "RAGFlow custom HTTP clients are forbidden when endpoint pinning is required"
+            )
         try:
             if self._client is not None:
                 response = await self._client.request(
@@ -206,7 +223,19 @@ class HttpRagflowClient:
                     follow_redirects=False,
                 )
             else:
-                async with httpx.AsyncClient(timeout=self._timeout_seconds) as client:
+                endpoint = await resolve_and_authorize_ragflow_endpoint(
+                    base_url=self._base_url,
+                    protected_environment=self._protected_environment,
+                    tls_spki_pins=self._tls_spki_pins,
+                    resolver=self._resolver,
+                )
+                transport = build_pinned_ragflow_transport(endpoint)
+                async with httpx.AsyncClient(
+                    timeout=self._timeout_seconds,
+                    transport=transport,
+                    trust_env=False,
+                    follow_redirects=False,
+                ) as client:
                     response = await client.request(
                         method,
                         url,
@@ -216,6 +245,8 @@ class HttpRagflowClient:
                         params=params,
                         follow_redirects=False,
                     )
+        except RagflowEndpointSecurityError:
+            raise self._client_error("RAGFlow endpoint security check failed") from None
         except httpx.HTTPError as exc:
             message = f"RAGFlow request failed: {type(exc).__name__}"
             if submission_outcome_unknown:

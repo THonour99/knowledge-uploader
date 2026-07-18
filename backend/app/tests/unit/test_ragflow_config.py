@@ -127,6 +127,29 @@ class _FakeProbeClient:
             raise self._raise_on_check
 
 
+def _use_runtime_settings(
+    monkeypatch: pytest.MonkeyPatch,
+    ragflow_api: Any,
+    *,
+    base_url: str,
+    api_key: str,
+    timeout_seconds: float,
+) -> None:
+    from app.core.ragflow_runtime import RagflowRuntimeSettings
+
+    async def resolve() -> RagflowRuntimeSettings:
+        return RagflowRuntimeSettings(
+            base_url=base_url,
+            api_key=api_key,
+            timeout_seconds=timeout_seconds,
+            allowed_dataset_ids=frozenset(),
+            protected_environment=False,
+            tls_spki_pins=frozenset(),
+        )
+
+    monkeypatch.setattr(ragflow_api, "resolve_ragflow_runtime_settings", resolve)
+
+
 # ---------------------------------------------------------------------------
 # Test: test-connection endpoint permissions
 # ---------------------------------------------------------------------------
@@ -173,14 +196,13 @@ async def test_test_connection_success(
 
     monkeypatch.setattr(ragflow_api, "HttpRagflowClient", _fake_client)
 
-    async def _fake_get_config(key: str) -> object | None:
-        return {
-            "ragflow.base_url": "http://ragflow-server:9380",
-            "ragflow.api_key": "sk-runtime-key-99",
-            "ragflow.sync_timeout_seconds": 45,
-        }.get(key)
-
-    monkeypatch.setattr(ragflow_api, "get_config", _fake_get_config)
+    _use_runtime_settings(
+        monkeypatch,
+        ragflow_api,
+        base_url="http://ragflow-server:9380",
+        api_key="sk-runtime-key-99",
+        timeout_seconds=45.0,
+    )
 
     token = await _create_token(api_client, role="system_admin")
     response = await api_client.post(
@@ -199,6 +221,8 @@ async def test_test_connection_success(
     assert constructed_args["base_url"] == "http://ragflow-server:9380"
     assert constructed_args["api_key"] == "sk-runtime-key-99"
     assert constructed_args["timeout_seconds"] == 45.0
+    assert constructed_args["protected_environment"] is False
+    assert constructed_args["tls_spki_pins"] == frozenset()
 
 
 async def test_test_connection_failure_keeps_error_detail_without_api_key(
@@ -215,14 +239,13 @@ async def test_test_connection_failure_keeps_error_detail_without_api_key(
 
     monkeypatch.setattr(ragflow_api, "HttpRagflowClient", _fake_client)
 
-    async def _fake_get_config(key: str) -> object | None:
-        return {
-            "ragflow.base_url": "http://ragflow-bad:9380",
-            "ragflow.api_key": "sk-secret-key",
-            "ragflow.sync_timeout_seconds": 10,
-        }.get(key)
-
-    monkeypatch.setattr(ragflow_api, "get_config", _fake_get_config)
+    _use_runtime_settings(
+        monkeypatch,
+        ragflow_api,
+        base_url="http://ragflow-bad:9380",
+        api_key="sk-secret-key",
+        timeout_seconds=10.0,
+    )
 
     token = await _create_token(api_client, role="system_admin")
     response = await api_client.post(
@@ -253,14 +276,13 @@ async def test_test_connection_failure_on_client_error(
 
     monkeypatch.setattr(ragflow_api, "HttpRagflowClient", _fake_client)
 
-    async def _fake_get_config(key: str) -> object | None:
-        return {
-            "ragflow.base_url": "http://bad:9380",
-            "ragflow.api_key": "sk-ultra-secret",
-            "ragflow.sync_timeout_seconds": 5,
-        }.get(key)
-
-    monkeypatch.setattr(ragflow_api, "get_config", _fake_get_config)
+    _use_runtime_settings(
+        monkeypatch,
+        ragflow_api,
+        base_url="http://bad:9380",
+        api_key="sk-ultra-secret",
+        timeout_seconds=5.0,
+    )
 
     token = await _create_token(api_client, role="system_admin")
     response = await api_client.post(
@@ -291,14 +313,13 @@ async def test_test_connection_empty_api_key_keeps_error_message_intact(
 
     monkeypatch.setattr(ragflow_api, "HttpRagflowClient", _fake_client)
 
-    async def _fake_get_config(key: str) -> object | None:
-        return {
-            "ragflow.base_url": "http://ragflow:9380",
-            "ragflow.api_key": "",
-            "ragflow.sync_timeout_seconds": 10,
-        }.get(key)
-
-    monkeypatch.setattr(ragflow_api, "get_config", _fake_get_config)
+    _use_runtime_settings(
+        monkeypatch,
+        ragflow_api,
+        base_url="http://ragflow:9380",
+        api_key="",
+        timeout_seconds=10.0,
+    )
 
     token = await _create_token(api_client, role="system_admin")
     response = await api_client.post(
@@ -331,14 +352,13 @@ async def test_test_connection_api_key_not_in_logs(
 
     secret_api_key = "sk-must-not-appear-in-logs"
 
-    async def _fake_get_config(key: str) -> object | None:
-        return {
-            "ragflow.base_url": "http://ragflow:9380",
-            "ragflow.api_key": secret_api_key,
-            "ragflow.sync_timeout_seconds": 30,
-        }.get(key)
-
-    monkeypatch.setattr(ragflow_api, "get_config", _fake_get_config)
+    _use_runtime_settings(
+        monkeypatch,
+        ragflow_api,
+        base_url="http://ragflow:9380",
+        api_key=secret_api_key,
+        timeout_seconds=30.0,
+    )
 
     token = await _create_token(api_client, role="system_admin")
     await api_client.post(

@@ -1,9 +1,8 @@
 from __future__ import annotations
 
-import ipaddress
 from functools import lru_cache
 from typing import Self
-from urllib.parse import urlparse, urlsplit
+from urllib.parse import urlparse
 
 from cryptography.fernet import Fernet
 from pydantic import Field, model_validator
@@ -12,6 +11,11 @@ from pydantic_settings import BaseSettings, SettingsConfigDict
 from app.core.llm_endpoint import (
     normalize_llm_base_url,
     normalized_llm_allowed_base_urls,
+    normalized_llm_tls_spki_pins,
+)
+from app.core.ragflow_endpoint import (
+    normalized_ragflow_tls_spki_pins,
+    ragflow_endpoint_identity,
 )
 
 PROTECTED_ENVS = {"production", "prod", "staging"}
@@ -112,6 +116,7 @@ class Settings(BaseSettings):
     llm_provider: str = "disabled"
     llm_base_url: str = ""
     llm_allowed_base_urls: str = ""
+    llm_tls_spki_pins: str = ""
     llm_api_key: str = ""
     llm_model: str = ""
     ai_request_timeout: int = Field(default=60, ge=1, le=240)
@@ -126,6 +131,7 @@ class Settings(BaseSettings):
 
     ragflow_base_url: str = "http://ragflow:9380"
     ragflow_allowed_base_urls: str = ""
+    ragflow_tls_spki_pins: str = ""
     ragflow_api_key: str = ""
     ragflow_allowed_dataset_ids: str = ""
     ragflow_request_timeout: float = 300.0
@@ -137,7 +143,18 @@ class Settings(BaseSettings):
     def validate_protected_environment_secrets(self) -> Self:
         approved_ragflow_base_url(self.ragflow_base_url, self)
         for approved_url in _normalized_csv_values(self.ragflow_allowed_base_urls):
-            _ragflow_endpoint_identity(approved_url)
+            ragflow_endpoint_identity(approved_url)
+        ragflow_pins = normalized_ragflow_tls_spki_pins(self.ragflow_tls_spki_pins)
+        approved_ragflow_identities = {
+            ragflow_endpoint_identity(value)
+            for value in {
+                self.ragflow_base_url.strip(),
+                *_normalized_csv_values(self.ragflow_allowed_base_urls),
+            }
+            if value
+        }
+        if not set(ragflow_pins).issubset(approved_ragflow_identities):
+            raise ValueError("RAGFLOW_TLS_SPKI_PINS endpoints must be approved RAGFlow URLs")
         if self.ragflow_api_key.strip() and not _normalized_csv_values(
             self.ragflow_allowed_dataset_ids
         ):
@@ -148,8 +165,15 @@ class Settings(BaseSettings):
         _validate_llm_seed_configuration(self)
         normalized_llm_allowed_base_urls(self.llm_allowed_base_urls)
 
-        if not _requires_protected_secret_validation(self.app_env, self.app_base_url):
+        if not is_protected_environment(self.app_env, self.app_base_url):
             return self
+
+        if self.ragflow_api_key.strip():
+            endpoint_identity = ragflow_endpoint_identity(self.ragflow_base_url)
+            if endpoint_identity[0] != "https":
+                raise ValueError("RAGFLOW_BASE_URL must use HTTPS in protected environments")
+            if endpoint_identity not in ragflow_pins:
+                raise ValueError("RAGFLOW_TLS_SPKI_PINS must bind the protected RAGFlow endpoint")
 
         if self.allow_external_llm:
             msg = (
@@ -189,9 +213,7 @@ class Settings(BaseSettings):
             )
             raise ValueError(msg)
         if not metrics_access and has_metrics_token_file:
-            msg = (
-                "MINIO_METRICS_BEARER_TOKEN_FILE is restricted " "to the protected metrics consumer"
-            )
+            msg = "MINIO_METRICS_BEARER_TOKEN_FILE is restricted to the protected metrics consumer"
             raise ValueError(msg)
         if not smtp_configured:
             msg = "SMTP must be configured in protected environments"
@@ -258,7 +280,11 @@ def _validate_llm_seed_configuration(settings: Settings) -> None:
     }
     if provider_type not in allowed_provider_types:
         raise ValueError("LLM_PROVIDER is not supported")
-    protected = _requires_protected_secret_validation(settings.app_env, settings.app_base_url)
+    protected = is_protected_environment(settings.app_env, settings.app_base_url)
+    allowed_base_urls = normalized_llm_allowed_base_urls(settings.llm_allowed_base_urls)
+    tls_spki_pins = normalized_llm_tls_spki_pins(settings.llm_tls_spki_pins)
+    if not set(tls_spki_pins).issubset(allowed_base_urls):
+        raise ValueError("LLM_TLS_SPKI_PINS endpoints must be approved LLM URLs")
     if provider_type == "disabled":
         return
     if provider_type == "mock":
@@ -278,47 +304,14 @@ def _validate_llm_seed_configuration(settings: Settings) -> None:
         base_url = ""
     if invalid_base_url:
         raise ValueError("LLM_BASE_URL must be a safe absolute HTTP(S) endpoint")
-    if base_url not in normalized_llm_allowed_base_urls(settings.llm_allowed_base_urls):
+    if base_url not in allowed_base_urls:
         raise ValueError("LLM_BASE_URL must exactly match LLM_ALLOWED_BASE_URLS")
+    if protected and (not base_url.startswith("https://") or base_url not in tls_spki_pins):
+        raise ValueError("LLM_TLS_SPKI_PINS must bind the protected LLM endpoint over HTTPS")
 
 
 def _normalized_csv_values(raw_value: str) -> set[str]:
     return {item.strip() for item in raw_value.split(",") if item.strip()}
-
-
-def _ragflow_endpoint_identity(raw_value: str) -> tuple[str, str, int, str]:
-    value = raw_value.strip()
-    parsed = urlsplit(value)
-    if (
-        not value
-        or parsed.scheme.lower() not in {"http", "https"}
-        or not parsed.netloc
-        or parsed.username is not None
-        or parsed.password is not None
-        or parsed.query
-        or parsed.fragment
-    ):
-        raise ValueError("RAGFlow base URL must be an absolute HTTP(S) endpoint")
-    hostname = parsed.hostname
-    if hostname is None:
-        raise ValueError("RAGFlow base URL must include a hostname")
-    try:
-        normalized_hostname = hostname.rstrip(".").encode("idna").decode("ascii").lower()
-        port = parsed.port or (443 if parsed.scheme.lower() == "https" else 80)
-    except (UnicodeError, ValueError) as error:
-        raise ValueError("RAGFlow base URL contains an invalid hostname or port") from error
-    if normalized_hostname in {"metadata.google.internal", "metadata.google.internal."}:
-        raise ValueError("RAGFlow base URL must not target an instance metadata endpoint")
-    try:
-        address = ipaddress.ip_address(normalized_hostname)
-    except ValueError:
-        address = None
-    if address is not None and (address.is_link_local or address.is_unspecified):
-        raise ValueError("RAGFlow base URL must not target a link-local endpoint")
-    path = parsed.path.rstrip("/")
-    if any(segment in {".", ".."} for segment in path.split("/")):
-        raise ValueError("RAGFlow base URL path must not contain dot segments")
-    return parsed.scheme.lower(), normalized_hostname, port, path
 
 
 def approved_ragflow_base_url(raw_value: str, settings: Settings) -> str:
@@ -326,30 +319,45 @@ def approved_ragflow_base_url(raw_value: str, settings: Settings) -> str:
     cleaned = raw_value.strip().rstrip("/")
     if not cleaned:
         return ""
-    candidate = _ragflow_endpoint_identity(cleaned)
+    candidate = ragflow_endpoint_identity(cleaned)
     approved_values = {
         settings.ragflow_base_url.strip(),
         *_normalized_csv_values(settings.ragflow_allowed_base_urls),
     }
     approved_identities = {
-        _ragflow_endpoint_identity(value) for value in approved_values if value.strip()
+        ragflow_endpoint_identity(value) for value in approved_values if value.strip()
     }
     if candidate not in approved_identities:
         raise ValueError("RAGFlow base URL is not approved by the deployment environment")
     return cleaned
 
 
-def _requires_protected_secret_validation(app_env: str, app_base_url: str) -> bool:
+def is_protected_environment(app_env: str, app_base_url: str) -> bool:
     normalized_env = app_env.strip().lower()
     return normalized_env in PROTECTED_ENVS or _looks_like_deployed_base_url(app_base_url)
 
 
 def _looks_like_deployed_base_url(raw_value: str) -> bool:
-    parsed = urlparse(raw_value.strip())
-    hostname = parsed.hostname
-    if hostname is None:
+    cleaned = raw_value.strip()
+    if not cleaned:
         return False
-    return hostname.lower() not in LOCAL_APP_BASE_HOSTS
+    try:
+        parsed = urlparse(cleaned)
+        hostname = parsed.hostname
+        _port = parsed.port
+    except ValueError:
+        return True
+    if (
+        parsed.scheme.lower() not in {"http", "https"}
+        or not parsed.netloc
+        or hostname is None
+        or parsed.username is not None
+        or parsed.password is not None
+        or parsed.query
+        or parsed.fragment
+    ):
+        return True
+    return hostname.rstrip(".").lower() not in LOCAL_APP_BASE_HOSTS
 
 
 def _ensure_non_placeholder_secret(name: str, raw_value: str, *, min_length: int = 1) -> None:

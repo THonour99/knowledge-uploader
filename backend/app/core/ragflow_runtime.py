@@ -4,7 +4,16 @@ from dataclasses import dataclass
 
 import structlog
 
-from app.core.config import Settings, approved_ragflow_base_url, get_settings
+from app.core.config import (
+    Settings,
+    approved_ragflow_base_url,
+    get_settings,
+    is_protected_environment,
+)
+from app.core.ragflow_endpoint import (
+    ragflow_endpoint_identity,
+    ragflow_tls_spki_pins_for_endpoint,
+)
 from app.core.runtime_config import get_config
 
 logger = structlog.get_logger(__name__)
@@ -16,6 +25,8 @@ class RagflowRuntimeSettings:
     api_key: str
     timeout_seconds: float
     allowed_dataset_ids: frozenset[str]
+    protected_environment: bool
+    tls_spki_pins: frozenset[bytes]
 
     @property
     def integration_enabled(self) -> bool:
@@ -61,8 +72,18 @@ async def resolve_ragflow_runtime_settings(
         if isinstance(timeout_value, int | float)
         else resolved_settings.ragflow_request_timeout
     )
+    protected_environment = is_protected_environment(
+        resolved_settings.app_env,
+        resolved_settings.app_base_url,
+    )
+    tls_spki_pins: frozenset[bytes] = frozenset()
     try:
         base_url = approved_ragflow_base_url(requested_base_url, resolved_settings)
+        if base_url:
+            tls_spki_pins = ragflow_tls_spki_pins_for_endpoint(
+                base_url,
+                resolved_settings.ragflow_tls_spki_pins,
+            )
     except ValueError:
         logger.error(
             "ragflow_runtime_endpoint_not_approved",
@@ -70,13 +91,24 @@ async def resolve_ragflow_runtime_settings(
         )
         base_url = ""
         api_key = ""
+    if api_key and protected_environment and base_url:
+        scheme = ragflow_endpoint_identity(base_url)[0]
+        if scheme != "https" or not tls_spki_pins:
+            logger.error(
+                "ragflow_runtime_transport_not_approved",
+                error_type="ProtectedTransportNotApproved",
+            )
+            base_url = ""
+            api_key = ""
+            tls_spki_pins = frozenset()
     if not base_url:
         api_key = ""
+        tls_spki_pins = frozenset()
     return RagflowRuntimeSettings(
         base_url=base_url,
         api_key=api_key,
         timeout_seconds=timeout_seconds,
-        allowed_dataset_ids=normalized_dataset_ids(
-            resolved_settings.ragflow_allowed_dataset_ids
-        ),
+        allowed_dataset_ids=normalized_dataset_ids(resolved_settings.ragflow_allowed_dataset_ids),
+        protected_environment=protected_environment,
+        tls_spki_pins=tls_spki_pins,
     )

@@ -21,7 +21,7 @@ from app.adapters.llm.openai_compatible import (
 )
 from app.adapters.minio_client import STORAGE_TRANSIENT_ERRORS, is_transient_storage_error
 from app.core.audit import record_admin_audit_log
-from app.core.config import PROTECTED_ENVS, Settings
+from app.core.config import Settings, is_protected_environment
 from app.core.document_state import DocumentStateError, DocumentStateMachine
 from app.core.llm_endpoint import (
     llm_base_url_is_allowed,
@@ -1386,7 +1386,7 @@ class AiConfigService:
                 message="database transaction was not released",
             )
         if snapshot.provider_type == "mock":
-            if _is_protected_app_env(self._settings.app_env):
+            if is_protected_environment(self._settings.app_env, self._settings.app_base_url):
                 return LLMTestResult(
                     status="failed",
                     latency_ms=None,
@@ -1418,6 +1418,10 @@ class AiConfigService:
             raw_allowed_base_urls=self._settings.llm_allowed_base_urls,
             allow_external=snapshot.effective_allow_external,
             is_internal=snapshot.is_internal,
+            raw_tls_spki_pins=self._settings.llm_tls_spki_pins,
+            require_tls_spki_pin=is_protected_environment(
+                self._settings.app_env, self._settings.app_base_url
+            ),
         )
         return await client.test_connection()
 
@@ -1434,7 +1438,9 @@ class AiConfigService:
         }
         if provider_type not in allowed:
             raise exceptions.invalid_provider_config()
-        if provider_type == "mock" and _is_protected_app_env(self._settings.app_env):
+        if provider_type == "mock" and is_protected_environment(
+            self._settings.app_env, self._settings.app_base_url
+        ):
             raise exceptions.invalid_provider_config(
                 "mock provider is disabled in protected environments"
             )
@@ -2106,7 +2112,7 @@ class AiAnalysisService:
     ) -> BaseLLMProvider:
         model = clean_optional_text(provider.chat_model)
         if provider.provider_type == "mock":
-            if _is_protected_app_env(self._settings.app_env):
+            if is_protected_environment(self._settings.app_env, self._settings.app_base_url):
                 raise LLMAnalysisConfigurationError(
                     "mock provider is disabled in protected environments"
                 )
@@ -2173,6 +2179,10 @@ class AiAnalysisService:
             raw_allowed_base_urls=self._settings.llm_allowed_base_urls,
             allow_external=self._settings.allow_external_llm and allow_external_llm,
             is_internal=provider.is_internal,
+            raw_tls_spki_pins=self._settings.llm_tls_spki_pins,
+            require_tls_spki_pin=is_protected_environment(
+                self._settings.app_env, self._settings.app_base_url
+            ),
         )
 
     async def _record_llm_usage(
@@ -2940,10 +2950,6 @@ def resolve_analysis_engine_type(
 
 def normalize_space(value: str) -> str:
     return re.sub(r"\s+", " ", value).strip()
-
-
-def _is_protected_app_env(app_env: str) -> bool:
-    return app_env.strip().lower() in PROTECTED_ENVS
 
 
 def _default_prompt_definitions() -> list[PromptDefinition]:

@@ -13,6 +13,7 @@ from .safe_transport import (
     AsyncHostResolver,
     LLMEndpointSecurityError,
     SystemHostResolver,
+    TLSSPKIPinningError,
     build_pinned_transport,
     resolve_and_authorize_llm_endpoint,
 )
@@ -121,6 +122,8 @@ class OpenAICompatibleProvider:
         raw_allowed_base_urls: str = "",
         allow_external: bool = False,
         is_internal: bool = False,
+        raw_tls_spki_pins: str = "",
+        require_tls_spki_pin: bool = False,
     ) -> None:
         self._base_url = base_url.rstrip("/")
         self._api_key = api_key or None
@@ -132,6 +135,8 @@ class OpenAICompatibleProvider:
         self._raw_allowed_base_urls = raw_allowed_base_urls
         self._allow_external = allow_external
         self._is_internal = is_internal
+        self._raw_tls_spki_pins = raw_tls_spki_pins
+        self._require_tls_spki_pin = require_tls_spki_pin
 
     def _headers(self) -> dict[str, str]:
         headers = {"Content-Type": "application/json"}
@@ -158,6 +163,8 @@ class OpenAICompatibleProvider:
                 allow_external=self._allow_external,
                 is_internal=self._is_internal,
                 resolver=self._resolver,
+                raw_tls_spki_pins=self._raw_tls_spki_pins,
+                require_tls_spki_pin=self._require_tls_spki_pin,
             )
         except LLMEndpointSecurityError as exc:
             endpoint_failure = _ProviderFailure(
@@ -171,6 +178,13 @@ class OpenAICompatibleProvider:
             )
         if endpoint_failure is not None:
             safe_error = endpoint_failure.to_error()
+            del self, prompt, system_prompt
+            raise safe_error
+        if self._transport is not None and endpoint.tls_spki_sha256_pins:
+            safe_error = _ProviderFailure(
+                category="request_rejected",
+                retryable=False,
+            ).to_error()
             del self, prompt, system_prompt
             raise safe_error
         transport = self._transport or build_pinned_transport(endpoint)
@@ -224,6 +238,13 @@ class OpenAICompatibleProvider:
             request_failure = _ProviderFailure(
                 "timeout",
                 retryable=True,
+                latency_ms=_elapsed_ms(started),
+            )
+        except httpx.ConnectError as exc:
+            pinning_failure = isinstance(exc.__cause__, TLSSPKIPinningError)
+            request_failure = _ProviderFailure(
+                "request_rejected" if pinning_failure else "connection_error",
+                retryable=not pinning_failure,
                 latency_ms=_elapsed_ms(started),
             )
         except Exception:

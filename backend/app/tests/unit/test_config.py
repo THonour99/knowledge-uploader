@@ -10,6 +10,7 @@ from app.core.config import Settings, approved_ragflow_base_url
 VALID_FERNET_KEY = "RZ1Sw_27VrN9c5Cfsq01qiwViwT6y7jDCuXYn7tgGJY="
 PRODUCTION_FERNET_KEY = "x6TF85ulMkiMF3GSpxCRgYn5v_t7q8D2r5LJw8ZvcVY="
 PRODUCTION_JWT_SECRET = "this-is-a-production-secret-with-32-bytes"
+LLM_TEST_PIN = "sha256/AQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQE="
 
 
 def _production_settings(**overrides: Any) -> dict[str, Any]:
@@ -284,6 +285,11 @@ def test_ragflow_dataset_allowlist_must_have_normalized_values() -> None:
 def test_production_accepts_ragflow_dataset_allowlist() -> None:
     settings = Settings(
         **_production_settings(
+            ragflow_base_url="https://ragflow.internal/api",
+            ragflow_tls_spki_pins=(
+                '{"https://ragflow.internal/api":'
+                '["sha256/AQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQE="]}'
+            ),
             ragflow_api_key="test-ragflow-key",
             ragflow_allowed_dataset_ids="dataset-1,dataset-2",
         )
@@ -400,6 +406,7 @@ def test_protected_environment_rejects_external_llm_until_cost_002(app_env: str)
                 llm_base_url="https://llm.example.test/v1",
                 llm_model="analysis-model",
                 llm_allowed_base_urls="https://llm.example.test/v1",
+                llm_tls_spki_pins=('{"https://llm.example.test/v1":["' + LLM_TEST_PIN + '"]}'),
             )
         )
 
@@ -418,19 +425,53 @@ def test_development_allows_external_llm_gate() -> None:
     assert settings.llm_provider == "openai_compatible"
 
 
-def test_protected_environment_allows_internal_llm_with_external_gate_disabled() -> None:
+def test_protected_environment_allows_pinned_internal_llm_with_external_gate_disabled() -> None:
     settings = Settings(
         **_production_settings(
             allow_external_llm=False,
             llm_provider="local_openai_compatible",
-            llm_base_url="http://vllm:8000/v1",
+            llm_base_url="https://vllm.internal/v1",
             llm_model="qwen-analysis",
-            llm_allowed_base_urls="http://vllm:8000/v1",
+            llm_allowed_base_urls="https://vllm.internal/v1",
+            llm_tls_spki_pins=('{"https://vllm.internal/v1":["' + LLM_TEST_PIN + '"]}'),
         )
     )
 
     assert settings.allow_external_llm is False
     assert settings.llm_provider == "local_openai_compatible"
+
+
+@pytest.mark.parametrize(
+    ("app_env", "app_base_url"),
+    [
+        ("production", "http://localhost"),
+        ("development", "https://knowledge.example.com"),
+    ],
+)
+def test_protected_environment_requires_exact_llm_spki_pin_binding(
+    app_env: str,
+    app_base_url: str,
+) -> None:
+    with pytest.raises(ValidationError, match="LLM_TLS_SPKI_PINS"):
+        Settings(
+            **_production_settings(
+                app_env=app_env,
+                app_base_url=app_base_url,
+                llm_provider="local_openai_compatible",
+                llm_base_url="https://vllm.internal/v1",
+                llm_model="qwen-analysis",
+                llm_allowed_base_urls="https://vllm.internal/v1",
+                llm_tls_spki_pins="{}",
+            )
+        )
+
+
+def test_llm_spki_pin_mapping_cannot_bind_unapproved_endpoint() -> None:
+    with pytest.raises(ValidationError, match="approved LLM URLs"):
+        Settings(
+            llm_allowed_base_urls="https://llm.example/v1",
+            llm_tls_spki_pins=('{"https://other.example/v1":["' + LLM_TEST_PIN + '"]}'),
+        )
 
 
 def test_protected_environment_rejects_mock_llm_at_startup() -> None:

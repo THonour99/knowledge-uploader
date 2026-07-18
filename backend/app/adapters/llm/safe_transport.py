@@ -3,21 +3,25 @@
 from __future__ import annotations
 
 import asyncio
+import hmac
 import ipaddress
 import socket
 import ssl
-from collections.abc import Iterable, Sequence
+from collections.abc import Callable, Iterable, Sequence
 from dataclasses import dataclass
-from typing import Literal, Protocol
+from typing import Literal, Protocol, cast
 
 import httpcore
 import httpx
+from cryptography import x509
+from cryptography.hazmat.primitives import hashes, serialization
 
 from app.core.llm_endpoint import (
     llm_endpoint_parts,
     normalize_llm_base_url,
     normalize_llm_hostname,
     normalized_llm_allowed_base_urls,
+    normalized_llm_tls_spki_pins,
 )
 
 EndpointFailureKind = Literal["policy", "resolution"]
@@ -36,7 +40,6 @@ PRIVATE_LLM_NETWORKS = (
     ipaddress.ip_network("192.168.0.0/16"),
     ipaddress.ip_network("fc00::/7"),
 )
-
 
 
 class AsyncHostResolver(Protocol):
@@ -71,6 +74,7 @@ class ResolvedLLMEndpoint:
     port: int
     pinned_ip: str
     is_external: bool
+    tls_spki_sha256_pins: frozenset[bytes] = frozenset()
 
 
 class SystemHostResolver:
@@ -147,6 +151,8 @@ async def resolve_and_authorize_llm_endpoint(
     allow_external: bool,
     is_internal: bool,
     resolver: AsyncHostResolver,
+    raw_tls_spki_pins: str = "",
+    require_tls_spki_pin: bool = False,
 ) -> ResolvedLLMEndpoint:
     normalized = normalize_llm_base_url(base_url)
     if normalized not in normalized_llm_allowed_base_urls(raw_allowed_base_urls):
@@ -156,6 +162,16 @@ async def resolve_and_authorize_llm_endpoint(
             retryable=False,
         )
     scheme, hostname, port = llm_endpoint_parts(normalized)
+    endpoint_pins = normalized_llm_tls_spki_pins(raw_tls_spki_pins).get(
+        normalized,
+        frozenset(),
+    )
+    if require_tls_spki_pin and (scheme != "https" or not endpoint_pins):
+        raise LLMEndpointSecurityError(
+            "tls_spki_pin_required",
+            kind="policy",
+            retryable=False,
+        )
     resolution_failed = False
     try:
         raw_addresses = await resolver.resolve(hostname, port)
@@ -204,7 +220,103 @@ async def resolve_and_authorize_llm_endpoint(
         port=port,
         pinned_ip=str(addresses[0]),
         is_external=has_public,
+        tls_spki_sha256_pins=endpoint_pins,
     )
+
+
+class TLSSPKIPinningError(httpcore.ConnectError):
+    """A detail-free, permanent TLS identity policy failure."""
+
+
+def spki_sha256_digest_from_der_certificate(certificate_der: bytes) -> bytes:
+    certificate = x509.load_der_x509_certificate(certificate_der)
+    public_key_der = certificate.public_key().public_bytes(
+        serialization.Encoding.DER,
+        serialization.PublicFormat.SubjectPublicKeyInfo,
+    )
+    digest = hashes.Hash(hashes.SHA256())
+    digest.update(public_key_der)
+    return digest.finalize()
+
+
+async def _close_stream_quietly(stream: httpcore.AsyncNetworkStream) -> None:
+    try:
+        await stream.aclose()
+    except Exception:
+        pass
+
+
+class TLSSPKIPinningStream(httpcore.AsyncNetworkStream):
+    def __init__(
+        self,
+        stream: httpcore.AsyncNetworkStream,
+        *,
+        expected_hostname: str,
+        allowed_pins: frozenset[bytes],
+    ) -> None:
+        self._stream = stream
+        self._expected_hostname = normalize_llm_hostname(expected_hostname)
+        self._allowed_pins = allowed_pins
+
+    async def read(self, max_bytes: int, timeout: float | None = None) -> bytes:
+        return await self._stream.read(max_bytes=max_bytes, timeout=timeout)
+
+    async def write(self, buffer: bytes, timeout: float | None = None) -> None:
+        await self._stream.write(buffer=buffer, timeout=timeout)
+
+    async def aclose(self) -> None:
+        await self._stream.aclose()
+
+    async def start_tls(
+        self,
+        ssl_context: ssl.SSLContext,
+        server_hostname: str | None = None,
+        timeout: float | None = None,
+    ) -> httpcore.AsyncNetworkStream:
+        valid_hostname = False
+        try:
+            valid_hostname = (
+                server_hostname is not None
+                and normalize_llm_hostname(server_hostname) == self._expected_hostname
+            )
+        except ValueError:
+            valid_hostname = False
+        if not valid_hostname:
+            await _close_stream_quietly(self._stream)
+            raise TLSSPKIPinningError("tls pin verification failed")
+
+        try:
+            tls_stream = await self._stream.start_tls(
+                ssl_context=ssl_context,
+                server_hostname=server_hostname,
+                timeout=timeout,
+            )
+        except BaseException:
+            await _close_stream_quietly(self._stream)
+            raise
+        verified = False
+        try:
+            ssl_object = tls_stream.get_extra_info("ssl_object")
+            get_peer_certificate = getattr(ssl_object, "getpeercert", None)
+            if callable(get_peer_certificate):
+                certificate_der = cast(Callable[..., object], get_peer_certificate)(
+                    binary_form=True
+                )
+                if isinstance(certificate_der, bytes):
+                    actual_pin = spki_sha256_digest_from_der_certificate(certificate_der)
+                    verified = any(
+                        hmac.compare_digest(actual_pin, expected_pin)
+                        for expected_pin in self._allowed_pins
+                    )
+        except Exception:
+            verified = False
+        if not verified:
+            await _close_stream_quietly(tls_stream)
+            raise TLSSPKIPinningError("tls pin verification failed")
+        return tls_stream
+
+    def get_extra_info(self, info: str) -> object:
+        return self._stream.get_extra_info(info)
 
 
 class PinnedNetworkBackend(httpcore.AsyncNetworkBackend):
@@ -214,11 +326,13 @@ class PinnedNetworkBackend(httpcore.AsyncNetworkBackend):
         hostname: str,
         port: int,
         pinned_ip: str,
+        tls_spki_sha256_pins: frozenset[bytes] = frozenset(),
         backend: httpcore.AsyncNetworkBackend | None = None,
     ) -> None:
         self._hostname = normalize_llm_hostname(hostname)
         self._port = port
         self._pinned_ip = str(ipaddress.ip_address(pinned_ip))
+        self._tls_spki_sha256_pins = tls_spki_sha256_pins
         self._backend = backend or httpcore.AnyIOBackend()
 
     async def connect_tcp(
@@ -236,12 +350,19 @@ class PinnedNetworkBackend(httpcore.AsyncNetworkBackend):
             valid_origin = False
         if not valid_origin:
             raise httpcore.ConnectError("pinned endpoint mismatch")
-        return await self._backend.connect_tcp(
+        stream = await self._backend.connect_tcp(
             host=self._pinned_ip,
             port=port,
             timeout=timeout,
             local_address=local_address,
             socket_options=socket_options,
+        )
+        if not self._tls_spki_sha256_pins:
+            return stream
+        return TLSSPKIPinningStream(
+            stream,
+            expected_hostname=self._hostname,
+            allowed_pins=self._tls_spki_sha256_pins,
         )
 
     async def connect_unix_socket(
@@ -273,10 +394,13 @@ def build_pinned_transport(
     *,
     network_backend: httpcore.AsyncNetworkBackend | None = None,
 ) -> httpx.AsyncBaseTransport:
+    if endpoint.tls_spki_sha256_pins and endpoint.scheme != "https":
+        raise ValueError("TLS SPKI pins require HTTPS")
     pinned_backend = PinnedNetworkBackend(
         hostname=endpoint.hostname,
         port=endpoint.port,
         pinned_ip=endpoint.pinned_ip,
+        tls_spki_sha256_pins=endpoint.tls_spki_sha256_pins,
         backend=network_backend,
     )
     return PinnedAsyncHTTPTransport(pinned_backend)
