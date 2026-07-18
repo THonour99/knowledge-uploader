@@ -6,6 +6,7 @@ import subprocess
 from pathlib import Path
 
 import pytest
+
 import scripts.acceptance_git as acceptance_git
 from scripts.acceptance_git import (
     AcceptanceGitError,

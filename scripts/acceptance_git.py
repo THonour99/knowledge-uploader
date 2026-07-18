@@ -219,11 +219,14 @@ def _is_execution_input(relative_path: str) -> bool:
     )
     in_pytest_scope = "/" not in lowered or lowered.startswith("ops/")
     in_root_pycache = lowered.startswith("__pycache__/")
-    return in_root_pycache or ((in_primary_scope or in_pytest_scope) and (
-        "__pycache__" in parts
-        or Path(lowered).suffix in EXECUTABLE_SUFFIXES
-        or parts[-1] in PYTEST_INPUT_NAMES
-    ))
+    return in_root_pycache or (
+        (in_primary_scope or in_pytest_scope)
+        and (
+            "__pycache__" in parts
+            or Path(lowered).suffix in EXECUTABLE_SUFFIXES
+            or parts[-1] in PYTEST_INPUT_NAMES
+        )
+    )
 
 
 def _assert_no_untracked_execution_inputs(

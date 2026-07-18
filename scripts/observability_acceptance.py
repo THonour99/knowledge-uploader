@@ -7,9 +7,16 @@ from __future__ import annotations
 import importlib.util
 import os
 import sys
+from typing import Protocol, cast
 
 
-def _load_acceptance_entry() -> object:
+class _AcceptanceEntry(Protocol):
+    def consume_launcher_claim(self, repo_root: str) -> None: ...
+
+    def runtime_isolation_error(self, repo_root: str) -> str | None: ...
+
+
+def _load_acceptance_entry() -> _AcceptanceEntry:
     module_path = os.path.join(os.path.dirname(__file__), "acceptance_entry.py")
     spec = importlib.util.spec_from_file_location(
         "knowledge_uploader_observability_acceptance_entry",
@@ -20,7 +27,7 @@ def _load_acceptance_entry() -> object:
     module = importlib.util.module_from_spec(spec)
     sys.modules[spec.name] = module
     spec.loader.exec_module(module)
-    return module
+    return cast(_AcceptanceEntry, module)
 
 
 _acceptance_entry = _load_acceptance_entry()
@@ -59,7 +66,6 @@ from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from types import ModuleType
-from typing import Protocol, cast
 
 import yaml  # type: ignore[import-untyped]
 

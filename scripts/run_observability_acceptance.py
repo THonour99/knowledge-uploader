@@ -11,9 +11,14 @@ from __future__ import annotations
 import importlib.util
 import os
 import sys
+from typing import Protocol, cast
 
 
-def _load_acceptance_entry() -> object:
+class _AcceptanceEntry(Protocol):
+    def consume_launcher_claim(self, repo_root: str) -> None: ...
+
+
+def _load_acceptance_entry() -> _AcceptanceEntry:
     module_path = os.path.join(os.path.dirname(__file__), "acceptance_entry.py")
     spec = importlib.util.spec_from_file_location(
         "knowledge_uploader_observability_wrapper_entry",
@@ -24,7 +29,7 @@ def _load_acceptance_entry() -> object:
     module = importlib.util.module_from_spec(spec)
     sys.modules[spec.name] = module
     spec.loader.exec_module(module)
-    return module
+    return cast(_AcceptanceEntry, module)
 
 
 _acceptance_entry = _load_acceptance_entry()
@@ -44,8 +49,12 @@ if sys.argv[1:] == ["--isolation-probe"]:
 
 from collections.abc import Callable
 from pathlib import Path
-from types import ModuleType
-from typing import cast
+
+
+class _ObservabilityModule(Protocol):
+    _LAUNCHER_CLAIM_CONSUMED: bool
+    main: Callable[[], int]
+
 
 MODULE_PATH = Path(__file__).with_name("observability_acceptance.py").resolve()
 SPEC = importlib.util.spec_from_file_location(
@@ -56,8 +65,9 @@ if SPEC is None or SPEC.loader is None:
 MODULE = importlib.util.module_from_spec(SPEC)
 sys.modules[SPEC.name] = MODULE
 SPEC.loader.exec_module(MODULE)
-MODULE._LAUNCHER_CLAIM_CONSUMED = True
-main = cast(Callable[[], int], cast(ModuleType, MODULE).main)
+_observability_module = cast(_ObservabilityModule, MODULE)
+_observability_module._LAUNCHER_CLAIM_CONSUMED = True
+main = _observability_module.main
 
 if __name__ == "__main__":
     raise SystemExit(main())

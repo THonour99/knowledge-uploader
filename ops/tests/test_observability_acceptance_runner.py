@@ -157,9 +157,7 @@ def test_static_contract_covers_real_windows_resolutions_and_runbooks() -> None:
     assert acceptance.ACCEPTANCE_ENTRY_PATH in acceptance.SOURCE_PATHS
     assert acceptance.ACCEPTANCE_LAUNCHER_PATH in acceptance.SOURCE_PATHS
     runbook = acceptance.RUNBOOK_PATH.read_text(encoding="utf-8")
-    assert (
-        "python -I -S -X utf8 scripts/acceptance_launcher.py observability" in runbook
-    )
+    assert "python -I -S -X utf8 scripts/acceptance_launcher.py observability" in runbook
 
 
 def test_static_contract_rejects_duplicate_target_alert(

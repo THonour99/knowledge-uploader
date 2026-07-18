@@ -7,9 +7,21 @@ from __future__ import annotations
 import importlib.util
 import os
 import sys
+from typing import Protocol, cast
 
 
-def _load_acceptance_entry() -> object:
+class _AcceptanceEntry(Protocol):
+    CLAIM_FILENAME: str
+    CLAIM_MARKER_ENV: str
+    CLAIM_RUNTIME_ENV: str
+    CLAIM_TOKEN_ENV: str
+
+    def consume_launcher_claim(self, repo_root: str) -> None: ...
+
+    def runtime_isolation_error(self, repo_root: str) -> str | None: ...
+
+
+def _load_acceptance_entry() -> _AcceptanceEntry:
     module_path = os.path.join(os.path.dirname(__file__), "acceptance_entry.py")
     spec = importlib.util.spec_from_file_location(
         "knowledge_uploader_baseline_acceptance_entry",
@@ -20,7 +32,7 @@ def _load_acceptance_entry() -> object:
     module = importlib.util.module_from_spec(spec)
     sys.modules[spec.name] = module
     spec.loader.exec_module(module)
-    return module
+    return cast(_AcceptanceEntry, module)
 
 
 _acceptance_entry = _load_acceptance_entry()
@@ -49,7 +61,7 @@ from datetime import UTC, datetime
 from pathlib import Path
 from tempfile import TemporaryDirectory
 from types import ModuleType
-from typing import Final, Protocol, cast
+from typing import Final
 from xml.etree import ElementTree
 
 ROOT = Path(__file__).resolve().parents[1]

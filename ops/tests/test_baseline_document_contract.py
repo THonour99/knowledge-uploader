@@ -11,6 +11,7 @@ from urllib.parse import unquote
 from uuid import uuid4
 
 import pytest
+
 import scripts.acceptance_launcher as acceptance_launcher
 import scripts.check_baseline_contract as baseline_contract
 from scripts.check_baseline_contract import (
@@ -216,9 +217,9 @@ def test_authority_documents_and_local_links_are_traceable() -> None:
             relative_target = unquote(target.split("#", maxsplit=1)[0])
             assert relative_target, f"empty local link in {document.relative_to(ROOT)}"
             resolved = (document.parent / relative_target).resolve()
-            assert resolved.is_relative_to(root), (
-                f"local link escapes repository: {document.relative_to(ROOT)} -> {target}"
-            )
+            assert resolved.is_relative_to(
+                root
+            ), f"local link escapes repository: {document.relative_to(ROOT)} -> {target}"
             assert resolved.exists(), f"broken local link: {document.relative_to(ROOT)} -> {target}"
 
 
@@ -240,9 +241,9 @@ def test_05_is_the_single_state_and_api_authority() -> None:
         IA: "05_DATABASE_API_SPEC_数据库与API规范.md",
     }
     for document, marker in references.items():
-        assert marker in _read(document), (
-            f"missing 05 authority marker: {document.relative_to(ROOT)}"
-        )
+        assert marker in _read(
+            document
+        ), f"missing 05 authority marker: {document.relative_to(ROOT)}"
 
 
 def test_cross_document_state_transitions_are_allowed_by_05() -> None:
@@ -491,9 +492,7 @@ def test_candidate_evidence_runner_rejects_ambiguous_identity_and_stays_local(
     assert "untracked or ignored Python execution inputs are forbidden" in provenance
     assert "Git 2.36 or newer is required" in provenance
     assert "最终整合后的 SHA 尚未绑定" in evidence
-    assert (
-        "python -I -S -X utf8 scripts/acceptance_launcher.py baseline" in evidence
-    )
+    assert "python -I -S -X utf8 scripts/acceptance_launcher.py baseline" in evidence
     assert "external_release_status=not_evaluated" in evidence
 
 
@@ -569,9 +568,9 @@ def test_stage_nine_is_consistently_declared_incomplete() -> None:
     for document in AUTHORITY_DOCUMENTS:
         for line in _read(document).splitlines():
             if re.search(r"阶段\s*9", line) and "完成" in line:
-                assert any(marker in line for marker in negative_context), (
-                    f"positive stage-9 completion claim: {document.relative_to(ROOT)}: {line}"
-                )
+                assert any(
+                    marker in line for marker in negative_context
+                ), f"positive stage-9 completion claim: {document.relative_to(ROOT)}: {line}"
 
 
 def test_acceptance_matrix_ids_and_statuses_are_well_formed() -> None:
@@ -701,6 +700,7 @@ def test_baseline_entry_requires_trusted_launcher_and_cleans_runtime() -> None:
     assert "--expected-git-sha" in launched.stdout
     assert list(runtime_parent.iterdir()) == []
     runtime_parent.rmdir()
+
 
 def test_baseline_pytest_environment_is_minimal_and_drops_secret_sentinels(
     tmp_path: Path,

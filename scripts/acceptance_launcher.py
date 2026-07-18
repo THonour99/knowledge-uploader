@@ -43,9 +43,7 @@ import subprocess
 import tempfile
 from typing import Final
 
-CLAIM_ENVIRONMENT_KEYS: Final = frozenset(
-    {CLAIM_TOKEN_ENV, CLAIM_MARKER_ENV, CLAIM_RUNTIME_ENV}
-)
+CLAIM_ENVIRONMENT_KEYS: Final = frozenset({CLAIM_TOKEN_ENV, CLAIM_MARKER_ENV, CLAIM_RUNTIME_ENV})
 MINIMAL_HOST_ENVIRONMENT_KEYS: Final = frozenset(
     {"PATH", "PATHEXT", "SYSTEMROOT", "WINDIR", "COMSPEC", "SYSTEMDRIVE"}
 )
@@ -182,9 +180,7 @@ def main(arguments: Sequence[str] | None = None) -> int:
     argv = tuple(sys.argv[1:] if arguments is None else arguments)
     if not argv or argv[0] not in TARGETS:
         targets = "|".join(sorted(TARGETS))
-        sys.stderr.write(
-            f"usage: acceptance_launcher.py <{targets}> [target arguments...]\n"
-        )
+        sys.stderr.write(f"usage: acceptance_launcher.py <{targets}> [target arguments...]\n")
         return 2
     return launch(argv[0], argv[1:])
 

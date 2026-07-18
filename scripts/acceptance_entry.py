@@ -69,10 +69,9 @@ def consume_launcher_claim(repo_root: str) -> None:
     expected_prefix = os.path.join(runtime, CHILD_PYCACHE_NAME)
     if _is_within(repository, runtime):
         raise AcceptanceEntryError("launcher runtime must be outside the repository")
-    if (
-        os.path.normcase(marker) != os.path.normcase(expected_marker)
-        or os.path.normcase(prefix) != os.path.normcase(expected_prefix)
-    ):
+    if os.path.normcase(marker) != os.path.normcase(expected_marker) or os.path.normcase(
+        prefix
+    ) != os.path.normcase(expected_prefix):
         raise AcceptanceEntryError("launcher claim paths do not match the child runtime")
     if os.path.islink(raw_runtime) or not os.path.isdir(raw_runtime):
         raise AcceptanceEntryError("launcher runtime is invalid")
