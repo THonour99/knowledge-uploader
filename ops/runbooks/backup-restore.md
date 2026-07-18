@@ -15,7 +15,7 @@ docker compose -f docker-compose.yml -f docker-compose.ops.yml --profile ops run
 ```
 
 The backup is written to the `backups` volume only after validation. The manifest records table
-row counts and row digests, the Alembic revision, object key/size/ETag/SHA-256 metadata, and only
+row counts (without row-content digests), the Alembic revision, object key/size/ETag/SHA-256 metadata, and only
 the key/secret-presence flags for runtime configuration. It never records a configuration value,
 credential, token, or connection string.
 
@@ -47,7 +47,7 @@ equals the recorded source. The success metric is updated only after dump, schem
 configuration metadata, object checksum, optional health, and optional cleanup validation pass.
 Evidence is written to the separate `dr-evidence` volume; the immutable backup directory is never
 modified during restore. It records measured backup age as `rpo_seconds`, elapsed restore time as
-`rto_seconds`, table digests, Alembic revision, and explicit missing/orphaned/mismatched object
+`rto_seconds`, table row counts, Alembic revision, and explicit missing/orphaned/mismatched object
 lists. `main_chain_smoke=not_provided` remains a release blocker until the true infrastructure E2E
 artifact is paired with the drill.
 
