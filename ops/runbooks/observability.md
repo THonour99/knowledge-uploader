@@ -15,6 +15,22 @@ textfile exporter。公网 Nginx
 必须通过 `ALERTMANAGER_CONFIG_FILE` 挂载由 secret manager 管理的真实 receiver 配置，并保存
 一次测试告警从 firing 到 resolved 的通知证据；缺少任一项时 protected release gate 必须失败。
 
+OBS-001 本机运行时验收使用唯一 Compose project、node-exporter textfile fixture 与生产
+`alerts.yml`，按真实 `for` 窗口观察 outbox backlog、document worker offline、审核 SLA overdue
+和 RAGFlow failure rate 四个规则从 pending 到 firing，再写入健康指标并观察 resolved。执行时必须
+绑定完整、干净的候选 SHA，证据目录必须位于仓库外且不存在：
+
+    python scripts/run_observability_acceptance.py --expected-git-sha <40位SHA> --output-dir <仓库外新目录>
+
+证据有效期为 24 小时；合并产生新 SHA 后必须重跑，失败、过期、候选不一致或清理不完整的证据
+不得填为“通过”。该验收不会启动 Alertmanager，也不会发送或伪造 Webhook；它只能证明本机
+Prometheus 抓取、生产规则窗口、状态转换与 runbook 绑定。`EXT-WEBHOOK-001` 仍必须在受保护环境
+由独立 receiver 生成 firing/resolved 投递收据。
+生产 `prometheus.yml` 的本机 promtool 语法检查只挂载显式 synthetic placeholder，以满足
+`credentials_file` 必须存在的解析前提；它不验证受保护 MinIO 鉴权。证据必须固定记录
+`protected_minio_auth_verified=false` 与 `synthetic_auth_placeholder=true`，真实 TLS、token
+权限、轮换和抓取证据仍按下方 protected 流程执行。
+
 staging/production 还必须叠加 `docker-compose.observability.protected.yml`，显式设置 `PROMETHEUS_CONFIG_FILE=./ops/observability/prometheus.protected.yml` 和 `MINIO_TLS_DIR=<含 public.crt、private.key、ca.crt 的目录>`。`public.crt` 的 SAN 必须包含 `DNS:minio`，MinIO 健康检查和 Prometheus 都必须用 `ca.crt` 校验该名称。MinIO 抓取必须显示为 `https://minio:9000/minio/v2/metrics/cluster`，`server_name=minio`，且 `/api/v1/targets` 中 `job=minio` 的 health 必须为 `up`；禁止通过 HTTP 或 `insecure_skip_verify` 规避证书问题。
 
 MinIO root 凭据只允许进入 MinIO、`minio-bootstrap`、`minio-metrics-token-init`。幂等 `minio-bootstrap` 使用 root 创建桶、独立数据面用户和桶级最小策略；应用只获得数据面凭据，`operational-metrics` 不获得任何可用 S3 凭据。两组凭据相同或 bootstrap 失败时，后端与指标消费者必须拒绝启动。

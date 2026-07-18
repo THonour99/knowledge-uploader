@@ -1,0 +1,52 @@
+services:
+  metrics-fixture:
+    image: quay.io/prometheus/node-exporter:v1.11.1
+    command:
+      - --collector.disable-defaults
+      - --collector.textfile
+      - --collector.textfile.directory=/var/lib/node_exporter/textfile
+      - --web.listen-address=:9100
+    read_only: true
+    tmpfs:
+      - /tmp
+    volumes:
+      - type: bind
+        source: ${OBSERVABILITY_FIXTURE_DIR:?set OBSERVABILITY_FIXTURE_DIR}
+        target: /var/lib/node_exporter/textfile
+        read_only: true
+
+  prometheus:
+    image: prom/prometheus:v3.12.0
+    command:
+      - --config.file=/etc/prometheus/prometheus.yml
+      - --storage.tsdb.path=/prometheus
+      - --storage.tsdb.retention.time=1h
+    ports:
+      - "127.0.0.1:${OBSERVABILITY_PROMETHEUS_PORT:?set OBSERVABILITY_PROMETHEUS_PORT}:9090"
+    read_only: true
+    tmpfs:
+      - /prometheus
+      - /tmp
+    volumes:
+      - type: bind
+        source: ${OBSERVABILITY_PROMETHEUS_CONFIG:?set OBSERVABILITY_PROMETHEUS_CONFIG}
+        target: /etc/prometheus/prometheus.yml
+        read_only: true
+      - type: bind
+        source: ${OBSERVABILITY_PRODUCTION_PROMETHEUS_CONFIG:?set OBSERVABILITY_PRODUCTION_PROMETHEUS_CONFIG}
+        target: /etc/prometheus/prometheus.production.yml
+        read_only: true
+      - type: bind
+        source: ${OBSERVABILITY_ALERTS_FILE:?set OBSERVABILITY_ALERTS_FILE}
+        target: /etc/prometheus/alerts.yml
+        read_only: true
+      - type: bind
+        source: ${OBSERVABILITY_ALERT_TEST_FILE:?set OBSERVABILITY_ALERT_TEST_FILE}
+        target: /etc/prometheus/alerts.test.yml
+        read_only: true
+      - type: bind
+        source: ${OBSERVABILITY_MINIO_TOKEN_FILE:?set OBSERVABILITY_MINIO_TOKEN_FILE}
+        target: /run/secrets/minio-metrics/token
+        read_only: true
+    depends_on:
+      - metrics-fixture

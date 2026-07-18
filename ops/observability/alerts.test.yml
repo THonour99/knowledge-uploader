@@ -553,7 +553,7 @@ tests:
   - interval: 1m
     input_series:
       - series: knowledge_uploader_outbox_pending
-        values: 101x12
+        values: 101x12 0
       - series: knowledge_uploader_outbox_oldest_seconds
         values: 301x12
       - series: knowledge_uploader_outbox_dead_letters{status="pending"}
@@ -561,7 +561,7 @@ tests:
       - series: rabbitmq_detailed_queue_messages_ready{queue="ragflow_queue.dlq"}
         values: 1x12
       - series: rabbitmq_detailed_queue_consumers{queue="document_queue"}
-        values: 0x12
+        values: 0x12 1
       - series: rabbitmq_detailed_queue_consumers{queue="ai_queue"}
         values: 0x12
       - series: rabbitmq_detailed_queue_consumers{queue="ragflow_queue"}
@@ -569,12 +569,24 @@ tests:
       - series: rabbitmq_detailed_queue_consumers{queue="notification_queue"}
         values: 0x12
       - series: knowledge_uploader_review_overdue
-        values: 1x12
+        values: 1x12 0
       - series: knowledge_uploader_ragflow_sync_outcomes_window{result="success"}
-        values: 4x12
+        values: 4x12 5
       - series: knowledge_uploader_ragflow_sync_outcomes_window{result="failure"}
-        values: 1x12
+        values: 1x12 0
     alert_rule_test:
+      - eval_time: 9m
+        alertname: KnowledgeUploaderOutboxBacklog
+        exp_alerts: []
+      - eval_time: 1m
+        alertname: KnowledgeUploaderDocumentWorkerOffline
+        exp_alerts: []
+      - eval_time: 4m
+        alertname: KnowledgeUploaderReviewSlaOverdue
+        exp_alerts: []
+      - eval_time: 4m
+        alertname: KnowledgeUploaderRagflowSyncFailureRateHigh
+        exp_alerts: []
       - eval_time: 11m
         alertname: KnowledgeUploaderOutboxBacklog
         exp_alerts:
@@ -661,3 +673,15 @@ tests:
             exp_annotations:
               summary: RAGFlow sync failure ratio exceeds 10 percent in the 15 minute window
               runbook: ops/runbooks/observability.md#knowledgeuploaderragflowsyncfailureratehigh
+      - eval_time: 13m
+        alertname: KnowledgeUploaderOutboxBacklog
+        exp_alerts: []
+      - eval_time: 13m
+        alertname: KnowledgeUploaderDocumentWorkerOffline
+        exp_alerts: []
+      - eval_time: 13m
+        alertname: KnowledgeUploaderReviewSlaOverdue
+        exp_alerts: []
+      - eval_time: 13m
+        alertname: KnowledgeUploaderRagflowSyncFailureRateHigh
+        exp_alerts: []
