@@ -129,6 +129,33 @@ async def test_employee_can_access_upload_policy(policy_client: AsyncClient) -> 
     assert isinstance(data["allow_user_delete"], bool)
 
 
+async def test_upload_policy_reflects_runtime_upload_capabilities(
+    policy_client: AsyncClient,
+    set_system_config: Callable[[str, object], Awaitable[None]],
+) -> None:
+    await _create_user(email="multi-file-policy@company.com", password="password123")
+    token = await _login(
+        policy_client,
+        email="multi-file-policy@company.com",
+        password="password123",
+    )
+    headers = {"Authorization": f"Bearer {token}"}
+
+    await set_system_config("upload.allow_multi_file", True)
+    await set_system_config("upload.allowed_extensions", ["txt"])
+    enabled = await policy_client.get("/api/files/policy", headers=headers)
+    await set_system_config("upload.allow_multi_file", False)
+    await set_system_config("upload.allowed_extensions", ["pdf", "md"])
+    disabled = await policy_client.get("/api/files/policy", headers=headers)
+
+    assert enabled.status_code == 200
+    assert enabled.json()["data"]["allow_multi_file"] is True
+    assert enabled.json()["data"]["allowed_extensions"] == ["txt"]
+    assert disabled.status_code == 200
+    assert disabled.json()["data"]["allow_multi_file"] is False
+    assert disabled.json()["data"]["allowed_extensions"] == ["md", "pdf"]
+
+
 async def test_upload_policy_returns_env_fallback_extensions(policy_client: AsyncClient) -> None:
     await _create_user(email="employee2@company.com", password="password123")
     token = await _login(policy_client, email="employee2@company.com", password="password123")

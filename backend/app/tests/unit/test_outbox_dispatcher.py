@@ -643,6 +643,37 @@ async def test_configured_max_attempts_counts_retries_after_first_delivery(
     assert await configured_max_attempts() == 4
 
 
+async def test_runtime_zero_retries_quarantines_first_publish_failure(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import app.workers.outbox_dispatcher as dispatcher
+    from app.core.database import AsyncSessionFactory
+
+    event_id = await _create_outbox_event()
+
+    async def zero_retries(key: str) -> object:
+        assert key == "outbox.publish_max_retries"
+        return 0
+
+    monkeypatch.setattr(dispatcher, "get_config", zero_retries)
+    max_attempts = await configured_max_attempts()
+    assert max_attempts == 1
+    assert await dispatch_once(publisher=FakePublisher(fail=True), max_attempts=max_attempts) == 0
+
+    async with AsyncSessionFactory() as session:
+        event = await session.get(EventOutbox, event_id)
+        dead_letter = (
+            await session.execute(
+                select(OutboxDeadLetter).where(OutboxDeadLetter.event_id == event_id)
+            )
+        ).scalar_one()
+
+    assert event is not None
+    assert event.publish_attempts == 1
+    assert dead_letter.attempts == 1
+    assert dead_letter.status == "pending"
+
+
 async def test_ragflow_sync_task_outbox_event_dispatches_celery_task() -> None:
     event = EventOutbox(
         id=1,

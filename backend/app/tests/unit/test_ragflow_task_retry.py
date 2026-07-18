@@ -18,9 +18,17 @@ SYNC_TASK_ID = "0c8b3a4e-9f2d-4f1a-8c5b-2e7d6a1b3c4d"
 
 @pytest.mark.parametrize(
     ("configured_value", "expected_retries"),
-    [(None, 120), (True, 120), (59, 120), (86_401, 120), (600, 20)],
+    [
+        (None, 120),
+        (True, 120),
+        (59, 120),
+        (86_401, 120),
+        (60, 2),
+        (600, 20),
+        (3_600, 120),
+    ],
 )
-def test_parse_poll_budget_is_independent_of_new_settings_field(
+def test_parse_poll_timeout_controls_total_budget_independently_of_request_timeout(
     monkeypatch: pytest.MonkeyPatch,
     configured_value: object | None,
     expected_retries: int,
@@ -29,7 +37,14 @@ def test_parse_poll_budget_is_independent_of_new_settings_field(
         return configured_value
 
     monkeypatch.setattr(ragflow_service, "get_config", get_runtime_config)
-    monkeypatch.setattr(ragflow_service, "get_settings", lambda: SimpleNamespace())
+    monkeypatch.setattr(
+        ragflow_service,
+        "get_settings",
+        lambda: SimpleNamespace(
+            ragflow_parse_poll_timeout_seconds=3_600,
+            ragflow_request_timeout=5,
+        ),
+    )
 
     assert asyncio.run(ragflow_service.resolve_parse_poll_max_retries()) == expected_retries
 

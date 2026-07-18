@@ -1,0 +1,336 @@
+{
+  "schema_version": 1,
+  "active_key_count": 26,
+  "deleted_key_count": 15,
+  "keys": [
+    {
+      "key": "upload.enabled",
+      "consumer": {
+        "path": "backend/app/modules/document/service.py",
+        "symbol": "resolve_upload_enabled"
+      },
+      "effect_boundary": "new_upload_and_policy_read",
+      "assertion_type": "value_ab",
+      "pytest_nodes": [
+        "backend/app/tests/unit/test_upload_policy_api.py::test_upload_enabled_defaults_only_when_runtime_key_is_missing"
+      ]
+    },
+    {
+      "key": "upload.allowed_extensions",
+      "consumer": {
+        "path": "backend/app/modules/document/service.py",
+        "symbol": "resolve_allowed_extensions"
+      },
+      "effect_boundary": "new_upload",
+      "assertion_type": "value_ab",
+      "pytest_nodes": [
+        "backend/app/tests/unit/test_upload_policy_api.py::test_upload_policy_reflects_runtime_upload_capabilities",
+        "backend/app/tests/unit/test_document_api.py::test_upload_rejects_disallowed_extension",
+        "backend/app/tests/unit/test_document_api.py::test_upload_rejects_legacy_ole_extension_even_if_configured"
+      ]
+    },
+    {
+      "key": "upload.max_file_size_mb",
+      "consumer": {
+        "path": "backend/app/modules/document/service.py",
+        "symbol": "resolve_upload_max_size_bytes"
+      },
+      "effect_boundary": "new_upload_before_storage",
+      "assertion_type": "value_ab",
+      "pytest_nodes": [
+        "backend/app/tests/unit/test_document_api.py::test_upload_stores_file_metadata_and_minio_object",
+        "backend/app/tests/unit/test_document_api.py::test_upload_rejects_file_over_size_limit_before_storage"
+      ]
+    },
+    {
+      "key": "upload.user_quota_mb",
+      "consumer": {
+        "path": "backend/app/modules/document/service.py",
+        "symbol": "resolve_user_quota_mb"
+      },
+      "effect_boundary": "new_upload",
+      "assertion_type": "value_ab",
+      "pytest_nodes": [
+        "backend/app/tests/unit/test_document_lifecycle.py::test_upload_rejected_when_quota_exceeded_with_usage_details",
+        "backend/app/tests/unit/test_document_lifecycle.py::test_quota_zero_means_unlimited"
+      ]
+    },
+    {
+      "key": "upload.allow_multi_file",
+      "consumer": {
+        "path": "backend/app/modules/document/api.py",
+        "symbol": "get_upload_policy"
+      },
+      "effect_boundary": "new_policy_read",
+      "assertion_type": "value_ab",
+      "pytest_nodes": [
+        "backend/app/tests/unit/test_upload_policy_api.py::test_upload_policy_reflects_runtime_upload_capabilities"
+      ]
+    },
+    {
+      "key": "upload.allow_user_delete",
+      "consumer": {
+        "path": "backend/app/modules/document/service.py",
+        "symbol": "delete_file"
+      },
+      "effect_boundary": "new_delete",
+      "assertion_type": "value_ab",
+      "pytest_nodes": [
+        "backend/app/tests/unit/test_document_lifecycle.py::test_employee_deletes_own_file_when_config_allows",
+        "backend/app/tests/unit/test_document_lifecycle.py::test_employee_delete_rejected_when_config_disabled"
+      ]
+    },
+    {
+      "key": "outbox.publish_max_retries",
+      "consumer": {
+        "path": "backend/app/workers/outbox_dispatcher.py",
+        "symbol": "configured_max_attempts"
+      },
+      "effect_boundary": "next_publish_loop",
+      "assertion_type": "value_ab",
+      "pytest_nodes": [
+        "backend/app/tests/unit/test_outbox_dispatcher.py::test_runtime_zero_retries_quarantines_first_publish_failure",
+        "backend/app/tests/unit/test_outbox_dispatcher.py::test_configured_max_attempts_counts_retries_after_first_delivery"
+      ]
+    },
+    {
+      "key": "processing.parse_max_pages",
+      "consumer": {
+        "path": "backend/app/modules/ai/service.py",
+        "symbol": "resolve_parse_limits"
+      },
+      "effect_boundary": "new_analysis_task",
+      "assertion_type": "value_ab",
+      "pytest_nodes": [
+        "backend/app/tests/unit/test_ai_tasks.py::test_runtime_parse_limits_reach_extractor_and_bound_persisted_text"
+      ]
+    },
+    {
+      "key": "processing.parse_max_chars",
+      "consumer": {
+        "path": "backend/app/modules/ai/service.py",
+        "symbol": "resolve_parse_limits"
+      },
+      "effect_boundary": "new_analysis_task",
+      "assertion_type": "value_ab",
+      "pytest_nodes": [
+        "backend/app/tests/unit/test_ai_tasks.py::test_runtime_parse_limits_reach_extractor_and_bound_persisted_text"
+      ]
+    },
+    {
+      "key": "security.allowed_email_domains",
+      "consumer": {
+        "path": "backend/app/modules/auth/service.py",
+        "symbol": "resolve_allowed_email_domains"
+      },
+      "effect_boundary": "new_registration",
+      "assertion_type": "value_ab",
+      "pytest_nodes": [
+        "backend/app/tests/unit/test_auth_api.py::test_runtime_email_domain_policy_replaces_environment_default"
+      ]
+    },
+    {
+      "key": "security.password_min_length",
+      "consumer": {
+        "path": "backend/app/modules/auth/service.py",
+        "symbol": "resolve_password_min_length"
+      },
+      "effect_boundary": "new_password",
+      "assertion_type": "value_ab",
+      "pytest_nodes": [
+        "backend/app/tests/unit/test_auth_api.py::test_register_accepts_allowed_domain_and_rejects_other_domain",
+        "backend/app/tests/unit/test_auth_api.py::test_register_rejects_password_below_configured_min_length"
+      ]
+    },
+    {
+      "key": "security.login_max_failed_attempts",
+      "consumer": {
+        "path": "backend/app/modules/auth/service.py",
+        "symbol": "resolve_login_max_failed_attempts"
+      },
+      "effect_boundary": "new_failed_login",
+      "assertion_type": "value_ab",
+      "pytest_nodes": [
+        "backend/app/tests/unit/test_auth_api.py::test_runtime_login_threshold_and_lock_duration_control_failed_login"
+      ]
+    },
+    {
+      "key": "security.login_lock_minutes",
+      "consumer": {
+        "path": "backend/app/modules/auth/service.py",
+        "symbol": "resolve_login_lock_minutes"
+      },
+      "effect_boundary": "new_lock",
+      "assertion_type": "value_ab",
+      "pytest_nodes": [
+        "backend/app/tests/unit/test_auth_api.py::test_runtime_login_threshold_and_lock_duration_control_failed_login"
+      ]
+    },
+    {
+      "key": "security.require_email_verification",
+      "consumer": {
+        "path": "backend/app/modules/auth/service.py",
+        "symbol": "resolve_require_email_verification"
+      },
+      "effect_boundary": "new_registration_and_login",
+      "assertion_type": "value_ab",
+      "pytest_nodes": [
+        "backend/app/tests/unit/test_auth_api.py::test_register_creates_active_user_without_email_verification_by_default",
+        "backend/app/tests/unit/test_auth_api.py::test_register_writes_verification_outbox_without_replayable_token"
+      ]
+    },
+    {
+      "key": "security.block_critical_sensitive_sync",
+      "consumer": {
+        "path": "backend/app/core/runtime_config.py",
+        "symbol": "_enforce_security_floor"
+      },
+      "effect_boundary": "immediate_invariant",
+      "assertion_type": "immutable",
+      "pytest_nodes": [
+        "backend/app/tests/unit/test_config_api.py::test_critical_sync_block_is_exposed_as_immutable",
+        "backend/app/tests/unit/test_ragflow_task_api.py::test_ragflow_upload_worker_blocks_critical_even_when_config_disabled"
+      ]
+    },
+    {
+      "key": "review.claim_timeout_minutes",
+      "consumer": {
+        "path": "backend/app/core/review_policy.py",
+        "symbol": "review_claim_expiry"
+      },
+      "effect_boundary": "new_claim_snapshot",
+      "assertion_type": "snapshot",
+      "pytest_nodes": [
+        "backend/app/tests/unit/test_review_policy.py::test_review_policy_uses_bounded_runtime_values_and_snapshots_absolute_times",
+        "backend/app/tests/unit/test_review_policy.py::test_review_policy_invalid_values_fall_back_safely"
+      ]
+    },
+    {
+      "key": "review.sla_hours",
+      "consumer": {
+        "path": "backend/app/core/review_policy.py",
+        "symbol": "review_submission_times"
+      },
+      "effect_boundary": "new_submission_snapshot",
+      "assertion_type": "snapshot",
+      "pytest_nodes": [
+        "backend/app/tests/unit/test_review_policy.py::test_review_policy_uses_bounded_runtime_values_and_snapshots_absolute_times",
+        "backend/app/tests/unit/test_review_policy.py::test_review_policy_invalid_values_fall_back_safely"
+      ]
+    },
+    {
+      "key": "ragflow.base_url",
+      "consumer": {
+        "path": "backend/app/core/ragflow_runtime.py",
+        "symbol": "resolve_ragflow_runtime_settings"
+      },
+      "effect_boundary": "new_external_request",
+      "assertion_type": "value_ab",
+      "pytest_nodes": [
+        "backend/app/tests/unit/test_ragflow_config.py::test_sync_task_build_ragflow_client_uses_runtime_config",
+        "backend/app/tests/unit/test_ragflow_config.py::test_sync_task_build_ragflow_client_falls_back_to_settings"
+      ]
+    },
+    {
+      "key": "ragflow.api_key",
+      "consumer": {
+        "path": "backend/app/core/ragflow_runtime.py",
+        "symbol": "resolve_ragflow_runtime_settings"
+      },
+      "effect_boundary": "new_external_request",
+      "assertion_type": "secret_redaction",
+      "pytest_nodes": [
+        "backend/app/tests/unit/test_config_api.py::test_secret_config_masked_in_response_and_encrypted_in_db",
+        "backend/app/tests/unit/test_ragflow_config.py::test_sync_task_build_ragflow_client_uses_runtime_config"
+      ]
+    },
+    {
+      "key": "ragflow.sync_max_retries",
+      "consumer": {
+        "path": "backend/app/modules/ragflow/service.py",
+        "symbol": "resolve_sync_max_retries"
+      },
+      "effect_boundary": "new_sync_task",
+      "assertion_type": "value_ab",
+      "pytest_nodes": [
+        "backend/app/tests/unit/test_ragflow_task_api.py::test_create_ragflow_upload_task_uses_configured_retry_count"
+      ]
+    },
+    {
+      "key": "ragflow.sync_timeout_seconds",
+      "consumer": {
+        "path": "backend/app/core/ragflow_runtime.py",
+        "symbol": "resolve_ragflow_runtime_settings"
+      },
+      "effect_boundary": "new_external_request",
+      "assertion_type": "value_ab",
+      "pytest_nodes": [
+        "backend/app/tests/unit/test_ragflow_config.py::test_sync_task_build_ragflow_client_uses_runtime_config",
+        "backend/app/tests/unit/test_ragflow_config.py::test_sync_task_build_ragflow_client_falls_back_to_settings"
+      ]
+    },
+    {
+      "key": "ragflow.parse_poll_timeout_seconds",
+      "consumer": {
+        "path": "backend/app/modules/ragflow/service.py",
+        "symbol": "resolve_parse_poll_max_retries"
+      },
+      "effect_boundary": "new_parse_poll_task",
+      "assertion_type": "value_ab",
+      "pytest_nodes": [
+        "backend/app/tests/unit/test_ragflow_task_retry.py::test_parse_poll_timeout_controls_total_budget_independently_of_request_timeout",
+        "backend/app/tests/unit/test_ragflow_task_api.py::test_ragflow_status_polling_budget_exhaustion_fails_closed"
+      ]
+    },
+    {
+      "key": "ragflow.allow_high_risk_sync",
+      "consumer": {
+        "path": "backend/app/modules/ragflow/service.py",
+        "symbol": "manual_sync_file"
+      },
+      "effect_boundary": "new_approval_or_manual_sync",
+      "assertion_type": "value_ab",
+      "pytest_nodes": [
+        "backend/app/tests/unit/test_ragflow_lifecycle.py::test_manual_sync_high_risk_requires_enabled_policy_and_reason"
+      ]
+    },
+    {
+      "key": "ragflow.delete_remote_on_file_delete",
+      "consumer": {
+        "path": "backend/app/modules/document/service.py",
+        "symbol": "delete_file"
+      },
+      "effect_boundary": "new_delete_snapshot",
+      "assertion_type": "value_ab",
+      "pytest_nodes": [
+        "backend/app/tests/unit/test_document_lifecycle.py::test_admin_deletes_any_file_with_remote_decision_and_audit",
+        "backend/app/tests/unit/test_ragflow_lifecycle.py::test_file_deleted_event_skips_when_delete_remote_disabled"
+      ]
+    },
+    {
+      "key": "ragflow.keep_remote_on_archive",
+      "consumer": {
+        "path": "backend/app/modules/document/service.py",
+        "symbol": "archive_file"
+      },
+      "effect_boundary": "new_archive_snapshot",
+      "assertion_type": "value_ab",
+      "pytest_nodes": [
+        "backend/app/tests/unit/test_document_lifecycle.py::test_admin_archives_approved_file_and_emits_event",
+        "backend/app/tests/unit/test_document_lifecycle.py::test_archive_respects_keep_remote_config"
+      ]
+    },
+    {
+      "key": "ragflow.keep_replaced_remote",
+      "consumer": {
+        "path": "backend/app/modules/document/service.py",
+        "symbol": "upload_file"
+      },
+      "effect_boundary": "new_replacement_candidate_snapshot",
+      "assertion_type": "snapshot",
+      "pytest_nodes": [
+        "backend/app/tests/unit/test_document_lifecycle.py::test_replacement_snapshots_remote_action_and_inherits_governance"
+      ]
+    }
+  ]
+}

@@ -555,6 +555,53 @@ async def test_ai_analysis_stores_extracted_tables_and_markdown() -> None:
         assert "| 合同编号 | 金额 |" in (analysis.extracted_text or "")
 
 
+async def test_runtime_parse_limits_reach_extractor_and_bound_persisted_text(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from app.core.database import AsyncSessionFactory
+    from app.modules.ai import service as ai_service  # noqa: TID251 - same-module test
+    from app.modules.ai.models import DocumentAnalysis
+
+    observed: dict[str, object] = {}
+
+    async def get_runtime_config(key: str) -> object | None:
+        return {
+            "processing.parse_max_pages": 2,
+            "processing.parse_max_chars": 1_000,
+        }.get(key)
+
+    def extract_text(
+        _content: bytes,
+        *,
+        extension: str,
+        max_pages: int,
+        max_chars: int,
+    ) -> str:
+        observed.update(
+            extension=extension,
+            max_pages=max_pages,
+            max_chars=max_chars,
+        )
+        return "x" * 1_500
+
+    monkeypatch.setattr(ai_service, "get_runtime_config", get_runtime_config)
+    monkeypatch.setattr(ai_service, "extract_text", extract_text)
+    uploader_id = await _create_user()
+    file_id = await _create_file(uploader_id=uploader_id)
+
+    await _run_analysis(file_id, FakeAiStorage(content=b"runtime-bounded-content"))
+
+    async with AsyncSessionFactory() as session:
+        analysis = (
+            await session.execute(
+                select(DocumentAnalysis).where(DocumentAnalysis.file_id == file_id)
+            )
+        ).scalar_one()
+
+    assert observed == {"extension": "txt", "max_pages": 2, "max_chars": 1_000}
+    assert analysis.extracted_text == "x" * 1_000
+
+
 async def test_ai_analysis_stores_quality_score_when_enabled() -> None:
     from app.core.database import AsyncSessionFactory
     from app.modules.ai.models import DocumentAnalysis

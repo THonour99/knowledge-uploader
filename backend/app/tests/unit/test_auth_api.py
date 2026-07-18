@@ -231,6 +231,74 @@ async def test_register_accepts_allowed_domain_and_rejects_other_domain(
     assert rejected.json()["error_code"] == "EMAIL_DOMAIN_NOT_ALLOWED"
 
 
+async def test_runtime_email_domain_policy_replaces_environment_default(
+    client: AsyncClient,
+    set_system_config: Callable[[str, object], Awaitable[None]],
+) -> None:
+    await set_system_config("security.allowed_email_domains", ["partner.example"])
+
+    former_default = await client.post(
+        "/api/auth/register",
+        json={"name": "Former", "email": "former@company.com", "password": "password123"},
+    )
+    configured = await client.post(
+        "/api/auth/register",
+        json={
+            "name": "Partner",
+            "email": "partner@partner.example",
+            "password": "password123",
+        },
+    )
+
+    assert former_default.status_code == 400
+    assert former_default.json()["error_code"] == "EMAIL_DOMAIN_NOT_ALLOWED"
+    assert configured.status_code == 201
+
+
+async def test_runtime_login_threshold_and_lock_duration_control_failed_login(
+    client: AsyncClient,
+    set_system_config: Callable[[str, object], Awaitable[None]],
+) -> None:
+    from sqlalchemy import select
+
+    from app.core.database import AsyncSessionFactory
+    from app.modules.user.models import User
+
+    await set_system_config("security.login_max_failed_attempts", 2)
+    await set_system_config("security.login_lock_minutes", 7)
+    await _create_user(email="runtime-lock@company.com", password="password123")
+
+    first = await client.post(
+        "/api/auth/login",
+        json={"email": "runtime-lock@company.com", "password": "wrong-password"},
+    )
+    async with AsyncSessionFactory() as session:
+        after_first = (
+            await session.execute(select(User).where(User.email == "runtime-lock@company.com"))
+        ).scalar_one()
+        assert after_first.failed_login_count == 1
+        assert after_first.status == "active"
+        assert after_first.locked_until is None
+
+    before_second = datetime.now(UTC)
+    second = await client.post(
+        "/api/auth/login",
+        json={"email": "runtime-lock@company.com", "password": "wrong-password"},
+    )
+    async with AsyncSessionFactory() as session:
+        after_second = (
+            await session.execute(select(User).where(User.email == "runtime-lock@company.com"))
+        ).scalar_one()
+
+    assert first.status_code == 401
+    assert second.status_code == 401
+    assert after_second.failed_login_count == 2
+    assert after_second.status == "locked"
+    assert after_second.locked_until is not None
+    assert before_second + timedelta(minutes=6, seconds=55) <= after_second.locked_until
+    assert after_second.locked_until <= datetime.now(UTC) + timedelta(minutes=7, seconds=5)
+
+
 async def test_register_rejects_password_below_configured_min_length(
     client: AsyncClient,
     set_system_config: Callable[[str, object], Awaitable[None]],
