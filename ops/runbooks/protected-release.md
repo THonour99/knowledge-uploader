@@ -290,4 +290,6 @@ invoke ship `
 - 外部收集失败：修复真实演练或源目录，不要修改 JSON 伪造 `passed`。
 - protected gate 失败：按 main/DGX/external/LLM/RAGFlow run、attempt、artifact id/digest 或 owner
   attestation 定位；禁止合并、重传、复用 nonce 或编辑证据绕过来源。
-- 未执行物理证据时，验收矩阵 `E2E/DLQ/OBS/ARM/DR` 必须继续为“待执行”。
+- 未执行物理证据时，验收矩阵 `E2E/DLQ/OBS/ARM/DR` 一律不得标为“通过”；已经完成实现、
+  仅等待最终候选实跑证据的 `E2E/DLQ/OBS` 保持“进行中”，尚未完成物理执行的 `ARM/DR`
+  保持“待执行”。
