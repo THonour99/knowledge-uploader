@@ -414,6 +414,51 @@ def test_main_pr_ci_runs_static_release_contracts_without_claiming_physical_gate
     assert "verify_dgx_spark.py" not in all_runs
 
 
+def test_main_ci_runs_sha_scoped_protected_ui_acceptance() -> None:
+    job = _main_workflow_job()
+    order, steps = _steps_by_name(job)
+    acceptance_name = "Run protected UI acceptance"
+    upload_name = "Upload UI acceptance evidence"
+
+    assert order.index("Frontend lint and tests") < order.index(acceptance_name)
+    assert order.index(acceptance_name) < order.index(upload_name)
+
+    acceptance = steps[acceptance_name]
+    assert acceptance.get("if") == "${{ !env.ACT }}"
+    environment = acceptance.get("env")
+    assert isinstance(environment, dict)
+    assert environment == {
+        "E2E_ACCEPTANCE_MODE": "protected",
+        "E2E_ARTIFACT_DIR": ("${{ runner.temp }}/knowledge-uploader-ui-${{ github.sha }}"),
+        "E2E_BASE_URL": "http://127.0.0.1:4173",
+    }
+    command = acceptance.get("run")
+    assert isinstance(command, str)
+    for marker in (
+        "npx --no-install playwright install --with-deps chromium",
+        "npm run preview --prefix frontend -- --host 127.0.0.1 --port 4173",
+        'curl --fail --silent --show-error "${E2E_BASE_URL}"',
+        "npm run e2e:acceptance --prefix frontend",
+    ):
+        assert marker in command
+
+    upload = steps[upload_name]
+    assert upload.get("if") == "${{ always() && !env.ACT }}"
+    assert upload.get("uses") == (
+        "actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02"
+    )
+    upload_inputs = upload.get("with")
+    assert isinstance(upload_inputs, dict)
+    assert upload_inputs["name"] == (
+        "ui-acceptance-${{ github.sha }}-${{ github.run_id }}-${{ github.run_attempt }}"
+    )
+    assert "${{ runner.temp }}/knowledge-uploader-ui-${{ github.sha }}" in str(
+        upload_inputs["path"]
+    )
+    assert upload_inputs["if-no-files-found"] == "error"
+    assert upload_inputs["retention-days"] == "14"
+
+
 def test_every_main_ci_image_build_and_promtool_preflight_uses_pinned_digest() -> None:
     for job in (
         _main_workflow_job(),

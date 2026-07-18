@@ -155,6 +155,43 @@ jobs:
             echo "Skipping frontend checks until frontend/package.json is created."
           fi
 
+      - name: Run protected UI acceptance
+        if: ${{ !env.ACT }}
+        env:
+          E2E_ACCEPTANCE_MODE: protected
+          E2E_ARTIFACT_DIR: ${{ runner.temp }}/knowledge-uploader-ui-${{ github.sha }}
+          E2E_BASE_URL: http://127.0.0.1:4173
+        run: |
+          mkdir -p "${E2E_ARTIFACT_DIR}"
+          : > "${RUNNER_TEMP}/knowledge-uploader-ui-server.log"
+          (cd frontend && npx --no-install playwright install --with-deps chromium)
+          npm run preview --prefix frontend -- --host 127.0.0.1 --port 4173 \
+            > "${RUNNER_TEMP}/knowledge-uploader-ui-server.log" 2>&1 &
+          server_pid=$!
+          trap 'kill "${server_pid}" 2>/dev/null || true' EXIT
+          for attempt in $(seq 1 30); do
+            if curl --fail --silent --show-error "${E2E_BASE_URL}" > /dev/null; then
+              break
+            fi
+            if [ "${attempt}" -eq 30 ]; then
+              cat "${RUNNER_TEMP}/knowledge-uploader-ui-server.log"
+              exit 1
+            fi
+            sleep 1
+          done
+          npm run e2e:acceptance --prefix frontend
+
+      - name: Upload UI acceptance evidence
+        if: ${{ always() && !env.ACT }}
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: ui-acceptance-${{ github.sha }}-${{ github.run_id }}-${{ github.run_attempt }}
+          path: |
+            ${{ runner.temp }}/knowledge-uploader-ui-${{ github.sha }}
+            ${{ runner.temp }}/knowledge-uploader-ui-server.log
+          if-no-files-found: error
+          retention-days: 14
+
       - name: Set up QEMU for cross-architecture smoke tests
         if: ${{ !env.ACT }}
         uses: docker/setup-qemu-action@29109295f81e9208d7d86ff1c6c12d2833863392 # v3.6.0
