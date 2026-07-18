@@ -115,7 +115,7 @@ def test_ambient_compose_file_cannot_replace_config_or_cleanup_source(
         }
     )
     prefix = runner._compose_prefix("docker", "isolated", candidate_root)
-    config_command = (*prefix, "config")
+    config_command = runner._compose_config_command(prefix)
     cleanup_command = (*prefix, "down", "--volumes", "--remove-orphans")
 
     assert environment == {"PATH": "kept"}
@@ -136,28 +136,114 @@ def test_compose_source_environment_is_removed_case_insensitively(runner: Module
     sanitized, removed = runner._sanitized_environment(
         {
             "PATH": "kept",
-            "COMPOSE_FILE": "rogue.yml",
+            "COMPOSER_HOME": "kept-too",
+            "GITHUB_ACTIONS": "kept-three",
+            "CoMpOsE_fIlE": "rogue.yml",
             "compose_path_separator": ";",
             "COMPOSE_PROFILES": "rogue",
-            "COMPOSE_ENV_FILES": "rogue.env",
+            "Compose_Env_Files": "rogue.env",
+            "cOmPoSe_CoNvErT_WiNdOwS_pAtHs": "1",
+            "compose_bake": "true",
+            "Compose_Ignore_Orphans": "true",
+            "cOmPoSe_ReMoVe_OrPhAnS": "true",
+            "gIt_DiR": "rogue-git-dir",
+            "Git_Config_Count": "1",
         }
     )
 
-    assert sanitized == {"PATH": "kept"}
+    assert sanitized == {
+        "PATH": "kept",
+        "COMPOSER_HOME": "kept-too",
+        "GITHUB_ACTIONS": "kept-three",
+    }
     assert removed == [
+        "COMPOSE_BAKE",
+        "COMPOSE_CONVERT_WINDOWS_PATHS",
         "COMPOSE_ENV_FILES",
         "COMPOSE_FILE",
+        "COMPOSE_IGNORE_ORPHANS",
         "COMPOSE_PATH_SEPARATOR",
         "COMPOSE_PROFILES",
+        "COMPOSE_REMOVE_ORPHANS",
+        "GIT_CONFIG_COUNT",
+        "GIT_DIR",
     ]
     assert "rogue.yml" not in json.dumps(removed)
+
+
+def test_compose_interpolation_host_secrets_are_removed_before_controlled_injection(
+    runner: ModuleType,
+) -> None:
+    compose_source = (ROOT / "docker-compose.yml").read_bytes()
+    interpolation_keys = runner._compose_interpolation_keys(compose_source)
+    assert {
+        "APP_ENV",
+        "BACKEND_BUILD_TARGET",
+        "BACKEND_IMAGE",
+        "ENCRYPTION_KEY",
+        "JWT_SECRET",
+        "RAGFLOW_API_KEY",
+        "SMTP_PASSWORD",
+        "VCS_REF",
+    }.issubset(interpolation_keys)
+
+    host_sentinel = "host-secret-sentinel-must-not-reach-candidate"
+    sanitized, removed = runner._sanitized_environment(
+        {
+            "PATH": "kept",
+            "jWt_SeCrEt": host_sentinel,
+            "ENCRYPTION_KEY": host_sentinel,
+            "ragflow_api_key": host_sentinel,
+            "SmTp_PaSsWoRd": host_sentinel,
+            "APP_ENV": "production",
+            "BACKEND_BUILD_TARGET": "runtime",
+            "BACKEND_IMAGE": "production-image",
+            "VCS_REF": "untrusted-revision",
+        },
+        compose_interpolation_keys=interpolation_keys,
+    )
+    assert sanitized == {"PATH": "kept"}
+    assert removed == [
+        "APP_ENV",
+        "BACKEND_BUILD_TARGET",
+        "BACKEND_IMAGE",
+        "ENCRYPTION_KEY",
+        "JWT_SECRET",
+        "RAGFLOW_API_KEY",
+        "SMTP_PASSWORD",
+        "VCS_REF",
+    ]
+
+    controlled = runner._controlled_runtime_environment(
+        image_tag="governance:test",
+        expected_sha="a" * 40,
+    )
+    sanitized.update(controlled)
+    assert set(controlled) == runner.CONTROLLED_RUNTIME_ENVIRONMENT_KEYS
+    assert host_sentinel not in sanitized.values()
+    assert sanitized["APP_ENV"] == "test"
+    assert sanitized["BACKEND_IMAGE"] == "governance:test"
+    assert sanitized["VCS_REF"] == "a" * 40
+    assert runner._runtime_environment_is_controlled(
+        sanitized,
+        compose_interpolation_keys=interpolation_keys,
+        controlled_environment=controlled,
+    )
+
+    contaminated = dict(sanitized)
+    contaminated["smtp_password"] = host_sentinel
+    assert not runner._runtime_environment_is_controlled(
+        contaminated,
+        compose_interpolation_keys=interpolation_keys,
+        controlled_environment=controlled,
+    )
 
 
 def test_compose_binding_rejects_source_or_normalized_config_swap(runner: ModuleType) -> None:
     def result(name: str, stdout: bytes, returncode: int = 0) -> object:
         return runner.ProcessResult(
             name=name,
-            command=("docker", "compose", "config"),
+            command=("docker", "compose", "config", "--no-interpolate"),
             returncode=returncode,
             stdout=stdout,
             stderr=b"",
@@ -198,6 +284,47 @@ def test_compose_binding_rejects_source_or_normalized_config_swap(runner: Module
     )
 
 
+def test_interpolated_compose_config_secret_is_never_hashed(runner: ModuleType) -> None:
+    secret_config = b"JWT_SECRET=low-entropy-secret\nRAGFLOW_API_KEY=sk-sensitive\n"
+    unsafe = runner.ProcessResult(
+        name="compose_config_before",
+        command=("docker", "compose", "config"),
+        returncode=0,
+        stdout=secret_config,
+        stderr=b"secret-in-error",
+        duration_ms=1,
+    )
+
+    assert runner._config_digest(unsafe) is None
+    assert not runner._compose_binding_passed(
+        expected_source_sha256="a" * 64,
+        source_sha256_before="a" * 64,
+        source_sha256_after="a" * 64,
+        config_before=unsafe,
+        config_after=unsafe,
+    )
+    unsafe_evidence = runner._phase_evidence(unsafe)
+    serialized = json.dumps(unsafe_evidence)
+    assert unsafe_evidence["compose_config_no_interpolate"] is False
+    assert unsafe_evidence["content_digests_suppressed"] is True
+    assert unsafe_evidence["stdout_sha256"] is None
+    assert unsafe_evidence["stderr_sha256"] is None
+    assert hashlib.sha256(secret_config).hexdigest() not in serialized
+
+    safe = runner.ProcessResult(
+        name="compose_config_before",
+        command=("docker", "compose", "config", "--no-interpolate"),
+        returncode=0,
+        stdout=b"JWT_SECRET: ${JWT_SECRET:-synthetic-default}\n",
+        stderr=b"",
+        duration_ms=1,
+    )
+    safe_evidence = runner._phase_evidence(safe)
+    assert runner._config_digest(safe) == hashlib.sha256(safe.stdout).hexdigest()
+    assert safe_evidence["compose_config_no_interpolate"] is True
+    assert safe_evidence["content_digests_suppressed"] is False
+
+
 def test_runtime_names_are_unique_and_revision_scoped(
     runner: ModuleType,
     monkeypatch: pytest.MonkeyPatch,
@@ -212,6 +339,33 @@ def test_runtime_names_are_unique_and_revision_scoped(
     )
     assert second != first
     assert second[1].endswith("-44556677")
+
+
+def test_runtime_initialization_failure_removes_exact_temporary_tree(
+    runner: ModuleType,
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    runtime_root = tmp_path / "governance-runtime"
+
+    def fake_mkdtemp(*, prefix: str) -> str:
+        assert prefix == "isolated-"
+        runtime_root.mkdir()
+        (runtime_root / "sentinel.txt").write_text("created", encoding="utf-8")
+        return str(runtime_root)
+
+    def fail_after_reports_created(*_arguments: object) -> tuple[str, ...]:
+        raise OSError("synthetic initialization failure")
+
+    monkeypatch.setattr(runner.tempfile, "mkdtemp", fake_mkdtemp)
+    monkeypatch.setattr(runner, "_compose_prefix", fail_after_reports_created)
+
+    with pytest.raises(runner.GovernanceAcceptanceError, match="initialization failed"):
+        runner._initialize_runtime_layout(
+            project_name="isolated",
+            docker_executable="docker",
+        )
+    assert not runtime_root.exists()
 
 
 @pytest.mark.parametrize(
@@ -229,12 +383,17 @@ def test_candidate_identity_uses_full_untracked_status(
 ) -> None:
     calls: list[tuple[str, ...]] = []
 
-    def fake_git(_root: Path, *arguments: str) -> bytes:
+    def fake_git(
+        _root: Path,
+        *arguments: str,
+        environment: dict[str, str] | None = None,
+    ) -> bytes:
+        assert environment == {"PATH": "safe"}
         calls.append(arguments)
         return (b"a" * 40 + b"\n") if arguments == ("rev-parse", "HEAD") else b""
 
     monkeypatch.setattr(runner, "_git_bytes", fake_git)
-    identity = runner.candidate_identity(ROOT)
+    identity = runner.candidate_identity(ROOT, environment={"PATH": "safe"})
     assert identity.git_sha == "a" * 40
     assert identity.clean is True
     assert calls == [
@@ -526,8 +685,13 @@ def test_runner_contract_is_isolated_and_never_claims_external_llm(runner: Modul
     assert "_validate_test_targets(candidate_root)" in source
     assert '"--project-directory"' in source
     assert '"--file"' in source
+    assert '"--no-interpolate"' in source
     assert "compose_config_before" in source
     assert "compose_config_after" in source
     assert "compose_source_sha256_before" in source
     assert "compose_binding_passed" in source
+    assert '"compose_config_no_interpolate"' in source
+    assert "_compose_interpolation_keys(expected_compose_source)" in source
+    assert '"compose_environment_values_archived": False' in source
+    assert 'TOOL_ENVIRONMENT_PREFIXES = ("COMPOSE_", "GIT_")' in source
     assert "compose_environment_keys_removed" in source

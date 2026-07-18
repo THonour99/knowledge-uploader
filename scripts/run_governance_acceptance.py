@@ -38,16 +38,12 @@ PYTEST_SUMMARY_PATTERN = re.compile(
 TEST_DATABASE_NAME = "knowledge_uploader_governance_acceptance_test"
 TEST_REDIS_DB = "15"
 EVIDENCE_SCHEMA_VERSION = "governance-acceptance.v1"
-COMPOSE_SOURCE_ENVIRONMENT_KEYS = frozenset(
-    {
-        "COMPOSE_DISABLE_ENV_FILE",
-        "COMPOSE_ENV_FILES",
-        "COMPOSE_FILE",
-        "COMPOSE_PATH_SEPARATOR",
-        "COMPOSE_PROFILES",
-        "COMPOSE_PROJECT_DIRECTORY",
-        "COMPOSE_PROJECT_NAME",
-    }
+TOOL_ENVIRONMENT_PREFIXES = ("COMPOSE_", "GIT_")
+COMPOSE_CONFIG_ARGUMENTS = ("config", "--no-interpolate")
+COMPOSE_CONFIG_PHASE_NAMES = frozenset({"compose_config_before", "compose_config_after"})
+COMPOSE_INTERPOLATION_PATTERN = re.compile(rb"\$\{([A-Za-z_][A-Za-z0-9_]*)")
+CONTROLLED_RUNTIME_ENVIRONMENT_KEYS = frozenset(
+    {"APP_ENV", "BACKEND_BUILD_TARGET", "BACKEND_IMAGE", "VCS_REF"}
 )
 
 Executor = Literal["backend_pytest", "frontend_vitest"]
@@ -101,6 +97,16 @@ class ReportClosure:
     nonpassed_cases: int
     report_sha256: str | None
     reason: str
+
+
+@dataclass(frozen=True)
+class RuntimeLayout:
+    root: Path
+    candidate_root: Path
+    reports_root: Path
+    backend_report_path: Path
+    frontend_report_path: Path
+    compose_prefix: tuple[str, ...]
 
 
 ACCEPTANCE_PLAN: tuple[AcceptancePlan, ...] = (
@@ -306,15 +312,68 @@ def _sha256(payload: bytes) -> str:
     return hashlib.sha256(payload).hexdigest()
 
 
-def _sanitized_environment(source: dict[str, str]) -> tuple[dict[str, str], list[str]]:
+def _sanitized_environment(
+    source: dict[str, str],
+    *,
+    compose_interpolation_keys: Sequence[str] = (),
+) -> tuple[dict[str, str], list[str]]:
     environment = dict(source)
-    removed = sorted(
-        {key.upper() for key in environment if key.upper() in COMPOSE_SOURCE_ENVIRONMENT_KEYS}
-    )
+    interpolation_keys = {key.upper() for key in compose_interpolation_keys}
+
+    def must_remove(key: str) -> bool:
+        normalized = key.upper()
+        return normalized in interpolation_keys or normalized.startswith(TOOL_ENVIRONMENT_PREFIXES)
+
+    removed = sorted({key.upper() for key in environment if must_remove(key)})
     for key in tuple(environment):
-        if key.upper() in COMPOSE_SOURCE_ENVIRONMENT_KEYS:
+        if must_remove(key):
             environment.pop(key)
     return environment, removed
+
+
+def _compose_interpolation_keys(source: bytes) -> tuple[str, ...]:
+    return tuple(
+        sorted(
+            {
+                match.group(1).decode("ascii")
+                for match in COMPOSE_INTERPOLATION_PATTERN.finditer(source)
+            }
+        )
+    )
+
+
+def _controlled_runtime_environment(*, image_tag: str, expected_sha: str) -> dict[str, str]:
+    environment = {
+        "APP_ENV": "test",
+        "BACKEND_BUILD_TARGET": "development",
+        "BACKEND_IMAGE": image_tag,
+        "VCS_REF": expected_sha,
+    }
+    if set(environment) != CONTROLLED_RUNTIME_ENVIRONMENT_KEYS:
+        raise GovernanceAcceptanceError("controlled runtime environment contract drifted")
+    return environment
+
+
+def _runtime_environment_is_controlled(
+    environment: dict[str, str],
+    *,
+    compose_interpolation_keys: Sequence[str],
+    controlled_environment: dict[str, str],
+) -> bool:
+    interpolation_keys = {key.upper() for key in compose_interpolation_keys}
+    if not set(controlled_environment).issubset(interpolation_keys):
+        return False
+    for key, value in environment.items():
+        normalized = key.upper()
+        if normalized.startswith(TOOL_ENVIRONMENT_PREFIXES):
+            return False
+        if normalized in interpolation_keys and (
+            key != normalized
+            or normalized not in controlled_environment
+            or value != controlled_environment[normalized]
+        ):
+            return False
+    return all(environment.get(key) == value for key, value in controlled_environment.items())
 
 
 def _compose_prefix(
@@ -334,15 +393,24 @@ def _compose_prefix(
     )
 
 
-def _file_sha256(path: Path) -> str | None:
+def _compose_config_command(compose_prefix: Sequence[str]) -> tuple[str, ...]:
+    return (*compose_prefix, *COMPOSE_CONFIG_ARGUMENTS)
+
+
+def _compose_file_contract(path: Path) -> tuple[str | None, tuple[str, ...] | None]:
     try:
-        return _sha256(path.read_bytes())
+        source = path.read_bytes()
     except OSError:
-        return None
+        return None, None
+    return _sha256(source), _compose_interpolation_keys(source)
+
+
+def _config_is_no_interpolate(result: ProcessResult) -> bool:
+    return result.command[-len(COMPOSE_CONFIG_ARGUMENTS) :] == COMPOSE_CONFIG_ARGUMENTS
 
 
 def _config_digest(result: ProcessResult) -> str | None:
-    if result.returncode != 0 or not result.stdout.strip():
+    if result.returncode != 0 or not result.stdout.strip() or not _config_is_no_interpolate(result):
         return None
     return _sha256(result.stdout)
 
@@ -379,10 +447,17 @@ def _validate_test_database_name(value: str) -> str:
     return value
 
 
-def _git_bytes(repo_root: Path, *arguments: str) -> bytes:
+def _git_bytes(
+    repo_root: Path,
+    *arguments: str,
+    environment: dict[str, str] | None = None,
+) -> bytes:
+    if environment is None:
+        environment, _removed = _sanitized_environment(dict(os.environ))
     completed = subprocess.run(
         ("git", *arguments),
         cwd=repo_root,
+        env=environment,
         check=False,
         capture_output=True,
     )
@@ -391,14 +466,24 @@ def _git_bytes(repo_root: Path, *arguments: str) -> bytes:
     return bytes(completed.stdout)
 
 
-def candidate_identity(repo_root: Path) -> CandidateIdentity:
-    sha = _git_bytes(repo_root, "rev-parse", "HEAD").decode("ascii").strip().lower()
+def candidate_identity(
+    repo_root: Path,
+    *,
+    environment: dict[str, str] | None = None,
+) -> CandidateIdentity:
+    sha = (
+        _git_bytes(repo_root, "rev-parse", "HEAD", environment=environment)
+        .decode("ascii")
+        .strip()
+        .lower()
+    )
     status = (
         _git_bytes(
             repo_root,
             "status",
             "--porcelain=v1",
             "--untracked-files=all",
+            environment=environment,
         )
         .decode("utf-8", errors="strict")
         .strip()
@@ -541,16 +626,22 @@ def _safe_pytest_summary(result: ProcessResult) -> str | None:
 
 
 def _phase_evidence(result: ProcessResult) -> dict[str, object]:
-    return {
+    config_phase = result.name in COMPOSE_CONFIG_PHASE_NAMES
+    content_digest_allowed = not config_phase or _config_is_no_interpolate(result)
+    evidence: dict[str, object] = {
         "name": result.name,
         "command": list(result.command),
         "returncode": result.returncode,
         "duration_ms": result.duration_ms,
-        "stdout_sha256": _sha256(result.stdout),
-        "stderr_sha256": _sha256(result.stderr),
+        "stdout_sha256": _sha256(result.stdout) if content_digest_allowed else None,
+        "stderr_sha256": _sha256(result.stderr) if content_digest_allowed else None,
         "pytest_summary": _safe_pytest_summary(result),
         "raw_logs_archived": False,
     }
+    if config_phase:
+        evidence["compose_config_no_interpolate"] = _config_is_no_interpolate(result)
+        evidence["content_digests_suppressed"] = not content_digest_allowed
+    return evidence
 
 
 def _container_backend_node(node: str) -> str:
@@ -663,6 +754,19 @@ def _report_closure(
         nonpassed_cases=nonpassed_cases,
         report_sha256=_sha256(report_path.read_bytes()) if report_path.is_file() else None,
         reason=reason,
+    )
+
+
+def _empty_report_closure(expected_nodes: Sequence[str]) -> ReportClosure:
+    return ReportClosure(
+        passed=False,
+        expected_targets=len(set(expected_nodes)),
+        executed_targets=0,
+        total_cases=0,
+        passed_cases=0,
+        nonpassed_cases=0,
+        report_sha256=None,
+        reason="invalid_report",
     )
 
 
@@ -886,9 +990,13 @@ def _runtime_names(expected_sha: str) -> tuple[str, str]:
     return project_name, image_tag
 
 
-def _safe_candidate_identity(repo_root: Path) -> CandidateIdentity | None:
+def _safe_candidate_identity(
+    repo_root: Path,
+    *,
+    environment: dict[str, str] | None = None,
+) -> CandidateIdentity | None:
     try:
-        return candidate_identity(repo_root)
+        return candidate_identity(repo_root, environment=environment)
     except (GovernanceAcceptanceError, UnicodeError, OSError):
         return None
 
@@ -940,6 +1048,35 @@ def _remove_tree_result(name: str, target: Path) -> ProcessResult:
         )
 
 
+def _initialize_runtime_layout(
+    *,
+    project_name: str,
+    docker_executable: str,
+) -> RuntimeLayout:
+    runtime_root = Path(tempfile.mkdtemp(prefix=f"{project_name}-"))
+    try:
+        candidate_root = runtime_root / "candidate"
+        reports_root = runtime_root / "reports"
+        reports_root.mkdir()
+        return RuntimeLayout(
+            root=runtime_root,
+            candidate_root=candidate_root,
+            reports_root=reports_root,
+            backend_report_path=reports_root / "backend.junit.xml",
+            frontend_report_path=reports_root / "frontend.vitest.json",
+            compose_prefix=_compose_prefix(docker_executable, project_name, candidate_root),
+        )
+    except BaseException as error:
+        cleanup = _remove_tree_result("runtime_initialization_tree_remove", runtime_root)
+        if cleanup.returncode != 0:
+            raise GovernanceAcceptanceError(
+                "governance runtime initialization and exact temporary tree cleanup failed"
+            ) from error
+        if isinstance(error, KeyboardInterrupt) or isinstance(error, SystemExit):
+            raise
+        raise GovernanceAcceptanceError("governance runtime initialization failed") from error
+
+
 def _execute(*, repo_root: Path, expected_sha: str, output_dir: Path) -> int:
     expected_sha = _validate_expected_sha(expected_sha)
     _validate_test_database_name(TEST_DATABASE_NAME)
@@ -948,49 +1085,55 @@ def _execute(*, repo_root: Path, expected_sha: str, output_dir: Path) -> int:
     npm_executable = _resolve_executable("npm")
     docker_executable = _resolve_executable("docker")
     git_executable = _resolve_executable("git")
-    before = candidate_identity(repo_root)
+    tool_environment, removed_tool_environment = _sanitized_environment(dict(os.environ))
+    before = candidate_identity(repo_root, environment=tool_environment)
     _assert_candidate(before, expected_sha)
     expected_tree = (
-        _git_bytes(repo_root, "rev-parse", f"{expected_sha}^{{tree}}").decode("ascii").strip()
+        _git_bytes(
+            repo_root,
+            "rev-parse",
+            f"{expected_sha}^{{tree}}",
+            environment=tool_environment,
+        )
+        .decode("ascii")
+        .strip()
     )
     if not EXPECTED_SHA_PATTERN.fullmatch(expected_tree):
         raise GovernanceAcceptanceError("candidate Git tree identity is invalid")
-    expected_compose_source_sha256 = _sha256(
-        _git_bytes(repo_root, "show", f"{expected_sha}:docker-compose.yml")
+    expected_compose_source = _git_bytes(
+        repo_root,
+        "show",
+        f"{expected_sha}:docker-compose.yml",
+        environment=tool_environment,
     )
+    expected_compose_source_sha256 = _sha256(expected_compose_source)
+    expected_compose_interpolation_keys = _compose_interpolation_keys(expected_compose_source)
 
     project_name, image_tag = _runtime_names(expected_sha)
-    runtime_root = Path(tempfile.mkdtemp(prefix=f"{project_name}-"))
-    candidate_root = runtime_root / "candidate"
-    reports_root = runtime_root / "reports"
-    reports_root.mkdir()
-    backend_report_path = reports_root / "backend.junit.xml"
-    frontend_report_path = reports_root / "frontend.vitest.json"
-    environment, removed_compose_environment = _sanitized_environment(dict(os.environ))
-    environment.update(
-        {
-            "APP_ENV": "test",
-            "BACKEND_BUILD_TARGET": "development",
-            "BACKEND_IMAGE": image_tag,
-            "VCS_REF": expected_sha,
-        }
+    environment, removed_interpolation_environment = _sanitized_environment(
+        tool_environment,
+        compose_interpolation_keys=expected_compose_interpolation_keys,
     )
-    compose = _compose_prefix(docker_executable, project_name, candidate_root)
+    removed_host_environment = sorted(
+        set(removed_tool_environment) | set(removed_interpolation_environment)
+    )
+    controlled_runtime_environment = _controlled_runtime_environment(
+        image_tag=image_tag,
+        expected_sha=expected_sha,
+    )
+    environment.update(controlled_runtime_environment)
+    runtime_environment_policy_passed = _runtime_environment_is_controlled(
+        environment,
+        compose_interpolation_keys=expected_compose_interpolation_keys,
+        controlled_environment=controlled_runtime_environment,
+    )
+    if not runtime_environment_policy_passed:
+        raise GovernanceAcceptanceError("governance runtime environment is not fully controlled")
     phases: list[ProcessResult] = []
     backend_expected = _backend_nodes()
     frontend_expected = _frontend_report_nodes()
-    backend_report = _report_closure(
-        report_path=backend_report_path,
-        expected_nodes=backend_expected,
-        cases=(),
-        structurally_valid=False,
-    )
-    frontend_report = _report_closure(
-        report_path=frontend_report_path,
-        expected_nodes=frontend_expected,
-        cases=(),
-        structurally_valid=False,
-    )
+    backend_report = _empty_report_closure(backend_expected)
+    frontend_report = _empty_report_closure(frontend_expected)
     worktree_add = _not_run_result("candidate_worktree_add", "not_run")
     tree_inspect = _not_run_result("candidate_tree_identity", "not_run")
     compose_config_before = _not_run_result("compose_config_before", "not_run")
@@ -1005,12 +1148,25 @@ def _execute(*, repo_root: Path, expected_sha: str, output_dir: Path) -> int:
     candidate_tree_hash: str | None = None
     candidate_source_sha256_before: str | None = None
     candidate_source_sha256_after: str | None = None
+    candidate_interpolation_keys_before: tuple[str, ...] | None = None
+    candidate_interpolation_keys_after: tuple[str, ...] | None = None
     candidate_bound = False
     compose_bound = False
     candidate_targets_valid = False
     image_bound = False
     image_revision = ""
     internal_error = False
+
+    runtime_layout = _initialize_runtime_layout(
+        project_name=project_name,
+        docker_executable=docker_executable,
+    )
+    runtime_root = runtime_layout.root
+    candidate_root = runtime_layout.candidate_root
+    reports_root = runtime_layout.reports_root
+    backend_report_path = runtime_layout.backend_report_path
+    frontend_report_path = runtime_layout.frontend_report_path
+    compose = runtime_layout.compose_prefix
 
     try:
         worktree_add = _run_process(
@@ -1029,7 +1185,7 @@ def _execute(*, repo_root: Path, expected_sha: str, output_dir: Path) -> int:
         )
         phases.append(worktree_add)
         if worktree_add.returncode == 0:
-            candidate_before = _safe_candidate_identity(candidate_root)
+            candidate_before = _safe_candidate_identity(candidate_root, environment=environment)
             try:
                 _validate_test_targets(candidate_root)
                 candidate_targets_valid = True
@@ -1043,7 +1199,10 @@ def _execute(*, repo_root: Path, expected_sha: str, output_dir: Path) -> int:
                 timeout_seconds=30,
             )
             candidate_tree_hash = _result_ascii(tree_inspect)
-            candidate_source_sha256_before = _file_sha256(candidate_root / "docker-compose.yml")
+            (
+                candidate_source_sha256_before,
+                candidate_interpolation_keys_before,
+            ) = _compose_file_contract(candidate_root / "docker-compose.yml")
         phases.append(tree_inspect)
         candidate_bound = (
             candidate_targets_valid
@@ -1052,12 +1211,13 @@ def _execute(*, repo_root: Path, expected_sha: str, output_dir: Path) -> int:
             and candidate_before.clean
             and candidate_tree_hash == expected_tree
             and candidate_source_sha256_before == expected_compose_source_sha256
+            and candidate_interpolation_keys_before == expected_compose_interpolation_keys
         )
 
         if candidate_bound:
             compose_config_before = _run_process(
                 "compose_config_before",
-                (*compose, "config"),
+                _compose_config_command(compose),
                 cwd=candidate_root,
                 env=environment,
                 timeout_seconds=120,
@@ -1183,12 +1343,15 @@ def _execute(*, repo_root: Path, expected_sha: str, output_dir: Path) -> int:
         else:
             frontend = _not_run_result("frontend_notification_vitest", "npm_ci_failed")
         phases.append(frontend)
-        candidate_after = _safe_candidate_identity(candidate_root)
-        candidate_source_sha256_after = _file_sha256(candidate_root / "docker-compose.yml")
+        candidate_after = _safe_candidate_identity(candidate_root, environment=environment)
+        (
+            candidate_source_sha256_after,
+            candidate_interpolation_keys_after,
+        ) = _compose_file_contract(candidate_root / "docker-compose.yml")
         if candidate_bound:
             compose_config_after = _run_process(
                 "compose_config_after",
-                (*compose, "config"),
+                _compose_config_command(compose),
                 cwd=candidate_root,
                 env=environment,
                 timeout_seconds=120,
@@ -1210,7 +1373,7 @@ def _execute(*, repo_root: Path, expected_sha: str, output_dir: Path) -> int:
         )
     finally:
         if candidate_after is None and candidate_root.is_dir():
-            candidate_after = _safe_candidate_identity(candidate_root)
+            candidate_after = _safe_candidate_identity(candidate_root, environment=environment)
         cleanup_cwd = (
             candidate_root if (candidate_root / "docker-compose.yml").is_file() else repo_root
         )
@@ -1310,6 +1473,8 @@ def _execute(*, repo_root: Path, expected_sha: str, output_dir: Path) -> int:
         candidate_after is not None
         and candidate_after.git_sha == expected_sha
         and candidate_after.clean
+        and candidate_source_sha256_after == expected_compose_source_sha256
+        and candidate_interpolation_keys_after == expected_compose_interpolation_keys
     )
     compose_bound = _compose_binding_passed(
         expected_source_sha256=expected_compose_source_sha256,
@@ -1332,7 +1497,7 @@ def _execute(*, repo_root: Path, expected_sha: str, output_dir: Path) -> int:
         and worktree_removed
         and reports_removed
     )
-    after = _safe_candidate_identity(repo_root)
+    after = _safe_candidate_identity(repo_root, environment=environment)
     candidate_unchanged = (
         after == before
         and candidate_tree_unchanged
@@ -1386,12 +1551,28 @@ def _execute(*, repo_root: Path, expected_sha: str, output_dir: Path) -> int:
             "expected_compose_source_sha256": expected_compose_source_sha256,
             "compose_source_sha256_before": candidate_source_sha256_before,
             "compose_source_sha256_after": candidate_source_sha256_after,
+            "compose_interpolation_keys": list(expected_compose_interpolation_keys),
+            "compose_interpolation_key_count": len(expected_compose_interpolation_keys),
+            "compose_interpolation_keys_match_detached_source": (
+                candidate_interpolation_keys_before == expected_compose_interpolation_keys
+                and candidate_interpolation_keys_after == expected_compose_interpolation_keys
+            ),
             "compose_config_sha256_before": _config_digest(compose_config_before),
             "compose_config_sha256_after": _config_digest(compose_config_after),
+            "compose_config_no_interpolate": (
+                _config_is_no_interpolate(compose_config_before)
+                and _config_is_no_interpolate(compose_config_after)
+            ),
+            "compose_config_digest_scope": "no_interpolate_stdout",
             "compose_binding_passed": compose_bound,
             "compose_project_directory_bound": True,
             "compose_files": ["docker-compose.yml"],
-            "compose_environment_keys_removed": removed_compose_environment,
+            "compose_environment_keys_removed": removed_host_environment,
+            "compose_environment_values_archived": False,
+            "compose_controlled_environment_keys": sorted(controlled_runtime_environment),
+            "host_compose_interpolation_values_inherited": False,
+            "runtime_environment_policy_passed": runtime_environment_policy_passed,
+            "tool_environment_prefixes_removed": list(TOOL_ENVIRONMENT_PREFIXES),
         },
         "runtime_isolation": {
             "compose_project": project_name,
