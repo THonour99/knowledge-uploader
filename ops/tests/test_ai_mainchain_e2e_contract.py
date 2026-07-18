@@ -69,6 +69,11 @@ def stub_execute_runtime(
     ) -> object:
         del environment, timeout_seconds
         calls.append((step, args))
+        if step == "candidate_worktree_add":
+            candidate_root = Path(args[-2])
+            candidate_root.mkdir(parents=True)
+            for compose_name in (runner.BASE_COMPOSE.name, runner.AI_COMPOSE.name):
+                (candidate_root / compose_name).write_text(compose_name, encoding="utf-8")
         if step == cleanup_failure_step:
             raise runner.AiMainchainE2EError(step)
         return runner.RunResult(stdout="", stderr="")
@@ -89,6 +94,7 @@ def stub_execute_runtime(
     monkeypatch.setattr(runner, "ephemeral_environment", fake_environment)
     monkeypatch.setattr(runner, "run_command", fake_run)
     monkeypatch.setattr(runner, "inspect_candidate_image", fake_inspect)
+    monkeypatch.setattr(runner, "resolve_tree_revision", lambda *_args, **_kwargs: "f" * 40)
     monkeypatch.setattr(runner, "parse_probe_evidence", lambda _stdout: {"status": "passed"})
     monkeypatch.setattr(runner, "verify_runtime", lambda **_kwargs: {})
     return calls
@@ -222,6 +228,51 @@ def test_probe_mutates_only_through_public_api_and_reads_ordering_evidence() -> 
     assert compose.count("condition: service_healthy") >= 3
 
 
+def test_compose_command_binds_both_files_to_detached_project_root(
+    runner: ModuleType,
+    tmp_path: Path,
+) -> None:
+    candidate_root = tmp_path / "detached"
+    command = runner.compose_command(candidate_root, "isolated-project", "config", "--quiet")
+
+    assert command[:6] == [
+        "docker",
+        "compose",
+        "--project-name",
+        "isolated-project",
+        "--project-directory",
+        str(candidate_root),
+    ]
+    assert command[6:10] == [
+        "--file",
+        str(candidate_root / "docker-compose.yml"),
+        "--file",
+        str(candidate_root / "docker-compose.ai-mainchain.yml"),
+    ]
+
+
+def test_compose_source_environment_is_removed_without_leaking_values(runner: ModuleType) -> None:
+    source = {
+        "PATH": "kept",
+        "COMPOSE_FILE": "rogue.yml",
+        "COMPOSE_PATH_SEPARATOR": ";",
+        "COMPOSE_PROFILES": "rogue",
+        "COMPOSE_ENV_FILES": "rogue.env",
+        "compose_project_name": "rogue-project",
+    }
+    sanitized, removed = runner.sanitized_environment(source)
+
+    assert sanitized == {"PATH": "kept"}
+    assert removed == [
+        "COMPOSE_ENV_FILES",
+        "COMPOSE_FILE",
+        "COMPOSE_PATH_SEPARATOR",
+        "COMPOSE_PROFILES",
+        "COMPOSE_PROJECT_NAME",
+    ]
+    assert "rogue.yml" not in json.dumps(removed)
+
+
 def test_candidate_revision_requires_exact_clean_head(
     runner: ModuleType,
     monkeypatch: pytest.MonkeyPatch,
@@ -341,6 +392,7 @@ def test_candidate_services_must_run_the_same_image(
 
     monkeypatch.setattr(runner, "run_command", inspect_run)
     verified = runner.verify_candidate_containers(
+        candidate_root=ROOT,
         project="isolated",
         environment={},
         expected_image_id=image_id,
@@ -387,7 +439,94 @@ def test_atomic_evidence_write_is_create_only(
     assert not list(tmp_path.glob("atomic-evidence.json.*.tmp"))
 
 
-@pytest.mark.parametrize("failed_step", ["cleanup_compose", "cleanup_candidate_image"])
+def test_execute_runs_every_compose_phase_from_one_detached_snapshot(
+    runner: ModuleType,
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    revision = "a" * 40
+    output = tmp_path / "detached-evidence.json"
+    monkeypatch.setenv("COMPOSE_FILE", "rogue.yml")
+    monkeypatch.setenv("COMPOSE_PROFILES", "rogue")
+    monkeypatch.setattr(
+        runner,
+        "resolve_candidate_revision",
+        lambda *_args, **_kwargs: revision,
+    )
+    fingerprint_roots: list[Path] = []
+
+    def fingerprint(root: Path) -> str:
+        fingerprint_roots.append(root)
+        return "source-bound"
+
+    monkeypatch.setattr(runner, "source_fingerprint", fingerprint)
+    calls = stub_execute_runtime(runner, monkeypatch)
+
+    assert runner.execute(output_path=output, requested_revision=revision) == output
+    worktree_add = next(args for step, args in calls if step == "candidate_worktree_add")
+    candidate_root = Path(worktree_add[-2])
+    compose_calls = [args for _step, args in calls if args[:2] == ["docker", "compose"]]
+    assert compose_calls
+    assert all(
+        args[args.index("--project-directory") + 1] == str(candidate_root) for args in compose_calls
+    )
+    assert all(
+        args[args.index("--file") + 1] == str(candidate_root / "docker-compose.yml")
+        for args in compose_calls
+    )
+    assert all(
+        str(candidate_root / "docker-compose.ai-mainchain.yml") in args for args in compose_calls
+    )
+    assert fingerprint_roots == [candidate_root, candidate_root]
+    assert not candidate_root.exists()
+
+    evidence = json.loads(output.read_text(encoding="utf-8"))
+    candidate = evidence["candidate"]
+    assert candidate["git_sha"] == revision
+    assert candidate["git_tree_sha"] == "f" * 40
+    assert candidate["detached_worktree_bound"] is True
+    assert candidate["detached_worktree_removed"] is True
+    assert candidate["compose_files"] == [
+        "docker-compose.yml",
+        "docker-compose.ai-mainchain.yml",
+    ]
+    assert candidate["compose_environment_keys_removed"] == [
+        "COMPOSE_FILE",
+        "COMPOSE_PROFILES",
+    ]
+
+
+def test_build_failure_still_runs_all_cleanup_checks(
+    runner: ModuleType,
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    revision = "a" * 40
+    output = tmp_path / "build-failed.json"
+    monkeypatch.setattr(
+        runner,
+        "resolve_candidate_revision",
+        lambda *_args, **_kwargs: revision,
+    )
+    monkeypatch.setattr(runner, "source_fingerprint", lambda _root: "source-bound")
+    calls = stub_execute_runtime(runner, monkeypatch, cleanup_failure_step="build_backend_image")
+
+    with pytest.raises(runner.AiMainchainE2EError) as failed:
+        runner.execute(output_path=output, requested_revision=revision)
+
+    assert failed.value.step == "build_backend_image"
+    steps = [step for step, _args in calls]
+    assert "cleanup_compose" in steps
+    assert "cleanup_candidate_image" in steps
+    assert "cleanup_candidate_image_check" in steps
+    assert "candidate_worktree_cleanup_check" in steps
+    assert not output.exists()
+
+
+@pytest.mark.parametrize(
+    "failed_step",
+    ["cleanup_compose", "cleanup_candidate_image_check", "candidate_worktree_cleanup_check"],
+)
 def test_cleanup_failure_cannot_write_passed_evidence(
     runner: ModuleType,
     monkeypatch: pytest.MonkeyPatch,
@@ -397,8 +536,12 @@ def test_cleanup_failure_cannot_write_passed_evidence(
     revision = "a" * 40
     output = tmp_path / f"{failed_step}-failed.json"
 
-    monkeypatch.setattr(runner, "resolve_candidate_revision", lambda _env, _requested: revision)
-    monkeypatch.setattr(runner, "source_fingerprint", lambda: "source-before")
+    monkeypatch.setattr(
+        runner,
+        "resolve_candidate_revision",
+        lambda *_args, **_kwargs: revision,
+    )
+    monkeypatch.setattr(runner, "source_fingerprint", lambda _root: "source-before")
     calls = stub_execute_runtime(runner, monkeypatch, cleanup_failure_step=failed_step)
 
     with pytest.raises(runner.AiMainchainE2EError) as cleanup:
@@ -420,18 +563,15 @@ def test_candidate_change_after_cleanup_cannot_write_evidence(
     output = tmp_path / "candidate-changed.json"
     resolve_calls = 0
 
-    def changing_resolve(
-        _environment: dict[str, str],
-        _requested: str,
-    ) -> str:
+    def changing_resolve(*_args: object, **kwargs: object) -> str:
         nonlocal resolve_calls
         resolve_calls += 1
-        if resolve_calls == 1:
+        if resolve_calls < 3:
             return revision
-        raise runner.AiMainchainE2EError("candidate_worktree")
+        raise runner.AiMainchainE2EError(str(kwargs["status_step"]))
 
     monkeypatch.setattr(runner, "resolve_candidate_revision", changing_resolve)
-    monkeypatch.setattr(runner, "source_fingerprint", lambda: "stable-source")
+    monkeypatch.setattr(runner, "source_fingerprint", lambda _root: "stable-source")
     calls = stub_execute_runtime(runner, monkeypatch)
 
     with pytest.raises(runner.AiMainchainE2EError) as changed:
@@ -439,13 +579,26 @@ def test_candidate_change_after_cleanup_cannot_write_evidence(
             output_path=output,
             requested_revision=revision,
         )
-    assert changed.value.step == "candidate_worktree"
-    assert resolve_calls == 2
+    assert changed.value.step == "detached_worktree_after"
+    assert resolve_calls == 3
     cleanup_calls = {step: args for step, args in calls if step.startswith("cleanup_")}
     assert cleanup_calls["cleanup_compose"][-3:] == [
         "down",
         "--volumes",
         "--remove-orphans",
     ]
-    assert cleanup_calls["cleanup_candidate_image"] == ["docker", "image", "rm", "candidate:test"]
+    assert cleanup_calls["cleanup_candidate_image"] == [
+        "docker",
+        "image",
+        "rm",
+        "--force",
+        "candidate:test",
+    ]
+    assert cleanup_calls["cleanup_candidate_image_check"] == [
+        "docker",
+        "image",
+        "ls",
+        "--quiet",
+        "candidate:test",
+    ]
     assert not output.exists()

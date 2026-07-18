@@ -7,9 +7,11 @@ import json
 import os
 import re
 import secrets
+import shutil
 import socket
 import subprocess
 import sys
+import tempfile
 import uuid
 from collections.abc import Sequence
 from dataclasses import dataclass
@@ -41,6 +43,17 @@ BACKEND_CANDIDATE_SERVICES = (
     "mock-llm",
 )
 TASK_SUCCESS_PATTERN = re.compile(r"Task ai\.analyze_file\[[^\]]+\] succeeded")
+COMPOSE_SOURCE_ENVIRONMENT_KEYS = frozenset(
+    {
+        "COMPOSE_DISABLE_ENV_FILE",
+        "COMPOSE_ENV_FILES",
+        "COMPOSE_FILE",
+        "COMPOSE_PATH_SEPARATOR",
+        "COMPOSE_PROFILES",
+        "COMPOSE_PROJECT_DIRECTORY",
+        "COMPOSE_PROJECT_NAME",
+    }
+)
 
 
 class AiMainchainE2EError(RuntimeError):
@@ -87,18 +100,31 @@ def run_command(
     return RunResult(stdout=completed.stdout, stderr=completed.stderr)
 
 
-def compose_command(project: str, *args: str) -> list[str]:
+def compose_command(candidate_root: Path, project: str, *args: str) -> list[str]:
     return [
         "docker",
         "compose",
         "--project-name",
         project,
+        "--project-directory",
+        str(candidate_root),
         "--file",
-        str(BASE_COMPOSE),
+        str(candidate_root / BASE_COMPOSE.name),
         "--file",
-        str(AI_COMPOSE),
+        str(candidate_root / AI_COMPOSE.name),
         *args,
     ]
+
+
+def sanitized_environment(source: dict[str, str]) -> tuple[dict[str, str], list[str]]:
+    environment = dict(source)
+    removed = sorted(
+        {key.upper() for key in environment if key.upper() in COMPOSE_SOURCE_ENVIRONMENT_KEYS}
+    )
+    for key in tuple(environment):
+        if key.upper() in COMPOSE_SOURCE_ENVIRONMENT_KEYS:
+            environment.pop(key)
+    return environment, removed
 
 
 def free_host_port() -> int:
@@ -114,11 +140,16 @@ def random_token(byte_count: int = 24) -> str:
 def resolve_candidate_revision(
     environment: dict[str, str],
     requested_revision: str,
+    *,
+    repo_root: Path = ROOT,
+    identity_step: str = "git_identity",
+    status_step: str = "candidate_worktree",
 ) -> str:
+    git_prefix = ["git"] if repo_root.resolve() == ROOT.resolve() else ["git", "-C", str(repo_root)]
     result = run_command(
-        ["git", "rev-parse", "HEAD"],
+        [*git_prefix, "rev-parse", "HEAD"],
         environment=environment,
-        step="git_identity",
+        step=identity_step,
         timeout_seconds=30,
     )
     head_revision = result.stdout.strip().lower()
@@ -128,32 +159,53 @@ def resolve_candidate_revision(
         or re.fullmatch(r"[0-9a-f]{40}", normalized_requested) is None
         or normalized_requested != head_revision
     ):
-        raise AiMainchainE2EError("git_identity")
+        raise AiMainchainE2EError(identity_step)
     worktree_status = run_command(
-        ["git", "status", "--porcelain=v1", "--untracked-files=all"],
+        [*git_prefix, "status", "--porcelain=v1", "--untracked-files=all"],
         environment=environment,
-        step="candidate_worktree",
+        step=status_step,
         timeout_seconds=30,
     )
     if worktree_status.stdout.strip():
-        raise AiMainchainE2EError("candidate_worktree")
+        raise AiMainchainE2EError(status_step)
     return head_revision
 
 
-def source_fingerprint() -> str:
+def resolve_tree_revision(
+    environment: dict[str, str],
+    revision: str,
+    *,
+    repo_root: Path,
+    step: str,
+) -> str:
+    git_prefix = ["git"] if repo_root.resolve() == ROOT.resolve() else ["git", "-C", str(repo_root)]
+    result = run_command(
+        [*git_prefix, "rev-parse", f"{revision}^{{tree}}"],
+        environment=environment,
+        step=step,
+        timeout_seconds=30,
+    )
+    tree_revision = result.stdout.strip().lower()
+    if re.fullmatch(r"[0-9a-f]{40}", tree_revision) is None:
+        raise AiMainchainE2EError(step)
+    return tree_revision
+
+
+def source_fingerprint(root: Path = ROOT) -> str:
+    resolved_root = root.resolve()
     digest = hashlib.sha256()
     candidates = [
-        ROOT / "docker-compose.yml",
-        AI_COMPOSE,
-        ROOT / "ops" / "e2e" / "mock_llm.py",
-        ROOT / "scripts" / "ai_mainchain_probe.py",
-        ROOT / "scripts" / "run_ai_mainchain_e2e.py",
-        ROOT / "backend" / "Dockerfile",
-        ROOT / "backend" / "requirements.txt",
+        root / "docker-compose.yml",
+        root / AI_COMPOSE.name,
+        root / "ops" / "e2e" / "mock_llm.py",
+        root / "scripts" / "ai_mainchain_probe.py",
+        root / "scripts" / "run_ai_mainchain_e2e.py",
+        root / "backend" / "Dockerfile",
+        root / "backend" / "requirements.txt",
     ]
-    candidates.extend((ROOT / "backend" / "app").rglob("*.py"))
+    candidates.extend((root / "backend" / "app").rglob("*.py"))
     for path in sorted({candidate.resolve() for candidate in candidates}):
-        relative = path.relative_to(ROOT).as_posix()
+        relative = path.relative_to(resolved_root).as_posix()
         digest.update(relative.encode("utf-8"))
         digest.update(b"\0")
         digest.update(path.read_bytes())
@@ -319,6 +371,7 @@ def inspect_candidate_image(
 
 def verify_candidate_containers(
     *,
+    candidate_root: Path,
     project: str,
     environment: dict[str, str],
     expected_image_id: str,
@@ -326,7 +379,7 @@ def verify_candidate_containers(
     verified: list[str] = []
     for service in BACKEND_CANDIDATE_SERVICES:
         container_result = run_command(
-            compose_command(project, "ps", "--quiet", service),
+            compose_command(candidate_root, project, "ps", "--quiet", service),
             environment=environment,
             step=f"{service}_container_identity",
             timeout_seconds=60,
@@ -348,12 +401,13 @@ def verify_candidate_containers(
 
 def verify_runtime(
     *,
+    candidate_root: Path,
     project: str,
     environment: dict[str, str],
     expected_image_id: str,
 ) -> dict[str, object]:
     services_result = run_command(
-        compose_command(project, "ps", "--status", "running", "--services"),
+        compose_command(candidate_root, project, "ps", "--status", "running", "--services"),
         environment=environment,
         step="running_services",
         timeout_seconds=60,
@@ -362,6 +416,7 @@ def verify_runtime(
     if not REQUIRED_RUNNING_SERVICES.issubset(running_services):
         raise AiMainchainE2EError("running_services")
     candidate_services = verify_candidate_containers(
+        candidate_root=candidate_root,
         project=project,
         environment=environment,
         expected_image_id=expected_image_id,
@@ -369,6 +424,7 @@ def verify_runtime(
 
     queue_result = run_command(
         compose_command(
+            candidate_root,
             project,
             "exec",
             "-T",
@@ -390,7 +446,7 @@ def verify_runtime(
         raise AiMainchainE2EError("rabbitmq_queue_evidence")
 
     logs_result = run_command(
-        compose_command(project, "logs", "--no-color", "worker-ai"),
+        compose_command(candidate_root, project, "logs", "--no-color", "worker-ai"),
         environment=environment,
         step="worker_ai_log_evidence",
         timeout_seconds=60,
@@ -439,6 +495,56 @@ def default_output_path(revision: str) -> Path:
     return ROOT / "artifacts" / "ai-mainchain-e2e" / f"{revision}-{stamp}.json"
 
 
+def worktree_registered(output: str, candidate_root: Path) -> bool:
+    expected = candidate_root.resolve()
+    for line in output.splitlines():
+        if not line.startswith("worktree "):
+            continue
+        if Path(line.removeprefix("worktree ")).resolve() == expected:
+            return True
+    return False
+
+
+def remove_detached_worktree(
+    *,
+    candidate_root: Path,
+    runtime_root: Path,
+    environment: dict[str, str],
+) -> None:
+    try:
+        run_command(
+            ["git", "worktree", "remove", "--force", str(candidate_root)],
+            environment=environment,
+            step="candidate_worktree_remove",
+            timeout_seconds=300,
+        )
+    except AiMainchainE2EError:
+        pass
+
+    try:
+        if candidate_root.exists():
+            shutil.rmtree(candidate_root)
+        run_command(
+            ["git", "worktree", "prune", "--expire", "now"],
+            environment=environment,
+            step="candidate_worktree_prune",
+            timeout_seconds=60,
+        )
+        listed = run_command(
+            ["git", "worktree", "list", "--porcelain"],
+            environment=environment,
+            step="candidate_worktree_cleanup_check",
+            timeout_seconds=60,
+        )
+        if candidate_root.exists() or worktree_registered(listed.stdout, candidate_root):
+            raise AiMainchainE2EError("candidate_worktree_cleanup_check")
+        shutil.rmtree(runtime_root)
+    except AiMainchainE2EError:
+        raise
+    except OSError as exc:
+        raise AiMainchainE2EError("candidate_worktree_cleanup") from exc
+
+
 def execute(
     *,
     output_path: Path | None,
@@ -446,28 +552,73 @@ def execute(
 ) -> Path:
     if output_path is not None and output_path.exists():
         raise AiMainchainE2EError("evidence_output_exists")
-    base_environment = dict(os.environ)
+    base_environment, removed_compose_environment = sanitized_environment(dict(os.environ))
     revision = resolve_candidate_revision(base_environment, requested_revision)
     resolved_output = output_path or default_output_path(revision)
     if resolved_output.exists():
         raise AiMainchainE2EError("evidence_output_exists")
-    source_before = source_fingerprint()
+
     run_id = uuid.uuid4()
     project = f"ku-ai-mainchain-{run_id.hex[:12]}"
+    runtime_root = Path(tempfile.mkdtemp(prefix=f"{project}-"))
+    candidate_root = runtime_root / "candidate"
     environment = ephemeral_environment(
         base_environment=base_environment,
         run_id=run_id,
         revision=revision,
     )
     cleanup_required = False
+    worktree_added = False
+    cleanup_failures: list[AiMainchainE2EError] = []
+    primary_failure: Exception | None = None
+    source_before = ""
+    candidate_tree = ""
+    candidate_image: dict[str, str] = {}
+    evidence: dict[str, Any] = {}
+    detached_unchanged = False
+    compose_sha256: dict[str, str] = {}
     try:
         run_command(
-            compose_command(project, "build", "backend-api"),
+            ["git", "worktree", "add", "--detach", str(candidate_root), revision],
+            environment=base_environment,
+            step="candidate_worktree_add",
+            timeout_seconds=180,
+        )
+        worktree_added = True
+        detached_revision = resolve_candidate_revision(
+            base_environment,
+            revision,
+            repo_root=candidate_root,
+            identity_step="detached_git_identity",
+            status_step="detached_worktree",
+        )
+        expected_tree = resolve_tree_revision(
+            base_environment,
+            revision,
+            repo_root=ROOT,
+            step="expected_tree_identity",
+        )
+        candidate_tree = resolve_tree_revision(
+            base_environment,
+            detached_revision,
+            repo_root=candidate_root,
+            step="detached_tree_identity",
+        )
+        if candidate_tree != expected_tree:
+            raise AiMainchainE2EError("detached_tree_identity")
+        source_before = source_fingerprint(candidate_root)
+        compose_sha256 = {
+            name: hashlib.sha256((candidate_root / name).read_bytes()).hexdigest()
+            for name in (BASE_COMPOSE.name, AI_COMPOSE.name)
+        }
+
+        cleanup_required = True
+        run_command(
+            compose_command(candidate_root, project, "build", "backend-api"),
             environment=environment,
             step="build_backend_image",
             timeout_seconds=900,
         )
-        cleanup_required = True
         candidate_image = inspect_candidate_image(
             image_reference=environment["BACKEND_IMAGE"],
             revision=revision,
@@ -475,6 +626,7 @@ def execute(
         )
         run_command(
             compose_command(
+                candidate_root,
                 project,
                 "up",
                 "--detach",
@@ -493,6 +645,7 @@ def execute(
         )
         run_command(
             compose_command(
+                candidate_root,
                 project,
                 "run",
                 "--rm",
@@ -508,6 +661,7 @@ def execute(
         )
         run_command(
             compose_command(
+                candidate_root,
                 project,
                 "run",
                 "--rm",
@@ -528,6 +682,7 @@ def execute(
         )
         run_command(
             compose_command(
+                candidate_root,
                 project,
                 "up",
                 "--detach",
@@ -544,6 +699,7 @@ def execute(
         )
         probe_result = run_command(
             compose_command(
+                candidate_root,
                 project,
                 "exec",
                 "-T",
@@ -557,39 +713,108 @@ def execute(
         )
         evidence = parse_probe_evidence(probe_result.stdout)
         runtime = verify_runtime(
+            candidate_root=candidate_root,
             project=project,
             environment=environment,
             expected_image_id=candidate_image["image_id"],
         )
         evidence["runtime_evidence"] = runtime
+    except Exception as exc:
+        primary_failure = exc
     finally:
         if cleanup_required:
-            run_command(
-                compose_command(project, "down", "--volumes", "--remove-orphans"),
-                environment=environment,
-                step="cleanup_compose",
-                timeout_seconds=180,
+            try:
+                run_command(
+                    compose_command(
+                        candidate_root,
+                        project,
+                        "down",
+                        "--volumes",
+                        "--remove-orphans",
+                    ),
+                    environment=environment,
+                    step="cleanup_compose",
+                    timeout_seconds=180,
+                )
+            except AiMainchainE2EError as exc:
+                cleanup_failures.append(exc)
+            try:
+                run_command(
+                    ["docker", "image", "rm", "--force", environment["BACKEND_IMAGE"]],
+                    environment=environment,
+                    step="cleanup_candidate_image",
+                    timeout_seconds=180,
+                )
+            except AiMainchainE2EError:
+                pass
+            try:
+                image_check = run_command(
+                    ["docker", "image", "ls", "--quiet", environment["BACKEND_IMAGE"]],
+                    environment=environment,
+                    step="cleanup_candidate_image_check",
+                    timeout_seconds=60,
+                )
+                if image_check.stdout.strip():
+                    raise AiMainchainE2EError("cleanup_candidate_image_check")
+            except AiMainchainE2EError as exc:
+                cleanup_failures.append(exc)
+        if worktree_added and candidate_root.is_dir():
+            try:
+                final_revision = resolve_candidate_revision(
+                    base_environment,
+                    revision,
+                    repo_root=candidate_root,
+                    identity_step="detached_git_identity_after",
+                    status_step="detached_worktree_after",
+                )
+                source_after = source_fingerprint(candidate_root)
+                final_tree = resolve_tree_revision(
+                    base_environment,
+                    final_revision,
+                    repo_root=candidate_root,
+                    step="detached_tree_identity_after",
+                )
+                detached_unchanged = (
+                    final_revision == revision
+                    and final_tree == candidate_tree
+                    and source_after == source_before
+                )
+                if not detached_unchanged:
+                    raise AiMainchainE2EError("candidate_changed")
+            except AiMainchainE2EError as exc:
+                if primary_failure is None:
+                    primary_failure = exc
+        try:
+            remove_detached_worktree(
+                candidate_root=candidate_root,
+                runtime_root=runtime_root,
+                environment=base_environment,
             )
-            run_command(
-                ["docker", "image", "rm", environment["BACKEND_IMAGE"]],
-                environment=environment,
-                step="cleanup_candidate_image",
-                timeout_seconds=180,
-            )
-    final_revision = resolve_candidate_revision(base_environment, requested_revision)
-    source_after = source_fingerprint()
-    if final_revision != revision or source_after != source_before:
+        except AiMainchainE2EError as exc:
+            cleanup_failures.append(exc)
+
+    if primary_failure is not None:
+        raise primary_failure
+    if cleanup_failures:
+        raise cleanup_failures[0]
+    if not detached_unchanged:
         raise AiMainchainE2EError("candidate_changed")
 
     evidence["candidate"] = {
         "bound": True,
         **candidate_image,
         "git_sha": revision,
+        "git_tree_sha": candidate_tree,
         "source_sha256": source_before,
+        "compose_file_sha256": compose_sha256,
+        "compose_files": [BASE_COMPOSE.name, AI_COMPOSE.name],
+        "compose_environment_keys_removed": removed_compose_environment,
         "generated_at": datetime.now(UTC).isoformat(),
         "compose_project_isolated": True,
         "database_name_suffix_guard": "_test",
         "worktree_clean": True,
+        "detached_worktree_bound": True,
+        "detached_worktree_removed": True,
         "cleanup_completed": True,
     }
     atomic_write_json(resolved_output, evidence)
