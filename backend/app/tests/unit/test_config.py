@@ -29,6 +29,7 @@ def _production_settings(**overrides: Any) -> dict[str, Any]:
         "minio_secret_key": "strong-minio-secret",
         "minio_secure": True,
         "minio_ca_cert_file": "/etc/ssl/certs/ca-certificates.crt",
+        "minio_metrics_bearer_token_file": "",
         "smtp_host": "mail.internal",
         "smtp_from": "noreply@example.com",
         "smtp_tls": True,
@@ -85,6 +86,61 @@ def test_production_rejects_default_infrastructure_passwords() -> None:
 def test_protected_environment_requires_explicit_minio_ca_file() -> None:
     with pytest.raises(ValidationError, match="MINIO_CA_CERT_FILE"):
         Settings(**_production_settings(minio_ca_cert_file=""))
+
+
+def test_protected_data_plane_requires_empty_metrics_bearer_file() -> None:
+    settings = Settings(**_production_settings())
+
+    assert settings.minio_metrics_bearer_token_file == ""
+
+    with pytest.raises(ValidationError, match="MINIO_METRICS_BEARER_TOKEN_FILE"):
+        Settings(
+            **_production_settings(
+                minio_metrics_bearer_token_file="/run/secrets/minio-metrics/token"
+            )
+        )
+
+
+@pytest.mark.parametrize(
+    ("access_key", "secret_key"),
+    (
+        ("metrics-bearer-only-no-data-plane", "strong-minio-secret"),
+        ("knowledge-prod", "metrics-bearer-only-no-data-plane"),
+    ),
+)
+def test_protected_environment_rejects_partial_metrics_only_credentials(
+    access_key: str,
+    secret_key: str,
+) -> None:
+    with pytest.raises(ValidationError, match="configured as a pair"):
+        Settings(
+            **_production_settings(
+                minio_access_key=access_key,
+                minio_secret_key=secret_key,
+            )
+        )
+
+
+def test_protected_metrics_consumer_requires_minio_metrics_bearer_file() -> None:
+    metrics_settings = {
+        "minio_access_key": "metrics-bearer-only-no-data-plane",
+        "minio_secret_key": "metrics-bearer-only-no-data-plane",
+    }
+    with pytest.raises(ValidationError, match="MINIO_METRICS_BEARER_TOKEN_FILE"):
+        Settings(
+            **_production_settings(
+                **metrics_settings,
+                minio_metrics_bearer_token_file="",
+            )
+        )
+
+    settings = Settings(
+        **_production_settings(
+            **metrics_settings,
+            minio_metrics_bearer_token_file="/run/secrets/minio-metrics/token",
+        )
+    )
+    assert settings.minio_metrics_bearer_token_file == ("/run/secrets/minio-metrics/token")
 
 
 def test_protected_environment_rejects_configured_plaintext_smtp() -> None:

@@ -17,12 +17,16 @@ from app.core.email_delivery_metrics import read_email_delivery_metrics
 from app.core.logging import configure_logging, get_logger
 from app.core.metrics import (
     observe_operational_collector_component,
+    set_operational_collector_interval,
     start_metrics_server,
     update_db_pool,
     update_email_delivery_snapshot,
     update_operational_database_snapshot,
+    update_ragflow_call_telemetry_health,
     update_ready_probe,
 )
+from app.core.minio_capacity_telemetry import collect_and_persist_minio_capacity
+from app.core.ragflow_call_telemetry import reconcile_stale_ragflow_api_calls
 
 logger = get_logger(__name__)
 RAGFLOW_WINDOW_MINUTES = 15
@@ -98,7 +102,7 @@ async def _collect_logical_storage_bytes(session: AsyncSession) -> int:
     result = await session.execute(
         sa.select(sa.func.coalesce(sa.func.sum(_FILES.c.size), 0)).where(
             _FILES.c.storage_type == "minio",
-            _FILES.c.status.not_in(("deleted", "ragflow_cleanup_failed")),
+            _FILES.c.status.not_in(("disabled", "deleted", "ragflow_cleanup_failed")),
         )
     )
     return int(result.scalar_one())
@@ -186,6 +190,8 @@ async def _collect_ragflow_outcome_counts(
 
 async def collect_loop() -> None:
     consecutive_ready_failures = 0
+    collection_interval_seconds = _collection_interval_seconds()
+    set_operational_collector_interval(collection_interval_seconds)
     while True:
         ready = await asyncio.to_thread(_probe_ready)
         consecutive_ready_failures = 0 if ready else consecutive_ready_failures + 1
@@ -194,7 +200,7 @@ async def collect_loop() -> None:
             consecutive_failures=consecutive_ready_failures,
         )
         await collect_once()
-        await asyncio.sleep(_collection_interval_seconds())
+        await asyncio.sleep(collection_interval_seconds)
 
 
 async def collect_once() -> None:
@@ -223,6 +229,36 @@ async def collect_once() -> None:
             succeeded=True,
             timestamp=snapshot.collected_at.timestamp(),
         )
+
+    try:
+        capacity = await collect_and_persist_minio_capacity(get_settings())
+    except Exception as error:
+        observe_operational_collector_component("minio_capacity", succeeded=False)
+        logger.error(
+            "operational_metrics_minio_capacity_collection_failed",
+            error_type=type(error).__name__,
+        )
+    else:
+        observe_operational_collector_component(
+            "minio_capacity",
+            succeeded=True,
+            timestamp=capacity.captured_at.timestamp(),
+        )
+
+    try:
+        reconciliation = await reconcile_stale_ragflow_api_calls()
+    except Exception as error:
+        observe_operational_collector_component("ragflow_call_telemetry", succeeded=False)
+        logger.error(
+            "operational_metrics_ragflow_call_telemetry_failed",
+            error_type=type(error).__name__,
+        )
+    else:
+        update_ragflow_call_telemetry_health(
+            stale_started=reconciliation.stale_started_count,
+            recovered=reconciliation.recovered_count,
+        )
+        observe_operational_collector_component("ragflow_call_telemetry", succeeded=True)
 
     try:
         email_delivery = await read_email_delivery_metrics(

@@ -8,8 +8,8 @@ Create Date: 2026-07-17 08:00:00.000000
 from __future__ import annotations
 
 import uuid
-from collections.abc import Sequence
-from typing import Any
+from collections.abc import Callable, Sequence
+from typing import Any, cast
 
 import sqlalchemy as sa
 from alembic import op
@@ -34,6 +34,7 @@ _VERSION_CONFIG_COLUMNS = (
     "created_at",
     "updated_at",
 )
+_JSONB_FACTORY = cast(Callable[..., sa.types.TypeEngine[object]], postgresql.JSONB)
 
 
 def _system_config_table(name: str = "system_configs") -> sa.TableClause:
@@ -42,7 +43,7 @@ def _system_config_table(name: str = "system_configs") -> sa.TableClause:
         sa.column("id", sa.Uuid()),
         sa.column("key", sa.String()),
         sa.column("group", sa.String()),
-        sa.column("value", postgresql.JSONB(astext_type=sa.Text())),
+        sa.column("value", _JSONB_FACTORY(astext_type=sa.Text())),
         sa.column("value_type", sa.String()),
         sa.column("is_secret", sa.Boolean()),
         sa.column("description", sa.Text()),

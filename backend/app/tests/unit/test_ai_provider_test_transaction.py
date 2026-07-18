@@ -179,15 +179,16 @@ async def test_provider_test_discards_result_when_snapshot_becomes_stale(
     assert current.last_test_status is None
     assert session.commit_count == 2
     assert session.in_transaction() is False
-    assert audits == [
-        {
-            "status": "discarded",
-            "observed_status": "success",
-            "latency_ms": 12,
-            "stale_config": True,
-            "config_fingerprint": audits[0]["config_fingerprint"],
-        }
-    ]
+    assert len(audits) == 1
+    audit = audits[0]
+    assert audit is not None
+    assert audit == {
+        "status": "discarded",
+        "observed_status": "success",
+        "latency_ms": 12,
+        "stale_config": True,
+        "config_fingerprint": audit["config_fingerprint"],
+    }
 
 
 async def test_provider_test_network_failure_is_audited_after_transaction_release(

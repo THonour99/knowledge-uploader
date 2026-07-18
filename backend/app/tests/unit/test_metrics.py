@@ -191,6 +191,11 @@ def test_operational_collector_component_labels_are_bounded() -> None:
         timestamp=1234.0,
     )
     metrics.observe_operational_collector_component("email_redis", succeeded=False)
+    metrics.observe_operational_collector_component(
+        "ragflow_call_telemetry",
+        succeeded=True,
+        timestamp=1235.0,
+    )
     metrics.observe_operational_collector_component("redis://secret-host/0", succeeded=False)
     output = generate_latest().decode("utf-8")
 
@@ -200,8 +205,45 @@ def test_operational_collector_component_labels_are_bounded() -> None:
         'timestamp_seconds{component="database"} 1234.0'
     ) in output
     assert (
+        "knowledge_uploader_operational_collector_component_last_success_"
+        'timestamp_seconds{component="ragflow_call_telemetry"} 1235.0'
+    ) in output
+    assert (
         'knowledge_uploader_operational_collector_component_errors_total{component="email_redis"}'
     ) in output
     assert (
         'knowledge_uploader_operational_collector_component_errors_total{component="other"}'
     ) in output
+
+
+@pytest.mark.parametrize("interval_seconds", [30, 60, 300])
+def test_operational_collector_interval_is_exported_as_bounded_gauge(
+    interval_seconds: int,
+) -> None:
+    metrics.set_operational_collector_interval(interval_seconds)
+    output = generate_latest().decode("utf-8")
+
+    assert (
+        f"knowledge_uploader_operational_collector_interval_seconds {float(interval_seconds)}"
+    ) in output
+
+
+def test_operational_collector_interval_gauge_clamps_out_of_contract_values() -> None:
+    metrics.set_operational_collector_interval(1)
+    assert (
+        "knowledge_uploader_operational_collector_interval_seconds 5.0"
+        in generate_latest().decode("utf-8")
+    )
+    metrics.set_operational_collector_interval(5000)
+    assert (
+        "knowledge_uploader_operational_collector_interval_seconds 3600.0"
+        in generate_latest().decode("utf-8")
+    )
+
+
+def test_ragflow_stale_call_metrics_are_bounded_gauges_and_counters() -> None:
+    metrics.update_ragflow_call_telemetry_health(stale_started=3, recovered=2)
+    output = generate_latest().decode("utf-8")
+
+    assert "knowledge_uploader_ragflow_api_stale_started 3.0" in output
+    assert "knowledge_uploader_ragflow_api_stale_recovered_total" in output

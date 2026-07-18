@@ -10,8 +10,37 @@ from alembic.config import Config
 from sqlalchemy import create_engine, text
 from sqlalchemy.exc import IntegrityError
 
-from app.modules.config.defaults import DEFINITIONS_BY_KEY
 from app.tests.conftest import TEST_ALEMBIC_DATABASE_URL
+
+_O001_CONFIG_KEYS = frozenset(
+    {
+        "upload.enabled",
+        "upload.allowed_extensions",
+        "upload.max_file_size_mb",
+        "upload.user_quota_mb",
+        "upload.allow_multi_file",
+        "upload.allow_user_delete",
+        "outbox.publish_max_retries",
+        "processing.parse_max_pages",
+        "processing.parse_max_chars",
+        "security.allowed_email_domains",
+        "security.password_min_length",
+        "security.login_max_failed_attempts",
+        "security.login_lock_minutes",
+        "security.require_email_verification",
+        "security.block_critical_sensitive_sync",
+        "review.claim_timeout_minutes",
+        "review.sla_hours",
+        "ragflow.base_url",
+        "ragflow.api_key",
+        "ragflow.sync_max_retries",
+        "ragflow.parse_poll_timeout_seconds",
+        "ragflow.sync_timeout_seconds",
+        "ragflow.allow_high_risk_sync",
+        "ragflow.delete_remote_on_file_delete",
+        "ragflow.keep_remote_on_archive",
+    }
+)
 
 
 def _alembic_config() -> Config:
@@ -119,7 +148,7 @@ def test_o001_is_single_head_after_d002_and_reconciles_operational_schema(
                 ).scalars()
             )
         assert revision == "20260716o001"
-        assert config_keys == set(DEFINITIONS_BY_KEY)
+        assert config_keys == _O001_CONFIG_KEYS
         assert preserved_value == "73"
         assert critical_sync_block == "true"
         assert int(backup_count) == 15
@@ -238,8 +267,7 @@ def test_o001_fails_closed_without_deleting_unknown_or_sensitive_rows(
             ).scalar_one()
             preserved = connection.execute(
                 text(
-                    "SELECT value::text FROM system_configs "
-                    "WHERE key = 'custom.secret_endpoint'"
+                    "SELECT value::text FROM system_configs " "WHERE key = 'custom.secret_endpoint'"
                 )
             ).scalar_one()
             backup_table = connection.execute(

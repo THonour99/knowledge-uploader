@@ -3,7 +3,7 @@ from __future__ import annotations
 import uuid
 from dataclasses import dataclass
 from datetime import datetime
-from typing import cast
+from typing import Literal, cast
 
 from sqlalchemy import (
     BigInteger,
@@ -57,6 +57,7 @@ DOCUMENT_ANALYSIS = Table(
     Column("latency_ms", Integer, nullable=False),
     Column("failure_category", String(40)),
     Column("estimated_cost_microunits", BigInteger, nullable=False),
+    Column("cost_status", String(40), nullable=False),
     Column("cost_currency", String(3), nullable=False),
     Column("summary", Text),
     Column("sensitive_risk_level", String(20), nullable=False),
@@ -135,6 +136,12 @@ class DocumentAnalysisRecord:
     latency_ms: int
     failure_category: str | None
     estimated_cost_microunits: int
+    cost_status: Literal[
+        "known",
+        "unknown_pricing",
+        "unknown_usage",
+        "legacy_unverifiable",
+    ]
     cost_currency: str
     summary: str | None
     sensitive_risk_level: str
@@ -521,6 +528,7 @@ class DocumentRepository:
                 DOCUMENT_ANALYSIS.c.latency_ms,
                 DOCUMENT_ANALYSIS.c.failure_category,
                 DOCUMENT_ANALYSIS.c.estimated_cost_microunits,
+                DOCUMENT_ANALYSIS.c.cost_status,
                 DOCUMENT_ANALYSIS.c.cost_currency,
                 DOCUMENT_ANALYSIS.c.summary,
                 DOCUMENT_ANALYSIS.c.sensitive_risk_level,
@@ -553,6 +561,15 @@ class DocumentRepository:
             latency_ms=cast(int, row["latency_ms"]),
             failure_category=cast(str | None, row["failure_category"]),
             estimated_cost_microunits=cast(int, row["estimated_cost_microunits"]),
+            cost_status=cast(
+                Literal[
+                    "known",
+                    "unknown_pricing",
+                    "unknown_usage",
+                    "legacy_unverifiable",
+                ],
+                row["cost_status"],
+            ),
             cost_currency=cast(str, row["cost_currency"]),
             summary=cast(str | None, row["summary"]),
             sensitive_risk_level=cast(str, row["sensitive_risk_level"]),

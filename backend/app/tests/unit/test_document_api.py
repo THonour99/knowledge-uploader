@@ -8,7 +8,7 @@ from datetime import UTC, datetime, timedelta
 from hashlib import sha256
 from importlib import import_module
 from types import SimpleNamespace
-from typing import cast
+from typing import Literal, cast
 from uuid import UUID, uuid4
 
 import pytest
@@ -1991,6 +1991,10 @@ async def _create_analysis(
     sensitive_risk_level: str = "none",
     extracted_text: str | None = None,
     error_message: str | None = None,
+    cost_status: Literal[
+        "known", "unknown_pricing", "unknown_usage", "legacy_unverifiable"
+    ] = "known",
+    estimated_cost_microunits: int = 0,
 ) -> None:
     from app.core.database import AsyncSessionFactory
     from app.modules.ai.models import DocumentAnalysis
@@ -2005,6 +2009,8 @@ async def _create_analysis(
         sensitive_risk_level=sensitive_risk_level,
         sensitive_hits=[],
         error_message=error_message,
+        cost_status=cost_status,
+        estimated_cost_microunits=estimated_cost_microunits,
         started_at=now,
         finished_at=None if status == "running" else now,
     )
@@ -2092,6 +2098,46 @@ async def test_owner_file_detail_includes_category_analysis_and_sync_error(
     assert analysis["error_message"] is None
     assert analysis["finished_at"] is not None
     assert data["sync_error"] == "latest sync error"
+
+
+@pytest.mark.parametrize(
+    ("cost_status", "stored_cost", "expected_api_cost"),
+    [
+        ("known", 0, "0"),
+        ("known", 9_007_199_254_740_993, "9007199254740993"),
+        ("unknown_pricing", 0, None),
+        ("unknown_usage", 0, None),
+        ("legacy_unverifiable", 73, None),
+    ],
+)
+async def test_file_detail_cost_contract_is_lossless_and_hides_unknown_values(
+    document_client: tuple[AsyncClient, FakeDocumentStorage],
+    cost_status: Literal["known", "unknown_pricing", "unknown_usage", "legacy_unverifiable"],
+    stored_cost: int,
+    expected_api_cost: str | None,
+) -> None:
+    client, _storage = document_client
+    email = f"cost-{cost_status.replace('_', '-')}@company.com"
+    await _create_user(email=email, password="password123")
+    token = await _login(client, email=email, password="password123")
+    file_id = await _upload_pdf(client, token=token, filename=f"{cost_status}.pdf")
+    await _create_analysis(
+        file_id=UUID(file_id),
+        cost_status=cost_status,
+        estimated_cost_microunits=stored_cost,
+    )
+
+    response = await client.get(
+        f"/api/files/{file_id}",
+        headers={"Authorization": f"Bearer {token}"},
+    )
+
+    assert response.status_code == 200, response.text
+    analysis = response.json()["data"]["analysis"]
+    assert analysis["cost_status"] == cost_status
+    assert analysis["estimated_cost_microunits"] == expected_api_cost
+    if expected_api_cost is not None:
+        assert isinstance(analysis["estimated_cost_microunits"], str)
 
 
 async def test_file_detail_returns_null_extras_without_records(

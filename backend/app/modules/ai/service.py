@@ -7,7 +7,7 @@ import uuid
 from collections.abc import Iterable, Mapping, Sequence
 from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta
-from typing import Protocol
+from typing import Protocol, cast
 
 from cryptography.fernet import InvalidToken
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -35,6 +35,17 @@ from app.core.security import decrypt_api_key, encrypt_api_key
 from app.modules.user.schemas import AuthUserRecord
 
 from . import events, exceptions
+from .cost_governance import (
+    CostObservation,
+    CostStatus,
+    aggregate_cost_observation,
+    merge_cost_status,
+    observe_llm_cost,
+    pricing_confirmation_basis,
+    pricing_confirmation_is_effective,
+    resolve_create_pricing_configured,
+    resolve_update_pricing_configured,
+)
 from .llm_analysis import (
     ANALYSIS_PROMPT_KEY,
     LLM_ANALYSIS_SYSTEM_PROMPT,
@@ -48,7 +59,6 @@ from .llm_analysis import (
     build_analysis_prompt,
     build_input_provenance,
     checked_persisted_sum,
-    estimate_cost_microunits,
     parse_analysis_output,
 )
 from .models import (
@@ -136,6 +146,12 @@ class LLMAnalysisConfigurationError(Exception):
 
 class AnalysisLeaseLostError(Exception):
     pass
+
+
+def _persistable_usage_counter(value: int | None) -> int | None:
+    if value is None or value < 0 or value > MAX_POSTGRES_INTEGER:
+        return None
+    return value
 
 
 class AiObjectStorage(Protocol):
@@ -309,6 +325,25 @@ class AiConfigService:
             chat_model=chat_model,
             enabled=request.enabled,
         )
+        pricing_configured = resolve_create_pricing_configured(
+            explicit=request.pricing_configured,
+            input_price_microunits_per_million_tokens=(
+                request.input_price_microunits_per_million_tokens
+            ),
+            output_price_microunits_per_million_tokens=(
+                request.output_price_microunits_per_million_tokens
+            ),
+        )
+        confirmed_input, confirmed_output, confirmed_currency = pricing_confirmation_basis(
+            configured=pricing_configured,
+            input_price_microunits_per_million_tokens=(
+                request.input_price_microunits_per_million_tokens
+            ),
+            output_price_microunits_per_million_tokens=(
+                request.output_price_microunits_per_million_tokens
+            ),
+            pricing_currency=request.pricing_currency,
+        )
         provider = AiProvider(
             name=request.name.strip(),
             provider_type=request.provider_type,
@@ -327,6 +362,10 @@ class AiConfigService:
             input_price_microunits_per_million_tokens=request.input_price_microunits_per_million_tokens,
             output_price_microunits_per_million_tokens=request.output_price_microunits_per_million_tokens,
             pricing_currency=request.pricing_currency,
+            pricing_configured=pricing_configured,
+            pricing_confirmed_input_microunits_per_million=confirmed_input,
+            pricing_confirmed_output_microunits_per_million=confirmed_output,
+            pricing_confirmed_currency=confirmed_currency,
         )
         await self._repository.add_provider(provider)
         provider_changed_fields = _provider_create_audit_fields(provider)
@@ -341,6 +380,7 @@ class AiConfigService:
                 "provider_type": provider.provider_type,
                 "enabled": provider.enabled,
                 "pricing_currency": provider.pricing_currency,
+                "pricing_configured": _provider_effective_pricing_configured(provider),
                 "input_price_microunits_per_million_tokens": (
                     provider.input_price_microunits_per_million_tokens
                 ),
@@ -372,6 +412,8 @@ class AiConfigService:
         )
         self._validate_provider_type(next_type, is_internal=next_internal)
         fields_set = request.model_fields_set
+        previous_pricing_configured = _provider_effective_pricing_configured(provider)
+        pricing_fields_submitted = _pricing_fields_submitted(request)
         if request.name is not None:
             provider.name = request.name.strip()
         if request.provider_type is not None:
@@ -415,7 +457,47 @@ class AiConfigService:
             )
         if request.pricing_currency is not None:
             provider.pricing_currency = request.pricing_currency
+        provider.pricing_configured = resolve_update_pricing_configured(
+            explicit=request.pricing_configured,
+            previous=previous_pricing_configured,
+            pricing_fields_submitted=pricing_fields_submitted,
+            input_price_microunits_per_million_tokens=(
+                provider.input_price_microunits_per_million_tokens
+            ),
+            output_price_microunits_per_million_tokens=(
+                provider.output_price_microunits_per_million_tokens
+            ),
+        )
+        should_sync_pricing_confirmation = request.pricing_configured is True or (
+            request.pricing_configured is None
+            and pricing_fields_submitted
+            and (
+                provider.input_price_microunits_per_million_tokens > 0
+                or provider.output_price_microunits_per_million_tokens > 0
+            )
+        )
+        if should_sync_pricing_confirmation:
+            confirmed_input, confirmed_output, confirmed_currency = pricing_confirmation_basis(
+                configured=True,
+                input_price_microunits_per_million_tokens=(
+                    provider.input_price_microunits_per_million_tokens
+                ),
+                output_price_microunits_per_million_tokens=(
+                    provider.output_price_microunits_per_million_tokens
+                ),
+                pricing_currency=provider.pricing_currency,
+            )
+            provider.pricing_confirmed_input_microunits_per_million = confirmed_input
+            provider.pricing_confirmed_output_microunits_per_million = confirmed_output
+            provider.pricing_confirmed_currency = confirmed_currency
+        elif not provider.pricing_configured:
+            provider.pricing_confirmed_input_microunits_per_million = None
+            provider.pricing_confirmed_output_microunits_per_million = None
+            provider.pricing_confirmed_currency = None
+        effective_pricing_configured = _provider_effective_pricing_configured(provider)
         provider_changed_fields = _provider_update_audit_fields(request)
+        if effective_pricing_configured != previous_pricing_configured:
+            provider_changed_fields = sorted({*provider_changed_fields, "pricing_configured"})
         self._validate_provider_activation(
             provider_type=provider.provider_type,
             base_url=provider.base_url,
@@ -433,6 +515,7 @@ class AiConfigService:
                 "provider_type": provider.provider_type,
                 "enabled": provider.enabled,
                 "pricing_currency": provider.pricing_currency,
+                "pricing_configured": effective_pricing_configured,
                 "input_price_microunits_per_million_tokens": (
                     provider.input_price_microunits_per_million_tokens
                 ),
@@ -900,6 +983,7 @@ class AiConfigService:
             input_price_microunits_per_million_tokens=provider.input_price_microunits_per_million_tokens,
             output_price_microunits_per_million_tokens=provider.output_price_microunits_per_million_tokens,
             pricing_currency=provider.pricing_currency,
+            pricing_configured=_provider_effective_pricing_configured(provider),
             has_api_key=bool(provider.api_key_encrypted),
             api_key_masked=self._masked_provider_key(provider),
             last_test_status=provider.last_test_status,
@@ -1164,6 +1248,7 @@ class AiConfigService:
                     input_price_microunits_per_million_tokens=0,
                     output_price_microunits_per_million_tokens=0,
                     pricing_currency="USD",
+                    pricing_configured=False,
                 )
             )
         await self._session.flush()
@@ -2105,8 +2190,15 @@ class AiAnalysisService:
     ) -> None:
         prompt_tokens = completion.usage.prompt_tokens if completion is not None else None
         completion_tokens = completion.usage.completion_tokens if completion is not None else None
-        estimated_cost = (
-            estimate_cost_microunits(
+        persisted_prompt_tokens = _persistable_usage_counter(prompt_tokens)
+        persisted_completion_tokens = _persistable_usage_counter(completion_tokens)
+        persisted_latency_ms = _persistable_usage_counter(latency_ms)
+        token_usage_is_persistable = (
+            prompt_tokens is None or persisted_prompt_tokens is not None
+        ) and (completion_tokens is None or persisted_completion_tokens is not None)
+        try:
+            call_cost_observation = observe_llm_cost(
+                pricing_configured=_provider_effective_pricing_configured(provider),
                 prompt_tokens=prompt_tokens,
                 completion_tokens=completion_tokens,
                 input_price_microunits_per_million_tokens=(
@@ -2116,9 +2208,23 @@ class AiAnalysisService:
                     provider.output_price_microunits_per_million_tokens
                 ),
             )
-            if prompt_tokens is not None and completion_tokens is not None
-            else 0
+        except (OverflowError, ValueError):
+            call_cost_observation = CostObservation(
+                status="unknown_usage",
+                estimated_cost_microunits=None,
+            )
+        if not token_usage_is_persistable:
+            call_cost_observation = CostObservation(
+                status="unknown_usage",
+                estimated_cost_microunits=None,
+            )
+        aggregate_observation = aggregate_cost_observation(
+            call_observation=call_cost_observation,
+            aggregate_currency=analysis.cost_currency,
+            call_currency=provider.pricing_currency,
         )
+        call_estimated_cost = call_cost_observation.estimated_cost_microunits
+        aggregate_estimated_cost = aggregate_observation.estimated_cost_microunits
         call_sequence = await self._repository.next_usage_call_sequence(
             analysis_id=analysis.id,
             analysis_attempt=analysis.attempt_number,
@@ -2140,11 +2246,18 @@ class AiAnalysisService:
                 latency_ms or 0,
                 maximum=MAX_POSTGRES_INTEGER,
             )
-            next_cost = checked_persisted_sum(
-                analysis.estimated_cost_microunits,
-                estimated_cost,
-                maximum=MAX_POSTGRES_BIGINT,
-            )
+            current_cost_status = cast(CostStatus, analysis.cost_status)
+            next_cost_status = merge_cost_status(current_cost_status, aggregate_observation.status)
+            if next_cost_status == "known":
+                if aggregate_estimated_cost is None:
+                    raise ValueError("known aggregate cost cannot be null")
+                next_cost = checked_persisted_sum(
+                    analysis.estimated_cost_microunits,
+                    aggregate_estimated_cost,
+                    maximum=MAX_POSTGRES_BIGINT,
+                )
+            else:
+                next_cost = 0
             usage_overflow = False
         except (OverflowError, ValueError):
             usage_overflow = True
@@ -2161,16 +2274,21 @@ class AiAnalysisService:
                 prompt_version=prompt_template.version,
                 analysis_attempt=analysis.attempt_number,
                 call_sequence=call_sequence,
-                prompt_tokens=prompt_tokens,
+                prompt_tokens=persisted_prompt_tokens,
                 input_char_count=input_provenance.input_char_count,
                 input_sha256=input_provenance.input_sha256,
                 category_count=input_provenance.category_count,
                 input_truncated=input_provenance.input_truncated,
-                completion_tokens=completion_tokens,
-                latency_ms=latency_ms,
+                completion_tokens=persisted_completion_tokens,
+                latency_ms=persisted_latency_ms,
                 status="failed" if usage_overflow else status,
                 failure_category="usage_overflow" if usage_overflow else failure_category,
-                estimated_cost_microunits=estimated_cost,
+                estimated_cost_microunits=(
+                    call_estimated_cost
+                    if call_cost_observation.status == "known" and call_estimated_cost is not None
+                    else 0
+                ),
+                cost_status=call_cost_observation.status,
                 cost_currency=provider.pricing_currency,
                 error_message=None,
             )
@@ -2181,13 +2299,15 @@ class AiAnalysisService:
         analysis.category_count = input_provenance.category_count
         analysis.input_truncated = input_provenance.input_truncated
         if usage_overflow:
+            analysis.estimated_cost_microunits = 0
+            analysis.cost_status = "unknown_usage"
             analysis.failure_category = "usage_overflow"
             raise LLMAnalysisConfigurationError("analysis usage aggregate overflow")
         analysis.prompt_tokens = next_prompt_tokens
         analysis.completion_tokens = next_completion_tokens
         analysis.latency_ms = next_latency_ms
         analysis.estimated_cost_microunits = next_cost
-        analysis.cost_currency = provider.pricing_currency
+        analysis.cost_status = next_cost_status
         analysis.failure_category = failure_category
 
     async def _start_analysis(
@@ -2202,7 +2322,9 @@ class AiAnalysisService:
         started_at = datetime.now(UTC)
         new_attempt = analysis is None or analysis.status != "running"
         if analysis is None:
-            analysis = DocumentAnalysis(file_id=file.id)
+            analysis = DocumentAnalysis(
+                file_id=file.id, estimated_cost_microunits=0, cost_status="known"
+            )
             await self._repository.add_document_analysis(analysis)
         elif new_attempt:
             analysis.attempt_number += 1
@@ -2218,7 +2340,9 @@ class AiAnalysisService:
             analysis.completion_tokens = 0
             analysis.latency_ms = 0
             analysis.estimated_cost_microunits = 0
+            analysis.cost_status = "known"
             analysis.summary = None
+            analysis.cost_currency = provider.pricing_currency if provider is not None else "USD"
             analysis.suggested_category_id = None
             analysis.suggested_category_name = None
             analysis.suggested_tags = []
@@ -2233,7 +2357,6 @@ class AiAnalysisService:
         analysis.provider_name = provider.name if provider is not None else None
         analysis.model_name = None
         analysis.engine_type = engine_type
-        analysis.cost_currency = provider.pricing_currency if provider is not None else "USD"
         analysis.status = "running"
         analysis.error_message = None
         analysis.failure_category = None
@@ -2322,7 +2445,9 @@ class AiAnalysisService:
             return False
         should_publish_failure = analysis is None or analysis.status != "failed"
         if analysis is None:
-            analysis = DocumentAnalysis(file_id=file_id)
+            analysis = DocumentAnalysis(
+                file_id=file_id, estimated_cost_microunits=0, cost_status="known"
+            )
             await self._repository.add_document_analysis(analysis)
         try:
             if file.status != "analysis_failed":
@@ -2524,6 +2649,41 @@ def safe_provider_base_url(value: str | None) -> str | None:
         return None
 
 
+def _provider_effective_pricing_configured(provider: AiProvider) -> bool:
+    return pricing_confirmation_is_effective(
+        declared=provider.pricing_configured,
+        input_price_microunits_per_million_tokens=(
+            provider.input_price_microunits_per_million_tokens
+        ),
+        output_price_microunits_per_million_tokens=(
+            provider.output_price_microunits_per_million_tokens
+        ),
+        pricing_currency=provider.pricing_currency,
+        confirmed_input_microunits_per_million=(
+            provider.pricing_confirmed_input_microunits_per_million
+        ),
+        confirmed_output_microunits_per_million=(
+            provider.pricing_confirmed_output_microunits_per_million
+        ),
+        confirmed_currency=provider.pricing_confirmed_currency,
+    )
+
+
+def _pricing_fields_submitted(request: AiProviderUpdateRequest) -> bool:
+    fields_set = request.model_fields_set
+    return (
+        (
+            "input_price_microunits_per_million_tokens" in fields_set
+            and request.input_price_microunits_per_million_tokens is not None
+        )
+        or (
+            "output_price_microunits_per_million_tokens" in fields_set
+            and request.output_price_microunits_per_million_tokens is not None
+        )
+        or ("pricing_currency" in fields_set and request.pricing_currency is not None)
+    )
+
+
 def _provider_create_audit_fields(provider: AiProvider) -> list[str]:
     fields = [
         "name",
@@ -2537,6 +2697,7 @@ def _provider_create_audit_fields(provider: AiProvider) -> list[str]:
         "input_price_microunits_per_million_tokens",
         "output_price_microunits_per_million_tokens",
         "pricing_currency",
+        "pricing_configured",
     ]
     optional_fields = (
         "base_url",
@@ -2554,10 +2715,18 @@ def _provider_create_audit_fields(provider: AiProvider) -> list[str]:
 
 
 def _provider_update_audit_fields(request: AiProviderUpdateRequest) -> list[str]:
+    nullable_clear_fields = {
+        "base_url",
+        "chat_model",
+        "max_input_tokens",
+        "max_output_tokens",
+        "top_p",
+    }
     fields = {
         field_name
         for field_name in request.model_fields_set
         if field_name not in {"api_key", "clear_api_key"}
+        and (getattr(request, field_name) is not None or field_name in nullable_clear_fields)
     }
     if request.clear_api_key:
         fields.add("api_key_cleared")

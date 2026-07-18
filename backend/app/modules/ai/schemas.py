@@ -55,6 +55,7 @@ class AiProviderCreateRequest(BaseModel):
     input_price_microunits_per_million_tokens: int = Field(default=0, ge=0, le=1_000_000_000_000)
     output_price_microunits_per_million_tokens: int = Field(default=0, ge=0, le=1_000_000_000_000)
     pricing_currency: PricingCurrency = "USD"
+    pricing_configured: bool | None = None
 
 
 class AiProviderUpdateRequest(BaseModel):
@@ -80,6 +81,7 @@ class AiProviderUpdateRequest(BaseModel):
         default=None, ge=0, le=1_000_000_000_000
     )
     pricing_currency: PricingCurrency | None = None
+    pricing_configured: bool | None = None
 
 
 class AiProviderResponse(BaseModel):
@@ -100,6 +102,7 @@ class AiProviderResponse(BaseModel):
     input_price_microunits_per_million_tokens: int
     output_price_microunits_per_million_tokens: int
     pricing_currency: PricingCurrency
+    pricing_configured: bool | None = None
     has_api_key: bool
     api_key_masked: str | None
     last_test_status: str | None

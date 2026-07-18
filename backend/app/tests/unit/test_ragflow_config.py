@@ -372,6 +372,14 @@ async def test_sync_task_build_ragflow_client_uses_runtime_config(
 
     monkeypatch.setattr(tasks_module, "HttpRagflowClient", _CapturingClient)
 
+    from app.core.config import Settings
+
+    monkeypatch.setattr(
+        ragflow_runtime,
+        "get_settings",
+        lambda: Settings(ragflow_allowed_base_urls="http://runtime-ragflow:9999"),
+    )
+
     async def _fake_get_config(key: str) -> object | None:
         return {
             "ragflow.base_url": "http://runtime-ragflow:9999",

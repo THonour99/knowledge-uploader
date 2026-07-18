@@ -15,6 +15,11 @@ from starlette.requests import Request
 from starlette.responses import Response
 
 from app.core.email_delivery_metrics import EMAIL_DELIVERY_RESULTS
+from app.core.ragflow_metrics_contract import (
+    RAGFLOW_COMPLETED_RESULTS,
+    RAGFLOW_FAILURE_CATEGORIES,
+    RAGFLOW_OPERATIONS,
+)
 
 HTTP_REQUESTS = Counter(
     "knowledge_uploader_http_requests_total",
@@ -57,7 +62,7 @@ EXTERNAL_REQUESTS = Counter(
 )
 LOGICAL_DOCUMENT_REFERENCES_BYTES = Gauge(
     "knowledge_uploader_logical_document_references_bytes",
-    "Sum of non-deleted file-row byte references; deduplicated objects count per file row.",
+    "Sum of active file-row byte references; archived objects remain separately retained.",
     ("backend",),
 )
 POSTGRES_DATABASE_SIZE_BYTES = Gauge(
@@ -94,9 +99,26 @@ RAGFLOW_SYNC_OUTCOMES_WINDOW = Gauge(
     ),
     ("result",),
 )
+RAGFLOW_API_CALLS = Counter(
+    "knowledge_uploader_ragflow_api_calls_total",
+    "RAGFlow API calls grouped only by bounded operation, result and failure category.",
+    ("operation", "result", "failure_category"),
+)
+RAGFLOW_API_STALE_STARTED = Gauge(
+    "knowledge_uploader_ragflow_api_stale_started",
+    "Persisted RAGFlow API calls still in started state after the bounded stale threshold.",
+)
+RAGFLOW_API_STALE_RECOVERED = Counter(
+    "knowledge_uploader_ragflow_api_stale_recovered_total",
+    "Persisted stale RAGFlow API calls recovered to a terminal unknown-failure state.",
+)
 OPERATIONAL_COLLECTOR_LAST_SUCCESS = Gauge(
     "knowledge_uploader_operational_collector_last_success_timestamp_seconds",
     "Unix timestamp of the last successful operational database collection.",
+)
+OPERATIONAL_COLLECTOR_INTERVAL_SECONDS = Gauge(
+    "knowledge_uploader_operational_collector_interval_seconds",
+    "Configured operational collection cadence, bounded to the supported range.",
 )
 OPERATIONAL_COLLECTOR_COMPONENT_ERRORS = Counter(
     "knowledge_uploader_operational_collector_component_errors_total",
@@ -137,7 +159,9 @@ _EXTERNAL_SERVICES = frozenset({"rabbitmq"})
 _RESULTS = frozenset({"success", "failure", "timeout"})
 _CONFIG_INVARIANTS = frozenset({"security.block_critical_sensitive_sync"})
 _EMAIL_DELIVERY_RESULTS = EMAIL_DELIVERY_RESULTS
-_OPERATIONAL_COLLECTOR_COMPONENTS = frozenset({"database", "email_redis"})
+_OPERATIONAL_COLLECTOR_COMPONENTS = frozenset(
+    {"database", "email_redis", "minio_capacity", "ragflow_call_telemetry"}
+)
 
 
 async def http_metrics_middleware(
@@ -210,6 +234,34 @@ def observe_external_request(service: str, result: str) -> None:
     EXTERNAL_REQUESTS.labels(service=bounded_service, result=_bounded_result(result)).inc()
 
 
+def observe_ragflow_api_call(
+    *,
+    operation: str,
+    result: str,
+    failure_category: str | None,
+) -> None:
+    bounded_operation = operation if operation in RAGFLOW_OPERATIONS else "other"
+    bounded_result = result if result in RAGFLOW_COMPLETED_RESULTS else "failure"
+    if bounded_result == "success":
+        bounded_failure = "none"
+    else:
+        bounded_failure = (
+            failure_category if failure_category in RAGFLOW_FAILURE_CATEGORIES else "unknown"
+        )
+    RAGFLOW_API_CALLS.labels(
+        operation=bounded_operation,
+        result=bounded_result,
+        failure_category=bounded_failure,
+    ).inc()
+
+
+def update_ragflow_call_telemetry_health(*, stale_started: int, recovered: int) -> None:
+    RAGFLOW_API_STALE_STARTED.set(max(stale_started, 0))
+    recovered_count = max(recovered, 0)
+    if recovered_count:
+        RAGFLOW_API_STALE_RECOVERED.inc(recovered_count)
+
+
 def set_logical_document_references_bytes(value: int) -> None:
     LOGICAL_DOCUMENT_REFERENCES_BYTES.labels(backend="minio").set(max(value, 0))
 
@@ -278,6 +330,10 @@ def update_operational_database_snapshot(
     set_logical_document_references_bytes(minio_bytes)
     set_postgres_database_size_bytes(postgres_bytes)
     OPERATIONAL_COLLECTOR_LAST_SUCCESS.set(max(collected_at_timestamp, 0.0))
+
+
+def set_operational_collector_interval(interval_seconds: int) -> None:
+    OPERATIONAL_COLLECTOR_INTERVAL_SECONDS.set(min(max(interval_seconds, 5), 3600))
 
 
 def update_email_delivery_snapshot(

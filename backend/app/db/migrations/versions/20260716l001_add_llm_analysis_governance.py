@@ -8,6 +8,7 @@ Create Date: 2026-07-16 22:30:00.000000
 from __future__ import annotations
 
 from collections.abc import Sequence
+from typing import Any
 
 import sqlalchemy as sa
 from alembic import op
@@ -129,7 +130,7 @@ def upgrade() -> None:
 
 
 def _add_document_analysis_columns() -> None:
-    columns = (
+    columns: tuple[sa.Column[Any], ...] = (
         sa.Column("engine_type", sa.String(length=20), server_default="rule", nullable=False),
         sa.Column("provider_name", sa.String(length=120), nullable=True),
         sa.Column("model_name", sa.String(length=120), nullable=True),
@@ -198,7 +199,7 @@ def _add_document_analysis_columns() -> None:
 
 
 def _add_usage_log_columns() -> None:
-    columns = (
+    columns: tuple[sa.Column[Any], ...] = (
         sa.Column("analysis_id", sa.Uuid(), nullable=True),
         sa.Column("provider_name", sa.String(length=120), nullable=True),
         sa.Column("model_name", sa.String(length=120), nullable=True),

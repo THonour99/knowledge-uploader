@@ -95,6 +95,17 @@ class AiProvider(Base):
             "pricing_currency ~ '^[A-Z]{3}$'",
             name="ck_ai_providers_pricing_currency",
         ),
+        CheckConstraint(
+            "(pricing_configured AND "
+            "pricing_confirmed_input_microunits_per_million IS NOT NULL AND "
+            "pricing_confirmed_output_microunits_per_million IS NOT NULL AND "
+            "pricing_confirmed_currency IS NOT NULL) OR "
+            "(NOT pricing_configured AND "
+            "pricing_confirmed_input_microunits_per_million IS NULL AND "
+            "pricing_confirmed_output_microunits_per_million IS NULL AND "
+            "pricing_confirmed_currency IS NULL)",
+            name="ck_ai_providers_pricing_confirmation_basis",
+        ),
         Index("idx_ai_providers_enabled_priority", "enabled", "priority"),
         Index("uq_ai_providers_name", "name", unique=True),
     )
@@ -123,6 +134,12 @@ class AiProvider(Base):
     pricing_currency: Mapped[str] = mapped_column(
         String(3), nullable=False, server_default=sql_text("'USD'")
     )
+    pricing_configured: Mapped[bool] = mapped_column(
+        Boolean, nullable=False, server_default="false"
+    )
+    pricing_confirmed_input_microunits_per_million: Mapped[int | None] = mapped_column(BigInteger)
+    pricing_confirmed_output_microunits_per_million: Mapped[int | None] = mapped_column(BigInteger)
+    pricing_confirmed_currency: Mapped[str | None] = mapped_column(String(3))
     last_test_status: Mapped[str | None] = mapped_column(String(20))
     last_test_latency_ms: Mapped[int | None] = mapped_column(Integer)
     last_tested_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
@@ -301,6 +318,10 @@ class DocumentAnalysis(Base):
             name="ck_document_analysis_cost_non_negative",
         ),
         CheckConstraint(
+            "cost_status IN ('known', 'unknown_pricing', 'unknown_usage', 'legacy_unverifiable')",
+            name="ck_document_analysis_cost_status",
+        ),
+        CheckConstraint(
             "cost_currency ~ '^[A-Z]{3}$'",
             name="ck_document_analysis_cost_currency",
         ),
@@ -336,9 +357,13 @@ class DocumentAnalysis(Base):
     latency_ms: Mapped[int] = mapped_column(Integer, nullable=False, server_default="0")
     failure_category: Mapped[str | None] = mapped_column(String(40))
     estimated_cost_microunits: Mapped[int] = mapped_column(
-        BigInteger,
+        BigInteger, nullable=False, default=0, server_default="0"
+    )
+    cost_status: Mapped[str] = mapped_column(
+        String(40),
         nullable=False,
-        server_default="0",
+        default="legacy_unverifiable",
+        server_default=sql_text("'legacy_unverifiable'"),
     )
     cost_currency: Mapped[str] = mapped_column(
         String(3),
@@ -444,6 +469,15 @@ class AiUsageLog(Base):
             name="ck_ai_usage_logs_cost_non_negative",
         ),
         CheckConstraint(
+            "cost_status IN ('known', 'unknown_pricing', 'unknown_usage', 'legacy_unverifiable')",
+            name="ck_ai_usage_logs_cost_status",
+        ),
+        CheckConstraint(
+            "cost_status <> 'known' OR "
+            "(prompt_tokens IS NOT NULL AND completion_tokens IS NOT NULL)",
+            name="ck_ai_usage_logs_known_cost_usage",
+        ),
+        CheckConstraint(
             "cost_currency ~ '^[A-Z]{3}$'",
             name="ck_ai_usage_logs_cost_currency",
         ),
@@ -486,9 +520,12 @@ class AiUsageLog(Base):
     call_sequence: Mapped[int] = mapped_column(Integer, nullable=False, server_default="1")
     failure_category: Mapped[str | None] = mapped_column(String(40))
     estimated_cost_microunits: Mapped[int] = mapped_column(
-        BigInteger,
+        BigInteger, nullable=False, server_default="0"
+    )
+    cost_status: Mapped[str] = mapped_column(
+        String(40),
         nullable=False,
-        server_default="0",
+        server_default=sql_text("'legacy_unverifiable'"),
     )
     cost_currency: Mapped[str] = mapped_column(
         String(3), nullable=False, server_default=sql_text("'USD'")

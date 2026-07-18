@@ -238,7 +238,7 @@ async def test_null_outcome_timestamps_are_not_counted() -> None:
     assert counts == {"succeeded": 0, "failed": 0, "canceled": 0}
 
 
-async def test_cleanup_failed_rows_are_excluded_from_active_logical_storage() -> None:
+async def test_inactive_rows_are_excluded_from_active_logical_storage() -> None:
     from app.core.database import AsyncSessionFactory
     from app.workers.operational_metrics import _collect_logical_storage_bytes
 
@@ -276,6 +276,16 @@ async def test_cleanup_failed_rows_are_excluded_from_active_logical_storage() ->
                     last_sync_at=None,
                     size=303,
                 ),
+                _file(
+                    uploader_id=user_id,
+                    department_id=department_id,
+                    hash_value="3" * 64,
+                    status="disabled",
+                    parse_status="",
+                    ragflow_error=None,
+                    last_sync_at=None,
+                    size=404,
+                ),
             ]
         )
         await session.commit()
@@ -283,6 +293,18 @@ async def test_cleanup_failed_rows_are_excluded_from_active_logical_storage() ->
         logical_bytes = await _collect_logical_storage_bytes(session)
 
     assert logical_bytes == 101
+
+
+@pytest.mark.parametrize("interval_seconds", [30, 60, 300])
+async def test_collection_interval_accepts_supported_release_cadences(
+    monkeypatch: pytest.MonkeyPatch,
+    interval_seconds: int,
+) -> None:
+    from app.workers import operational_metrics
+
+    monkeypatch.setenv("OPERATIONAL_METRICS_INTERVAL_SECONDS", str(interval_seconds))
+
+    assert operational_metrics._collection_interval_seconds() == interval_seconds
 
 
 async def test_email_redis_failure_preserves_database_snapshot(
@@ -294,6 +316,7 @@ async def test_email_redis_failure_preserves_database_snapshot(
     database_updates: list[dict[str, object]] = []
     email_updates: list[dict[str, object]] = []
     component_results: list[tuple[str, bool]] = []
+    ragflow_updates: list[dict[str, object]] = []
 
     async def fake_collect_snapshot() -> operational_metrics.OperationalSnapshot:
         return operational_metrics.OperationalSnapshot(
@@ -306,11 +329,23 @@ async def test_email_redis_failure_preserves_database_snapshot(
             collected_at=collected_at,
         )
 
+    async def fake_capacity(_settings: object) -> object:
+        return SimpleNamespace(captured_at=collected_at)
+
+    async def fake_reconciliation() -> object:
+        return SimpleNamespace(stale_started_count=2, recovered_count=1)
+
     async def fail_email_metrics(*, redis_url: str) -> object:
         assert redis_url
         raise OSError("redis unavailable with sensitive endpoint")
 
     monkeypatch.setattr(operational_metrics, "collect_snapshot", fake_collect_snapshot)
+    monkeypatch.setattr(operational_metrics, "collect_and_persist_minio_capacity", fake_capacity)
+    monkeypatch.setattr(
+        operational_metrics,
+        "reconcile_stale_ragflow_api_calls",
+        fake_reconciliation,
+    )
     monkeypatch.setattr(
         operational_metrics,
         "read_email_delivery_metrics",
@@ -325,6 +360,11 @@ async def test_email_redis_failure_preserves_database_snapshot(
         operational_metrics,
         "update_email_delivery_snapshot",
         lambda **values: email_updates.append(values),
+    )
+    monkeypatch.setattr(
+        operational_metrics,
+        "update_ragflow_call_telemetry_health",
+        lambda **values: ragflow_updates.append(values),
     )
     monkeypatch.setattr(operational_metrics, "update_db_pool", lambda **_values: None)
     monkeypatch.setattr(
@@ -359,7 +399,13 @@ async def test_email_redis_failure_preserves_database_snapshot(
         }
     ]
     assert email_updates == []
-    assert component_results == [("database", True), ("email_redis", False)]
+    assert ragflow_updates == [{"stale_started": 2, "recovered": 1}]
+    assert component_results == [
+        ("database", True),
+        ("minio_capacity", True),
+        ("ragflow_call_telemetry", True),
+        ("email_redis", False),
+    ]
 
 
 async def _owner(session: AsyncSession, *, suffix: str) -> tuple[UUID, UUID]:

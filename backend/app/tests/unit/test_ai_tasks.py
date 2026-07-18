@@ -1393,6 +1393,10 @@ async def test_formal_llm_repair_records_each_call_and_cost(
                 is_internal=True,
                 enabled=True,
                 priority=1,
+                pricing_configured=True,
+                pricing_confirmed_input_microunits_per_million=2_000_000,
+                pricing_confirmed_output_microunits_per_million=4_000_000,
+                pricing_confirmed_currency="CNY",
                 input_price_microunits_per_million_tokens=2_000_000,
                 output_price_microunits_per_million_tokens=4_000_000,
                 pricing_currency="CNY",
@@ -1606,6 +1610,7 @@ async def test_external_provider_blocked_by_policy_fails_closed() -> None:
     assert analysis.engine_type == "hybrid"
     assert analysis.provider_id == provider.id
     assert analysis.failure_category == "request_rejected"
+    assert file.ai_config_snapshot is not None
     assert file.ai_config_snapshot["provider_id"] == str(provider.id)
     assert storage.calls == 1
 

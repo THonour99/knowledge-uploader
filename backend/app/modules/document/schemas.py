@@ -157,7 +157,13 @@ class FileAnalysisDetail(BaseModel):
     completion_tokens: int = 0
     latency_ms: int = 0
     failure_category: str | None = None
-    estimated_cost_microunits: int = 0
+    cost_status: Literal[
+        "known",
+        "unknown_pricing",
+        "unknown_usage",
+        "legacy_unverifiable",
+    ] = "legacy_unverifiable"
+    estimated_cost_microunits: int | None = Field(default=None, ge=0)
     cost_currency: str = "USD"
     summary: str | None
     sensitive_risk_level: str
@@ -169,9 +175,18 @@ class FileAnalysisDetail(BaseModel):
     error_message: str | None
     finished_at: datetime | None
 
+    @model_validator(mode="after")
+    def enforce_cost_contract(self) -> Self:
+        if self.cost_status == "known":
+            if self.estimated_cost_microunits is None:
+                raise ValueError("known cost_status requires a non-negative estimated cost")
+            return self
+        self.estimated_cost_microunits = None
+        return self
+
     @field_serializer("estimated_cost_microunits")
-    def serialize_estimated_cost(self, value: int) -> str:
-        return str(value)
+    def serialize_estimated_cost(self, value: int | None) -> str | None:
+        return str(value) if value is not None else None
 
 
 class VersionChainItem(BaseModel):

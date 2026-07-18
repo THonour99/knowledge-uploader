@@ -32,6 +32,7 @@ MAX_IN_MEMORY_UPLOAD_BYTES = 200 * 1024 * 1024
 DEFAULT_SMTP_PORT = 587
 DEFAULT_SMTP_TIMEOUT_SECONDS = 10.0
 MAX_SMTP_TIMEOUT_SECONDS = 300.0
+MINIO_METRICS_ONLY_CREDENTIAL = "metrics-bearer-only-no-data-plane"
 
 
 class Settings(BaseSettings):
@@ -58,6 +59,7 @@ class Settings(BaseSettings):
     minio_bucket: str = "knowledge-files"
     minio_secure: bool = False
     minio_ca_cert_file: str = ""
+    minio_metrics_bearer_token_file: str = ""
     upload_max_file_size_bytes: int = Field(
         default=50 * 1024 * 1024,
         ge=1,
@@ -166,6 +168,23 @@ class Settings(BaseSettings):
             raise ValueError(msg)
         if not self.minio_ca_cert_file.strip():
             msg = "MINIO_CA_CERT_FILE must be configured in protected environments"
+            raise ValueError(msg)
+        metrics_access = self.minio_access_key == MINIO_METRICS_ONLY_CREDENTIAL
+        metrics_secret = self.minio_secret_key == MINIO_METRICS_ONLY_CREDENTIAL
+        if metrics_access != metrics_secret:
+            msg = "MinIO metrics-only credentials must be configured as a pair"
+            raise ValueError(msg)
+        has_metrics_token_file = bool(self.minio_metrics_bearer_token_file.strip())
+        if metrics_access and not has_metrics_token_file:
+            msg = (
+                "MINIO_METRICS_BEARER_TOKEN_FILE must be configured "
+                "for the protected metrics consumer"
+            )
+            raise ValueError(msg)
+        if not metrics_access and has_metrics_token_file:
+            msg = (
+                "MINIO_METRICS_BEARER_TOKEN_FILE is restricted " "to the protected metrics consumer"
+            )
             raise ValueError(msg)
         if not smtp_configured:
             msg = "SMTP must be configured in protected environments"

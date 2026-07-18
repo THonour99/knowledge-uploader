@@ -76,6 +76,7 @@ class File(Base):
             name="ck_files_review_status",
         ),
         Index("idx_files_uploader_uploaded_at", "uploader_id", "uploaded_at"),
+        Index("idx_files_uploaded_at", "uploaded_at"),
         Index("idx_files_uploader_status", "uploader_id", "status"),
         Index("idx_files_department_id", "department_id"),
         Index("idx_files_department_uploaded_at", "department_id", "uploaded_at"),

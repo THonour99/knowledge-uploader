@@ -2,9 +2,11 @@ from __future__ import annotations
 
 import json
 import uuid
-from typing import cast
+from datetime import UTC, datetime
+from typing import Literal, cast
 
 import pytest
+from sqlalchemy import Table
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.config import Settings
@@ -25,6 +27,7 @@ from app.modules.ai.llm_analysis import (
 )
 from app.modules.ai.models import AiProvider
 from app.modules.ai.repository import AiCategoryRecord, AiRepository  # noqa: TID251
+from app.modules.ai.schemas import AiProviderResponse
 from app.modules.ai.service import (  # noqa: TID251
     AiAnalysisService,
     AiConfigService,
@@ -227,8 +230,21 @@ def test_cost_rounds_up_and_rejects_unsafe_bounds() -> None:
         checked_persisted_sum(MAX_POSTGRES_BIGINT, 1, maximum=MAX_POSTGRES_BIGINT)
 
 
-def test_file_analysis_cost_serializes_losslessly() -> None:
-    value = 9_007_199_254_740_993_123_456
+@pytest.mark.parametrize(
+    ("cost_status", "stored_cost", "expected_api_cost"),
+    [
+        ("known", 0, "0"),
+        ("known", 9_007_199_254_740_993, "9007199254740993"),
+        ("unknown_pricing", 0, None),
+        ("unknown_usage", 42, None),
+        ("legacy_unverifiable", 73, None),
+    ],
+)
+def test_file_analysis_cost_model_preserves_four_state_api_contract(
+    cost_status: Literal["known", "unknown_pricing", "unknown_usage", "legacy_unverifiable"],
+    stored_cost: int | None,
+    expected_api_cost: str | None,
+) -> None:
     detail = FileAnalysisDetail(
         status="succeeded",
         summary=None,
@@ -236,10 +252,63 @@ def test_file_analysis_cost_serializes_losslessly() -> None:
         extracted_text_preview=None,
         error_message=None,
         finished_at=None,
-        estimated_cost_microunits=value,
+        cost_status=cost_status,
+        estimated_cost_microunits=stored_cost,
     )
 
-    assert detail.model_dump(mode="json")["estimated_cost_microunits"] == str(value)
+    payload = detail.model_dump(mode="json")
+    assert payload["cost_status"] == cost_status
+    assert payload["estimated_cost_microunits"] == expected_api_cost
+    if cost_status != "known":
+        assert detail.estimated_cost_microunits is None
+
+
+@pytest.mark.parametrize("stored_cost", [None, -1])
+def test_file_analysis_known_cost_requires_non_negative_amount(
+    stored_cost: int | None,
+) -> None:
+    with pytest.raises(ValueError, match=r"non-negative estimated cost|greater than or equal to 0"):
+        FileAnalysisDetail(
+            status="succeeded",
+            summary=None,
+            sensitive_risk_level="none",
+            extracted_text_preview=None,
+            error_message=None,
+            finished_at=None,
+            cost_status="known",
+            estimated_cost_microunits=stored_cost,
+        )
+
+
+def test_ai_provider_response_accepts_legacy_payload_without_pricing_status() -> None:
+    now = datetime.now(UTC)
+    response = AiProviderResponse(
+        id=uuid.uuid4(),
+        name="legacy-provider",
+        provider_type="openai_compatible",
+        base_url=None,
+        chat_model=None,
+        is_internal=True,
+        enabled=True,
+        priority=1,
+        timeout_seconds=60,
+        max_retry_count=2,
+        max_input_tokens=None,
+        max_output_tokens=None,
+        temperature=0.2,
+        top_p=None,
+        input_price_microunits_per_million_tokens=0,
+        output_price_microunits_per_million_tokens=0,
+        pricing_currency="USD",
+        has_api_key=False,
+        api_key_masked=None,
+        last_test_status=None,
+        last_test_latency_ms=None,
+        last_tested_at=None,
+        created_at=now,
+        updated_at=now,
+    )
+    assert response.pricing_configured is None
 
 
 @pytest.mark.parametrize(
@@ -298,7 +367,7 @@ def test_mock_provider_is_rejected_in_protected_environment() -> None:
 def test_provider_model_runtime_limit_constraints_match_api_contract() -> None:
     constraint_names = {
         constraint.name
-        for constraint in AiProvider.__table__.constraints
+        for constraint in cast(Table, AiProvider.__table__).constraints
         if constraint.name is not None
     }
     assert {
@@ -309,6 +378,7 @@ def test_provider_model_runtime_limit_constraints_match_api_contract() -> None:
         "ck_ai_providers_max_output_tokens_range",
         "ck_ai_providers_temperature_range",
         "ck_ai_providers_top_p_range",
+        "ck_ai_providers_pricing_confirmation_basis",
     }.issubset(constraint_names)
 
 

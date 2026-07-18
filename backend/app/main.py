@@ -33,6 +33,7 @@ from app.modules.department.api import router as department_router
 from app.modules.document.api import admin_router as document_admin_router
 from app.modules.document.api import policy_router as document_policy_router
 from app.modules.document.api import router as document_router
+from app.modules.governance_metrics.api import router as governance_metrics_router
 from app.modules.notification.api import router as notification_router
 from app.modules.ragflow.api import router as ragflow_router
 from app.modules.review.api import router as review_router
@@ -54,6 +55,7 @@ app.include_router(department_managed_router)
 app.include_router(document_admin_router)
 app.include_router(document_router)
 app.include_router(document_policy_router)
+app.include_router(governance_metrics_router)
 app.include_router(notification_router)
 app.include_router(ragflow_router)
 app.include_router(review_router)

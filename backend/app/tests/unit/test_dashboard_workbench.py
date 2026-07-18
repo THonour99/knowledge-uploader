@@ -169,6 +169,7 @@ async def _create_notification(
                 title=title,
                 body=f"{title} body",
                 metadata_json=metadata or {},
+                delivery_status="pending" if channel == "email" else "not_applicable",
                 created_at=created_at,
             )
         )

@@ -566,7 +566,12 @@ class DocumentService:
                     completion_tokens=analysis.completion_tokens,
                     latency_ms=analysis.latency_ms,
                     failure_category=analysis.failure_category,
-                    estimated_cost_microunits=analysis.estimated_cost_microunits,
+                    cost_status=analysis.cost_status,
+                    estimated_cost_microunits=(
+                        analysis.estimated_cost_microunits
+                        if analysis.cost_status == "known"
+                        else None
+                    ),
                     cost_currency=analysis.cost_currency,
                     summary=analysis.summary,
                     sensitive_risk_level=analysis.sensitive_risk_level,

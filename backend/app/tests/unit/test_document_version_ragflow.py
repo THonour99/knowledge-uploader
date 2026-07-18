@@ -5,10 +5,14 @@ from collections.abc import AsyncGenerator
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from importlib import import_module
+from typing import TYPE_CHECKING
 
 import pytest
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
+
+if TYPE_CHECKING:
+    from app.adapters.ragflow.base import RagflowDocumentStatus, RagflowUploadResult
 
 pytestmark = pytest.mark.asyncio
 
@@ -30,6 +34,27 @@ class MetadataClient:
         self.fail_calls = fail_calls or set()
         self.not_found_calls = not_found_calls or set()
         self.calls: list[dict[str, object]] = []
+
+    async def ping(self) -> bool:
+        raise AssertionError("unexpected ping")
+
+    async def upload_document(
+        self,
+        *,
+        dataset_id: str,
+        filename: str,
+        content: bytes,
+        content_type: str,
+    ) -> RagflowUploadResult:
+        raise AssertionError("unexpected document upload")
+
+    async def find_document_by_name(
+        self,
+        *,
+        dataset_id: str,
+        name: str,
+    ) -> RagflowUploadResult | None:
+        raise AssertionError("unexpected document lookup")
 
     async def update_document_metadata(
         self,
@@ -66,6 +91,17 @@ class MetadataClient:
             raise RagflowDocumentNotFoundError
         if call_number in self.fail_calls:
             raise RuntimeError("synthetic remote cleanup failure")
+
+    async def start_parse(self, *, dataset_id: str, document_id: str) -> None:
+        raise AssertionError("unexpected parse start")
+
+    async def get_document_status(
+        self,
+        *,
+        dataset_id: str,
+        document_id: str,
+    ) -> RagflowDocumentStatus:
+        raise AssertionError("unexpected document status lookup")
 
 
 async def _reset_database() -> None:
@@ -234,11 +270,7 @@ async def test_version_switch_recovers_old_remote_failure_and_records_candidate_
     assert "object_key" not in candidate_metadata
 
     with pytest.raises(RagflowVersionSwitchError):
-        await service._complete_version_switch(
-            task=task,
-            file=candidate,
-            ragflow_client=client,  # type: ignore[arg-type]
-        )
+        await service._complete_version_switch(task=task, file=candidate, ragflow_client=client)
     failed = await repository.get_file(seed.candidate_id)
     predecessor = await repository.get_file(seed.predecessor_id)
     assert failed is not None and predecessor is not None
@@ -252,9 +284,7 @@ async def test_version_switch_recovers_old_remote_failure_and_records_candidate_
     candidate = await repository.get_file(seed.candidate_id)
     assert task is not None and candidate is not None
     completed = await service._complete_version_switch(
-        task=task,
-        file=candidate,
-        ragflow_client=client,  # type: ignore[arg-type]
+        task=task, file=candidate, ragflow_client=client
     )
     assert completed.version_switch_status == "completed"
     assert completed.version_switch_error is None
@@ -391,11 +421,7 @@ async def test_candidate_remote_activation_is_idempotent_after_database_failure(
     assert task is not None and candidate is not None
 
     with pytest.raises(RuntimeError, match="database finish failure"):
-        await service._complete_version_switch(
-            task=task,
-            file=candidate,
-            ragflow_client=client,  # type: ignore[arg-type]
-        )
+        await service._complete_version_switch(task=task, file=candidate, ragflow_client=client)
     await version_session.rollback()
 
     repository = RagflowTaskRepository(version_session)
@@ -418,9 +444,7 @@ async def test_candidate_remote_activation_is_idempotent_after_database_failure(
 
     retry_service = RagflowTaskService(session=version_session, repository=repository)
     completed = await retry_service._complete_version_switch(
-        task=task,
-        file=interrupted,
-        ragflow_client=client,  # type: ignore[arg-type]
+        task=task, file=interrupted, ragflow_client=client
     )
     assert completed.version_switch_status == "completed"
     assert [call["document_id"] for call in client.calls] == [
@@ -460,9 +484,7 @@ async def test_archive_snapshot_preserves_predecessor_and_marks_it_non_current(
 
     client = MetadataClient()
     completed = await service._complete_version_switch(
-        task=task,
-        file=candidate,
-        ragflow_client=client,  # type: ignore[arg-type]
+        task=task, file=candidate, ragflow_client=client
     )
 
     assert completed.version_switch_status == "completed"

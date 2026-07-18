@@ -10,6 +10,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.adapters.ragflow.base import RagflowClientError
 from app.adapters.ragflow.http import HttpRagflowClient, redact_secret
+from app.adapters.ragflow.instrumented import InstrumentedRagflowClient
 from app.core.access_scope import ScopedAdminDep
 from app.core.database import get_session
 from app.core.deps import get_current_user
@@ -235,10 +236,12 @@ async def test_ragflow_connection(
     start = time.monotonic()
     ok = True
     error_summary: str | None = None
-    client = HttpRagflowClient(
-        base_url=base_url,
-        api_key=api_key,
-        timeout_seconds=timeout_seconds,
+    client = InstrumentedRagflowClient(
+        HttpRagflowClient(
+            base_url=base_url,
+            api_key=api_key,
+            timeout_seconds=timeout_seconds,
+        )
     )
     try:
         await client.check_connection()

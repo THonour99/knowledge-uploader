@@ -15,6 +15,7 @@ from app.adapters.ragflow.base import (
     RagflowSubmissionOutcomeUnknownError,
     RagflowUploadResult,
 )
+from app.adapters.ragflow.instrumented import InstrumentedRagflowClient
 from app.core.access_scope import DepartmentAccessScope
 from app.core.audit import record_admin_audit_log
 from app.core.config import get_settings
@@ -62,6 +63,16 @@ SYNC_READY_STATUSES = {
     "parsed",
     "failed",
 }
+
+
+def _instrument_ragflow_client(
+    client: RagflowClient,
+    *,
+    department_id: uuid.UUID | None,
+) -> RagflowClient:
+    if isinstance(client, InstrumentedRagflowClient):
+        return client
+    return InstrumentedRagflowClient(client, department_id=department_id)
 
 
 class RagflowObjectStorage(Protocol):
@@ -682,6 +693,10 @@ class RagflowTaskService:
         file = await self._repository.get_file(task.file_id)
         if file is None:
             raise RagflowSyncPreconditionError
+        ragflow_client = _instrument_ragflow_client(
+            ragflow_client,
+            department_id=file.department_id,
+        )
         dataset_id = await self._require_sync_target(file)
         document_id = file.ragflow_document_id
         if document_id:
@@ -891,6 +906,10 @@ class RagflowTaskService:
         file = await self._repository.get_file(task.file_id)
         if file is None:
             raise RagflowSyncPreconditionError
+        ragflow_client = _instrument_ragflow_client(
+            ragflow_client,
+            department_id=file.department_id,
+        )
         dataset_id = await self._require_sync_target(file)
         document_id = file.ragflow_document_id
         if document_id is None or not document_id.strip():
@@ -1028,6 +1047,10 @@ class RagflowTaskService:
                 expected_lease_token=task.lease_token,
             )
 
+        ragflow_client = _instrument_ragflow_client(
+            ragflow_client,
+            department_id=file.department_id,
+        )
         document_id = file.ragflow_document_id
         if document_id is None or not document_id.strip():
             await self._repository.add_log(

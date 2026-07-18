@@ -1341,6 +1341,7 @@ async def test_replacement_config_failure_never_orphans_or_deletes_storage(
     duplicate_content: bool,
 ) -> None:
     from app.core.database import AsyncSessionFactory
+    from app.core.runtime_config import get_config as original_get_config
     from app.modules.document import service as document_service  # noqa: TID251
     from app.modules.document.models import File
 
@@ -1359,8 +1360,6 @@ async def test_replacement_config_failure_never_orphans_or_deletes_storage(
         predecessor.ragflow_parse_status = "DONE"
         predecessor.remote_visibility = "current"
         await session.commit()
-
-    original_get_config = document_service.get_config
 
     async def failing_get_config(key: str) -> object:
         if key == "ragflow.keep_replaced_remote":

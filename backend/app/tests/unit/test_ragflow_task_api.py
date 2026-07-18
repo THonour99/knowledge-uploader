@@ -827,11 +827,11 @@ async def test_incomplete_version_switch_cancel_and_exhausted_reconcile_are_safe
     assert cancel.json()["message"] == "an incomplete version switch task cannot be canceled"
 
     async with AsyncSessionFactory() as session:
-        task = await session.get(SyncTask, task_id)
-        assert task is not None
-        task.status = "failed"
-        task.error_message = "version activation interrupted"
-        task.reconcile_attempt_count = 3
+        failed_task = await session.get(SyncTask, task_id)
+        assert failed_task is not None
+        failed_task.status = "failed"
+        failed_task.error_message = "version activation interrupted"
+        failed_task.reconcile_attempt_count = 3
         await session.commit()
 
     ordinary_retry = await task_client.post(
@@ -854,9 +854,9 @@ async def test_incomplete_version_switch_cancel_and_exhausted_reconcile_are_safe
     assert data["max_retry_count"] == 3
 
     async with AsyncSessionFactory() as session:
-        task = await session.get(SyncTask, task_id)
-        assert task is not None
-        assert task.reconcile_attempt_count == 0
+        queued_task = await session.get(SyncTask, task_id)
+        assert queued_task is not None
+        assert queued_task.reconcile_attempt_count == 0
         queued_events_before = list(
             (
                 await session.execute(

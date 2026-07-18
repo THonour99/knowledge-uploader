@@ -14,6 +14,16 @@ from sqlalchemy.ext.asyncio import AsyncSession
 pytestmark = pytest.mark.asyncio
 
 
+def _changed_fields(metadata: dict[str, object]) -> set[str]:
+    raw_fields = metadata.get("changed_fields")
+    assert isinstance(raw_fields, list)
+    fields: set[str] = set()
+    for field in raw_fields:
+        assert isinstance(field, str)
+        fields.add(field)
+    return fields
+
+
 async def _reset_database() -> None:
     import_module("app.db.models")
 
@@ -369,10 +379,14 @@ async def test_provider_key_is_encrypted_and_masked(ai_client: AsyncClient) -> N
     assert provider_data["input_price_microunits_per_million_tokens"] == 5_000_000
     assert provider_data["output_price_microunits_per_million_tokens"] == 10_000_000
     assert provider_data["pricing_currency"] == "CNY"
+    assert provider_data["pricing_configured"] is True
     async with AsyncSessionFactory() as session:
         stored_provider = await session.get(AiProvider, UUID(provider_data["id"]))
         assert stored_provider is not None
         assert stored_provider.api_key_encrypted != "sk-live-secret"
+        assert stored_provider.pricing_confirmed_input_microunits_per_million == 5_000_000
+        assert stored_provider.pricing_confirmed_output_microunits_per_million == 10_000_000
+        assert stored_provider.pricing_confirmed_currency == "CNY"
         assert (
             decrypt_api_key(
                 stored_provider.api_key_encrypted or "",
@@ -411,25 +425,202 @@ async def test_provider_key_is_encrypted_and_masked(ai_client: AsyncClient) -> N
         assert "'pricing_currency': 'CNY'" in audit_metadata
         assert "'input_price_microunits_per_million_tokens': 5000000" in audit_metadata
         assert "'output_price_microunits_per_million_tokens': 10000000" in audit_metadata
-        assert "pricing_currency" in audit_log.metadata_json["changed_fields"]
-        assert (
-            "input_price_microunits_per_million_tokens" in audit_log.metadata_json["changed_fields"]
-        )
-        assert (
-            "output_price_microunits_per_million_tokens"
-            in audit_log.metadata_json["changed_fields"]
-        )
-        assert "api_key_rotated" in audit_log.metadata_json["changed_fields"]
+        create_changed_fields = _changed_fields(audit_log.metadata_json)
+        assert "pricing_currency" in create_changed_fields
+        assert "pricing_configured" in create_changed_fields
+        assert "input_price_microunits_per_million_tokens" in create_changed_fields
+        assert "output_price_microunits_per_million_tokens" in create_changed_fields
+        assert "api_key_rotated" in create_changed_fields
         update_result = await session.execute(
             select(AuditLog).where(AuditLog.action == "ai.provider.update")
         )
         update_metadata = [log.metadata_json for log in update_result.scalars()]
-        changed_field_sets = [set(metadata["changed_fields"]) for metadata in update_metadata]
+        changed_field_sets = [_changed_fields(metadata) for metadata in update_metadata]
         assert any({"base_url", "api_key_rotated"} <= fields for fields in changed_field_sets)
         assert any("api_key_cleared" in fields for fields in changed_field_sets)
         update_audit_text = str(update_metadata)
         assert rotated_secret not in update_audit_text
         assert safe_base_url not in update_audit_text
+
+
+async def test_provider_pricing_confirmation_fails_closed_on_drift_and_can_be_reconfirmed(
+    ai_client: AsyncClient,
+) -> None:
+    from sqlalchemy import select
+
+    from app.core.database import AsyncSessionFactory
+    from app.modules.ai.models import AiProvider
+    from app.modules.audit.models import AuditLog
+
+    await _create_user(email="pricing@company.com", password="password123", role="system_admin")
+    token = await _login(ai_client, email="pricing@company.com", password="password123")
+    headers = {"Authorization": f"Bearer {token}"}
+
+    created_response = await ai_client.post(
+        "/api/admin/ai/providers",
+        headers=headers,
+        json={
+            "name": "价格确认供应商",
+            "provider_type": "mock",
+            "chat_model": "mock-chat",
+            "input_price_microunits_per_million_tokens": 10,
+            "output_price_microunits_per_million_tokens": 20,
+            "pricing_currency": "USD",
+        },
+    )
+    assert created_response.status_code == 201
+    provider_id = UUID(created_response.json()["data"]["id"])
+    assert created_response.json()["data"]["pricing_configured"] is True
+
+    async with AsyncSessionFactory() as session:
+        provider = await session.get(AiProvider, provider_id)
+        assert provider is not None
+        # Simulate a rolling old writer that changes pricing but cannot update the
+        # confirmation basis.
+        provider.pricing_currency = "CNY"
+        await session.commit()
+
+    config_response = await ai_client.get("/api/admin/ai/config", headers=headers)
+    assert config_response.status_code == 200
+    provider_data = next(
+        item
+        for item in config_response.json()["data"]["providers"]
+        if item["id"] == str(provider_id)
+    )
+    assert provider_data["pricing_configured"] is False
+
+    unrelated_response = await ai_client.patch(
+        f"/api/admin/ai/providers/{provider_id}",
+        headers=headers,
+        json={"priority": 77},
+    )
+    assert unrelated_response.status_code == 200
+    assert unrelated_response.json()["data"]["pricing_configured"] is False
+
+    all_null_response = await ai_client.patch(
+        f"/api/admin/ai/providers/{provider_id}",
+        headers=headers,
+        json={
+            "input_price_microunits_per_million_tokens": None,
+            "output_price_microunits_per_million_tokens": None,
+            "pricing_currency": None,
+        },
+    )
+    assert all_null_response.status_code == 200
+    assert all_null_response.json()["data"]["pricing_configured"] is False
+
+    single_null_response = await ai_client.patch(
+        f"/api/admin/ai/providers/{provider_id}",
+        headers=headers,
+        json={"pricing_currency": None, "priority": 78},
+    )
+    assert single_null_response.status_code == 200
+    assert single_null_response.json()["data"]["pricing_configured"] is False
+
+    async with AsyncSessionFactory() as session:
+        update_audits = (
+            (
+                await session.execute(
+                    select(AuditLog).where(
+                        AuditLog.action == "ai.provider.update",
+                        AuditLog.target_id == provider_id,
+                    )
+                )
+            )
+            .scalars()
+            .all()
+        )
+        null_patch_audit = next(
+            log.metadata_json for log in update_audits if log.metadata_json["changed_fields"] == []
+        )
+        assert null_patch_audit["pricing_configured"] is False
+        assert "pricing_configured" not in _changed_fields(null_patch_audit)
+
+    reconfirmed_response = await ai_client.patch(
+        f"/api/admin/ai/providers/{provider_id}",
+        headers=headers,
+        json={"pricing_configured": True, "pricing_currency": None},
+    )
+    assert reconfirmed_response.status_code == 200
+    assert reconfirmed_response.json()["data"]["pricing_configured"] is True
+
+    async with AsyncSessionFactory() as session:
+        provider = await session.get(AiProvider, provider_id)
+        assert provider is not None
+        assert provider.pricing_confirmed_input_microunits_per_million == 10
+        assert provider.pricing_confirmed_output_microunits_per_million == 20
+        assert provider.pricing_confirmed_currency == "CNY"
+        provider.pricing_currency = "EUR"
+        await session.commit()
+
+    currency_only_response = await ai_client.patch(
+        f"/api/admin/ai/providers/{provider_id}",
+        headers=headers,
+        json={"pricing_currency": "USD"},
+    )
+    assert currency_only_response.status_code == 200
+    assert currency_only_response.json()["data"]["pricing_configured"] is True
+
+    async with AsyncSessionFactory() as session:
+        provider = await session.get(AiProvider, provider_id)
+        assert provider is not None
+        provider.input_price_microunits_per_million_tokens = 11
+        await session.commit()
+
+    price_only_response = await ai_client.patch(
+        f"/api/admin/ai/providers/{provider_id}",
+        headers=headers,
+        json={"output_price_microunits_per_million_tokens": 21},
+    )
+    assert price_only_response.status_code == 200
+    assert price_only_response.json()["data"]["pricing_configured"] is True
+
+    async with AsyncSessionFactory() as session:
+        provider = await session.get(AiProvider, provider_id)
+        assert provider is not None
+        assert provider.pricing_confirmed_input_microunits_per_million == 11
+        assert provider.pricing_confirmed_output_microunits_per_million == 21
+        assert provider.pricing_confirmed_currency == "USD"
+
+    explicit_free_response = await ai_client.patch(
+        f"/api/admin/ai/providers/{provider_id}",
+        headers=headers,
+        json={
+            "input_price_microunits_per_million_tokens": 0,
+            "output_price_microunits_per_million_tokens": 0,
+            "pricing_configured": True,
+        },
+    )
+    assert explicit_free_response.status_code == 200
+    assert explicit_free_response.json()["data"]["pricing_configured"] is True
+
+    async with AsyncSessionFactory() as session:
+        provider = (
+            await session.execute(select(AiProvider).where(AiProvider.id == provider_id))
+        ).scalar_one()
+        assert provider.pricing_confirmed_input_microunits_per_million == 0
+        assert provider.pricing_confirmed_output_microunits_per_million == 0
+        assert provider.pricing_confirmed_currency == "USD"
+
+    cancelled_response = await ai_client.patch(
+        f"/api/admin/ai/providers/{provider_id}",
+        headers=headers,
+        json={
+            "input_price_microunits_per_million_tokens": 5,
+            "pricing_configured": False,
+        },
+    )
+    assert cancelled_response.status_code == 200
+    assert cancelled_response.json()["data"]["pricing_configured"] is False
+
+    async with AsyncSessionFactory() as session:
+        provider = await session.get(AiProvider, provider_id)
+        assert provider is not None
+        assert provider.pricing_configured is False
+        assert provider.pricing_confirmed_input_microunits_per_million is None
+        assert provider.pricing_confirmed_output_microunits_per_million is None
+        assert provider.pricing_confirmed_currency is None
+        assert provider.input_price_microunits_per_million_tokens == 5
 
 
 async def test_short_provider_key_is_never_returned_or_audited(
@@ -469,7 +660,7 @@ async def test_short_provider_key_is_never_returned_or_audited(
         )
         audit_log = result.scalar_one()
         assert raw_secret not in str(audit_log.metadata_json)
-        assert "api_key_rotated" in audit_log.metadata_json["changed_fields"]
+        assert "api_key_rotated" in _changed_fields(audit_log.metadata_json)
 
 
 async def test_update_feature_writes_audit_log(ai_client: AsyncClient) -> None:

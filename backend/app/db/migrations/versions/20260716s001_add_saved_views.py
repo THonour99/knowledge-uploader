@@ -7,7 +7,8 @@ Create Date: 2026-07-17 10:30:00.000000
 
 from __future__ import annotations
 
-from collections.abc import Sequence
+from collections.abc import Callable, Sequence
+from typing import cast
 
 import sqlalchemy as sa
 from alembic import op
@@ -19,6 +20,7 @@ branch_labels: str | Sequence[str] | None = None
 depends_on: str | Sequence[str] | None = None
 
 _ROLLBACK_BACKUP_TABLE = "saved_views_rollback_backup"
+_JSONB_FACTORY = cast(Callable[..., sa.types.TypeEngine[object]], postgresql.JSONB)
 
 
 def upgrade() -> None:
@@ -40,8 +42,8 @@ def upgrade() -> None:
         sa.Column("page_key", sa.String(length=40), nullable=False),
         sa.Column("name", sa.String(length=80), nullable=False),
         sa.Column("definition_schema_version", sa.SmallInteger(), nullable=False),
-        sa.Column("query_definition", postgresql.JSONB(astext_type=sa.Text()), nullable=False),
-        sa.Column("column_preferences", postgresql.JSONB(astext_type=sa.Text()), nullable=False),
+        sa.Column("query_definition", _JSONB_FACTORY(astext_type=sa.Text()), nullable=False),
+        sa.Column("column_preferences", _JSONB_FACTORY(astext_type=sa.Text()), nullable=False),
         sa.Column(
             "row_version",
             sa.Integer(),
@@ -166,8 +168,8 @@ def _create_rollback_backup() -> None:
         sa.Column("page_key", sa.String(length=40), nullable=False),
         sa.Column("name", sa.String(length=80), nullable=False),
         sa.Column("definition_schema_version", sa.SmallInteger(), nullable=False),
-        sa.Column("query_definition", postgresql.JSONB(astext_type=sa.Text()), nullable=False),
-        sa.Column("column_preferences", postgresql.JSONB(astext_type=sa.Text()), nullable=False),
+        sa.Column("query_definition", _JSONB_FACTORY(astext_type=sa.Text()), nullable=False),
+        sa.Column("column_preferences", _JSONB_FACTORY(astext_type=sa.Text()), nullable=False),
         sa.Column("row_version", sa.Integer(), nullable=False),
         sa.Column("created_at", sa.DateTime(timezone=True), nullable=False),
         sa.Column("updated_at", sa.DateTime(timezone=True), nullable=False),

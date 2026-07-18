@@ -2,11 +2,11 @@ from __future__ import annotations
 
 import math
 import time
-from collections.abc import Awaitable
+from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 from typing import cast
 
-from redis.asyncio import from_url
+from redis.asyncio import Redis, from_url
 
 EMAIL_DELIVERY_METRICS_KEY = "metrics:notification:email-delivery"
 EMAIL_DELIVERY_RESULTS = frozenset(
@@ -30,7 +30,7 @@ class EmailDeliveryMetricsSnapshot:
 async def record_email_delivery_result(*, redis_url: str, result: str) -> None:
     if result not in EMAIL_DELIVERY_RESULTS:
         raise ValueError("email delivery result is invalid")
-    client = from_url(
+    client = cast(Callable[..., Redis], from_url)(
         redis_url,
         encoding="utf-8",
         decode_responses=True,
@@ -48,7 +48,7 @@ async def record_email_delivery_result(*, redis_url: str, result: str) -> None:
 
 
 async def read_email_delivery_metrics(*, redis_url: str) -> EmailDeliveryMetricsSnapshot:
-    client = from_url(
+    client = cast(Callable[..., Redis], from_url)(
         redis_url,
         encoding="utf-8",
         decode_responses=True,
