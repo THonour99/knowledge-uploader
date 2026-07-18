@@ -26,6 +26,7 @@ from sqlalchemy.sql import Select
 
 from .models import (
     ACTIVE_SYNC_TASK_STATUSES,
+    SYNC_TASK_STATUSES,
     RagflowVersionOperation,
     SyncTask,
     SyncTaskLog,
@@ -237,19 +238,54 @@ class RagflowTaskRepository:
         self,
         *,
         file_id: uuid.UUID | None = None,
+        task_type: str | None = None,
+        status: str | None = None,
         department_ids: frozenset[uuid.UUID] | None = None,
-    ) -> list[SyncTask]:
+        sort: str = "created_at",
+        order: str = "desc",
+        limit: int = 20,
+        offset: int = 0,
+    ) -> tuple[list[SyncTask], int, dict[str, int]]:
+        status_counts = {task_status: 0 for task_status in SYNC_TASK_STATUSES}
         if department_ids is not None and not department_ids:
-            return []
-        query = select(SyncTask).order_by(SyncTask.created_at.desc(), SyncTask.id.desc())
+            return [], 0, status_counts
+        query = select(SyncTask)
+        status_counts_query = select(
+            SyncTask.status,
+            func.count(SyncTask.id),
+        ).group_by(SyncTask.status)
         if department_ids is not None:
             query = query.join(FILES, FILES.c.id == SyncTask.file_id).where(
                 FILES.c.department_id.in_(department_ids)
             )
+            status_counts_query = status_counts_query.join(
+                FILES, FILES.c.id == SyncTask.file_id
+            ).where(FILES.c.department_id.in_(department_ids))
         if file_id is not None:
             query = query.where(SyncTask.file_id == file_id)
-        result = await self._session.execute(query)
-        return list(result.scalars())
+            status_counts_query = status_counts_query.where(SyncTask.file_id == file_id)
+        if task_type is not None:
+            query = query.where(SyncTask.task_type == task_type)
+            status_counts_query = status_counts_query.where(SyncTask.task_type == task_type)
+        if status is not None:
+            query = query.where(SyncTask.status == status)
+            status_counts_query = status_counts_query.where(SyncTask.status == status)
+        sort_column = {
+            "created_at": SyncTask.created_at,
+            "updated_at": SyncTask.updated_at,
+            "started_at": SyncTask.started_at,
+            "finished_at": SyncTask.finished_at,
+        }[sort]
+        ordering = sort_column.asc() if order == "asc" else sort_column.desc()
+        id_ordering = SyncTask.id.asc() if order == "asc" else SyncTask.id.desc()
+        result = await self._session.execute(
+            query.order_by(ordering.nulls_last(), id_ordering).offset(offset).limit(limit)
+        )
+        status_count_rows = (await self._session.execute(status_counts_query)).all()
+        for task_status, count in status_count_rows:
+            status_counts[task_status] = int(count)
+        total = sum(status_counts.values())
+        return list(result.scalars()), total, status_counts
 
     async def get_task(self, task_id: uuid.UUID) -> SyncTask | None:
         result = await self._session.execute(select(SyncTask).where(SyncTask.id == task_id))
@@ -297,6 +333,29 @@ class RagflowTaskRepository:
             .order_by(SyncTaskLog.created_at.asc(), SyncTaskLog.id.asc())
         )
         return list(result.scalars())
+
+    async def list_logs_for_tasks(
+        self,
+        task_ids: Collection[uuid.UUID],
+    ) -> dict[uuid.UUID, list[SyncTaskLog]]:
+        normalized_task_ids = tuple(dict.fromkeys(task_ids))
+        logs_by_task: dict[uuid.UUID, list[SyncTaskLog]] = {
+            task_id: [] for task_id in normalized_task_ids
+        }
+        if not normalized_task_ids:
+            return logs_by_task
+        result = await self._session.execute(
+            select(SyncTaskLog)
+            .where(SyncTaskLog.task_id.in_(normalized_task_ids))
+            .order_by(
+                SyncTaskLog.task_id.asc(),
+                SyncTaskLog.created_at.asc(),
+                SyncTaskLog.id.asc(),
+            )
+        )
+        for log in result.scalars():
+            logs_by_task[log.task_id].append(log)
+        return logs_by_task
 
     async def get_file(
         self,

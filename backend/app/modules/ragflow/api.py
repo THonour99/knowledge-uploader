@@ -1,11 +1,11 @@
 from __future__ import annotations
 
 import time
-from typing import Annotated, NoReturn
+from typing import Annotated, Literal, NoReturn
 from uuid import UUID
 
 import structlog
-from fastapi import APIRouter, Depends, HTTPException, Request
+from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.adapters.ragflow.base import RagflowClientError
@@ -26,6 +26,7 @@ from .schemas import (
     SyncTaskListResponse,
     SyncTaskLogResponse,
     SyncTaskResponse,
+    SyncTaskStatusCountsResponse,
     VersionSwitchReconcileRequest,
 )
 from .service import (  # noqa: TID251 - same-module service dependency
@@ -92,19 +93,45 @@ async def list_tasks(
     scope: ScopedAdminDep,
     session: SessionDep,
     file_id: UUID | None = None,
+    task_type: Annotated[
+        Literal["ragflow_upload", "ragflow_parse", "ragflow_status_check", "ragflow_delete"] | None,
+        Query(),
+    ] = None,
+    status: Annotated[
+        Literal["queued", "running", "succeeded", "failed", "canceled"] | None,
+        Query(),
+    ] = None,
+    department_id: UUID | None = None,
+    sort: Annotated[
+        Literal["created_at", "updated_at", "started_at", "finished_at"], Query()
+    ] = "created_at",
+    order: Annotated[Literal["asc", "desc"], Query()] = "desc",
+    page: Annotated[int, Query(ge=1)] = 1,
+    page_size: Annotated[int, Query(ge=1, le=100)] = 20,
 ) -> dict[str, object]:
     try:
-        tasks = await _service(session).list_tasks(
+        tasks, total, status_counts = await _service(session).list_tasks(
             current_user=current_user,
             scope=scope,
             context=_context_from(request),
             file_id=file_id,
+            task_type=task_type,
+            status=status,
+            department_id=department_id,
+            sort=sort,
+            order=order,
+            page=page,
+            page_size=page_size,
         )
     except RagflowTaskError as error:
         _raise_ragflow_task_error(error)
     response = SyncTaskListResponse(
         items=[_task_response(task) for task in tasks],
-        total=len(tasks),
+        total=total,
+        status_counts=SyncTaskStatusCountsResponse(**status_counts),
+        page=page,
+        page_size=page_size,
+        total_pages=(total + page_size - 1) // page_size,
     )
     return success_response(response.model_dump(mode="json"), request)
 

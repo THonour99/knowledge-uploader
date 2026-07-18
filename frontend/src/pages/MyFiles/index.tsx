@@ -43,6 +43,7 @@ import {
   getEmployeeDashboard,
 } from "../../api/dashboard";
 import { DepartmentAssignmentAlert } from "../../components/DepartmentAssignmentAlert";
+import { SavedViewManager } from "../../components/SavedViewManager";
 import { StatusTag } from "../../components/StatusTag";
 import { PageContainer } from "../../layouts/PageContainer";
 import {
@@ -162,6 +163,15 @@ const STATUS_FILTERS = [
   { value: "rejected", label: "已驳回" },
 ] as const;
 
+const SORT_OPTIONS = [
+  { value: "uploaded_at", label: "上传时间" },
+  { value: "updated_at", label: "更新时间" },
+  { value: "original_name", label: "原始文件名" },
+  { value: "title", label: "标题" },
+  { value: "size", label: "文件大小" },
+  { value: "status", label: "状态" },
+];
+const SORT_VALUES = new Set<string>(SORT_OPTIONS.map((option) => option.value));
 const SUBMITTABLE_STATUSES = new Set([
   "uploaded",
   "analyzed",
@@ -340,6 +350,20 @@ export default function MyFilesPage() {
   const extension = searchParams.get("extension") ?? "all";
   const tagId = searchParams.get("tag_id") ?? "all";
   const expiryStatus = searchParams.get("expiry_status") ?? "all";
+  const rawSort = searchParams.get("sort");
+  const sort = SORT_VALUES.has(rawSort ?? "") ? (rawSort as string) : "updated_at";
+  const order: "asc" | "desc" = searchParams.get("order") === "asc" ? "asc" : "desc";
+  const savedViewDefinition: Record<string, unknown> = {
+    relationship,
+    sort,
+    order,
+    page_size: pageSize,
+    ...(q ? { q } : {}),
+    ...(status !== "all" ? { status } : {}),
+    ...(extension !== "all" ? { extension } : {}),
+    ...(!responsibleView && tagId !== "all" ? { tag_id: tagId } : {}),
+    ...(expiryStatus !== "all" ? { expiry_status: expiryStatus } : {}),
+  };
 
   useEffect(() => {
     if (staleResponsibleTagId === null) {
@@ -391,6 +415,42 @@ export default function MyFilesPage() {
     );
   };
 
+  const applySavedView = (definition: Record<string, unknown>) => {
+    const next = new URLSearchParams();
+    const nextRelationship = definition.relationship === "responsible" ? "responsible" : "uploaded";
+    next.set("relationship", nextRelationship);
+    const stringFields = ["q", "status", "extension", "expiry_status"] as const;
+    for (const field of stringFields) {
+      const value = definition[field];
+      if (typeof value === "string" && value) {
+        next.set(field, value);
+      }
+    }
+    if (
+      nextRelationship === "uploaded" &&
+      typeof definition.tag_id === "string" &&
+      definition.tag_id
+    ) {
+      next.set("tag_id", definition.tag_id);
+    }
+    if (typeof definition.sort === "string" && SORT_VALUES.has(definition.sort)) {
+      next.set("sort", definition.sort);
+    }
+    if (definition.order === "asc" || definition.order === "desc") {
+      next.set("order", definition.order);
+    }
+    if (
+      typeof definition.page_size === "number" &&
+      Number.isInteger(definition.page_size) &&
+      definition.page_size >= 1 &&
+      definition.page_size <= 100
+    ) {
+      next.set("page_size", String(definition.page_size));
+    }
+    next.set("page", "1");
+    setSearchParams(next, { replace: true });
+  };
+
   const filesQuery = useQuery({
     queryKey: [
       "documents",
@@ -404,6 +464,8 @@ export default function MyFilesPage() {
         q: deferredQ,
         status,
         extension,
+        sort,
+        order,
         tagId: responsibleView ? null : tagId,
         expiryStatus,
       },
@@ -416,8 +478,8 @@ export default function MyFilesPage() {
         status: status === "all" ? undefined : status,
         extension: extension === "all" ? undefined : extension,
         expiry_status: expiryStatus === "all" ? undefined : expiryStatus,
-        sort: "updated_at",
-        order: "desc" as const,
+        sort,
+        order,
       };
       if (responsibleView) {
         return listResponsibleDocuments(commonParams);
@@ -429,6 +491,33 @@ export default function MyFilesPage() {
     },
     enabled: Boolean(user?.id),
   });
+
+  useEffect(() => {
+    const response = filesQuery.data;
+    if (!response || filesQuery.isFetching || filesQuery.isPlaceholderData) {
+      return;
+    }
+    const responseLastPage = response.total_pages ?? Math.ceil(response.total / pageSize);
+    const lastPage = Math.max(1, responseLastPage);
+    if (page <= lastPage) {
+      return;
+    }
+    setSearchParams(
+      (previous) => {
+        const next = new URLSearchParams(previous);
+        next.set("page", String(lastPage));
+        return next;
+      },
+      { replace: true },
+    );
+  }, [
+    filesQuery.data,
+    filesQuery.isFetching,
+    filesQuery.isPlaceholderData,
+    page,
+    pageSize,
+    setSearchParams,
+  ]);
 
   const tagsQuery = useQuery({
     queryKey: ["tags", "list", "enabled"],
@@ -707,6 +796,11 @@ export default function MyFilesPage() {
         </Space>
       }
     >
+      <SavedViewManager
+        pageKey="my_files"
+        queryDefinition={savedViewDefinition}
+        onApply={applySavedView}
+      />
       {departmentBlocked ? <DepartmentAssignmentAlert className="workbench-gate-alert" /> : null}
       {uploadPolicyQuery.isError ? (
         <Alert
@@ -937,6 +1031,23 @@ export default function MyFilesPage() {
               { label: "即将到期", value: "expiring" },
               { label: "已到期", value: "expired" },
             ]}
+          />
+          <Select
+            className="filter-toolbar__control"
+            aria-label="文档排序字段"
+            value={sort}
+            options={SORT_OPTIONS}
+            onChange={(value) => setQueryValue("sort", value)}
+          />
+          <Select
+            className="filter-toolbar__control"
+            aria-label="文档排序方向"
+            value={order}
+            options={[
+              { label: "降序", value: "desc" },
+              { label: "升序", value: "asc" },
+            ]}
+            onChange={(value) => setQueryValue("order", value)}
           />
         </div>
 

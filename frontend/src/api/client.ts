@@ -508,6 +508,7 @@ export interface StatisticsQueryParams {
   start_date?: string;
   end_date?: string;
   department?: string;
+  user_q?: string;
   user_id?: string;
   category_id?: string;
   status?: string;
@@ -1625,15 +1626,100 @@ export interface SyncTask {
   logs: SyncTaskLog[];
 }
 
+export interface SyncTaskStatusCounts {
+  queued: number;
+  running: number;
+  succeeded: number;
+  failed: number;
+  canceled: number;
+}
+
 export interface SyncTaskListResponse {
   items: SyncTask[];
   total: number;
+  status_counts: SyncTaskStatusCounts;
+  page?: number;
+  page_size?: number;
+  total_pages?: number;
 }
 
+export type SyncTaskType =
+  | "ragflow_upload"
+  | "ragflow_parse"
+  | "ragflow_status_check"
+  | "ragflow_delete";
+export type SyncTaskStatus = "queued" | "running" | "succeeded" | "failed" | "canceled";
+export type SyncTaskSort = "created_at" | "updated_at" | "started_at" | "finished_at";
+
 export interface TaskListQuery {
-  task_type?: string;
-  status?: string;
+  task_type?: SyncTaskType;
+  status?: SyncTaskStatus;
   file_id?: string;
+  department_id?: string;
+  sort?: SyncTaskSort;
+  order?: "asc" | "desc";
+  page?: number;
+  page_size?: number;
+}
+
+export const SAVED_VIEW_DEFINITION_SCHEMA_VERSION = 2;
+
+export type SavedViewPageKey = "my_files" | "review_files" | "task_logs" | "statistics";
+export type SavedViewScope = "private" | "department";
+export type SavedViewCompatibility = "current" | "migrated" | "unsupported";
+
+export interface SavedViewDefinition {
+  query_definition: Record<string, unknown>;
+  column_preferences: Record<string, unknown>;
+}
+
+export interface SavedViewItem {
+  id: string;
+  owner_id: string;
+  scope: SavedViewScope;
+  department_id: string | null;
+  page_key: SavedViewPageKey;
+  name: string;
+  stored_schema_version: number;
+  effective_schema_version: number | null;
+  compatibility: SavedViewCompatibility;
+  effective_definition: SavedViewDefinition | null;
+  row_version: number;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface SavedViewListResponse {
+  items: SavedViewItem[];
+  total: number;
+  page: number;
+  page_size: number;
+  total_pages: number;
+}
+
+export interface SavedViewListQuery {
+  page_key: SavedViewPageKey;
+  scope?: SavedViewScope;
+  page?: number;
+  page_size?: number;
+}
+
+export interface SavedViewCreatePayload {
+  page_key: SavedViewPageKey;
+  name: string;
+  scope: SavedViewScope;
+  department_id?: string;
+  definition_schema_version: number;
+  query_definition: Record<string, unknown>;
+  column_preferences: Record<string, unknown>;
+}
+
+export interface SavedViewUpdatePayload {
+  row_version: number;
+  name?: string;
+  definition_schema_version?: number;
+  query_definition?: Record<string, unknown>;
+  column_preferences?: Record<string, unknown>;
 }
 
 // ── System config types ──────────────────────────────────────────────────────
@@ -1715,6 +1801,39 @@ export async function listTasks(params: TaskListQuery = {}): Promise<SyncTaskLis
   );
 
   return unwrapResponse(response.data);
+}
+export async function listSavedViews(params: SavedViewListQuery): Promise<SavedViewListResponse> {
+  const response = await apiClient.get<ApiEnvelope<SavedViewListResponse> | SavedViewListResponse>(
+    "/saved-views",
+    { params },
+  );
+
+  return unwrapResponse(response.data);
+}
+
+export async function createSavedView(payload: SavedViewCreatePayload): Promise<SavedViewItem> {
+  const response = await apiClient.post<ApiEnvelope<SavedViewItem> | SavedViewItem>(
+    "/saved-views",
+    payload,
+  );
+
+  return unwrapResponse(response.data);
+}
+
+export async function updateSavedView(
+  id: string,
+  payload: SavedViewUpdatePayload,
+): Promise<SavedViewItem> {
+  const response = await apiClient.patch<ApiEnvelope<SavedViewItem> | SavedViewItem>(
+    `/saved-views/${id}`,
+    payload,
+  );
+
+  return unwrapResponse(response.data);
+}
+
+export async function deleteSavedView(id: string): Promise<void> {
+  await apiClient.delete(`/saved-views/${id}`);
 }
 
 export async function getTask(id: string): Promise<SyncTask> {

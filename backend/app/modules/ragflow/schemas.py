@@ -48,6 +48,18 @@ class SyncTaskResponse(BaseModel):
     logs: list[SyncTaskLogResponse] = Field(default_factory=list)
 
 
+class SyncTaskStatusCountsResponse(BaseModel):
+    queued: int = Field(ge=0)
+    running: int = Field(ge=0)
+    succeeded: int = Field(ge=0)
+    failed: int = Field(ge=0)
+    canceled: int = Field(ge=0)
+
+
 class SyncTaskListResponse(BaseModel):
     items: list[SyncTaskResponse]
     total: int
+    status_counts: SyncTaskStatusCountsResponse
+    page: int
+    page_size: int
+    total_pages: int

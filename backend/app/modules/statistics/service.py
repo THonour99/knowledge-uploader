@@ -63,6 +63,7 @@ class StatisticsQuery:
     start_date: date | None = None
     end_date: date | None = None
     department: str | None = None
+    user_q: str | None = None
     user_id: uuid.UUID | None = None
     category_id: uuid.UUID | None = None
     status: str | None = None
@@ -125,7 +126,7 @@ class StatisticsService:
     ) -> StatisticsUserListResponse:
         self._require_admin(current_user)
         files = await self._repository.list_files(to_filters(query))
-        rows = sorted_user_rows(build_user_rows(files), query)
+        rows = sorted_user_rows(filter_user_rows(build_user_rows(files), query.user_q), query)
         total = len(rows)
         page = max(query.page, 1)
         page_size = max(query.page_size, 1)
@@ -309,7 +310,7 @@ class StatisticsService:
     ) -> str:
         self._require_admin(current_user)
         files = await self._repository.list_files(to_filters(query))
-        rows = sorted_user_rows(build_user_rows(files), query)
+        rows = sorted_user_rows(filter_user_rows(build_user_rows(files), query.user_q), query)
         buffer = StringIO()
         writer = csv.writer(buffer)
         writer.writerow(
@@ -398,6 +399,7 @@ def query_with_user(query: StatisticsQuery, user_id: uuid.UUID) -> StatisticsQue
         start_date=query.start_date,
         end_date=query.end_date,
         department=query.department,
+        user_q=query.user_q,
         user_id=user_id,
         category_id=query.category_id,
         status=query.status,
@@ -416,6 +418,7 @@ def query_metadata(query: StatisticsQuery) -> dict[str, object]:
         "start_date": query.start_date.isoformat() if query.start_date else None,
         "end_date": query.end_date.isoformat() if query.end_date else None,
         "department": query.department,
+        "user_q": query.user_q,
         "user_id": str(query.user_id) if query.user_id else None,
         "category_id": str(query.category_id) if query.category_id else None,
         "status": query.status,
@@ -442,6 +445,24 @@ def build_user_rows(files: Iterable[StatisticsFileRow]) -> list[StatisticsUserRo
         for index, (user_id, user_files) in enumerate(grouped.items())
     ]
     return sorted_user_rows(rows, StatisticsQuery())
+
+
+def filter_user_rows(
+    rows: list[StatisticsUserRow],
+    user_q: str | None,
+) -> list[StatisticsUserRow]:
+    keyword = (user_q or "").strip()
+    if len(keyword) > 100:
+        raise exceptions.invalid_filter("user_q must contain at most 100 characters")
+    if not keyword:
+        return rows
+    normalized_keyword = keyword.casefold()
+    return [
+        row
+        for row in rows
+        if normalized_keyword in row.user_name.casefold()
+        or normalized_keyword in (row.department or "").casefold()
+    ]
 
 
 def sorted_user_rows(

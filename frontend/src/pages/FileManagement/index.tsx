@@ -58,6 +58,7 @@ import {
   releaseReviewClaim,
   updateFileClassification,
 } from "../../api/client";
+import { SavedViewManager } from "../../components/SavedViewManager";
 import { StatusTag } from "../../components/StatusTag";
 import { useMediaQuery } from "../../hooks/useMediaQuery";
 import { useNow } from "../../hooks/useNow";
@@ -97,6 +98,15 @@ const REVIEW_QUEUES = [
   { value: "due_soon", label: "临近 SLA" },
   { value: "overdue", label: "已超时" },
 ] as const;
+const REVIEW_SORT_OPTIONS = [
+  { value: "default", label: "智能优先级" },
+  { value: "submitted_at", label: "提交时间" },
+  { value: "review_due_at", label: "SLA 截止" },
+  { value: "uploaded_at", label: "上传时间" },
+  { value: "original_name", label: "文件名" },
+  { value: "risk", label: "风险等级" },
+];
+const REVIEW_SORT_VALUES = new Set<string>(REVIEW_SORT_OPTIONS.map((option) => option.value));
 
 type ReviewQueue = (typeof REVIEW_QUEUES)[number]["value"];
 type RiskFilter = "all" | "none" | "low" | "medium" | "high" | "critical";
@@ -275,7 +285,7 @@ export default function FileManagementPage() {
   const queryClient = useQueryClient();
   const user = useAuthStore((state) => state.user);
   const now = useNow();
-  const isMobile = useMediaQuery("(max-width: 767px)");
+  const isMobile = useMediaQuery("(max-width: 768px)");
   const refreshedExpiredClaims = useRef(new Set<string>());
   const [approveForm] = Form.useForm<ReviewFormValues>();
   const [rejectForm] = Form.useForm<ReviewFormValues>();
@@ -303,13 +313,33 @@ export default function FileManagementPage() {
     : undefined;
   const rawTagIdFilter = searchParams.get("tag_id");
   const tagIdFilter = isUuid(rawTagIdFilter) ? rawTagIdFilter : undefined;
+  const rawDepartmentIdFilter = searchParams.get("department_id");
+  const departmentIdFilter = isUuid(rawDepartmentIdFilter) ? rawDepartmentIdFilter : undefined;
+  const rawSort = searchParams.get("sort");
+  const sort = REVIEW_SORT_VALUES.has(rawSort ?? "default") ? (rawSort ?? "default") : "default";
+  const rawOrder = searchParams.get("order");
+  const order = rawOrder === "desc" ? "desc" : "asc";
+  const savedViewDefinition: Record<string, unknown> = {
+    order,
+    page_size: pageSize,
+    ...(serverSearch ? { q: serverSearch } : {}),
+    ...(queue !== "all" ? { queue } : {}),
+    ...(extensionFilter ? { extension: extensionFilter } : {}),
+    ...(tagIdFilter ? { tag_id: tagIdFilter } : {}),
+    ...(departmentIdFilter ? { department_id: departmentIdFilter } : {}),
+    ...(riskFilter !== "all" ? { sensitive_risk_level: riskFilter } : {}),
+    ...(sort !== "default" ? { sort } : {}),
+  };
   const [searchText, setSearchText] = useState(serverSearch);
   const [claimFeedback, setClaimFeedback] = useState<{
     fileId: string;
     message: string;
   } | null>(null);
   const [filtersExpanded, setFiltersExpanded] = useState(
-    riskFilter !== "all" || Boolean(extensionFilter || tagIdFilter),
+    riskFilter !== "all" ||
+      sort !== "default" ||
+      order !== "asc" ||
+      Boolean(extensionFilter || tagIdFilter || departmentIdFilter),
   );
   const [bulkApproving, setBulkApproving] = useState(false);
 
@@ -318,10 +348,17 @@ export default function FileManagementPage() {
   }, [serverSearch]);
 
   useEffect(() => {
-    if (riskFilter !== "all" || extensionFilter || tagIdFilter) {
+    if (
+      riskFilter !== "all" ||
+      sort !== "default" ||
+      order !== "asc" ||
+      extensionFilter ||
+      tagIdFilter ||
+      departmentIdFilter
+    ) {
       setFiltersExpanded(true);
     }
-  }, [extensionFilter, riskFilter, tagIdFilter]);
+  }, [departmentIdFilter, extensionFilter, order, riskFilter, sort, tagIdFilter]);
 
   const serializedSearchParams = searchParams.toString();
   useEffect(() => {
@@ -346,15 +383,30 @@ export default function FileManagementPage() {
       next.delete("tag_id");
       changed = true;
     }
+    if (rawDepartmentIdFilter && !isUuid(rawDepartmentIdFilter)) {
+      next.delete("department_id");
+      changed = true;
+    }
+    if (rawSort && !REVIEW_SORT_VALUES.has(rawSort)) {
+      next.delete("sort");
+      changed = true;
+    }
+    if (rawOrder && rawOrder !== "asc" && rawOrder !== "desc") {
+      next.delete("order");
+      changed = true;
+    }
     if (changed) {
       next.set("page", "1");
       setSearchParams(next, { replace: true });
     }
   }, [
     extensionFilter,
+    rawDepartmentIdFilter,
     rawExtensionFilter,
+    rawOrder,
     rawQueue,
     rawRiskFilter,
+    rawSort,
     rawTagIdFilter,
     serializedSearchParams,
     setSearchParams,
@@ -379,6 +431,41 @@ export default function FileManagementPage() {
   };
 
   // ── 数据查询 ─────────────────────────────────────────────────────────────────
+  const applySavedView = (definition: Record<string, unknown>) => {
+    const next = new URLSearchParams();
+    const stringFields = ["q", "extension", "tag_id", "department_id"] as const;
+    for (const field of stringFields) {
+      const value = definition[field];
+      if (typeof value === "string" && value) {
+        next.set(field, value);
+      }
+    }
+    if (typeof definition.queue === "string" && REVIEW_QUEUE_VALUES.has(definition.queue)) {
+      next.set("queue", definition.queue);
+    }
+    if (
+      typeof definition.sensitive_risk_level === "string" &&
+      RISK_FILTER_VALUES.has(definition.sensitive_risk_level)
+    ) {
+      next.set("risk", definition.sensitive_risk_level);
+    }
+    if (typeof definition.sort === "string" && REVIEW_SORT_VALUES.has(definition.sort)) {
+      next.set("sort", definition.sort);
+    }
+    if (definition.order === "asc" || definition.order === "desc") {
+      next.set("order", definition.order);
+    }
+    if (
+      typeof definition.page_size === "number" &&
+      Number.isInteger(definition.page_size) &&
+      definition.page_size >= 1 &&
+      definition.page_size <= 100
+    ) {
+      next.set("page_size", String(definition.page_size));
+    }
+    next.set("page", "1");
+    setSearchParams(next, { replace: true });
+  };
 
   const reviewFilesQuery = useQuery({
     queryKey: [
@@ -389,6 +476,9 @@ export default function FileManagementPage() {
         q: serverSearch,
         queue,
         extension: extensionFilter,
+        department_id: departmentIdFilter,
+        sort,
+        order,
         tag_id: tagIdFilter,
         risk: riskFilter,
       },
@@ -400,6 +490,9 @@ export default function FileManagementPage() {
         q: serverSearch || undefined,
         queue: queue === "all" ? undefined : queue,
         extension: extensionFilter,
+        department_id: departmentIdFilter,
+        sort: sort === "default" ? undefined : sort,
+        order,
         tag_id: tagIdFilter,
         sensitive_risk_level:
           riskFilter === "all"
@@ -408,6 +501,33 @@ export default function FileManagementPage() {
       }),
     placeholderData: (previous) => previous,
   });
+
+  useEffect(() => {
+    const response = reviewFilesQuery.data;
+    if (!response || reviewFilesQuery.isFetching || reviewFilesQuery.isPlaceholderData) {
+      return;
+    }
+    const responseLastPage = response.total_pages ?? Math.ceil(response.total / pageSize);
+    const lastPage = Math.max(1, responseLastPage);
+    if (page <= lastPage) {
+      return;
+    }
+    setSearchParams(
+      (previous) => {
+        const next = new URLSearchParams(previous);
+        next.set("page", String(lastPage));
+        return next;
+      },
+      { replace: true },
+    );
+  }, [
+    page,
+    pageSize,
+    reviewFilesQuery.data,
+    reviewFilesQuery.isFetching,
+    reviewFilesQuery.isPlaceholderData,
+    setSearchParams,
+  ]);
   const categoriesQuery = useQuery({
     queryKey: ["categories"],
     queryFn: listCategories,
@@ -429,6 +549,24 @@ export default function FileManagementPage() {
   const datasets = datasetsQuery.data?.items ?? [];
   const files = reviewFilesQuery.data?.items ?? [];
   const tags = tagsQuery.data?.items ?? [];
+  const savedViewDepartmentOptions = useMemo(() => {
+    const labels = new Map<string, string>();
+    if (user?.department_id) {
+      labels.set(user.department_id, user.department_name?.trim() || "账号所属部门");
+    }
+    for (const file of files) {
+      if (file.department_id) {
+        labels.set(
+          file.department_id,
+          file.department_name?.trim() || file.department?.trim() || "授权部门",
+        );
+      }
+    }
+    if (departmentIdFilter && !labels.has(departmentIdFilter)) {
+      labels.set(departmentIdFilter, `部门 ${departmentIdFilter.slice(0, 8)}`);
+    }
+    return [...labels].map(([value, label]) => ({ value, label }));
+  }, [departmentIdFilter, files, user?.department_id, user?.department_name]);
   const allowedExtensions = useMemo(
     () => allowedExtensionsFromPolicy(uploadPolicyQuery.data),
     [uploadPolicyQuery.data],
@@ -1091,6 +1229,12 @@ export default function FileManagementPage() {
         </Button>
       }
     >
+      <SavedViewManager
+        pageKey="review_files"
+        queryDefinition={savedViewDefinition}
+        departmentOptions={savedViewDepartmentOptions}
+        onApply={applySavedView}
+      />
       <nav className="review-queue-tabs" aria-label="审核队列" role="tablist">
         {REVIEW_QUEUES.map((item, index) => (
           <button
@@ -1192,6 +1336,32 @@ export default function FileManagementPage() {
                 onChange={(value) => updateCoreQuery("tag_id", value)}
                 loading={tagsQuery.isLoading}
                 placeholder="标签：全部"
+              />
+              {savedViewDepartmentOptions.length > 0 ? (
+                <Select
+                  className="filter-toolbar__control"
+                  aria-label="部门筛选"
+                  value={departmentIdFilter ?? "all"}
+                  options={[{ label: "部门：全部", value: "all" }, ...savedViewDepartmentOptions]}
+                  onChange={(value) => updateCoreQuery("department_id", value)}
+                />
+              ) : null}
+              <Select
+                className="filter-toolbar__control"
+                aria-label="审核队列排序字段"
+                value={sort}
+                options={REVIEW_SORT_OPTIONS}
+                onChange={(value) => updateCoreQuery("sort", value)}
+              />
+              <Select
+                className="filter-toolbar__control"
+                aria-label="审核队列排序方向"
+                value={order}
+                options={[
+                  { label: "升序", value: "asc" },
+                  { label: "降序", value: "desc" },
+                ]}
+                onChange={(value) => updateCoreQuery("order", value)}
               />
             </>
           ) : null}

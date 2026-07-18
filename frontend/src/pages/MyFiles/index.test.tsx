@@ -61,6 +61,32 @@ vi.mock("../../api/dashboard", async () => {
   const actual = await vi.importActual<typeof DashboardApiModule>("../../api/dashboard");
   return { ...actual, getEmployeeDashboard: vi.fn() };
 });
+vi.mock("../../components/SavedViewManager", () => ({
+  SavedViewManager: ({
+    pageKey,
+    onApply,
+  }: {
+    pageKey: string;
+    onApply: (definition: Record<string, unknown>) => void;
+  }) => (
+    <button
+      type="button"
+      data-testid={"saved-view-" + pageKey}
+      onClick={() =>
+        onApply({
+          relationship: "responsible",
+          queue: "mine",
+          task_type: "ragflow_upload",
+          group_by: "month",
+          order: "desc",
+          page_size: 50,
+        })
+      }
+    >
+      应用测试保存视图
+    </button>
+  ),
+}));
 
 // ── Ant Design mocks ─────────────────────────────────────────────────────────
 // Popconfirm: immediately calls onConfirm when wrapper is clicked (portal doesn't render in jsdom)
@@ -1136,6 +1162,43 @@ describe("MyFilesPage", () => {
     await waitFor(() => {
       expect(vi.mocked(listDocuments).mock.calls.length).toBeGreaterThan(initialCallCount);
     });
+  });
+
+  it("returns to page one when deleting the only item on the last page shrinks total", async () => {
+    vi.mocked(listDocuments)
+      .mockResolvedValueOnce({
+        items: [mockFile1],
+        total: 21,
+        page: 2,
+        page_size: 20,
+        total_pages: 2,
+      })
+      .mockResolvedValueOnce({
+        items: [],
+        total: 20,
+        page: 2,
+        page_size: 20,
+        total_pages: 1,
+      })
+      .mockResolvedValue({
+        items: [mockFile2],
+        total: 20,
+        page: 1,
+        page_size: 20,
+        total_pages: 1,
+      });
+    vi.mocked(listTags).mockResolvedValue(mockTagsResponse);
+    vi.mocked(deleteFile).mockResolvedValue(undefined);
+
+    renderWithProviders(<MyFilesPage />, ["/my-files?page=2&page_size=20"]);
+    await screen.findAllByText("产品规划.pdf");
+
+    fireEvent.click(screen.getAllByRole("button", { name: /删除/ })[0]);
+
+    await waitFor(() => expect(screen.getByTestId("location-search")).toHaveTextContent("page=1"));
+    expect(listDocuments).toHaveBeenLastCalledWith(
+      expect.objectContaining({ page: 1, page_size: 20 }),
+    );
   });
 
   it("submits an uploaded draft file for review and refreshes the list", async () => {

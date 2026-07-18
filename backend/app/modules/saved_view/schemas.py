@@ -173,6 +173,7 @@ class StatisticsQueryDefinition(BaseModel):
     start_date: date | None = None
     end_date: date | None = None
     department: str | None = Field(default=None, max_length=100)
+    user_q: str | None = Field(default=None, max_length=100)
     user_id: UUID | None = None
     category_id: UUID | None = None
     status: str | None = Field(default=None, max_length=40)

@@ -3,7 +3,7 @@ import React from "react";
 import { App as AntdApp, ConfigProvider } from "antd";
 import type * as AntdModule from "antd";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { MemoryRouter, useLocation } from "react-router-dom";
 import { afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 
@@ -30,6 +30,32 @@ vi.mock("../../api/client", async () => {
     cancelTask: vi.fn(),
   };
 });
+vi.mock("../../components/SavedViewManager", () => ({
+  SavedViewManager: ({
+    pageKey,
+    onApply,
+  }: {
+    pageKey: string;
+    onApply: (definition: Record<string, unknown>) => void;
+  }) => (
+    <button
+      type="button"
+      data-testid={"saved-view-" + pageKey}
+      onClick={() =>
+        onApply({
+          relationship: "responsible",
+          queue: "mine",
+          task_type: "ragflow_upload",
+          group_by: "month",
+          order: "desc",
+          page_size: 50,
+        })
+      }
+    >
+      应用测试保存视图
+    </button>
+  ),
+}));
 
 // Simplify AntD components that are difficult to interact with in jsdom:
 // - Popconfirm: immediately call onConfirm when children are clicked
@@ -124,6 +150,23 @@ const makeMockTask = (overrides: Partial<SyncTask> = {}): SyncTask => ({
   ...overrides,
 });
 
+const emptyStatusCounts = {
+  queued: 0,
+  running: 0,
+  succeeded: 0,
+  failed: 0,
+  canceled: 0,
+};
+
+const emptyListResponse: SyncTaskListResponse = {
+  items: [],
+  total: 0,
+  status_counts: emptyStatusCounts,
+  page: 1,
+  page_size: 20,
+  total_pages: 0,
+};
+
 const mockListResponse: SyncTaskListResponse = {
   items: [
     makeMockTask({ id: "task-1", status: "failed" }),
@@ -150,7 +193,17 @@ const mockListResponse: SyncTaskListResponse = {
       logs: [],
     }),
   ],
-  total: 3,
+  total: 110,
+  status_counts: {
+    queued: 1,
+    running: 41,
+    succeeded: 50,
+    failed: 17,
+    canceled: 1,
+  },
+  page: 1,
+  page_size: 20,
+  total_pages: 6,
 };
 
 const LINKED_TASK_ID = "11111111-1111-4111-8111-111111111111";
@@ -265,7 +318,7 @@ describe("TaskLogsPage", () => {
     expect(screen.getByText("file-def")).toBeInTheDocument();
 
     // retry count
-    expect(screen.getByText("2")).toBeInTheDocument();
+    expect(screen.getByRole("cell", { name: "2" })).toBeInTheDocument();
 
     // status tags rendered (sync kind: "failed" → "同步失败", "syncing" → "同步中", "queued" → "待同步")
     expect(screen.getByText("同步失败")).toBeInTheDocument();
@@ -273,11 +326,28 @@ describe("TaskLogsPage", () => {
     expect(screen.getByText("待同步")).toBeInTheDocument();
 
     expect(screen.getByText("任务列表")).toBeInTheDocument();
-    expect(screen.getByText("当前显示 3 条任务，共 3 条队列记录")).toBeInTheDocument();
+    expect(screen.getByText("当前显示 3 条任务，共 110 条队列记录")).toBeInTheDocument();
+    const totalCard = screen
+      .getByText("任务总数", { selector: ".kpi-card__title" })
+      .closest(".kpi-card");
+    const runningCard = screen
+      .getByText("运行中", { selector: ".kpi-card__title" })
+      .closest(".kpi-card");
+    const failedCard = screen
+      .getByText("失败任务", { selector: ".kpi-card__title" })
+      .closest(".kpi-card");
+    expect(totalCard).not.toBeNull();
+    expect(runningCard).not.toBeNull();
+    expect(failedCard).not.toBeNull();
+    await waitFor(() => {
+      expect(within(totalCard as HTMLElement).getByText("110")).toBeInTheDocument();
+      expect(within(runningCard as HTMLElement).getByText("41")).toBeInTheDocument();
+      expect(within(failedCard as HTMLElement).getByText("17")).toBeInTheDocument();
+    });
   });
 
   it("re-queries when task_type filter changes", async () => {
-    vi.mocked(listTasks).mockResolvedValue({ items: [], total: 0 });
+    vi.mocked(listTasks).mockResolvedValue(emptyListResponse);
 
     renderWithProviders(<TaskLogsPage />);
 
@@ -377,6 +447,91 @@ describe("TaskLogsPage", () => {
 
     await waitFor(() => {
       expect(cancelTask).toHaveBeenCalledWith("task-2");
+    });
+  });
+  it("shows unavailable KPI values and an explicit retry state when the task list fails", async () => {
+    vi.mocked(listTasks)
+      .mockRejectedValueOnce(new Error("任务服务暂时不可用"))
+      .mockResolvedValueOnce(mockListResponse);
+
+    renderWithProviders(<TaskLogsPage />);
+
+    expect(await screen.findByText("任务服务暂时不可用")).toBeInTheDocument();
+    expect(screen.getByText("任务数据暂不可用，请重试")).toBeInTheDocument();
+    for (const title of ["任务总数", "运行中", "失败任务"]) {
+      const card = screen.getByText(title, { selector: ".kpi-card__title" }).closest(".kpi-card");
+      expect(card).not.toBeNull();
+      expect(within(card as HTMLElement).getByText("—")).toBeInTheDocument();
+    }
+    expect(screen.queryByText(/共 0 条队列记录/)).not.toBeInTheDocument();
+    expect(screen.queryByText("暂无数据")).not.toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole("button", { name: /重试/ }));
+    expect(await screen.findByText("file-abc")).toBeInTheDocument();
+    await waitFor(() => expect(listTasks).toHaveBeenCalledTimes(2));
+  });
+
+  it("replaces an out-of-range task page with the last page from the current response", async () => {
+    const statusCounts = {
+      queued: 1,
+      running: 5,
+      succeeded: 30,
+      failed: 5,
+      canceled: 0,
+    };
+    vi.mocked(listTasks).mockImplementation(async (params) =>
+      params?.page === 9
+        ? {
+            items: [],
+            total: 41,
+            status_counts: statusCounts,
+            page: 9,
+            page_size: 20,
+            total_pages: 3,
+          }
+        : {
+            items: [makeMockTask({ id: "task-last-page" })],
+            total: 41,
+            status_counts: statusCounts,
+            page: 3,
+            page_size: 20,
+            total_pages: 3,
+          },
+    );
+
+    renderWithProviders(<TaskLogsPage />, "/task-logs?page=9&page_size=20");
+
+    await waitFor(() =>
+      expect(listTasks).toHaveBeenLastCalledWith(
+        expect.objectContaining({ page: 3, page_size: 20 }),
+      ),
+    );
+    expect(screen.getByTestId("task-log-location")).toHaveTextContent("page=3");
+    expect(await screen.findByTestId("detail-task-last-page")).toBeInTheDocument();
+  });
+
+  it("applies a saved task view through the URL and re-queries with server pagination", async () => {
+    vi.mocked(listTasks).mockResolvedValue(emptyListResponse);
+
+    renderWithProviders(<TaskLogsPage />, "/task-logs?page=4&page_size=20");
+    await waitFor(() => expect(listTasks).toHaveBeenCalledTimes(1));
+
+    fireEvent.click(screen.getByTestId("saved-view-task_logs"));
+
+    await waitFor(() => {
+      const location = screen.getByTestId("task-log-location");
+      expect(location).toHaveTextContent("task_type=ragflow_upload");
+      expect(location).toHaveTextContent("order=desc");
+      expect(location).toHaveTextContent("page_size=50");
+      expect(location).toHaveTextContent("page=1");
+      expect(listTasks).toHaveBeenLastCalledWith(
+        expect.objectContaining({
+          task_type: "ragflow_upload",
+          order: "desc",
+          page: 1,
+          page_size: 50,
+        }),
+      );
     });
   });
 });

@@ -7,16 +7,21 @@ import {
   type KnowledgeFile,
   apiClient,
   getDocumentContent,
+  createSavedView,
+  deleteSavedView,
   getGovernanceCapacity,
   getGovernanceLlmUsage,
   getGovernanceRagflowUsage,
   getUploadPolicy,
   getUserFacingErrorMessage,
+  listSavedViews,
+  listTasks,
   listDocumentOwnerOptions,
   listResponsibleDocuments,
   reconcileVersionSwitchTask,
   updateDocumentDraft,
   uploadDocument,
+  updateSavedView,
 } from "./client";
 import { SESSION_SUPERSEDED_CODE, captureAuthSessionIdentity } from "../sessionIdentity";
 import { type CurrentUser, useAuthStore } from "../store/auth.store";
@@ -800,5 +805,104 @@ describe("getDocumentContent bounded streaming", () => {
     expect(read).toHaveBeenCalledTimes(2);
     expect(cancelReader).toHaveBeenCalledTimes(1);
     expect(releaseLock).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe("task and saved-view API contracts", () => {
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
+
+  it("forwards scoped task filters, sorting and pagination to the canonical endpoint", async () => {
+    const response = {
+      items: [],
+      total: 0,
+      status_counts: { queued: 0, running: 0, succeeded: 0, failed: 0, canceled: 0 },
+      page: 2,
+      page_size: 50,
+      total_pages: 0,
+    };
+    const get = vi.spyOn(apiClient, "get").mockResolvedValue({
+      data: { success: true, data: response, message: "ok" },
+    } as never);
+    const params = {
+      task_type: "ragflow_upload" as const,
+      status: "failed" as const,
+      file_id: "11111111-1111-4111-8111-111111111111",
+      department_id: "22222222-2222-4222-8222-222222222222",
+      sort: "finished_at" as const,
+      order: "desc" as const,
+      page: 2,
+      page_size: 50,
+    };
+
+    await expect(listTasks(params)).resolves.toEqual(response);
+    expect(get).toHaveBeenCalledWith("/tasks", { params });
+  });
+
+  it("uses the saved-view list/create/update/delete endpoints without result-row payloads", async () => {
+    const view = {
+      id: "33333333-3333-4333-8333-333333333333",
+      owner_id: firstUser.id,
+      scope: "private",
+      department_id: null,
+      page_key: "my_files",
+      name: "待处理",
+      stored_schema_version: 2,
+      effective_schema_version: 2,
+      compatibility: "current",
+      effective_definition: {
+        query_definition: { status: "rejected" },
+        column_preferences: {},
+      },
+      row_version: 1,
+      created_at: "2026-07-18T00:00:00Z",
+      updated_at: "2026-07-18T00:00:00Z",
+    } as const;
+    const listResponse = {
+      items: [view],
+      total: 1,
+      page: 1,
+      page_size: 100,
+      total_pages: 1,
+    };
+    const get = vi.spyOn(apiClient, "get").mockResolvedValue({
+      data: { success: true, data: listResponse, message: "ok" },
+    } as never);
+    const post = vi.spyOn(apiClient, "post").mockResolvedValue({
+      data: { success: true, data: view, message: "ok" },
+    } as never);
+    const patch = vi.spyOn(apiClient, "patch").mockResolvedValue({
+      data: { success: true, data: view, message: "ok" },
+    } as never);
+    const remove = vi.spyOn(apiClient, "delete").mockResolvedValue({ data: undefined } as never);
+    const createPayload = {
+      page_key: "my_files" as const,
+      name: "待处理",
+      scope: "private" as const,
+      definition_schema_version: 2,
+      query_definition: { status: "rejected" },
+      column_preferences: {},
+    };
+
+    await listSavedViews({ page_key: "my_files", page: 1, page_size: 100 });
+    await createSavedView(createPayload);
+    await updateSavedView(view.id, {
+      row_version: 1,
+      definition_schema_version: 2,
+      query_definition: { status: "approved" },
+    });
+    await deleteSavedView(view.id);
+
+    expect(get).toHaveBeenCalledWith("/saved-views", {
+      params: { page_key: "my_files", page: 1, page_size: 100 },
+    });
+    expect(post).toHaveBeenCalledWith("/saved-views", createPayload);
+    expect(patch).toHaveBeenCalledWith("/saved-views/" + view.id, {
+      row_version: 1,
+      definition_schema_version: 2,
+      query_definition: { status: "approved" },
+    });
+    expect(remove).toHaveBeenCalledWith("/saved-views/" + view.id);
   });
 });

@@ -177,6 +177,13 @@ const taskListResponse: SyncTaskListResponse = {
     },
   ],
   total: 2,
+  status_counts: {
+    queued: 0,
+    running: 0,
+    succeeded: 1,
+    failed: 1,
+    canceled: 0,
+  },
 };
 
 const datasetMapping: DatasetMapping = {
@@ -284,7 +291,13 @@ beforeEach(() => {
   vi.mocked(listDatasetMappings)
     .mockReset()
     .mockResolvedValue({ items: [datasetMapping], total: 1 });
-  vi.mocked(listTasks).mockReset().mockResolvedValue({ items: [], total: 0 });
+  vi.mocked(listTasks)
+    .mockReset()
+    .mockResolvedValue({
+      items: [],
+      total: 0,
+      status_counts: { queued: 0, running: 0, succeeded: 0, failed: 0, canceled: 0 },
+    });
   vi.mocked(rejectFile).mockReset().mockResolvedValue(baseFile);
   vi.mocked(releaseReviewClaim).mockReset().mockResolvedValue(baseFile);
 });
@@ -495,6 +508,7 @@ describe("FileDetailPage", () => {
         },
       ],
       total: 1,
+      status_counts: { queued: 0, running: 0, succeeded: 0, failed: 1, canceled: 0 },
     });
 
     renderFileDetail();
@@ -1065,7 +1079,11 @@ describe("FileDetailPage", () => {
       error_message: null,
       logs: [],
     };
-    vi.mocked(listTasks).mockResolvedValueOnce({ items: [blankFailure], total: 1 });
+    vi.mocked(listTasks).mockResolvedValueOnce({
+      items: [blankFailure],
+      total: 1,
+      status_counts: { queued: 0, running: 0, succeeded: 0, failed: 1, canceled: 0 },
+    });
 
     const firstView = renderFileDetail();
     expect(await screen.findByText(/任务失败（task-1）/)).toBeInTheDocument();
@@ -1073,7 +1091,11 @@ describe("FileDetailPage", () => {
 
     vi.mocked(listTasks)
       .mockRejectedValueOnce(new Error("队列服务不可用"))
-      .mockResolvedValue({ items: [], total: 0 });
+      .mockResolvedValue({
+        items: [],
+        total: 0,
+        status_counts: { queued: 0, running: 0, succeeded: 0, failed: 0, canceled: 0 },
+      });
     renderFileDetail();
     const taskErrorTitle = await screen.findByText("处理日志加载失败");
     expect(taskErrorTitle).toBeInTheDocument();

@@ -390,6 +390,104 @@ async def test_admin_reads_overview_users_departments_categories_and_trends(
     assert user_detail["category_breakdown"][0]["category_name"] == "技术文档"
 
 
+async def test_statistics_user_search_filters_before_pagination_case_insensitively(
+    statistics_client: AsyncClient,
+) -> None:
+    from app.core.database import AsyncSessionFactory
+    from app.modules.audit.models import AuditLog
+
+    ids = await _seed_statistics_fixture()
+    case_user_id = await _create_user(
+        email="case-search@company.com",
+        password="password123",
+        name="Case Search User",
+        department="Platform Team",
+    )
+    await _create_file(
+        uploader_id=case_user_id,
+        category_id=ids["tech_id"],
+        department="Platform Team",
+        status_value="parsed",
+        review_status="approved",
+        size=5_000,
+        uploaded_at=datetime(2026, 6, 5, 9, 0, tzinfo=UTC),
+        hash_value="5" * 64,
+    )
+    token = await _login(
+        statistics_client,
+        email="stats-admin@company.com",
+        password="password123",
+    )
+    headers = {"Authorization": f"Bearer {token}"}
+    common_params = {
+        "page_size": 1,
+        "sort_by": "last_upload_at",
+        "sort_order": "asc",
+    }
+
+    unfiltered = await statistics_client.get(
+        "/api/admin/statistics/users",
+        headers=headers,
+        params={**common_params, "page": 3},
+    )
+    by_name = await statistics_client.get(
+        "/api/admin/statistics/users",
+        headers=headers,
+        params={**common_params, "page": 1, "user_q": "cAsE"},
+    )
+    by_department = await statistics_client.get(
+        "/api/admin/statistics/users",
+        headers=headers,
+        params={**common_params, "page": 1, "user_q": "pLaTfOrM"},
+    )
+    exported = await statistics_client.get(
+        "/api/admin/statistics/export",
+        headers=headers,
+        params={"user_q": "PLATFORM"},
+    )
+
+    assert unfiltered.status_code == 200
+    assert unfiltered.json()["data"]["total"] == 3
+    assert unfiltered.json()["data"]["items"][0]["user_name"] == "Case Search User"
+    for response in (by_name, by_department):
+        assert response.status_code == 200
+        data = response.json()["data"]
+        assert data["total"] == 1
+        assert data["page"] == 1
+        assert data["items"][0]["user_id"] == str(case_user_id)
+        assert data["items"][0]["rank"] == 1
+    assert exported.status_code == 200
+    assert "Case Search User,Platform Team,1" in exported.text
+    assert "李明,研发中心" not in exported.text
+
+    async with AsyncSessionFactory() as session:
+        result = await session.execute(
+            select(AuditLog).where(AuditLog.action == "statistics.users.list")
+        )
+        metadata = [audit.metadata_json for audit in result.scalars()]
+    assert any(item["user_q"] == "cAsE" and item["result_count"] == 1 for item in metadata)
+    assert any(item["user_q"] == "pLaTfOrM" and item["result_count"] == 1 for item in metadata)
+
+
+async def test_statistics_user_search_rejects_values_longer_than_100_characters(
+    statistics_client: AsyncClient,
+) -> None:
+    await _seed_statistics_fixture()
+    token = await _login(
+        statistics_client,
+        email="stats-admin@company.com",
+        password="password123",
+    )
+
+    response = await statistics_client.get(
+        "/api/admin/statistics/users",
+        headers={"Authorization": f"Bearer {token}"},
+        params={"user_q": "x" * 101},
+    )
+
+    assert response.status_code == 422
+
+
 async def test_admin_reads_expiry_statistics(
     statistics_client: AsyncClient,
 ) -> None:

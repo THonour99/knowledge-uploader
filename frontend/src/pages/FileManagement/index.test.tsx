@@ -7,6 +7,7 @@ import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vite
 
 import {
   ApiError,
+  type FileListResponse,
   type KnowledgeFile,
   type UploadPolicy,
   approveFile,
@@ -46,6 +47,32 @@ vi.mock("../../api/client", async () => {
     releaseReviewClaim: vi.fn(),
   };
 });
+vi.mock("../../components/SavedViewManager", () => ({
+  SavedViewManager: ({
+    pageKey,
+    onApply,
+  }: {
+    pageKey: string;
+    onApply: (definition: Record<string, unknown>) => void;
+  }) => (
+    <button
+      type="button"
+      data-testid={"saved-view-" + pageKey}
+      onClick={() =>
+        onApply({
+          relationship: "responsible",
+          queue: "mine",
+          task_type: "ragflow_upload",
+          group_by: "month",
+          order: "desc",
+          page_size: 50,
+        })
+      }
+    >
+      应用测试保存视图
+    </button>
+  ),
+}));
 
 const uploadPolicy: UploadPolicy = {
   allowed_extensions: ["pdf", "docx"],
@@ -230,6 +257,58 @@ describe("FileManagementPage", () => {
     expect(screen.getByRole("tabpanel")).toHaveAttribute(
       "aria-labelledby",
       "review-queue-tab-overdue",
+    );
+  });
+
+  it("waits for the current filter response before clamping a shrunken result set", async () => {
+    const oldFile = makeReviewFile({ original_name: "旧筛选结果.pdf" });
+    let resolveShrunkResponse!: (value: FileListResponse) => void;
+    const shrunkResponse = new Promise<FileListResponse>((resolve) => {
+      resolveShrunkResponse = resolve;
+    });
+    vi.mocked(listReviewFiles)
+      .mockResolvedValueOnce({
+        items: [oldFile],
+        total: 1,
+        page: 1,
+        page_size: 20,
+        total_pages: 1,
+      })
+      .mockReturnValueOnce(shrunkResponse)
+      .mockResolvedValue({
+        items: [],
+        total: 21,
+        page: 2,
+        page_size: 20,
+        total_pages: 2,
+      });
+
+    renderWorkbench("/admin/files?q=初始&page=1&page_size=20");
+    expect(await screen.findByText("旧筛选结果.pdf")).toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole("button", { name: "模拟外部地址变化" }));
+    await waitFor(() =>
+      expect(listReviewFiles).toHaveBeenCalledWith(
+        expect.objectContaining({ q: "外部更新", page: 3, page_size: 20 }),
+      ),
+    );
+    expect(screen.getByTestId("location")).toHaveTextContent("q=外部更新&page=3");
+
+    await act(async () => {
+      resolveShrunkResponse({
+        items: [],
+        total: 21,
+        page: 3,
+        page_size: 20,
+        total_pages: 2,
+      });
+    });
+
+    await waitFor(() =>
+      expect(screen.getByTestId("location")).toHaveTextContent("q=外部更新&page=2"),
+    );
+    expect(listReviewFiles).toHaveBeenLastCalledWith(
+      expect.objectContaining({ q: "外部更新", page: 2, page_size: 20 }),
     );
   });
 
@@ -514,7 +593,7 @@ describe("FileManagementPage", () => {
 
   it("renders a compact action-complete queue instead of a table on a 390px viewport", async () => {
     vi.mocked(window.matchMedia).mockImplementation((query: string) => ({
-      matches: query === "(max-width: 767px)",
+      matches: query === "(max-width: 768px)",
       media: query,
       onchange: null,
       addListener: vi.fn(),

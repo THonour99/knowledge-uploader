@@ -206,13 +206,34 @@ class RagflowTaskService:
         scope: DepartmentAccessScope,
         context: RequestContext,
         file_id: uuid.UUID | None = None,
-    ) -> list[SyncTaskBundle]:
+        task_type: str | None = None,
+        status: str | None = None,
+        department_id: uuid.UUID | None = None,
+        sort: str = "created_at",
+        order: str = "desc",
+        page: int = 1,
+        page_size: int = 20,
+    ) -> tuple[list[SyncTaskBundle], int, dict[str, int]]:
         self._require_admin(current_user)
-        tasks = await self._repository.list_tasks(
+        department_ids = scope.query_department_ids()
+        if department_id is not None:
+            department_ids = (
+                frozenset({department_id})
+                if scope.covers_department(department_id)
+                else frozenset()
+            )
+        tasks, total, status_counts = await self._repository.list_tasks(
             file_id=file_id,
-            department_ids=scope.query_department_ids(),
+            task_type=task_type,
+            status=status,
+            department_ids=department_ids,
+            sort=sort,
+            order=order,
+            limit=page_size,
+            offset=(page - 1) * page_size,
         )
-        bundles = [await self._bundle(task) for task in tasks]
+        logs_by_task = await self._repository.list_logs_for_tasks(tuple(task.id for task in tasks))
+        bundles = [SyncTaskBundle(task=task, logs=logs_by_task.get(task.id, [])) for task in tasks]
         await self._record_admin_audit(
             current_user=current_user,
             action="task.list",
@@ -221,12 +242,21 @@ class RagflowTaskService:
             context=context,
             metadata_json={
                 "result_count": len(tasks),
+                "total": total,
+                "status_counts": status_counts,
                 "file_id": str(file_id) if file_id is not None else None,
+                "task_type": task_type,
+                "status": status,
+                "filter_department_id": (str(department_id) if department_id is not None else None),
+                "sort": sort,
+                "order": order,
+                "page": page,
+                "page_size": page_size,
                 **scope.audit_metadata(),
             },
         )
         await self._session.commit()
-        return bundles
+        return bundles, total, status_counts
 
     async def get_task(
         self,

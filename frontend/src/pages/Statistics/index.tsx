@@ -26,7 +26,8 @@ import { useQuery, useQueryClient } from "@tanstack/react-query";
 import type { ColumnsType } from "antd/es/table";
 import dayjs, { type Dayjs } from "dayjs";
 import ReactECharts from "echarts-for-react";
-import { useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef } from "react";
+import { useSearchParams } from "react-router-dom";
 
 import {
   exportStatistics,
@@ -47,6 +48,7 @@ import {
   type StatisticsUserRow,
 } from "../../api/client";
 import { KpiCard } from "../../components/KpiCard";
+import { SavedViewManager } from "../../components/SavedViewManager";
 import { useSessionMutation as useMutation } from "../../hooks/useSessionMutation";
 import { StatusTag } from "../../components/StatusTag";
 import { PageContainer } from "../../layouts/PageContainer";
@@ -78,6 +80,206 @@ const reviewStatusOptions = [
   { label: "已通过", value: "approved" },
   { label: "已拒绝", value: "rejected" },
 ];
+const SYNC_STATUS_VALUES = new Set(["synced", "failed", "syncing", "not_synced"]);
+const REVIEW_STATUS_VALUES = new Set(["pending", "in_review", "approved", "rejected"]);
+const GROUP_BY_VALUES = new Set<GroupBy>(["day", "week", "month"]);
+const UUID_PATTERN = /^[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}$/i;
+const ISO_DATE_PATTERN = /^\d{4}-\d{2}-\d{2}$/;
+const STATISTICS_SORT_VALUES = new Set([
+  "total_files",
+  "synced_files",
+  "failed_files",
+  "pending_review_files",
+  "total_file_size",
+  "last_upload_at",
+]);
+const STATISTICS_URL_KEYS = [
+  "date_range",
+  "start_date",
+  "end_date",
+  "department",
+  "category_id",
+  "status",
+  "user_id",
+  "sync_status",
+  "review_status",
+  "group_by",
+  "page",
+  "page_size",
+  "sort_by",
+  "sort_order",
+  "user_q",
+] as const;
+
+interface StatisticsUrlState {
+  startDate?: string;
+  endDate?: string;
+  department?: string;
+  categoryId?: string;
+  status?: string;
+  userId?: string;
+  syncStatus?: string;
+  reviewStatus?: string;
+  groupBy: GroupBy;
+  page: number;
+  pageSize: number;
+  sortBy: string;
+  sortOrder: "asc" | "desc";
+  userKeyword: string;
+}
+
+interface NormalizedStatisticsSearch {
+  state: StatisticsUrlState;
+  search: string;
+}
+
+function validIsoDate(value: string | null): string | undefined {
+  if (!value || !ISO_DATE_PATTERN.test(value)) {
+    return undefined;
+  }
+  const parsed = dayjs(value);
+  return parsed.isValid() && parsed.format("YYYY-MM-DD") === value ? value : undefined;
+}
+
+function positiveInteger(
+  value: string | null,
+  fallback: number,
+  maximum = Number.MAX_SAFE_INTEGER,
+): number {
+  if (!value || !/^[1-9]\d*$/.test(value)) {
+    return fallback;
+  }
+  const parsed = Number(value);
+  return Number.isSafeInteger(parsed) && parsed <= maximum ? parsed : fallback;
+}
+
+function normalizeStatisticsSearch(
+  source: URLSearchParams,
+  defaultStartDate: string,
+  defaultEndDate: string,
+): NormalizedStatisticsSearch {
+  const params = new URLSearchParams(source);
+  const allTime = params.get("date_range") === "all";
+  const rawStartDate = params.get("start_date");
+  const rawEndDate = params.get("end_date");
+  const hasExplicitDateBound = rawStartDate !== null || rawEndDate !== null;
+  let startDate = validIsoDate(rawStartDate);
+  let endDate = validIsoDate(rawEndDate);
+  if (allTime) {
+    startDate = undefined;
+    endDate = undefined;
+    params.set("date_range", "all");
+    params.delete("start_date");
+    params.delete("end_date");
+  } else {
+    params.delete("date_range");
+    const needsDefaultRange =
+      !hasExplicitDateBound ||
+      (!startDate && !endDate) ||
+      Boolean(startDate && endDate && startDate > endDate);
+    if (needsDefaultRange) {
+      startDate = defaultStartDate;
+      endDate = defaultEndDate;
+    }
+    if (startDate) {
+      params.set("start_date", startDate);
+    } else {
+      params.delete("start_date");
+    }
+    if (endDate) {
+      params.set("end_date", endDate);
+    } else {
+      params.delete("end_date");
+    }
+  }
+
+  const rawDepartment = params.get("department");
+  const department =
+    rawDepartment && rawDepartment.trim().length <= 100 ? rawDepartment.trim() : undefined;
+  if (department) {
+    params.set("department", department);
+  } else {
+    params.delete("department");
+  }
+  const rawCategoryId = params.get("category_id");
+  const categoryId = rawCategoryId && UUID_PATTERN.test(rawCategoryId) ? rawCategoryId : undefined;
+  if (categoryId) {
+    params.set("category_id", categoryId);
+  } else {
+    params.delete("category_id");
+  }
+  const rawStatus = params.get("status");
+  const status = rawStatus && rawStatus.trim().length <= 40 ? rawStatus.trim() : undefined;
+  if (status) {
+    params.set("status", status);
+  } else {
+    params.delete("status");
+  }
+  const rawUserId = params.get("user_id")?.trim();
+  const userId = rawUserId && UUID_PATTERN.test(rawUserId) ? rawUserId : undefined;
+  if (userId) {
+    params.set("user_id", userId);
+  } else {
+    params.delete("user_id");
+  }
+  const rawSyncStatus = params.get("sync_status");
+  const syncStatus =
+    rawSyncStatus && SYNC_STATUS_VALUES.has(rawSyncStatus) ? rawSyncStatus : undefined;
+  const rawReviewStatus = params.get("review_status");
+  const reviewStatus =
+    rawReviewStatus && REVIEW_STATUS_VALUES.has(rawReviewStatus) ? rawReviewStatus : undefined;
+  const rawGroupBy = params.get("group_by");
+  const groupBy = GROUP_BY_VALUES.has(rawGroupBy as GroupBy) ? (rawGroupBy as GroupBy) : "day";
+  const page = positiveInteger(params.get("page"), 1);
+  const pageSize = positiveInteger(params.get("page_size"), 20, 100);
+  const rawSortBy = params.get("sort_by");
+  const sortBy = rawSortBy && STATISTICS_SORT_VALUES.has(rawSortBy) ? rawSortBy : "total_files";
+  const sortOrder = params.get("sort_order") === "asc" ? "asc" : "desc";
+  const rawUserKeyword = params.get("user_q");
+  const userKeyword =
+    rawUserKeyword && rawUserKeyword.trim().length <= 100 ? rawUserKeyword.trim() : "";
+
+  for (const [key, value] of [
+    ["sync_status", syncStatus],
+    ["review_status", reviewStatus],
+  ] as const) {
+    if (value) {
+      params.set(key, value);
+    } else {
+      params.delete(key);
+    }
+  }
+  params.set("group_by", groupBy);
+  params.set("page", String(page));
+  params.set("page_size", String(pageSize));
+  params.set("sort_by", sortBy);
+  params.set("sort_order", sortOrder);
+  if (userKeyword) {
+    params.set("user_q", userKeyword);
+  } else {
+    params.delete("user_q");
+  }
+
+  return {
+    state: {
+      startDate,
+      endDate,
+      department,
+      categoryId,
+      status,
+      userId,
+      syncStatus,
+      reviewStatus,
+      groupBy,
+      page,
+      pageSize,
+      sortBy,
+      sortOrder,
+      userKeyword,
+    },
+    search: params.toString(),
+  };
+}
 
 const categoryColorTokens = [
   { token: "--ku-color-primary", fallback: "#1677ff" },
@@ -410,69 +612,263 @@ export default function StatisticsPage() {
   const { message } = AntdApp.useApp();
   const queryClient = useQueryClient();
   const categoryChartRef = useRef<CategoryChartRef | null>(null);
-  const [dateRange, setDateRange] = useState<DateRange>([dayjs().subtract(30, "day"), dayjs()]);
-  const [department, setDepartment] = useState<string | undefined>();
-  const [categoryId, setCategoryId] = useState<string | undefined>();
-  const [syncStatus, setSyncStatus] = useState<string | undefined>();
-  const [reviewStatus, setReviewStatus] = useState<string | undefined>();
-  const [groupBy, setGroupBy] = useState<GroupBy>("day");
-  const [userKeyword, setUserKeyword] = useState("");
+  const [searchParams, setSearchParams] = useSearchParams();
+  const defaultDateBounds = useMemo(
+    () => ({
+      startDate: dayjs().subtract(30, "day").format("YYYY-MM-DD"),
+      endDate: dayjs().format("YYYY-MM-DD"),
+    }),
+    [],
+  );
+  const rawSearch = searchParams.toString();
+  const normalizedSearch = useMemo(
+    () =>
+      normalizeStatisticsSearch(
+        new URLSearchParams(rawSearch),
+        defaultDateBounds.startDate,
+        defaultDateBounds.endDate,
+      ),
+    [defaultDateBounds.endDate, defaultDateBounds.startDate, rawSearch],
+  );
+  const isCanonicalSearch = rawSearch === normalizedSearch.search;
+  useEffect(() => {
+    if (!isCanonicalSearch) {
+      setSearchParams(normalizedSearch.search, { replace: true });
+    }
+  }, [isCanonicalSearch, normalizedSearch.search, setSearchParams]);
+  const {
+    startDate,
+    endDate,
+    department,
+    categoryId,
+    status,
+    userId,
+    syncStatus,
+    reviewStatus,
+    groupBy,
+    page,
+    pageSize,
+    sortBy,
+    sortOrder,
+    userKeyword,
+  } = normalizedSearch.state;
+  const dateRange = useMemo<DateRange>(
+    () =>
+      startDate || endDate
+        ? [startDate ? dayjs(startDate) : null, endDate ? dayjs(endDate) : null]
+        : null,
+    [endDate, startDate],
+  );
+
+  const updateStatisticsQuery = useCallback(
+    (
+      updates: Record<string, string | number | undefined>,
+      options: { replace?: boolean; resetPage?: boolean } = {},
+    ) => {
+      setSearchParams(
+        (current) => {
+          const next = new URLSearchParams(current);
+          for (const [key, value] of Object.entries(updates)) {
+            if (value === undefined || value === "") {
+              next.delete(key);
+            } else {
+              next.set(key, String(value));
+            }
+          }
+          if (options.resetPage !== false) {
+            next.set("page", "1");
+          }
+          return normalizeStatisticsSearch(
+            next,
+            defaultDateBounds.startDate,
+            defaultDateBounds.endDate,
+          ).search;
+        },
+        { replace: options.replace ?? false },
+      );
+    },
+    [defaultDateBounds.endDate, defaultDateBounds.startDate, setSearchParams],
+  );
 
   const queryParams = useMemo<StatisticsQueryParams>(
     () => ({
-      start_date: dateRange?.[0]?.format("YYYY-MM-DD"),
-      end_date: dateRange?.[1]?.format("YYYY-MM-DD"),
+      start_date: startDate,
+      end_date: endDate,
       department,
       category_id: categoryId,
+      status,
+      user_id: userId,
       sync_status: syncStatus,
       review_status: reviewStatus,
       group_by: groupBy,
     }),
-    [categoryId, dateRange, department, groupBy, reviewStatus, syncStatus],
+    [categoryId, department, endDate, groupBy, reviewStatus, startDate, status, syncStatus, userId],
   );
 
   const usersParams = useMemo<StatisticsQueryParams>(
     () => ({
       ...queryParams,
-      page: 1,
-      page_size: 100,
-      sort_by: "total_files",
-      sort_order: "desc",
+      user_q: userKeyword || undefined,
+      page,
+      page_size: pageSize,
+      sort_by: sortBy,
+      sort_order: sortOrder,
     }),
-    [queryParams],
+    [page, pageSize, queryParams, sortBy, sortOrder, userKeyword],
+  );
+  const exportParams = useMemo<StatisticsQueryParams>(
+    () => ({
+      ...queryParams,
+      user_q: userKeyword || undefined,
+      sort_by: sortBy,
+      sort_order: sortOrder,
+    }),
+    [queryParams, sortBy, sortOrder, userKeyword],
+  );
+  const savedViewDefinition = useMemo<Record<string, unknown>>(
+    () => ({
+      group_by: groupBy,
+      page_size: pageSize,
+      sort_by: sortBy,
+      sort_order: sortOrder,
+      ...(startDate ? { start_date: startDate } : {}),
+      ...(endDate ? { end_date: endDate } : {}),
+      ...(department ? { department } : {}),
+      ...(categoryId ? { category_id: categoryId } : {}),
+      ...(status ? { status } : {}),
+      ...(userId ? { user_id: userId } : {}),
+      ...(syncStatus ? { sync_status: syncStatus } : {}),
+      ...(reviewStatus ? { review_status: reviewStatus } : {}),
+      ...(userKeyword ? { user_q: userKeyword } : {}),
+    }),
+    [
+      categoryId,
+      department,
+      endDate,
+      groupBy,
+      pageSize,
+      reviewStatus,
+      sortBy,
+      sortOrder,
+      startDate,
+      status,
+      syncStatus,
+      userId,
+      userKeyword,
+    ],
+  );
+
+  const applySavedView = useCallback(
+    (definition: Record<string, unknown>) => {
+      setSearchParams(
+        (current) => {
+          const next = new URLSearchParams(current);
+          for (const key of STATISTICS_URL_KEYS) {
+            next.delete(key);
+          }
+
+          const definitionStartDate = definition.start_date;
+          const definitionEndDate = definition.end_date;
+          if (typeof definitionStartDate === "string" || typeof definitionEndDate === "string") {
+            if (typeof definitionStartDate === "string") {
+              next.set("start_date", definitionStartDate);
+            }
+            if (typeof definitionEndDate === "string") {
+              next.set("end_date", definitionEndDate);
+            }
+          } else {
+            next.set("date_range", "all");
+          }
+
+          for (const key of [
+            "department",
+            "category_id",
+            "status",
+            "user_id",
+            "sync_status",
+            "review_status",
+            "group_by",
+            "sort_by",
+            "sort_order",
+            "user_q",
+          ] as const) {
+            const value = definition[key];
+            if (typeof value === "string") {
+              next.set(key, value);
+            }
+          }
+          if (typeof definition.page_size === "number") {
+            next.set("page_size", String(definition.page_size));
+          }
+          next.set("page", "1");
+          return normalizeStatisticsSearch(
+            next,
+            defaultDateBounds.startDate,
+            defaultDateBounds.endDate,
+          ).search;
+        },
+        { replace: false },
+      );
+    },
+    [defaultDateBounds.endDate, defaultDateBounds.startDate, setSearchParams],
   );
 
   const overviewQuery = useQuery({
     queryKey: ["statistics", "overview", queryParams],
     queryFn: () => getStatisticsOverview(queryParams),
+    enabled: isCanonicalSearch,
   });
   const usersQuery = useQuery({
     queryKey: ["statistics", "users", usersParams],
     queryFn: () => getStatisticsUsers(usersParams),
+    enabled: isCanonicalSearch,
   });
+  useEffect(() => {
+    const response = usersQuery.data;
+    if (!isCanonicalSearch || usersQuery.isFetching || usersQuery.isPlaceholderData || !response) {
+      return;
+    }
+    const lastPage = Math.max(1, Math.ceil(response.total / pageSize));
+    if (page > lastPage) {
+      updateStatisticsQuery({ page: lastPage }, { replace: true, resetPage: false });
+    }
+  }, [
+    isCanonicalSearch,
+    page,
+    pageSize,
+    updateStatisticsQuery,
+    usersQuery.data,
+    usersQuery.isFetching,
+    usersQuery.isPlaceholderData,
+  ]);
   const departmentsQuery = useQuery({
     queryKey: ["statistics", "departments", queryParams],
     queryFn: () => getStatisticsDepartments(queryParams),
+    enabled: isCanonicalSearch,
   });
   const categoriesQuery = useQuery({
     queryKey: ["statistics", "categories", queryParams],
     queryFn: () => getStatisticsCategories(queryParams),
+    enabled: isCanonicalSearch,
   });
   const trendsQuery = useQuery({
     queryKey: ["statistics", "trends", queryParams],
     queryFn: () => getStatisticsTrends(queryParams),
+    enabled: isCanonicalSearch,
   });
   const failuresQuery = useQuery({
     queryKey: ["statistics", "failures", queryParams],
     queryFn: () => getStatisticsFailures(queryParams),
+    enabled: isCanonicalSearch,
   });
   const expiryQuery = useQuery({
     queryKey: ["statistics", "expiry", queryParams],
     queryFn: () => getStatisticsExpiry(queryParams),
+    enabled: isCanonicalSearch,
   });
 
   const exportMutation = useMutation({
-    mutationFn: () => exportStatistics(queryParams),
+    mutationFn: () => exportStatistics(exportParams),
     onSuccess: (blob) => {
       makeDownload(blob, `statistics-${dayjs().format("YYYYMMDD-HHmm")}.csv`);
       message.success("统计报表已导出");
@@ -509,15 +905,7 @@ export default function StatisticsPage() {
     failuresQuery,
   ].find((query) => query.isError)?.error;
 
-  const filteredUsers = useMemo(() => {
-    const keyword = userKeyword.trim().toLowerCase();
-    if (!keyword) {
-      return users;
-    }
-    return users.filter((user) =>
-      [user.user_name, user.department].filter(Boolean).join(" ").toLowerCase().includes(keyword),
-    );
-  }, [userKeyword, users]);
+  const visibleUsers = users;
 
   const departmentOptions = [
     { label: "部门：全部", value: "all" },
@@ -649,7 +1037,25 @@ export default function StatisticsPage() {
       description="查看上传趋势、部门贡献、分类分布和用户上传明细。"
       actions={
         <Space wrap className="statistics-page-actions">
-          <RangePicker value={dateRange} onChange={(value) => setDateRange(value)} allowClear />
+          <RangePicker
+            value={dateRange}
+            onChange={(value) => {
+              const nextStartDate = value?.[0]?.format("YYYY-MM-DD");
+              const nextEndDate = value?.[1]?.format("YYYY-MM-DD");
+              const hasDateBound = Boolean(nextStartDate || nextEndDate);
+              updateStatisticsQuery(
+                hasDateBound
+                  ? {
+                      date_range: undefined,
+                      start_date: nextStartDate,
+                      end_date: nextEndDate,
+                    }
+                  : { date_range: "all", start_date: undefined, end_date: undefined },
+              );
+            }}
+            allowClear
+            allowEmpty={[true, true]}
+          />
           <Button
             type="primary"
             icon={<DownloadOutlined />}
@@ -661,6 +1067,11 @@ export default function StatisticsPage() {
         </Space>
       }
     >
+      <SavedViewManager
+        pageKey="statistics"
+        queryDefinition={savedViewDefinition}
+        onApply={applySavedView}
+      />
       {firstError ? (
         <Alert
           className="statistics-alert"
@@ -677,31 +1088,39 @@ export default function StatisticsPage() {
           className="filter-toolbar__control"
           value={department ?? "all"}
           options={departmentOptions}
-          onChange={(value) => setDepartment(value === "all" ? undefined : value)}
+          onChange={(value) =>
+            updateStatisticsQuery({ department: value === "all" ? undefined : value })
+          }
         />
         <Select
           className="filter-toolbar__control"
           value={categoryId ?? "all"}
           options={categoryOptions}
-          onChange={(value) => setCategoryId(value === "all" ? undefined : value)}
+          onChange={(value) =>
+            updateStatisticsQuery({ category_id: value === "all" ? undefined : value })
+          }
         />
         <Select
           className="filter-toolbar__control"
           value={syncStatus ?? "all"}
           options={syncStatusOptions}
-          onChange={(value) => setSyncStatus(value === "all" ? undefined : value)}
+          onChange={(value) =>
+            updateStatisticsQuery({ sync_status: value === "all" ? undefined : value })
+          }
         />
         <Select
           className="filter-toolbar__control"
           value={reviewStatus ?? "all"}
           options={reviewStatusOptions}
-          onChange={(value) => setReviewStatus(value === "all" ? undefined : value)}
+          onChange={(value) =>
+            updateStatisticsQuery({ review_status: value === "all" ? undefined : value })
+          }
         />
         <Select
           className="filter-toolbar__control"
           value={groupBy}
           options={groupByOptions}
-          onChange={setGroupBy}
+          onChange={(value) => updateStatisticsQuery({ group_by: value })}
         />
         <Button
           icon={<ReloadOutlined />}
@@ -783,9 +1202,9 @@ export default function StatisticsPage() {
         </Card>
 
         <Card className="document-panel statistics-ranking-card" title="活跃贡献用户排行">
-          {filteredUsers.length > 0 ? (
+          {visibleUsers.length > 0 ? (
             <div className="statistics-ranking-list">
-              {filteredUsers.slice(0, 6).map((user) => (
+              {visibleUsers.slice(0, 6).map((user) => (
                 <div className="statistics-ranking-row" key={user.user_id}>
                   <span className="statistics-ranking-row__rank">{user.rank}</span>
                   <span className="statistics-user-cell__avatar">{user.user_name.slice(0, 1)}</span>
@@ -809,9 +1228,9 @@ export default function StatisticsPage() {
         <Card className="document-panel table-card statistics-users-card" title="用户上传统计">
           <StatisticsContributionWorkbench
             exportLoading={exportMutation.isPending}
-            filteredUsers={filteredUsers}
+            filteredUsers={visibleUsers}
             hasKeyword={userKeyword.trim().length > 0}
-            onClearKeyword={() => setUserKeyword("")}
+            onClearKeyword={() => updateStatisticsQuery({ user_q: undefined }, { replace: true })}
             onExport={() => exportMutation.mutate()}
             totalUsers={userSampleCount}
           />
@@ -822,15 +1241,28 @@ export default function StatisticsPage() {
               value={userKeyword}
               allowClear
               prefix={<RiseOutlined />}
-              onChange={(event) => setUserKeyword(event.target.value)}
+              onChange={(event) =>
+                updateStatisticsQuery({ user_q: event.target.value }, { replace: true })
+              }
             />
           </div>
           <Table<StatisticsUserRow>
             rowKey="user_id"
             columns={columns}
-            dataSource={filteredUsers}
+            dataSource={visibleUsers}
             loading={usersQuery.isLoading}
-            pagination={{ pageSize: 10, showSizeChanger: false, total: filteredUsers.length }}
+            pagination={{
+              current: page,
+              pageSize,
+              total: usersQuery.data?.total ?? 0,
+              showSizeChanger: true,
+              pageSizeOptions: ["10", "20", "50", "100"],
+              onChange: (nextPage, nextPageSize) =>
+                updateStatisticsQuery(
+                  { page: nextPage, page_size: nextPageSize },
+                  { resetPage: false },
+                ),
+            }}
             locale={{ emptyText: "暂无用户上传统计" }}
             scroll={{ x: 1220 }}
           />

@@ -218,6 +218,43 @@ async def test_private_views_are_owner_only_and_page_permissions_are_enforced() 
     assert statistics.status_code == 422
 
 
+async def test_statistics_saved_view_preserves_and_bounds_user_search() -> None:
+    department_id = await _create_department(name="统计搜索", code="stats-search")
+    system_admin = await _create_user(
+        email="stats-view-admin@company.com",
+        role="system_admin",
+        department_id=department_id,
+    )
+
+    created = await _request(
+        system_admin,
+        "POST",
+        "/api/saved-views",
+        json=_create_payload(
+            name="平台用户",
+            page_key="statistics",
+            query_definition={"user_q": "Platform", "page_size": 50},
+        ),
+    )
+    too_long = await _request(
+        system_admin,
+        "POST",
+        "/api/saved-views",
+        json=_create_payload(
+            name="过长搜索",
+            page_key="statistics",
+            query_definition={"user_q": "x" * 101},
+        ),
+    )
+
+    assert created.status_code == 201, created.text
+    query_definition = created.json()["data"]["effective_definition"]["query_definition"]
+    assert query_definition["user_q"] == "Platform"
+    assert query_definition["page_size"] == 50
+    assert too_long.status_code == 422
+    assert too_long.json()["detail"]["error_code"] == "SAVED_VIEW_INVALID_DEFINITION"
+
+
 async def test_responsible_view_rejects_tag_filter_not_supported_by_listing_api() -> None:
     department_id = await _create_department(name="负责人契约", code="owner-contract")
     owner = await _create_user(

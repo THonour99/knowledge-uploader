@@ -4,12 +4,12 @@ import asyncio
 import os
 from collections.abc import AsyncGenerator, Awaitable, Callable
 from datetime import UTC, datetime, timedelta
-from uuid import UUID
+from uuid import UUID, uuid4
 
 import pytest
 from httpx import ASGITransport, AsyncClient
 from redis.asyncio import from_url
-from sqlalchemy import select
+from sqlalchemy import event, select
 
 pytestmark = pytest.mark.asyncio
 UNASSIGNED_DEPARTMENT_ID = UUID("00000000-0000-0000-0000-000000000001")
@@ -3952,3 +3952,325 @@ async def test_stale_worker_message_does_not_revive_failed_task(
 
     assert task.status == "failed"
     assert task.error_message == "previous failure"
+
+
+async def test_task_list_supports_saved_view_filters_sort_and_pagination(
+    task_client: AsyncClient,
+) -> None:
+    from app.core.database import AsyncSessionFactory
+    from app.modules.ragflow.models import SyncTask
+
+    token = await _create_admin_token(task_client)
+    department_id = await _create_department(name="Task Filters", code="task-filters")
+    uploader_id = await _create_user(
+        email="task-filter-owner@company.com",
+        password="password123",
+    )
+    file_ids = [
+        await _create_file(
+            uploader_id=uploader_id,
+            department_id=department_id,
+            hash_value=character * 64,
+        )
+        for character in ("5", "6", "7")
+    ]
+    timestamps = [
+        datetime(2026, 7, 18, 1, tzinfo=UTC),
+        datetime(2026, 7, 18, 2, tzinfo=UTC),
+        datetime(2026, 7, 18, 3, tzinfo=UTC),
+    ]
+    async with AsyncSessionFactory() as session:
+        tasks = [
+            SyncTask(
+                file_id=file_ids[0],
+                task_type="ragflow_upload",
+                status="failed",
+                created_at=timestamps[0],
+                updated_at=timestamps[0],
+            ),
+            SyncTask(
+                file_id=file_ids[1],
+                task_type="ragflow_parse",
+                status="succeeded",
+                created_at=timestamps[1],
+                updated_at=timestamps[1],
+            ),
+            SyncTask(
+                file_id=file_ids[2],
+                task_type="ragflow_upload",
+                status="failed",
+                created_at=timestamps[2],
+                updated_at=timestamps[2],
+            ),
+        ]
+        session.add_all(tasks)
+        await session.commit()
+        expected_second_id = tasks[2].id
+
+    response = await task_client.get(
+        "/api/tasks",
+        headers={"Authorization": f"Bearer {token}"},
+        params={
+            "task_type": "ragflow_upload",
+            "status": "failed",
+            "department_id": str(department_id),
+            "sort": "created_at",
+            "order": "asc",
+            "page": 2,
+            "page_size": 1,
+        },
+    )
+
+    assert response.status_code == 200, response.text
+    data = response.json()["data"]
+    assert data["total"] == 2
+    assert data["page"] == 2
+    assert data["page_size"] == 1
+    assert data["total_pages"] == 2
+    assert [item["id"] for item in data["items"]] == [str(expected_second_id)]
+    assert data["status_counts"] == {
+        "queued": 0,
+        "running": 0,
+        "succeeded": 0,
+        "failed": 2,
+        "canceled": 0,
+    }
+
+
+@pytest.mark.parametrize(
+    ("parameter", "value"),
+    [
+        ("task_type", "not-a-task"),
+        ("status", "not-a-status"),
+        ("sort", "file_id"),
+        ("order", "sideways"),
+        ("page", "0"),
+        ("page_size", "101"),
+    ],
+)
+async def test_task_list_rejects_invalid_saved_view_query_values(
+    task_client: AsyncClient,
+    parameter: str,
+    value: str,
+) -> None:
+    token = await _create_admin_token(task_client)
+
+    response = await task_client.get(
+        "/api/tasks",
+        headers={"Authorization": f"Bearer {token}"},
+        params={parameter: value},
+    )
+
+    assert response.status_code == 422
+
+
+async def test_task_list_department_filter_cannot_expand_admin_scope(
+    task_client: AsyncClient,
+) -> None:
+    from app.core.database import AsyncSessionFactory
+    from app.modules.department.models import UserManagedDepartment
+    from app.modules.ragflow.models import SyncTask
+
+    managed_department_id = await _create_department(name="Managed", code="task-managed")
+    foreign_department_id = await _create_department(name="Foreign", code="task-foreign")
+    admin_id = await _create_user(
+        email="task-scope-admin@company.com",
+        password="password123",
+        role="dept_admin",
+    )
+    uploader_id = await _create_user(
+        email="task-scope-owner@company.com",
+        password="password123",
+    )
+    managed_file_id = await _create_file(
+        uploader_id=uploader_id,
+        department_id=managed_department_id,
+        hash_value="8" * 64,
+    )
+    foreign_file_id = await _create_file(
+        uploader_id=uploader_id,
+        department_id=foreign_department_id,
+        hash_value="9" * 64,
+    )
+    async with AsyncSessionFactory() as session:
+        session.add(
+            UserManagedDepartment(
+                user_id=admin_id,
+                department_id=managed_department_id,
+            )
+        )
+        session.add_all(
+            [
+                SyncTask(
+                    file_id=managed_file_id,
+                    task_type="ragflow_parse",
+                    status="succeeded",
+                ),
+                SyncTask(
+                    file_id=foreign_file_id,
+                    task_type="ragflow_parse",
+                    status="succeeded",
+                ),
+            ]
+        )
+        await session.commit()
+    token = await _login(
+        task_client,
+        email="task-scope-admin@company.com",
+        password="password123",
+    )
+
+    visible = await task_client.get(
+        "/api/tasks",
+        headers={"Authorization": f"Bearer {token}"},
+    )
+    foreign = await task_client.get(
+        "/api/tasks",
+        headers={"Authorization": f"Bearer {token}"},
+        params={"department_id": str(foreign_department_id)},
+    )
+    unknown = await task_client.get(
+        "/api/tasks",
+        headers={"Authorization": f"Bearer {token}"},
+        params={"department_id": str(uuid4())},
+    )
+
+    assert visible.status_code == 200
+    visible_data = visible.json()["data"]
+    assert visible_data["total"] == 1
+    assert visible_data["status_counts"] == {
+        "queued": 0,
+        "running": 0,
+        "succeeded": 1,
+        "failed": 0,
+        "canceled": 0,
+    }
+    assert foreign.status_code == unknown.status_code == 200
+    foreign_data = foreign.json()["data"]
+    unknown_data = unknown.json()["data"]
+    assert foreign_data["items"] == unknown_data["items"] == []
+    assert foreign_data["total"] == unknown_data["total"] == 0
+    empty_counts = {
+        "queued": 0,
+        "running": 0,
+        "succeeded": 0,
+        "failed": 0,
+        "canceled": 0,
+    }
+    assert foreign_data["status_counts"] == unknown_data["status_counts"] == empty_counts
+
+
+async def test_task_list_batches_logs_with_constant_query_count_and_stable_grouping(
+    task_client: AsyncClient,
+) -> None:
+    from app.core.database import AsyncSessionFactory, engine
+    from app.modules.ragflow.models import SyncTask, SyncTaskLog
+
+    token = await _create_admin_token(task_client)
+    department_id = await _create_department(name="Task Log Batch", code="task-log-batch")
+    uploader_id = await _create_user(
+        email="task-log-batch-owner@company.com",
+        password="password123",
+    )
+    file_ids = [
+        await _create_file(
+            uploader_id=uploader_id,
+            department_id=department_id,
+            hash_value=character * 64,
+        )
+        for character in ("a", "b", "c", "d")
+    ]
+    task_times = [datetime(2026, 7, 18, hour, tzinfo=UTC) for hour in (4, 5, 6, 7)]
+    async with AsyncSessionFactory() as session:
+        tasks = [
+            SyncTask(
+                file_id=file_id,
+                task_type="ragflow_parse",
+                status="succeeded",
+                created_at=created_at,
+                updated_at=created_at,
+            )
+            for file_id, created_at in zip(file_ids, task_times, strict=True)
+        ]
+        session.add_all(tasks)
+        await session.flush()
+        session.add_all(
+            [
+                SyncTaskLog(
+                    task_id=tasks[0].id,
+                    status="succeeded",
+                    message="second log",
+                    created_at=datetime(2026, 7, 18, 4, 2, tzinfo=UTC),
+                ),
+                SyncTaskLog(
+                    task_id=tasks[0].id,
+                    status="running",
+                    message="first log",
+                    created_at=datetime(2026, 7, 18, 4, 1, tzinfo=UTC),
+                ),
+                SyncTaskLog(
+                    task_id=tasks[2].id,
+                    status="succeeded",
+                    message="third task log",
+                    created_at=datetime(2026, 7, 18, 6, 1, tzinfo=UTC),
+                ),
+            ]
+        )
+        await session.commit()
+        expected_task_ids = [str(task.id) for task in tasks]
+
+    statement_count = 0
+
+    def count_statement(
+        _connection: object,
+        _cursor: object,
+        _statement: str,
+        _parameters: object,
+        _context: object,
+        _executemany: bool,
+    ) -> None:
+        nonlocal statement_count
+        statement_count += 1
+
+    headers = {"Authorization": f"Bearer {token}"}
+    event.listen(engine.sync_engine, "before_cursor_execute", count_statement)
+    try:
+        statement_count = 0
+        single_response = await task_client.get(
+            "/api/tasks",
+            headers=headers,
+            params={"sort": "created_at", "order": "asc", "page_size": 1},
+        )
+        single_page_statement_count = statement_count
+
+        statement_count = 0
+        full_response = await task_client.get(
+            "/api/tasks",
+            headers=headers,
+            params={"sort": "created_at", "order": "asc", "page_size": 4},
+        )
+        full_page_statement_count = statement_count
+    finally:
+        event.remove(engine.sync_engine, "before_cursor_execute", count_statement)
+
+    assert single_response.status_code == full_response.status_code == 200
+    assert full_page_statement_count == single_page_statement_count
+    single_data = single_response.json()["data"]
+    full_data = full_response.json()["data"]
+    expected_status_counts = {
+        "queued": 0,
+        "running": 0,
+        "succeeded": 4,
+        "failed": 0,
+        "canceled": 0,
+    }
+    assert single_data["status_counts"] == full_data["status_counts"] == expected_status_counts
+    full_items = full_data["items"]
+    assert [item["id"] for item in full_items] == expected_task_ids
+    assert [log["message"] for log in full_items[0]["logs"]] == [
+        "first log",
+        "second log",
+    ]
+    assert full_items[1]["logs"] == []
+    assert [log["message"] for log in full_items[2]["logs"]] == ["third task log"]
+    assert full_items[3]["logs"] == []
