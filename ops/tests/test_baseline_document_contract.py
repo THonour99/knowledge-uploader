@@ -346,6 +346,9 @@ def test_candidate_evidence_runner_rejects_ambiguous_identity_and_stays_local(
     with pytest.raises(BaselineContractError, match="non-ignored untracked"):
         baseline_contract.verify_candidate_identity(expected_sha)
 
+    with pytest.raises(BaselineContractError, match="outside the repository"):
+        baseline_contract._prepare_output_dir(ROOT / "artifacts" / "baseline-evidence")
+
     expected_nodes = baseline_contract.BASELINE_TEST_NODES
     assert len(expected_nodes) == 13
 

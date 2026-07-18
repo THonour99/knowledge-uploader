@@ -1245,8 +1245,8 @@ def _prepare_output_dir(output_dir: Path) -> Path:
     if output_dir.exists() and output_dir.is_symlink():
         raise BaselineContractError("output directory must not be a symlink")
     resolved = output_dir.resolve()
-    if resolved == ROOT.resolve():
-        raise BaselineContractError("output directory must not be the repository root")
+    if resolved.is_relative_to(ROOT.resolve()):
+        raise BaselineContractError("output directory must be outside the repository")
     if resolved.exists():
         if not resolved.is_dir() or any(resolved.iterdir()):
             raise BaselineContractError("output directory must be empty")

@@ -80,6 +80,7 @@ python scripts/check_baseline_contract.py `
 验证器在测试前后分别确认 HEAD、Git tree 与 tracked/非忽略 untracked 均为空的工作区，复核全部输入 SHA256，并生成：
 
 - `baseline-contract-<sha>.json`：exact commit/tree、输入摘要、状态/API 审计摘要、测试退出码及证据边界；
-- `baseline-contract-<sha>.log`：聚焦 pytest 原始输出，JSON 中保存其 SHA256。
+- `baseline-contract-<sha>.log`：脱敏结构化摘要，仅包含命令、退出码、通过数量和精确 nodeid，
+  不保存 pytest stdout/stderr；JSON 中保存其 SHA256。
 
 SHA 不匹配、tracked 文件有修改、存在非忽略 untracked 文件、输入在运行中改变、测试失败、输出目录非空或证据已存在时一律不写成功证据。当前提交只交付验证能力；最终整合后的 SHA 尚未绑定，所以矩阵不得提前改成“通过”，也不得把 `external_release_status=not_evaluated` 提升为任何外部发布结论。
