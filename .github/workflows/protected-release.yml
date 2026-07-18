@@ -48,6 +48,7 @@ jobs:
       name: ${{ inputs.environment }}
     env:
       APP_ENV: ${{ inputs.environment }}
+      ALLOW_EXTERNAL_LLM: "false"
       BACKEND_API_HOST: 127.0.0.1
       REQUIRE_EMAIL_VERIFICATION: "true"
       SMTP_HOST: ${{ secrets.PROTECTED_SMTP_HOST }}
@@ -239,6 +240,9 @@ jobs:
             --backend-api-host 127.0.0.1 \
             --git-sha "${GITHUB_SHA}" \
             --environment "${RELEASE_ENVIRONMENT}"
+
+      - name: Enforce external service release readiness
+        run: python scripts/check_external_release_readiness.py --require-ready
 
       - name: Issue short-lived digest-bound deployment authorization
         run: |

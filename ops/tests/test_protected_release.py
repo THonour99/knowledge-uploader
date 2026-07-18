@@ -342,6 +342,91 @@ def test_resolved_compose_environment_is_structural_not_comment_text(
     )
 
 
+def _resolved_external_llm_services() -> dict[str, object]:
+    return {
+        "backend-api": {"environment": {"ALLOW_EXTERNAL_LLM": "false"}},
+        "worker-ai": {"environment": {"ALLOW_EXTERNAL_LLM": "false"}},
+    }
+
+
+def test_resolved_external_llm_contract_requires_explicit_false_for_api_and_worker() -> None:
+    gate = _load_gate()
+
+    assert gate._resolved_external_llm_errors(_resolved_external_llm_services()) == []
+
+
+def test_resolved_external_llm_contract_rejects_missing_value() -> None:
+    gate = _load_gate()
+    services = _resolved_external_llm_services()
+    backend = services["backend-api"]
+    assert isinstance(backend, dict)
+    environment = backend["environment"]
+    assert isinstance(environment, dict)
+    environment.pop("ALLOW_EXTERNAL_LLM")
+
+    errors = gate._resolved_external_llm_errors(services)
+
+    assert errors == ["resolved backend-api ALLOW_EXTERNAL_LLM is not explicitly false"]
+
+
+def test_resolved_external_llm_contract_rejects_true_value() -> None:
+    gate = _load_gate()
+    services = _resolved_external_llm_services()
+    backend = services["backend-api"]
+    assert isinstance(backend, dict)
+    environment = backend["environment"]
+    assert isinstance(environment, dict)
+    environment["ALLOW_EXTERNAL_LLM"] = "true"
+
+    errors = gate._resolved_external_llm_errors(services)
+
+    assert errors == ["resolved backend-api ALLOW_EXTERNAL_LLM is not explicitly false"]
+
+
+def test_resolved_external_llm_contract_rejects_worker_override() -> None:
+    gate = _load_gate()
+    services = _resolved_external_llm_services()
+    worker = services["worker-ai"]
+    assert isinstance(worker, dict)
+    environment = worker["environment"]
+    assert isinstance(environment, dict)
+    environment["ALLOW_EXTERNAL_LLM"] = "true"
+
+    errors = gate._resolved_external_llm_errors(services)
+
+    assert errors == ["resolved worker-ai ALLOW_EXTERNAL_LLM is not explicitly false"]
+
+
+def test_check_evidence_invokes_resolved_external_llm_contract(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    gate = _load_gate()
+
+    class ExternalLlmContractCalled(RuntimeError):
+        pass
+
+    monkeypatch.setattr(
+        gate,
+        "_resolved_compose_services",
+        lambda: {"backend-api": {}},
+    )
+
+    def raise_when_called(_services: object) -> list[str]:
+        raise ExternalLlmContractCalled
+
+    monkeypatch.setattr(gate, "_resolved_external_llm_errors", raise_when_called)
+
+    with pytest.raises(ExternalLlmContractCalled):
+        gate.check_evidence(
+            evidence_root=tmp_path,
+            alertmanager_config=tmp_path / "alertmanager.yml",
+            backend_api_host="127.0.0.1",
+            git_sha=TEST_GIT_SHA,
+            environment="staging",
+        )
+
+
 def _resolved_minio_services() -> dict[str, object]:
     root_environment = {
         "MINIO_ROOT_USER": "protected-root-user",

@@ -262,9 +262,11 @@ def test_protected_workflow_runs_full_checker_with_complete_inventory() -> None:
     order, steps = _steps_by_name(job)
     inventory_name = "Assemble non-overlapping digest-bound evidence bundle"
     checker_name = "Run full protected release checker"
+    external_readiness_name = "Enforce external service release readiness"
     authorization_name = "Issue short-lived digest-bound deployment authorization"
     assert order.index(inventory_name) < order.index(checker_name)
-    assert order.index(checker_name) < order.index(authorization_name)
+    assert order.index(checker_name) < order.index(external_readiness_name)
+    assert order.index(external_readiness_name) < order.index(authorization_name)
     inventory = str(steps[inventory_name].get("run"))
     for filename in (
         "alertmanager-notification.json",
@@ -290,6 +292,10 @@ def test_protected_workflow_runs_full_checker_with_complete_inventory() -> None:
     assert "--alertmanager-config evidence/protected-gate/alertmanager.yml" in checker
     assert '--git-sha "${GITHUB_SHA}"' in checker
     assert '--environment "${RELEASE_ENVIRONMENT}"' in checker
+    external_readiness = str(steps[external_readiness_name].get("run"))
+    assert external_readiness == (
+        "python scripts/check_external_release_readiness.py --require-ready"
+    )
     authorization = str(steps[authorization_name].get("run"))
     assert "python scripts/release_oci.py authorize" in authorization
     assert "artifacts/release-authorization.json" in authorization
@@ -299,6 +305,7 @@ def test_protected_workflow_requires_real_mail_configuration() -> None:
     job = _protected_workflow_job()
     environment = job.get("env")
     assert isinstance(environment, dict)
+    assert environment.get("ALLOW_EXTERNAL_LLM") == "false"
     assert environment.get("REQUIRE_EMAIL_VERIFICATION") == "true"
     assert environment.get("SMTP_HOST") == "${{ secrets.PROTECTED_SMTP_HOST }}"
     assert environment.get("SMTP_FROM") == "${{ secrets.PROTECTED_SMTP_FROM }}"

@@ -1635,6 +1635,22 @@ def _resolved_service_environment(service: object, label: str) -> dict[str, str]
     return {str(key): str(value) for key, value in raw_environment.items() if value is not None}
 
 
+def _resolved_external_llm_errors(services: Mapping[str, object]) -> list[str]:
+    errors: list[str] = []
+    for service_name in ("backend-api", "worker-ai"):
+        raw_service = services.get(service_name)
+        service = raw_service if isinstance(raw_service, Mapping) else {}
+        raw_environment = service.get("environment")
+        environment = raw_environment if isinstance(raw_environment, Mapping) else {}
+        value = environment.get("ALLOW_EXTERNAL_LLM")
+        _require(
+            isinstance(value, str) and value.strip().casefold() == "false",
+            f"resolved {service_name} ALLOW_EXTERNAL_LLM is not explicitly false",
+            errors,
+        )
+    return errors
+
+
 def _resolved_minio_root_errors(services: Mapping[str, object]) -> list[str]:
     errors: list[str] = []
     minio_service = services.get("minio")
@@ -3089,6 +3105,7 @@ def check_evidence(
             resolved_services.get("backend-api"),
             "resolved backend-api service",
         )
+        errors.extend(_resolved_external_llm_errors(resolved_services))
         errors.extend(_resolved_minio_root_errors(resolved_services))
         resolved_backend_hosts = _backend_api_hosts(resolved_backend)
         _require(
