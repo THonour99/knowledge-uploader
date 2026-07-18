@@ -1,6 +1,6 @@
 # 04. 前端开发与交互规范
 
-> 权威产品结构见 [角色工作台与 IA](../docs/product/IA_ROLE_WORKBENCH.md)，视觉 token 见 [design.md](../docs/design/design.md)。本文只规定实现边界和跨页面行为。
+> 权威产品结构见 [角色工作台与 IA](../docs/product/IA_ROLE_WORKBENCH.md)，视觉 token 见 [design.md](../docs/design/design.md)。文件状态与 HTTP 字段以 [05 状态机/API 契约](./05_DATABASE_API_SPEC_数据库与API规范.md) 为准；本文只规定实现边界和跨页面行为。
 
 ## 1. 技术边界
 
@@ -21,6 +21,8 @@
 | `/task-logs` | 部门/系统管理员 | RAGFlow 任务与失败恢复 |
 | `/datasets`、`/ai-config`、`/users`、`/departments`、`/settings` | 系统管理员 | 全局治理 |
 | `/statistics`、`/audit-logs` | 系统管理员 | 指标与审计 |
+| `/categories`、`/tags` | 系统管理员 | 分类与标签治理 |
+| `/profile` | 全部登录用户 | 个人中心与密码修改 |
 
 登录成功后统一跳 `/dashboard`。无权访问返回明确 403 页面；资源不存在或数据域外都显示相同 404 文案，避免存在性泄露。
 

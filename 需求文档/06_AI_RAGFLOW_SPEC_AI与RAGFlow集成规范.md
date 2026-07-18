@@ -1,5 +1,8 @@
 # 06. AI 与 RAGFlow 集成规范
 
+> 本文规定外部处理、幂等和失败恢复；文件状态、允许转换与 HTTP 字段以
+> [05 状态机/API 契约](./05_DATABASE_API_SPEC_数据库与API规范.md) 为唯一权威源。
+
 ## 1. 共通原则
 
 前端不直连 AI/RAGFlow。Provider Key 使用 Fernet 加密，响应与日志只给 mask。外部调用通过 adapter，带超时、有限重试、结构化错误分类和 request correlation；任务必须幂等。

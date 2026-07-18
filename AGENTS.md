@@ -201,7 +201,7 @@ invoke build-arm64 --version=0.1.0
 - API 设计：`需求文档/05_DATABASE_API_SPEC_数据库与API规范.md §3`
 - AI Provider：`需求文档/06_AI_RAGFLOW_SPEC_AI与RAGFlow集成规范.md §2`
 - 部署/环境：`需求文档/07_DEPLOYMENT_ENV_部署与环境配置.md`
-- 前端设计：`docs/design/design.md` + 补充 spec §9
+- 前端设计：`docs/design/design.md` + 补充 spec §5
 - 测试 fixture：`backend/app/tests/conftest.py`
 - 跨平台坑：补充 spec §2
 - 域事件：补充 spec §3

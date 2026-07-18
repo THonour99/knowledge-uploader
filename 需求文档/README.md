@@ -5,13 +5,21 @@
 ## 阅读顺序与优先级
 
 1. [01 PRD](./01_PRD_产品需求文档.md)：角色、范围、主链与完成定义。
-2. [05 数据库/API](./05_DATABASE_API_SPEC_数据库与API规范.md)：唯一状态机与 HTTP 目标契约。
-3. [02 架构](./02_ARCHITECTURE_最终架构设计.md)：不可改变的系统边界。
-4. [03 后端规范](./03_BACKEND_SPEC_后端开发规范.md) 与 [04 前端规范](./04_FRONTEND_SPEC_前端开发规范.md)：实现方式。
-5. [06 AI/RAGFlow](./06_AI_RAGFLOW_SPEC_AI与RAGFlow集成规范.md)：外部处理、幂等与失败。
-6. [07 部署](./07_DEPLOYMENT_ENV_部署与环境配置.md)：环境、ARM64、DLQ、观测与恢复。
-7. [08 任务](./08_TASK_BREAKDOWN_开发任务拆解.md)：真实阶段与五个整改工作流。
-8. [视觉设计](../docs/design/design.md)、[角色 IA](../docs/product/IA_ROLE_WORKBENCH.md)、[配置契约](../docs/product/CONFIG_CONTRACT.md)、[验收矩阵](../docs/product/ACCEPTANCE_MATRIX.md)。
+2. [02 架构](./02_ARCHITECTURE_最终架构设计.md)：不可改变的系统边界。
+3. [03 后端规范](./03_BACKEND_SPEC_后端开发规范.md)：后端模块与实现边界。
+4. [05 数据库/API](./05_DATABASE_API_SPEC_数据库与API规范.md)：唯一状态机与 HTTP 目标契约；其业务语义不受阅读顺序改变。
+5. [07 部署](./07_DEPLOYMENT_ENV_部署与环境配置.md)：环境、ARM64、DLQ、观测与恢复。
+6. [08 任务](./08_TASK_BREAKDOWN_开发任务拆解.md)：真实阶段与五个整改工作流。
+7. [视觉设计](../docs/design/design.md)：页面布局与视觉权威源。
+8. [P0 实施补充](../docs/spark/2026-06-04-p0-implementation-supplement.md)：跨平台、事件、目录、版本锁与前端落地。
+
+以上顺序与项目根 `AGENTS.md` 的必读优先级一致。配套职责文档包括
+[04 前端规范](./04_FRONTEND_SPEC_前端开发规范.md)、
+[06 AI/RAGFlow](./06_AI_RAGFLOW_SPEC_AI与RAGFlow集成规范.md)、
+[角色 IA](../docs/product/IA_ROLE_WORKBENCH.md)、
+[配置契约](../docs/product/CONFIG_CONTRACT.md)、
+[验收矩阵](../docs/product/ACCEPTANCE_MATRIX.md)及
+[BASE-001 基线追溯证据](../docs/product/BASELINE_TRACEABILITY.md)。
 
 ## 权威与实现快照
 

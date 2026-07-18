@@ -100,16 +100,24 @@ Remove-Item Env:\SEED_ADMIN_PASSWORD
 | `/login` | 公开 | 登录 |
 | `/register` | 公开 | 注册 |
 | `/forgot-password` | 公开 | 找回密码 |
+| `/verify-email` | 公开 | 邮箱验证 |
+| `/reset-password/:token` | 公开 | 重置密码 |
 | `/upload` | 登录用户 | 文件上传 |
 | `/my-files` | 登录用户 | 我的文件 |
 | `/dashboard` | 登录用户 | 按角色展示员工、部门管理员或系统管理员工作台 |
 | `/files` | 部门管理员、系统管理员 | 文件管理与审核 |
+| `/files/:id` | 登录用户 | 后端按本人或管理员管辖范围鉴权的文件详情 |
+| `/task-logs` | 部门管理员、系统管理员 | RAGFlow 任务与失败恢复 |
+| `/categories` | 系统管理员 | 分类治理 |
+| `/tags` | 系统管理员 | 标签治理 |
 | `/datasets` | 系统管理员 | Dataset 配置 |
 | `/ai-config` | 系统管理员 | AI 配置 |
 | `/statistics` | 系统管理员 | 统计分析 |
+| `/audit-logs` | 系统管理员 | 审计日志 |
 | `/users` | 系统管理员 | 用户管理 |
 | `/departments` | 系统管理员 | 部门管理 |
-| `/settings` | 系统管理员 | 系统设置占位页 |
+| `/settings` | 系统管理员 | 运行时系统设置 |
+| `/profile` | 登录用户 | 个人中心与密码修改 |
 
 前端视觉以 [产品视觉与工作台设计](docs/design/design.md) 为权威参考，并复用 [设计系统](docs/design-system.md) 与 [交互原型](docs/design-system/prototype-app.html)。配套 image concept 当前为非阻塞待补项，不作为实现真源。
 
@@ -207,6 +215,7 @@ invoke build-arm64 --version=0.1.0
 - [运行时配置契约](docs/product/CONFIG_CONTRACT.md)：逐项消费者、默认值、敏感性、生效方式与死配置处置。
 - [保护发布证据门禁](ops/runbooks/protected-release.md)：DGX 实机、外部运维证据、手动 workflow 与 `invoke ship` 的闭环。
 - [产品与上线验收矩阵](docs/product/ACCEPTANCE_MATRIX.md)：P0/P1/P2、真实基础设施、ARM64 与备份恢复门禁。
+- [BASE-001 本地基线追溯证据](docs/product/BASELINE_TRACEABILITY.md)：权威源、链接、路由、状态与阶段声明的可重复契约。
 - [视觉设计](docs/design/design.md)：Emerald/Stone token 迁移、两类工作台和响应式规范。
 - `docs/api.md` / `docs/deployment.md`：当前实现快照；与权威目标冲突时以 `需求文档/` 为准，并在验收矩阵跟踪差距。
 - [常见问题](docs/faq.md)：端口、迁移、MinIO、RAGFlow、AI 和前端构建。
