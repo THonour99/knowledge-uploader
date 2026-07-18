@@ -608,6 +608,98 @@ a {
   justify-content: flex-end;
 }
 
+.upload-replacement-control {
+  display: grid;
+  gap: 8px;
+  margin-bottom: 16px;
+}
+
+.upload-replacement-panel {
+  display: grid;
+  gap: 12px;
+  margin-bottom: 16px;
+  padding: 12px;
+  border: 1px solid var(--ku-border);
+  border-radius: var(--ku-radius-control);
+  background: var(--ku-bg-subtle);
+}
+
+.upload-replacement-panel .ant-form-item {
+  margin-bottom: 0;
+}
+
+.version-governance-card {
+  scroll-margin-top: 76px;
+}
+
+.version-governance-stack {
+  display: grid;
+  gap: var(--ku-spacing-section);
+}
+
+.version-governance-form {
+  display: grid;
+  gap: 12px;
+  padding: 16px;
+  border: 1px solid var(--ku-border);
+  border-radius: var(--ku-radius-control);
+  background: var(--ku-bg-subtle);
+}
+
+.version-governance-form__grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 12px;
+}
+
+.version-governance-form__grid .ant-form-item {
+  margin-bottom: 0;
+}
+
+.version-governance-form__grid .ant-picker {
+  width: 100%;
+}
+
+.version-chain {
+  padding-top: 16px;
+  border-top: 1px solid var(--ku-border);
+}
+
+.version-chain__title.ant-typography {
+  margin: 0 0 16px;
+}
+
+.version-chain__item {
+  display: grid;
+  gap: 8px;
+  min-width: 0;
+}
+
+.version-chain__link {
+  width: fit-content;
+  max-width: 100%;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  color: var(--ku-color-primary);
+  font: inherit;
+  font-weight: 700;
+  text-align: left;
+  overflow-wrap: anywhere;
+  cursor: pointer;
+}
+
+.version-chain__link:hover {
+  color: var(--ku-color-primary-hover);
+  text-decoration: underline;
+}
+
+.version-chain__link:focus-visible {
+  border-radius: 2px;
+  outline: 2px solid var(--ku-color-primary);
+  outline-offset: 3px;
+}
+
 .upload-result-card {
   margin-top: var(--ku-spacing-section);
 }
@@ -877,6 +969,10 @@ a {
 
 .workbench-filter-toolbar {
   align-items: center;
+}
+
+.document-version-identity .ant-tag {
+  margin-inline-end: 0;
 }
 
 .recent-files-mobile {
@@ -2492,5 +2588,24 @@ a {
     padding: 12px 24px max(12px, env(safe-area-inset-bottom));
     border-top: 1px solid var(--ku-border);
     background: var(--ku-bg-card);
+  }
+
+  .version-governance-form__grid {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .version-governance-card .ant-card-head {
+    display: flex;
+    align-items: flex-start;
+    flex-direction: column;
+    gap: 8px;
+  }
+
+  .version-governance-card .ant-card-extra {
+    margin-inline-start: 0;
+  }
+
+  .upload-replacement-panel {
+    padding: 10px;
   }
 }

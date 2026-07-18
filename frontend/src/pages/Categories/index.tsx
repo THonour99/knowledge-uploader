@@ -1,15 +1,4 @@
-import {
-  App as AntdApp,
-  Button,
-  Card,
-  Form,
-  Input,
-  Modal,
-  Space,
-  Switch,
-  Table,
-  Typography,
-} from "antd";
+import { App as AntdApp, Button, Card, Form, Input, Space, Switch, Table, Typography } from "antd";
 import {
   AppstoreOutlined,
   BulbOutlined,
@@ -17,7 +6,7 @@ import {
   ReloadOutlined,
   TagsOutlined,
 } from "@ant-design/icons";
-import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { useState } from "react";
 import type { ColumnsType } from "antd/es/table";
 
@@ -31,6 +20,8 @@ import {
 import { KpiCard } from "../../components/KpiCard";
 import { StatusTag } from "../../components/StatusTag";
 import { PageContainer } from "../../layouts/PageContainer";
+import { SessionBoundModal as Modal } from "../../components/SessionBoundActions";
+import { useSessionMutation as useMutation } from "../../hooks/useSessionMutation";
 import "./styles.css";
 
 interface CategoryFormValues {

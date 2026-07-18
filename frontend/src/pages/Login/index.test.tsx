@@ -6,6 +6,7 @@ import { MemoryRouter, Route, Routes } from "react-router-dom";
 import { afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 
 import { ApiError, login, resendVerification } from "../../api/client";
+import { PublicRoute } from "../../router/guards";
 import type * as ApiClientModule from "../../api/client";
 import { useAuthStore } from "../../store/auth.store";
 import { themeCssVariables } from "../../theme/tokens";
@@ -44,7 +45,14 @@ function renderLogin() {
           <div style={themeCssVariables as CSSProperties}>
             <MemoryRouter initialEntries={["/login"]}>
               <Routes>
-                <Route path="/login" element={<LoginPage />} />
+                <Route
+                  path="/login"
+                  element={
+                    <PublicRoute>
+                      <LoginPage />
+                    </PublicRoute>
+                  }
+                />
                 <Route path="/dashboard" element={<span>dashboard-entry</span>} />
               </Routes>
             </MemoryRouter>

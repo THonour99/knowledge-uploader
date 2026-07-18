@@ -1,3 +1,4 @@
+import { useEffect, useRef } from "react";
 import { App as AntdApp, Button, Card, Descriptions, Form, Input, Typography } from "antd";
 import {
   LockOutlined,
@@ -5,13 +6,19 @@ import {
   SafetyCertificateOutlined,
   TeamOutlined,
 } from "@ant-design/icons";
-import { useMutation, useQuery } from "@tanstack/react-query";
+import { useQuery } from "@tanstack/react-query";
 
 import { type ChangePasswordRequest, changePassword, getMe } from "../../api/client";
 import { KpiCard } from "../../components/KpiCard";
 import { StatusTag } from "../../components/StatusTag";
 import { PageContainer } from "../../layouts/PageContainer";
-import { Roles } from "../../store/auth.store";
+import { useSessionMutation as useMutation } from "../../hooks/useSessionMutation";
+import {
+  type AuthSessionIdentity,
+  captureAuthSessionIdentity,
+  isCurrentAuthSessionIdentity,
+} from "../../sessionIdentity";
+import { Roles, useAuthStore } from "../../store/auth.store";
 
 const ROLE_LABELS: Record<string, string> = {
   [Roles.EMPLOYEE]: "普通员工",
@@ -34,6 +41,17 @@ interface PasswordFormValues {
 export default function ProfilePage() {
   const { message } = AntdApp.useApp();
   const [form] = Form.useForm<PasswordFormValues>();
+  const passwordIntentIdentity = useRef<AuthSessionIdentity | null>(null);
+
+  useEffect(() => {
+    return useAuthStore.subscribe(() => {
+      const identity = passwordIntentIdentity.current;
+      if (identity && !isCurrentAuthSessionIdentity(identity)) {
+        passwordIntentIdentity.current = null;
+        form.resetFields();
+      }
+    });
+  }, [form]);
 
   const { data: profile, isLoading } = useQuery({
     queryKey: ["me"],
@@ -52,6 +70,12 @@ export default function ProfilePage() {
   });
 
   function handleSubmit(values: PasswordFormValues) {
+    const requestIdentity = passwordIntentIdentity.current;
+    passwordIntentIdentity.current = null;
+    if (!requestIdentity || !isCurrentAuthSessionIdentity(requestIdentity)) {
+      form.resetFields();
+      return;
+    }
     doChangePassword({
       current_password: values.current_password,
       new_password: values.new_password,
@@ -139,7 +163,15 @@ export default function ProfilePage() {
         </div>
 
         <Card title="修改密码" className="document-panel profile-password-card">
-          <Form form={form} layout="vertical" onFinish={handleSubmit} autoComplete="off">
+          <Form
+            form={form}
+            layout="vertical"
+            onValuesChange={() => {
+              passwordIntentIdentity.current ??= captureAuthSessionIdentity();
+            }}
+            onFinish={handleSubmit}
+            autoComplete="off"
+          >
             <Form.Item
               label="当前密码"
               name="current_password"

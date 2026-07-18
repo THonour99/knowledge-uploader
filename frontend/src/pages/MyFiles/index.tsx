@@ -1,4 +1,4 @@
-import { useDeferredValue, useState } from "react";
+import { useDeferredValue, useEffect, useState } from "react";
 import {
   Alert,
   App,
@@ -6,11 +6,11 @@ import {
   Card,
   Empty,
   Input,
-  Modal,
-  Popconfirm,
+  Segmented,
   Select,
   Space,
   Table,
+  Tag,
   Typography,
 } from "antd";
 import {
@@ -21,7 +21,7 @@ import {
   SearchOutlined,
   SendOutlined,
 } from "@ant-design/icons";
-import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import { useQuery, useQueryClient } from "@tanstack/react-query";
 import dayjs from "dayjs";
 import { Link, useNavigate, useSearchParams } from "react-router-dom";
 import type { ColumnsType } from "antd/es/table";
@@ -33,6 +33,7 @@ import {
   deleteFile,
   getUploadPolicy,
   listDocuments,
+  listResponsibleDocuments,
   listTags,
   submitFileForReview,
 } from "../../api/client";
@@ -44,6 +45,20 @@ import {
 import { DepartmentAssignmentAlert } from "../../components/DepartmentAssignmentAlert";
 import { StatusTag } from "../../components/StatusTag";
 import { PageContainer } from "../../layouts/PageContainer";
+import {
+  SessionBoundModal as Modal,
+  SessionBoundPopconfirm as Popconfirm,
+} from "../../components/SessionBoundActions";
+import { useSessionMutation as useMutation } from "../../hooks/useSessionMutation";
+import {
+  type AuthSessionIdentity,
+  type AuthSessionCallbackContext,
+  assertCurrentAuthSessionIdentity,
+  captureAuthSessionIdentity,
+  isCurrentAuthSessionIdentity,
+  isSessionSupersededError,
+  runAuthSessionLifecycleCallback,
+} from "../../sessionIdentity";
 import { hasAssignedDepartment, useAuthStore } from "../../store/auth.store";
 import { downloadDocument } from "../../utils/documentDownload";
 import { documentDisplayTitle, originalFileNameLabel } from "../../utils/documentTitle";
@@ -173,6 +188,12 @@ const SENSITIVE_RISK_ACKNOWLEDGEMENT_REQUIRED_CODE = "SENSITIVE_RISK_ACKNOWLEDGE
 interface SubmitReviewVariables {
   file: KnowledgeFile;
   acknowledgeSensitiveRisk?: boolean;
+  requestIdentity: AuthSessionIdentity;
+}
+
+interface DeleteFileVariables {
+  fileId: string;
+  requestIdentity: AuthSessionIdentity;
 }
 
 interface SubmitRecovery {
@@ -193,6 +214,76 @@ function formatFileSize(size: number): string {
     return `${(size / 1024).toFixed(1)} KB`;
   }
   return `${(size / 1024 / 1024).toFixed(1)} MB`;
+}
+
+function expiryTimeLabel(expiresAt?: string | null): string {
+  if (!expiresAt) {
+    return "未设置到期时间";
+  }
+  const expiry = dayjs(expiresAt);
+  return expiry.isValid() ? expiry.format("YYYY-MM-DD HH:mm") : "到期时间不可用";
+}
+
+function ExpiryDetails({ file }: { file: Pick<KnowledgeFile, "expires_at" | "expiry_status"> }) {
+  return (
+    <Space direction="vertical" size={4}>
+      {file.expiry_status ? (
+        <StatusTag kind="expiry" value={file.expiry_status} />
+      ) : (
+        <Typography.Text type="secondary">到期状态未知</Typography.Text>
+      )}
+      <Typography.Text type="secondary">{expiryTimeLabel(file.expires_at)}</Typography.Text>
+    </Space>
+  );
+}
+
+type VersionSummaryStatus =
+  | "summary_current"
+  | "summary_history"
+  | "summary_candidate"
+  | "summary_failed"
+  | "summary_unknown";
+
+export function versionSummaryStatus(
+  file: Pick<KnowledgeFile, "is_current_version" | "remote_visibility" | "version_switch_status">,
+): VersionSummaryStatus {
+  if (
+    file.version_switch_status === "failed_old_deactivate" ||
+    file.version_switch_status === "failed_new_activate"
+  ) {
+    return "summary_failed";
+  }
+  if (
+    file.version_switch_status === "pending" ||
+    file.version_switch_status === "old_remote_deactivated" ||
+    file.version_switch_status === "local_switched"
+  ) {
+    return "summary_candidate";
+  }
+  if (file.remote_visibility === "unknown") {
+    return "summary_unknown";
+  }
+  if (file.remote_visibility === "current" || file.is_current_version) {
+    return "summary_current";
+  }
+  if (file.remote_visibility === "candidate") {
+    return "summary_candidate";
+  }
+  return "summary_history";
+}
+
+function DocumentVersionIdentity({ file }: { file: KnowledgeFile }) {
+  return (
+    <Space
+      size={4}
+      wrap
+      className="document-version-identity"
+      aria-label={`文档版本 v${file.version_number}`}
+    >
+      <Tag>{`v${file.version_number}`}</Tag>
+      <StatusTag kind="version" value={versionSummaryStatus(file)} />
+    </Space>
+  );
 }
 
 function nextStep(file: Pick<KnowledgeFile, "status">): string {
@@ -237,6 +328,10 @@ export default function MyFilesPage() {
   );
   const [submitRecovery, setSubmitRecovery] = useState<SubmitRecovery | null>(null);
 
+  const relationship =
+    searchParams.get("relationship") === "responsible" ? "responsible" : "uploaded";
+  const responsibleView = relationship === "responsible";
+  const staleResponsibleTagId = responsibleView ? searchParams.get("tag_id") : null;
   const page = positiveInteger(searchParams.get("page"), 1);
   const pageSize = Math.min(100, positiveInteger(searchParams.get("page_size"), 20));
   const q = searchParams.get("q")?.trim() ?? "";
@@ -244,6 +339,21 @@ export default function MyFilesPage() {
   const status = searchParams.get("status") ?? "all";
   const extension = searchParams.get("extension") ?? "all";
   const tagId = searchParams.get("tag_id") ?? "all";
+  const expiryStatus = searchParams.get("expiry_status") ?? "all";
+
+  useEffect(() => {
+    if (staleResponsibleTagId === null) {
+      return;
+    }
+    setSearchParams(
+      (previous) => {
+        const next = new URLSearchParams(previous);
+        next.delete("tag_id");
+        return next;
+      },
+      { replace: true },
+    );
+  }, [setSearchParams, staleResponsibleTagId]);
 
   const setQueryValue = (key: string, value?: string | number) => {
     setSearchParams(
@@ -263,36 +373,67 @@ export default function MyFilesPage() {
     );
   };
 
+  const changeRelationship = (value: string | number) => {
+    const nextRelationship = value === "responsible" ? "responsible" : "uploaded";
+    setSubmitRecovery(null);
+    setSensitiveSubmittingFile(null);
+    setSearchParams(
+      (previous) => {
+        const next = new URLSearchParams(previous);
+        next.set("relationship", nextRelationship);
+        next.set("page", "1");
+        if (nextRelationship === "responsible") {
+          next.delete("tag_id");
+        }
+        return next;
+      },
+      { replace: true },
+    );
+  };
+
   const filesQuery = useQuery({
     queryKey: [
       "documents",
-      "mine",
+      relationship,
       {
+        user_id: user?.id ?? null,
+        role: user?.role ?? null,
+        department_id: user?.department_id ?? null,
         page,
         pageSize,
         q: deferredQ,
         status,
         extension,
-        tagId,
+        tagId: responsibleView ? null : tagId,
+        expiryStatus,
       },
     ],
-    queryFn: () =>
-      listDocuments({
+    queryFn: () => {
+      const commonParams = {
         page,
         page_size: pageSize,
         q: deferredQ || undefined,
         status: status === "all" ? undefined : status,
         extension: extension === "all" ? undefined : extension,
-        tag_id: tagId === "all" ? undefined : tagId,
+        expiry_status: expiryStatus === "all" ? undefined : expiryStatus,
         sort: "updated_at",
-        order: "desc",
-      }),
-    placeholderData: (previous) => previous,
+        order: "desc" as const,
+      };
+      if (responsibleView) {
+        return listResponsibleDocuments(commonParams);
+      }
+      return listDocuments({
+        ...commonParams,
+        tag_id: tagId === "all" ? undefined : tagId,
+      });
+    },
+    enabled: Boolean(user?.id),
   });
 
   const tagsQuery = useQuery({
     queryKey: ["tags", "list", "enabled"],
     queryFn: () => listTags({ enabled: true, page_size: 100 }),
+    enabled: !responsibleView,
   });
   const uploadPolicyQuery = useQuery({
     queryKey: ["upload-policy"],
@@ -302,46 +443,72 @@ export default function MyFilesPage() {
     queryKey: ["dashboard", "employee"],
     queryFn: () => getEmployeeDashboard(),
     staleTime: 30_000,
+    enabled: !responsibleView,
   });
 
-  const refreshFiles = () =>
-    Promise.all([
-      queryClient.invalidateQueries({ queryKey: ["documents", "mine"] }),
-      queryClient.invalidateQueries({ queryKey: ["dashboard", "employee"] }),
-    ]);
+  const refreshFiles = (context: AuthSessionCallbackContext) =>
+    context.waitFor(() =>
+      Promise.all([
+        queryClient.invalidateQueries({ queryKey: ["documents", "uploaded"] }),
+        queryClient.invalidateQueries({ queryKey: ["dashboard", "employee"] }),
+      ]),
+    );
   const deleteMutation = useMutation({
-    mutationFn: deleteFile,
-    onSuccess: async () => {
-      await refreshFiles();
-      message.success("文件已删除");
+    mutationFn: ({ fileId, requestIdentity }: DeleteFileVariables) => {
+      assertCurrentAuthSessionIdentity(requestIdentity);
+      return deleteFile(fileId);
     },
-    onError: (error: Error) => message.error(error.message || "删除失败"),
+    onSuccess: (_file, variables) =>
+      runAuthSessionLifecycleCallback(variables.requestIdentity, async (context) => {
+        await refreshFiles(context);
+        context.run(() => message.success("文件已删除"));
+      }),
+    onError: (error: Error, variables) => {
+      if (
+        isSessionSupersededError(error) ||
+        !isCurrentAuthSessionIdentity(variables.requestIdentity)
+      ) {
+        return;
+      }
+      message.error(error.message || "删除失败");
+    },
   });
   const submitMutation = useMutation({
-    mutationFn: ({ file, acknowledgeSensitiveRisk }: SubmitReviewVariables) =>
-      submitFileForReview(
+    mutationFn: ({ file, acknowledgeSensitiveRisk, requestIdentity }: SubmitReviewVariables) => {
+      assertCurrentAuthSessionIdentity(requestIdentity);
+      return submitFileForReview(
         file.id,
         acknowledgeSensitiveRisk ? { acknowledge_sensitive_risk: true } : undefined,
-      ),
-    onSuccess: async (_file, variables) => {
-      if (submitRecovery?.fileId === variables.file.id) {
-        setSubmitRecovery(null);
-      }
-      setSensitiveSubmittingFile(null);
-      await refreshFiles();
-      message.success("已提交审核");
+      );
     },
+    onSuccess: (_file, variables) =>
+      runAuthSessionLifecycleCallback(variables.requestIdentity, async (context) => {
+        if (submitRecovery?.fileId === variables.file.id) {
+          context.run(() => setSubmitRecovery(null));
+        }
+        context.run(() => setSensitiveSubmittingFile(null));
+        await refreshFiles(context);
+        context.run(() => message.success("已提交审核"));
+      }),
     onError: (error: unknown, variables) => {
+      if (
+        isSessionSupersededError(error) ||
+        !isCurrentAuthSessionIdentity(variables.requestIdentity)
+      ) {
+        return;
+      }
       if (isApiError(error) && error.code === ANALYSIS_FAILED_SUBMISSION_DISABLED_CODE) {
         setSubmitRecovery({
           fileId: variables.file.id,
           fileName: documentDisplayTitle(variables.file),
         });
+        assertCurrentAuthSessionIdentity(variables.requestIdentity);
         message.warning("当前策略禁止跳过失败的 AI 分析");
         return;
       }
       if (isApiError(error) && error.code === SENSITIVE_RISK_ACKNOWLEDGEMENT_REQUIRED_CODE) {
         setSensitiveSubmittingFile(variables.file);
+        assertCurrentAuthSessionIdentity(variables.requestIdentity);
         message.warning("请先确认敏感风险，再提交审核");
         return;
       }
@@ -355,7 +522,12 @@ export default function MyFilesPage() {
         fileName: file.original_name,
         sizeBytes: file.size,
       }),
-    onError: (error: Error) => message.error(error.message || "原件下载失败"),
+    onError: (error: Error) => {
+      if (isSessionSupersededError(error)) {
+        return;
+      }
+      message.error(error.message || "原件下载失败");
+    },
   });
 
   const employeeWorkbench = dashboardQuery.data?.employee ?? null;
@@ -384,7 +556,7 @@ export default function MyFilesPage() {
       setSensitiveSubmittingFile(file);
       return;
     }
-    submitMutation.mutate({ file });
+    submitMutation.mutate({ file, requestIdentity: captureAuthSessionIdentity() });
   };
 
   const fileActions = (file: KnowledgeFile) => {
@@ -409,7 +581,7 @@ export default function MyFilesPage() {
         >
           下载
         </Button>
-        {isActionable(file) ? (
+        {!responsibleView && isActionable(file) ? (
           <Button
             type="text"
             icon={<SendOutlined />}
@@ -421,13 +593,18 @@ export default function MyFilesPage() {
             提交
           </Button>
         ) : null}
-        {allowUserDelete && USER_DELETABLE_STATUSES.has(file.status) ? (
+        {!responsibleView && allowUserDelete && USER_DELETABLE_STATUSES.has(file.status) ? (
           <Popconfirm
             title="删除文件"
             description="仅允许删除策略放行且非运行态的文件。确认继续？"
             okText="删除"
             cancelText="取消"
-            onConfirm={() => deleteMutation.mutate(file.id)}
+            onConfirm={() =>
+              deleteMutation.mutate({
+                fileId: file.id,
+                requestIdentity: captureAuthSessionIdentity(),
+              })
+            }
           >
             <Button
               type="text"
@@ -450,6 +627,7 @@ export default function MyFilesPage() {
         <Space direction="vertical" size={2}>
           <Link to={`/files/${file.id}`}>{documentDisplayTitle(file)}</Link>
           <Typography.Text type="secondary">{originalFileNameLabel(file)}</Typography.Text>
+          {!responsibleView ? <DocumentVersionIdentity file={file} /> : null}
           <Typography.Text type="secondary">
             {formatFileSize(file.size)} · {file.extension.toUpperCase()}
           </Typography.Text>
@@ -464,7 +642,9 @@ export default function MyFilesPage() {
       render: (_value: string, file) => (
         <Space direction="vertical" size={4}>
           <StatusTag kind="file" value={file.status} />
-          <Typography.Text type="secondary">{nextStep(file)}</Typography.Text>
+          <Typography.Text type="secondary">
+            {responsibleView ? "查看详情与原件" : nextStep(file)}
+          </Typography.Text>
         </Space>
       ),
     },
@@ -475,6 +655,16 @@ export default function MyFilesPage() {
       width: 170,
       render: (value: string) => dayjs(value).format("YYYY-MM-DD HH:mm"),
     },
+    ...(responsibleView
+      ? [
+          {
+            title: "到期状态与时间",
+            key: "expiry",
+            width: 200,
+            render: (_value: unknown, file: KnowledgeFile) => <ExpiryDetails file={file} />,
+          },
+        ]
+      : []),
     {
       title: "操作",
       key: "actions",
@@ -486,20 +676,35 @@ export default function MyFilesPage() {
   return (
     <PageContainer
       title={user?.name ? `${user.name}的知识工作台` : "我的知识工作台"}
-      description="先处理草稿和驳回，再跟踪审核与入库结果。"
+      description={
+        responsibleView
+          ? "查看由他人上传、指定由你负责到期治理的文档。"
+          : "先处理草稿和驳回，再跟踪审核与入库结果。"
+      }
       actions={
-        <Button
-          type="primary"
-          icon={<CloudUploadOutlined />}
-          disabled={
-            departmentBlocked ||
-            !uploadPolicyReady ||
-            uploadPolicyQuery.data?.upload_enabled !== true
-          }
-          onClick={() => navigate("/upload")}
-        >
-          上传文档
-        </Button>
+        <Space wrap>
+          <Segmented
+            aria-label="文档关系"
+            value={relationship}
+            options={[
+              { label: "我上传的", value: "uploaded" },
+              { label: "我负责的", value: "responsible" },
+            ]}
+            onChange={changeRelationship}
+          />
+          <Button
+            type="primary"
+            icon={<CloudUploadOutlined />}
+            disabled={
+              departmentBlocked ||
+              !uploadPolicyReady ||
+              uploadPolicyQuery.data?.upload_enabled !== true
+            }
+            onClick={() => navigate("/upload")}
+          >
+            上传文档
+          </Button>
+        </Space>
       }
     >
       {departmentBlocked ? <DepartmentAssignmentAlert className="workbench-gate-alert" /> : null}
@@ -508,8 +713,12 @@ export default function MyFilesPage() {
           className="workbench-gate-alert"
           type="error"
           showIcon
-          message="上传与删除策略加载失败"
-          description="上传入口和用户删除操作已安全暂停；文档浏览、下载与审核状态不受影响。"
+          message={responsibleView ? "上传策略加载失败" : "上传与删除策略加载失败"}
+          description={
+            responsibleView
+              ? "上传入口已安全暂停；负责文档的浏览、预览与下载不受影响。"
+              : "上传入口和用户删除操作已安全暂停；文档浏览、下载与审核状态不受影响。"
+          }
           action={
             <Button size="small" onClick={() => void uploadPolicyQuery.refetch()}>
               重试策略
@@ -517,7 +726,7 @@ export default function MyFilesPage() {
           }
         />
       ) : null}
-      {submitRecovery ? (
+      {!responsibleView && submitRecovery ? (
         <Alert
           className="workbench-gate-alert"
           type="warning"
@@ -534,117 +743,138 @@ export default function MyFilesPage() {
         />
       ) : null}
 
-      <section className="status-rail" aria-label="文档状态轨道">
-        {STATUS_RAIL.map((item, index) => {
-          const className = [
-            "status-rail__item",
-            item.danger ? "status-rail__item--danger" : "",
-            item.filterStatus && status === item.filterStatus ? "status-rail__item--active" : "",
-          ]
-            .filter(Boolean)
-            .join(" ");
-          const content = (
-            <>
-              <span className="status-rail__step">{index + 1}</span>
-              <span className="status-rail__copy">
-                <strong>{item.label}</strong>
-                <small>{item.hint}</small>
-              </span>
-              <span className="status-rail__count" aria-live="polite">
-                {dashboardQuery.isPending
-                  ? "…"
-                  : dashboardQuery.isError
-                    ? "—"
-                    : (statusCounts?.[item.key] ?? 0)}
-              </span>
-            </>
-          );
-          if (!item.filterStatus) {
-            return (
-              <article
-                className={`${className} status-rail__item--aggregate`}
-                key={item.key}
-                aria-label={`${item.label}（聚合状态）`}
-              >
-                {content}
-              </article>
-            );
-          }
-          return (
-            <button
-              className={className}
-              key={item.key}
-              type="button"
-              aria-pressed={status === item.filterStatus}
-              onClick={() => setQueryValue("status", item.filterStatus)}
-            >
-              {content}
-            </button>
-          );
-        })}
-      </section>
+      {!responsibleView ? (
+        <>
+          <section className="status-rail" aria-label="文档状态轨道">
+            {STATUS_RAIL.map((item, index) => {
+              const className = [
+                "status-rail__item",
+                item.danger ? "status-rail__item--danger" : "",
+                item.filterStatus && status === item.filterStatus
+                  ? "status-rail__item--active"
+                  : "",
+              ]
+                .filter(Boolean)
+                .join(" ");
+              const content = (
+                <>
+                  <span className="status-rail__step">{index + 1}</span>
+                  <span className="status-rail__copy">
+                    <strong>{item.label}</strong>
+                    <small>{item.hint}</small>
+                  </span>
+                  <span className="status-rail__count" aria-live="polite">
+                    {dashboardQuery.isPending
+                      ? "…"
+                      : dashboardQuery.isError
+                        ? "—"
+                        : (statusCounts?.[item.key] ?? 0)}
+                  </span>
+                </>
+              );
+              if (!item.filterStatus) {
+                return (
+                  <article
+                    className={`${className} status-rail__item--aggregate`}
+                    key={item.key}
+                    aria-label={`${item.label}（聚合状态）`}
+                  >
+                    {content}
+                  </article>
+                );
+              }
+              return (
+                <button
+                  className={className}
+                  key={item.key}
+                  type="button"
+                  aria-pressed={status === item.filterStatus}
+                  onClick={() => setQueryValue("status", item.filterStatus)}
+                >
+                  {content}
+                </button>
+              );
+            })}
+          </section>
 
-      <section className="continue-section" aria-labelledby="continue-title">
-        <div className="workbench-section-heading">
-          <div>
-            <Typography.Title level={4} id="continue-title">
-              继续处理
-            </Typography.Title>
-            <Typography.Text type="secondary">只列出你现在可以采取行动的文档</Typography.Text>
-          </div>
-        </div>
-        {dashboardQuery.isError ? (
-          <Alert
-            className="workbench-gate-alert"
-            type="error"
-            showIcon
-            message="待办汇总加载失败"
-            description="当前无法确认全部待处理文档，请重试后再判断是否存在待办。"
-            action={
-              <Button size="small" onClick={() => void dashboardQuery.refetch()}>
-                重试待办汇总
-              </Button>
-            }
-          />
-        ) : null}
-        {continueFiles.length > 0 ? (
-          <div className="continue-list">
-            {continueFiles.map((file) => (
-              <article className="continue-list__item" key={file.id}>
-                <StatusTag kind="file" value={file.status} />
-                <span className="continue-list__copy">
-                  <Link to={`/files/${file.id}`}>{documentDisplayTitle(file)}</Link>
-                  <Typography.Text type="secondary">{originalFileNameLabel(file)}</Typography.Text>
-                  <Typography.Text type="secondary">{nextStep(file)}</Typography.Text>
-                </span>
-                <Button type="link" onClick={() => navigate(`/files/${file.id}`)}>
-                  {file.status === "rejected" ? "修改并重提" : "查看并处理"}
-                </Button>
-              </article>
-            ))}
-          </div>
-        ) : dashboardQuery.isError ? null : dashboardQuery.isPending ? (
-          <Typography.Text type="secondary" role="status">
-            正在加载待办汇总…
-          </Typography.Text>
-        ) : actionCount > 0 ? (
-          <Alert
-            type="info"
-            showIcon
-            message={`还有 ${actionCount} 个待处理文档`}
-            description="最近五条动态未包含这些文档，请在下方按状态筛选后继续处理。"
-          />
-        ) : (
-          <Empty image={Empty.PRESENTED_IMAGE_SIMPLE} description="当前没有需要继续处理的文档" />
-        )}
-      </section>
+          <section className="continue-section" aria-labelledby="continue-title">
+            <div className="workbench-section-heading">
+              <div>
+                <Typography.Title level={4} id="continue-title">
+                  继续处理
+                </Typography.Title>
+                <Typography.Text type="secondary">只列出你现在可以采取行动的文档</Typography.Text>
+              </div>
+            </div>
+            {dashboardQuery.isError ? (
+              <Alert
+                className="workbench-gate-alert"
+                type="error"
+                showIcon
+                message="待办汇总加载失败"
+                description="当前无法确认全部待处理文档，请重试后再判断是否存在待办。"
+                action={
+                  <Button size="small" onClick={() => void dashboardQuery.refetch()}>
+                    重试待办汇总
+                  </Button>
+                }
+              />
+            ) : null}
+            {continueFiles.length > 0 ? (
+              <div className="continue-list">
+                {continueFiles.map((file) => (
+                  <article className="continue-list__item" key={file.id}>
+                    <StatusTag kind="file" value={file.status} />
+                    <span className="continue-list__copy">
+                      <Link to={`/files/${file.id}`}>{documentDisplayTitle(file)}</Link>
+                      <Typography.Text type="secondary">
+                        {originalFileNameLabel(file)}
+                      </Typography.Text>
+                      <Typography.Text type="secondary">{nextStep(file)}</Typography.Text>
+                    </span>
+                    <Button type="link" onClick={() => navigate(`/files/${file.id}`)}>
+                      {file.status === "rejected" ? "修改并重提" : "查看并处理"}
+                    </Button>
+                  </article>
+                ))}
+              </div>
+            ) : dashboardQuery.isError ? null : dashboardQuery.isPending ? (
+              <Typography.Text type="secondary" role="status">
+                正在加载待办汇总…
+              </Typography.Text>
+            ) : actionCount > 0 ? (
+              <Alert
+                type="info"
+                showIcon
+                message={`还有 ${actionCount} 个待处理文档`}
+                description="最近五条动态未包含这些文档，请在下方按状态筛选后继续处理。"
+              />
+            ) : (
+              <Empty
+                image={Empty.PRESENTED_IMAGE_SIMPLE}
+                description="当前没有需要继续处理的文档"
+              />
+            )}
+          </section>
+        </>
+      ) : (
+        <Alert
+          className="workbench-gate-alert"
+          type="info"
+          showIcon
+          message="我负责的文档"
+          description="被指定负责人可查看文件详情与原件，但不能修改、提交、替代或删除文件。"
+        />
+      )}
 
       <Card className="document-panel table-card recent-files-panel">
         <div className="workbench-section-heading">
           <div>
-            <Typography.Title level={4}>最近文档</Typography.Title>
+            <Typography.Title level={4}>
+              {responsibleView ? "我负责的文档" : "最近文档"}
+            </Typography.Title>
             <Typography.Text type="secondary">
-              服务端共 {total} 条，筛选条件会保留在地址栏
+              服务端共 {total} 条，当前关系与筛选条件会保留在地址栏
             </Typography.Text>
           </div>
         </div>
@@ -685,13 +915,28 @@ export default function MyFilesPage() {
               })),
             ]}
           />
+          {!responsibleView ? (
+            <Select
+              className="filter-toolbar__control"
+              placeholder="标签筛选"
+              value={tagId}
+              loading={tagsQuery.isLoading}
+              onChange={(value) => setQueryValue("tag_id", value)}
+              options={[{ label: "全部标签", value: "all" }, ...tagOptions]}
+            />
+          ) : null}
           <Select
             className="filter-toolbar__control"
-            placeholder="标签筛选"
-            value={tagId}
-            loading={tagsQuery.isLoading}
-            onChange={(value) => setQueryValue("tag_id", value)}
-            options={[{ label: "全部标签", value: "all" }, ...tagOptions]}
+            placeholder="到期状态"
+            value={expiryStatus}
+            onChange={(value) => setQueryValue("expiry_status", value)}
+            options={[
+              { label: "全部到期状态", value: "all" },
+              { label: "长期有效", value: "never" },
+              { label: "有效", value: "active" },
+              { label: "即将到期", value: "expiring" },
+              { label: "已到期", value: "expired" },
+            ]}
           />
         </div>
 
@@ -734,7 +979,7 @@ export default function MyFilesPage() {
               },
             }}
             locale={{ emptyText: "暂无符合条件的文档" }}
-            scroll={{ x: 900 }}
+            scroll={{ x: responsibleView ? 1080 : 900 }}
           />
         </div>
 
@@ -746,10 +991,14 @@ export default function MyFilesPage() {
                 <StatusTag kind="file" value={file.status} />
               </div>
               <Typography.Text type="secondary">{originalFileNameLabel(file)}</Typography.Text>
-              <Typography.Text type="secondary">{nextStep(file)}</Typography.Text>
+              {!responsibleView ? <DocumentVersionIdentity file={file} /> : null}
+              <Typography.Text type="secondary">
+                {responsibleView ? "查看详情与原件" : nextStep(file)}
+              </Typography.Text>
               <Typography.Text type="secondary">
                 {formatFileSize(file.size)} · {dayjs(file.updated_at).format("MM-DD HH:mm")}
               </Typography.Text>
+              {responsibleView ? <ExpiryDetails file={file} /> : null}
               {fileActions(file)}
             </article>
           ))}
@@ -780,7 +1029,7 @@ export default function MyFilesPage() {
 
       <Modal
         title="确认提交敏感风险文档"
-        open={Boolean(sensitiveSubmittingFile)}
+        open={!responsibleView && Boolean(sensitiveSubmittingFile)}
         okText="我已知悉风险，提交审核"
         cancelText="取消"
         okButtonProps={{ danger: true }}
@@ -791,6 +1040,7 @@ export default function MyFilesPage() {
             submitMutation.mutate({
               file: sensitiveSubmittingFile,
               acknowledgeSensitiveRisk: true,
+              requestIdentity: captureAuthSessionIdentity(),
             });
           }
         }}

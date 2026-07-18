@@ -9,7 +9,6 @@ import {
   Empty,
   Form,
   Input,
-  Modal,
   Progress,
   Radio,
   Result,
@@ -32,7 +31,7 @@ import {
   SafetyOutlined,
   UnlockOutlined,
 } from "@ant-design/icons";
-import { useMutation, useQuery } from "@tanstack/react-query";
+import { useQuery } from "@tanstack/react-query";
 import dayjs from "dayjs";
 import { useNavigate, useParams } from "react-router-dom";
 
@@ -59,9 +58,20 @@ import { KpiCard, type KpiTone } from "../../components/KpiCard";
 import { StatusTag } from "../../components/StatusTag";
 import { useNow } from "../../hooks/useNow";
 import { PageContainer } from "../../layouts/PageContainer";
+import { SessionBoundModal as Modal } from "../../components/SessionBoundActions";
+import { useSessionMutation as useMutation } from "../../hooks/useSessionMutation";
+import {
+  type AuthSessionIdentity,
+  assertCurrentAuthSessionIdentity,
+  captureAuthSessionIdentity,
+  isCurrentAuthSessionIdentity,
+  isSessionSupersededError,
+  runAuthSessionLifecycleCallback,
+} from "../../sessionIdentity";
 import { Roles, useAuthStore } from "../../store/auth.store";
 import { downloadDocument } from "../../utils/documentDownload";
 import { documentDisplayTitle } from "../../utils/documentTitle";
+import { VersionGovernanceCard } from "./VersionGovernanceCard";
 
 const TASK_TYPE_LABELS: Record<string, string> = {
   ragflow_upload: "RAGFlow 上传",
@@ -81,6 +91,16 @@ interface ReviewFormValues {
   sync_decision?: ReviewDecisionPayload["sync_decision"];
   dataset_mapping_id?: string;
   reason?: string;
+}
+
+interface ApproveReviewVariables {
+  requestIdentity: AuthSessionIdentity;
+  values: ReviewFormValues;
+}
+
+interface RejectReviewVariables {
+  requestIdentity: AuthSessionIdentity;
+  reason: string;
 }
 
 export function fileLoadErrorPresentation(error: unknown): FileLoadErrorPresentation {
@@ -460,18 +480,27 @@ export function validateInlinePreviewContent(content: DocumentContent): string {
   return responseMimeType;
 }
 
+interface PreviewRequest {
+  controller: AbortController;
+  generation: number;
+}
+
 function OriginalDocumentCard({ file }: { file: KnowledgeFile }) {
   const { message } = AntdApp.useApp();
   const [previewRequested, setPreviewRequested] = useState(false);
   const [objectUrl, setObjectUrl] = useState<string | null>(null);
   const objectUrlRef = useRef<string | null>(null);
+  const previewGenerationRef = useRef(0);
+  const previewAbortControllerRef = useRef<AbortController | null>(null);
+  const mountedRef = useRef(true);
   const [previewMimeType, setPreviewMimeType] = useState<string | null>(null);
   const displayTitle = documentDisplayTitle(file);
   const previewMutation = useMutation({
     mutationKey: ["documents", file.id, "content", "inline"],
-    mutationFn: async () => {
+    mutationFn: async (request: PreviewRequest) => {
       const content = await getDocumentContent(file.id, "inline", {
         maxBytes: INLINE_PREVIEW_MAX_BYTES,
+        signal: request.controller.signal,
       });
       return {
         content,
@@ -480,7 +509,14 @@ function OriginalDocumentCard({ file }: { file: KnowledgeFile }) {
     },
     gcTime: 0,
     retry: false,
-    onSuccess: ({ content, mimeType }) => {
+    onSuccess: ({ content, mimeType }, request) => {
+      if (
+        !mountedRef.current ||
+        request.controller.signal.aborted ||
+        request.generation !== previewGenerationRef.current
+      ) {
+        return;
+      }
       const nextObjectUrl = URL.createObjectURL(content.blob);
       if (objectUrlRef.current) {
         URL.revokeObjectURL(objectUrlRef.current);
@@ -489,13 +525,26 @@ function OriginalDocumentCard({ file }: { file: KnowledgeFile }) {
       setObjectUrl(nextObjectUrl);
       setPreviewMimeType(mimeType);
     },
-    onError: () => {
+    onError: (error, request) => {
+      if (
+        isSessionSupersededError(error) ||
+        !mountedRef.current ||
+        request.controller.signal.aborted ||
+        request.generation !== previewGenerationRef.current
+      ) {
+        return;
+      }
       if (objectUrlRef.current) {
         URL.revokeObjectURL(objectUrlRef.current);
         objectUrlRef.current = null;
       }
       setObjectUrl(null);
       setPreviewMimeType(null);
+    },
+    onSettled: (_data, _error, request) => {
+      if (previewAbortControllerRef.current === request.controller) {
+        previewAbortControllerRef.current = null;
+      }
     },
   });
   const downloadMutation = useMutation({
@@ -512,8 +561,26 @@ function OriginalDocumentCard({ file }: { file: KnowledgeFile }) {
     },
   });
 
+  const startPreview = () => {
+    previewAbortControllerRef.current?.abort();
+    const controller = new AbortController();
+    const request = {
+      controller,
+      generation: previewGenerationRef.current + 1,
+    };
+    previewGenerationRef.current = request.generation;
+    previewAbortControllerRef.current = controller;
+    setPreviewRequested(true);
+    previewMutation.mutate(request);
+  };
+
   useEffect(() => {
+    mountedRef.current = true;
     return () => {
+      mountedRef.current = false;
+      previewGenerationRef.current += 1;
+      previewAbortControllerRef.current?.abort();
+      previewAbortControllerRef.current = null;
       if (objectUrlRef.current) {
         URL.revokeObjectURL(objectUrlRef.current);
         objectUrlRef.current = null;
@@ -535,18 +602,12 @@ function OriginalDocumentCard({ file }: { file: KnowledgeFile }) {
       extra={
         <Space>
           {previewSupported && !previewRequested ? (
-            <Button
-              icon={<EyeOutlined />}
-              onClick={() => {
-                setPreviewRequested(true);
-                previewMutation.mutate();
-              }}
-            >
+            <Button icon={<EyeOutlined />} onClick={startPreview}>
               加载预览
             </Button>
           ) : null}
           {previewSupported && objectUrl && !previewMutation.isPending ? (
-            <Button icon={<ReloadOutlined />} onClick={() => previewMutation.mutate()}>
+            <Button icon={<ReloadOutlined />} onClick={startPreview}>
               重新加载预览
             </Button>
           ) : null}
@@ -582,14 +643,14 @@ function OriginalDocumentCard({ file }: { file: KnowledgeFile }) {
           <Typography.Text>正在安全加载原件…</Typography.Text>
         </div>
       ) : null}
-      {previewMutation.isError ? (
+      {previewMutation.isError && !isSessionSupersededError(previewMutation.error) ? (
         <Alert
           type="error"
           showIcon
           message="原件预览加载失败"
           description={previewMutation.error.message}
           action={
-            <Button size="small" onClick={() => previewMutation.mutate()}>
+            <Button size="small" onClick={startPreview}>
               重试
             </Button>
           }
@@ -612,7 +673,7 @@ function OriginalDocumentCard({ file }: { file: KnowledgeFile }) {
           />
         )
       ) : null}
-      {downloadMutation.isError ? (
+      {downloadMutation.isError && !isSessionSupersededError(downloadMutation.error) ? (
         <Alert
           className="original-document-download-error"
           type="error"
@@ -635,22 +696,38 @@ function analysisEngineLabel(engine?: FileAnalysis["engine_type"]): string {
   return "确定性规则";
 }
 
-function formatAnalysisCost(analysis: FileAnalysis): string {
+function formatKnownAnalysisCost(analysis: FileAnalysis): string | null {
   const rawMicroUnits = analysis.estimated_cost_microunits;
   let microUnits: bigint;
   if (typeof rawMicroUnits === "number") {
     if (!Number.isSafeInteger(rawMicroUnits) || rawMicroUnits < 0) {
-      return "-";
+      return null;
     }
     microUnits = BigInt(rawMicroUnits);
   } else if (typeof rawMicroUnits === "string" && /^[0-9]+$/.test(rawMicroUnits)) {
     microUnits = BigInt(rawMicroUnits);
   } else {
-    return "-";
+    return null;
   }
   const wholeUnits = microUnits / 1_000_000n;
   const fractionalUnits = (microUnits % 1_000_000n).toString().padStart(6, "0");
   return (analysis.cost_currency ?? "USD") + " " + wholeUnits + "." + fractionalUnits;
+}
+
+function analysisCostLabel(analysis: FileAnalysis): string {
+  if (analysis.cost_status === undefined) {
+    return "未知（成本状态缺失）";
+  }
+  if (analysis.cost_status === "known") {
+    return formatKnownAnalysisCost(analysis) ?? "未知（成本金额不可核验）";
+  }
+  if (analysis.cost_status === "unknown_pricing") {
+    return "未知（定价未确认）";
+  }
+  if (analysis.cost_status === "unknown_usage") {
+    return "未知（Token 用量未知）";
+  }
+  return "未知（历史记录不可核验）";
 }
 
 function analysisModelLabel(analysis: FileAnalysis): string {
@@ -789,11 +866,7 @@ function AnalysisCard({ analysis, file, loading }: AnalysisCardProps) {
             {ruleOnlyWithoutModelCall ? "未调用模型" : (analysis.latency_ms ?? 0) + " ms"}
           </Descriptions.Item>
           <Descriptions.Item label="预估成本">
-            {ruleOnlyWithoutModelCall
-              ? "未调用模型"
-              : providerUsageUnavailable
-                ? "成本不可估算"
-                : formatAnalysisCost(analysis)}
+            {ruleOnlyWithoutModelCall ? "未调用模型" : analysisCostLabel(analysis)}
           </Descriptions.Item>
           {analysis.failure_category ? (
             <Descriptions.Item label="失败分类">{analysis.failure_category}</Descriptions.Item>
@@ -868,77 +941,120 @@ function ReviewActionCard({
   const claimedByOther = validClaim && file.claimed_by !== userId;
 
   const claimMutation = useMutation({
-    mutationFn: () => claimReviewFile(file.id),
-    onSuccess: async () => {
-      message.success("审核任务已领取，请在租约到期前完成决定");
-      await onRefresh();
+    mutationFn: (requestIdentity: AuthSessionIdentity) => {
+      assertCurrentAuthSessionIdentity(requestIdentity);
+      return claimReviewFile(file.id);
     },
-    onError: async (error) => {
-      if (isApiError(error) && error.status === 409) {
-        message.warning("该任务刚刚被他人领取，详情已刷新");
-        await onRefresh();
+    onSuccess: (_file, requestIdentity) =>
+      runAuthSessionLifecycleCallback(requestIdentity, async (context) => {
+        context.run(() => message.success("审核任务已领取，请在租约到期前完成决定"));
+        await context.waitFor(onRefresh);
+      }),
+    onError: (error, requestIdentity) => {
+      if (isSessionSupersededError(error) || !isCurrentAuthSessionIdentity(requestIdentity)) {
         return;
       }
-      message.error(error.message || "领取审核任务失败");
+      return runAuthSessionLifecycleCallback(requestIdentity, async (context) => {
+        if (isApiError(error) && error.status === 409) {
+          context.run(() => message.warning("该任务刚刚被他人领取，详情已刷新"));
+          await context.waitFor(onRefresh);
+          return;
+        }
+        context.run(() => message.error(error.message || "领取审核任务失败"));
+      });
     },
   });
 
   const releaseMutation = useMutation({
-    mutationFn: () => releaseReviewClaim(file.id),
-    onSuccess: async () => {
-      message.success("审核任务已释放");
-      await onRefresh();
+    mutationFn: (requestIdentity: AuthSessionIdentity) => {
+      assertCurrentAuthSessionIdentity(requestIdentity);
+      return releaseReviewClaim(file.id);
     },
-    onError: async (error) => {
-      if (isApiError(error) && error.status === 409) {
-        message.warning("审核租约已变化，详情已刷新");
-        await onRefresh();
+    onSuccess: (_file, requestIdentity) =>
+      runAuthSessionLifecycleCallback(requestIdentity, async (context) => {
+        context.run(() => message.success("审核任务已释放"));
+        await context.waitFor(onRefresh);
+      }),
+    onError: (error, requestIdentity) => {
+      if (isSessionSupersededError(error) || !isCurrentAuthSessionIdentity(requestIdentity)) {
         return;
       }
-      message.error(error.message || "释放审核任务失败");
+      return runAuthSessionLifecycleCallback(requestIdentity, async (context) => {
+        if (isApiError(error) && error.status === 409) {
+          context.run(() => message.warning("审核租约已变化，详情已刷新"));
+          await context.waitFor(onRefresh);
+          return;
+        }
+        context.run(() => message.error(error.message || "释放审核任务失败"));
+      });
     },
   });
 
   const approveMutation = useMutation({
-    mutationFn: (values: ReviewFormValues) =>
-      approveFile(file.id, buildDetailReviewDecisionPayload(values, file, mappings)),
-    onSuccess: async (_approvedFile, values) => {
-      message.success(
-        values.sync_decision === "sync"
-          ? "文件已批准并进入 RAGFlow 同步队列"
-          : "文件已批准，本次明确不进入 RAGFlow",
-      );
-      setApproveOpen(false);
-      approveForm.resetFields();
-      await onRefresh();
+    mutationFn: ({ values, requestIdentity }: ApproveReviewVariables) => {
+      assertCurrentAuthSessionIdentity(requestIdentity);
+      return approveFile(file.id, buildDetailReviewDecisionPayload(values, file, mappings));
     },
-    onError: async (error) => {
-      if (isApiError(error) && error.status === 409) {
-        message.warning("审核任务状态已变化，详情已刷新");
-        setApproveOpen(false);
-        await onRefresh();
+    onSuccess: (_approvedFile, variables) =>
+      runAuthSessionLifecycleCallback(variables.requestIdentity, async (context) => {
+        context.run(() =>
+          message.success(
+            variables.values.sync_decision === "sync"
+              ? "文件已批准并进入 RAGFlow 同步队列"
+              : "文件已批准，本次明确不进入 RAGFlow",
+          ),
+        );
+        context.run(() => setApproveOpen(false));
+        context.run(() => approveForm.resetFields());
+        await context.waitFor(onRefresh);
+      }),
+    onError: (error, variables) => {
+      if (
+        isSessionSupersededError(error) ||
+        !isCurrentAuthSessionIdentity(variables.requestIdentity)
+      ) {
         return;
       }
-      message.error(error.message || "审核批准失败");
+      return runAuthSessionLifecycleCallback(variables.requestIdentity, async (context) => {
+        if (isApiError(error) && error.status === 409) {
+          context.run(() => message.warning("审核任务状态已变化，详情已刷新"));
+          context.run(() => setApproveOpen(false));
+          await context.waitFor(onRefresh);
+          return;
+        }
+        context.run(() => message.error(error.message || "审核批准失败"));
+      });
     },
   });
 
   const rejectMutation = useMutation({
-    mutationFn: (reason: string) => rejectFile(file.id, reason),
-    onSuccess: async () => {
-      message.success("文件已驳回");
-      setRejectOpen(false);
-      rejectForm.resetFields();
-      await onRefresh();
+    mutationFn: ({ reason, requestIdentity }: RejectReviewVariables) => {
+      assertCurrentAuthSessionIdentity(requestIdentity);
+      return rejectFile(file.id, reason);
     },
-    onError: async (error) => {
-      if (isApiError(error) && error.status === 409) {
-        message.warning("审核任务状态已变化，详情已刷新");
-        setRejectOpen(false);
-        await onRefresh();
+    onSuccess: (_file, variables) =>
+      runAuthSessionLifecycleCallback(variables.requestIdentity, async (context) => {
+        context.run(() => message.success("文件已驳回"));
+        context.run(() => setRejectOpen(false));
+        context.run(() => rejectForm.resetFields());
+        await context.waitFor(onRefresh);
+      }),
+    onError: (error, variables) => {
+      if (
+        isSessionSupersededError(error) ||
+        !isCurrentAuthSessionIdentity(variables.requestIdentity)
+      ) {
         return;
       }
-      message.error(error.message || "驳回文件失败");
+      return runAuthSessionLifecycleCallback(variables.requestIdentity, async (context) => {
+        if (isApiError(error) && error.status === 409) {
+          context.run(() => message.warning("审核任务状态已变化，详情已刷新"));
+          context.run(() => setRejectOpen(false));
+          await context.waitFor(onRefresh);
+          return;
+        }
+        context.run(() => message.error(error.message || "驳回文件失败"));
+      });
     },
   });
 
@@ -1022,7 +1138,7 @@ function ReviewActionCard({
                 <Button
                   icon={<UnlockOutlined />}
                   loading={releaseMutation.isPending}
-                  onClick={() => releaseMutation.mutate()}
+                  onClick={() => releaseMutation.mutate(captureAuthSessionIdentity())}
                 >
                   释放任务
                 </Button>
@@ -1034,7 +1150,7 @@ function ReviewActionCard({
                 icon={<LockOutlined />}
                 disabled={claimedByOther}
                 loading={claimMutation.isPending}
-                onClick={() => claimMutation.mutate()}
+                onClick={() => claimMutation.mutate(captureAuthSessionIdentity())}
               >
                 2. 领取审核任务
               </Button>
@@ -1088,7 +1204,12 @@ function ReviewActionCard({
           form={approveForm}
           layout="vertical"
           requiredMark={false}
-          onFinish={(values) => approveMutation.mutate(values)}
+          onFinish={(values) =>
+            approveMutation.mutate({
+              values,
+              requestIdentity: captureAuthSessionIdentity(),
+            })
+          }
         >
           <Form.Item
             label="批准后的处理"
@@ -1177,7 +1298,12 @@ function ReviewActionCard({
           form={rejectForm}
           layout="vertical"
           requiredMark={false}
-          onFinish={(values) => rejectMutation.mutate(values.reason?.trim() ?? "")}
+          onFinish={(values) =>
+            rejectMutation.mutate({
+              reason: values.reason?.trim() ?? "",
+              requestIdentity: captureAuthSessionIdentity(),
+            })
+          }
         >
           <Form.Item
             label="驳回原因"
@@ -1200,7 +1326,12 @@ interface TaskTimelineCardProps {
 
 function TaskTimelineCard({ tasks, loading, error, onRetry }: TaskTimelineCardProps) {
   return (
-    <Card className="document-panel" title="处理日志" loading={loading && !error}>
+    <Card
+      id="file-task-timeline"
+      className="document-panel"
+      title="处理日志"
+      loading={loading && !error}
+    >
       {error ? (
         <Alert
           type="error"
@@ -1248,25 +1379,36 @@ export default function FileDetailPage() {
   const { id } = useParams();
   const user = useAuthStore((state) => state.user);
   const role = user?.role ?? null;
-  const isAdmin = role === Roles.DEPT_ADMIN || role === Roles.SYSTEM_ADMIN;
-  const backPath = isAdmin ? "/files" : "/my-files";
-  const backLabel = isAdmin ? "返回审核工作台" : "返回我的文件";
+  const hasAdminRole = role === Roles.DEPT_ADMIN || role === Roles.SYSTEM_ADMIN;
+  const queryScope = {
+    user_id: user?.id ?? null,
+    role,
+    department_id: user?.department_id ?? null,
+  };
   const now = useNow();
   const refreshedExpiredClaims = useRef(new Set<string>());
   const fileQuery = useQuery({
-    queryKey: ["documents", id],
+    queryKey: ["documents", { file_id: id, ...queryScope }],
     queryFn: () => getDocument(id ?? ""),
     enabled: Boolean(id),
   });
+  const file = fileQuery.data;
+  const isDelegatedOwner = Boolean(
+    role !== Roles.SYSTEM_ADMIN &&
+    file &&
+    user?.id === file.owner_id &&
+    file.uploader_id !== user?.id,
+  );
+  const isAdmin = hasAdminRole && !isDelegatedOwner;
   const tasksQuery = useQuery({
-    queryKey: ["tasks", { file_id: id }],
+    queryKey: ["tasks", { file_id: id, ...queryScope }],
     queryFn: () => listTasks({ file_id: id ?? "" }),
-    enabled: Boolean(id) && isAdmin,
+    enabled: Boolean(id) && Boolean(file) && isAdmin,
   });
   const datasetMappingsQuery = useQuery({
-    queryKey: ["dataset-mappings"],
+    queryKey: ["dataset-mappings", queryScope],
     queryFn: listDatasetMappings,
-    enabled: Boolean(id) && isAdmin,
+    enabled: Boolean(id) && Boolean(file) && isAdmin,
   });
   const { refetch: refetchFile } = fileQuery;
   const { refetch: refetchTasks } = tasksQuery;
@@ -1277,8 +1419,16 @@ export default function FileDetailPage() {
     }
     await Promise.all(refreshes);
   }, [isAdmin, refetchFile, refetchTasks]);
-
-  const file = fileQuery.data;
+  const backPath = isAdmin
+    ? "/files"
+    : isDelegatedOwner
+      ? "/my-files?relationship=responsible"
+      : "/my-files";
+  const backLabel = isAdmin
+    ? "返回审核工作台"
+    : isDelegatedOwner
+      ? "返回我负责的文档"
+      : "返回我的文件";
   useEffect(() => {
     if (!file?.claimed_by || !file.claim_expires_at) {
       return;
@@ -1416,6 +1566,17 @@ export default function FileDetailPage() {
               </Descriptions>
             ) : null}
           </Card>
+
+          {file && !isDelegatedOwner ? (
+            <VersionGovernanceCard
+              key={`${file.id}:${file.review_version}:${file.updated_at}`}
+              file={file}
+              tasks={fileTasks}
+              isAdmin={isAdmin}
+              onOpenVersion={(fileId) => navigate(`/files/${fileId}`)}
+              onRefresh={refreshDetail}
+            />
+          ) : null}
 
           {file?.analysis ? (
             <AnalysisCard analysis={file.analysis} file={file} loading={fileQuery.isLoading} />

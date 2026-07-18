@@ -1,13 +1,14 @@
 import type { CSSProperties, ReactNode } from "react";
 import { App as AntdApp, ConfigProvider } from "antd";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { act, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { MemoryRouter } from "react-router-dom";
 import { afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 
 import { type UserProfile, changePassword, getMe } from "../../api/client";
 import type * as ApiClientModule from "../../api/client";
 import { themeCssVariables } from "../../theme/tokens";
+import { useAuthStore } from "../../store/auth.store";
 import ProfilePage from "./index";
 
 vi.mock("../../api/client", async () => {
@@ -75,6 +76,7 @@ function renderWithProviders(node: ReactNode) {
   );
 }
 
+useAuthStore.setState({ accessToken: null, user: null });
 afterEach(() => {
   vi.clearAllMocks();
 });
@@ -179,4 +181,56 @@ describe("ProfilePage", () => {
       expect(changePassword).toHaveBeenCalled();
     });
   });
+
+  it.each(["A→B", "ABA"] as const)(
+    "clears password intent and blocks submission after %s before confirm",
+    async (switchMode) => {
+      const sessionA = {
+        accessToken: "token-a",
+        user: {
+          id: "user-a",
+          name: "甲用户",
+          email: "a@example.com",
+          role: "dept_admin" as const,
+        },
+      };
+      useAuthStore.setState(sessionA);
+      vi.mocked(getMe).mockResolvedValue(mockProfile);
+      renderWithProviders(<ProfilePage />);
+      await screen.findByText("张三");
+
+      fireEvent.change(screen.getByLabelText("当前密码"), {
+        target: { value: "OldPass123" },
+      });
+      fireEvent.change(screen.getByLabelText("新密码"), {
+        target: { value: "NewPass456" },
+      });
+      fireEvent.change(screen.getByLabelText("确认新密码"), {
+        target: { value: "NewPass456" },
+      });
+
+      act(() => {
+        useAuthStore.setState({
+          accessToken: "token-b",
+          user: {
+            ...sessionA.user,
+            id: "user-b",
+            email: "b@example.com",
+          },
+        });
+        if (switchMode === "ABA") {
+          useAuthStore.setState(sessionA);
+        }
+      });
+
+      await waitFor(() => {
+        expect(screen.getByLabelText("当前密码")).toHaveValue("");
+        expect(screen.getByLabelText("新密码")).toHaveValue("");
+        expect(screen.getByLabelText("确认新密码")).toHaveValue("");
+      });
+      fireEvent.click(screen.getByRole("button", { name: "修改密码" }));
+      await Promise.resolve();
+      expect(changePassword).not.toHaveBeenCalled();
+    },
+  );
 });

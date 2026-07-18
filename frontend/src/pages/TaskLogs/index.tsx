@@ -14,7 +14,6 @@ import {
   Card,
   Descriptions,
   Drawer,
-  Popconfirm,
   Select,
   Space,
   Table,
@@ -22,7 +21,7 @@ import {
   Typography,
 } from "antd";
 import type { ColumnsType } from "antd/es/table";
-import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { useSearchParams } from "react-router-dom";
 
 import {
@@ -38,6 +37,8 @@ import { KpiCard } from "../../components/KpiCard";
 import { QueryBoundary } from "../../components/QueryBoundary";
 import { StatusTag } from "../../components/StatusTag";
 import { PageContainer } from "../../layouts/PageContainer";
+import { SessionBoundPopconfirm as Popconfirm } from "../../components/SessionBoundActions";
+import { useSessionMutation as useMutation } from "../../hooks/useSessionMutation";
 import { colors } from "../../theme/tokens";
 import "./styles.css";
 

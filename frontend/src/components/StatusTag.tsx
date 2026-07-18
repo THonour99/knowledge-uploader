@@ -11,6 +11,8 @@ export type StatusKind =
   | "user"
   | "dataset"
   | "expiry"
+  | "version"
+  | "capacity"
   | "health";
 type StatusTone = keyof typeof statusTagColors;
 
@@ -22,6 +24,8 @@ const statusKindLabels: Record<StatusKind, string> = {
   user: "用户状态",
   dataset: "Dataset 状态",
   expiry: "有效期状态",
+  version: "版本切换状态",
+  capacity: "物理容量快照状态",
   health: "健康状态",
 };
 
@@ -104,6 +108,30 @@ const statusMap: Record<StatusKind, Record<string, StatusMeta>> = {
     expiring: { label: "即将过期", color: "warning" },
     expired: { label: "已过期", color: "danger" },
     never: { label: "长期有效", color: "default" },
+  },
+  version: {
+    summary_current: { label: "当前", color: "success" },
+    summary_history: { label: "历史", color: "default" },
+    summary_candidate: { label: "候选处理中", color: "queued" },
+    summary_failed: { label: "切换失败", color: "danger" },
+    summary_unknown: { label: "待确认", color: "warning" },
+    candidate: { label: "候选远端版本", color: "queued" },
+    current: { label: "当前版本", color: "success" },
+    not_current: { label: "历史版本", color: "default" },
+    unknown: { label: "远端状态未知", color: "warning" },
+    not_required: { label: "无需切换", color: "default" },
+    pending: { label: "等待切换", color: "queued" },
+    old_remote_deactivated: { label: "旧远端已停用", color: "warning" },
+    local_switched: { label: "本地已切换", color: "processing", processing: true },
+    completed: { label: "切换完成", color: "success" },
+    failed_old_deactivate: { label: "旧版本停用未确认", color: "danger" },
+    failed_new_activate: { label: "新版本激活失败", color: "danger" },
+  },
+  capacity: {
+    available: { label: "快照新鲜", color: "success" },
+    stale: { label: "快照已过期", color: "warning" },
+    unavailable: { label: "暂无可信快照", color: "default" },
+    unsupported_dimension: { label: "维度不支持", color: "default" },
   },
   health: {
     ok: { label: "正常", color: "success" },

@@ -3,9 +3,8 @@ import type { CSSProperties, ReactNode } from "react";
 import { App as AntdApp, ConfigProvider } from "antd";
 import type * as AntdModule from "antd";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { fireEvent, render, screen, waitFor, within } from "@testing-library/react";
-import { MemoryRouter } from "react-router-dom";
-import type * as RouterModule from "react-router-dom";
+import { act, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
+import { MemoryRouter, useLocation, useNavigate } from "react-router-dom";
 import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 
 import {
@@ -16,6 +15,7 @@ import {
   deleteFile,
   getUploadPolicy,
   listDocuments,
+  listResponsibleDocuments,
   listTags,
   submitFileForReview,
 } from "../../api/client";
@@ -24,7 +24,23 @@ import { type EmployeeDashboard, getEmployeeDashboard } from "../../api/dashboar
 import type * as DashboardApiModule from "../../api/dashboard";
 import { useAuthStore } from "../../store/auth.store";
 import { themeCssVariables } from "../../theme/tokens";
-import MyFilesPage from "./index";
+import MyFilesPage, { versionSummaryStatus } from "./index";
+
+interface Deferred<T> {
+  promise: Promise<T>;
+  resolve: (value: T) => void;
+  reject: (reason: unknown) => void;
+}
+
+function createDeferred<T>(): Deferred<T> {
+  let resolve!: (value: T) => void;
+  let reject!: (reason: unknown) => void;
+  const promise = new Promise<T>((resolvePromise, rejectPromise) => {
+    resolve = resolvePromise;
+    reject = rejectPromise;
+  });
+  return { promise, resolve, reject };
+}
 
 // ── API mocks ────────────────────────────────────────────────────────────────
 vi.mock("../../api/client", async () => {
@@ -34,6 +50,7 @@ vi.mock("../../api/client", async () => {
     ...actual,
     getUploadPolicy: vi.fn(),
     listDocuments: vi.fn(),
+    listResponsibleDocuments: vi.fn(),
     listTags: vi.fn(),
     deleteFile: vi.fn(),
     submitFileForReview: vi.fn(),
@@ -43,16 +60,6 @@ vi.mock("../../api/client", async () => {
 vi.mock("../../api/dashboard", async () => {
   const actual = await vi.importActual<typeof DashboardApiModule>("../../api/dashboard");
   return { ...actual, getEmployeeDashboard: vi.fn() };
-});
-
-// ── react-router-dom mock ────────────────────────────────────────────────────
-vi.mock("react-router-dom", async () => {
-  const actual = await vi.importActual<typeof RouterModule>("react-router-dom");
-
-  return {
-    ...actual,
-    useNavigate: () => vi.fn(),
-  };
 });
 
 // ── Ant Design mocks ─────────────────────────────────────────────────────────
@@ -120,6 +127,24 @@ vi.mock("antd", async () => {
 });
 
 // ── Fixtures ─────────────────────────────────────────────────────────────────
+function governanceFields(seriesId: string) {
+  return {
+    owner_id: "user-1",
+    owner_name: "张三",
+    series_id: seriesId,
+    version_number: 1,
+    replaces_file_id: null,
+    is_current_version: true,
+    remote_visibility: "candidate" as const,
+    version_switch_status: "not_required" as const,
+    version_switch_error: null,
+    version_switch_attempt_count: 0,
+    predecessor_remote_deactivated_at: null,
+    local_version_activated_at: null,
+    remote_version_activated_at: null,
+  };
+}
+
 const mockFile1 = {
   id: "file-1",
   original_name: "产品规划.pdf",
@@ -127,6 +152,7 @@ const mockFile1 = {
   mime_type: "application/pdf",
   size: 204800,
   uploader_id: "user-1",
+  ...governanceFields("file-1"),
   department: "产品部",
   category_id: null,
   dataset_mapping_id: null,
@@ -154,6 +180,7 @@ const mockFile2 = {
   mime_type: "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
   size: 512000,
   uploader_id: "user-1",
+  ...governanceFields("file-2"),
   department: "技术部",
   category_id: null,
   dataset_mapping_id: null,
@@ -347,16 +374,39 @@ beforeAll(() => {
   });
 });
 
-function renderWithProviders(node: ReactNode) {
-  const queryClient = new QueryClient({
+function LocationProbe() {
+  const location = useLocation();
+  return <output data-testid="location-search">{location.search}</output>;
+}
+
+function HistoryControls() {
+  const navigate = useNavigate();
+  return (
+    <>
+      <button type="button" aria-label="浏览器后退" onClick={() => navigate(-1)}>
+        后退
+      </button>
+      <button type="button" aria-label="浏览器前进" onClick={() => navigate(1)}>
+        前进
+      </button>
+    </>
+  );
+}
+
+function renderWithProviders(
+  node: ReactNode,
+  initialEntries = ["/my-files"],
+  queryClient = new QueryClient({
     defaultOptions: {
       queries: { retry: false },
       mutations: { retry: false },
     },
-  });
-
+  }),
+) {
   return render(
-    <MemoryRouter>
+    <MemoryRouter initialEntries={initialEntries}>
+      <LocationProbe />
+      <HistoryControls />
       <ConfigProvider>
         <AntdApp>
           <QueryClientProvider client={queryClient}>
@@ -388,12 +438,277 @@ beforeEach(() => {
     },
   });
   vi.mocked(getUploadPolicy).mockResolvedValue(uploadPolicyResponse);
+  vi.mocked(listResponsibleDocuments).mockResolvedValue({
+    items: [],
+    total: 0,
+    page: 1,
+    page_size: 20,
+    total_pages: 0,
+  });
   vi.mocked(submitFileForReview).mockResolvedValue(mockFile2);
   vi.mocked(getEmployeeDashboard).mockResolvedValue(employeeDashboard());
 });
 
 // ── Tests ────────────────────────────────────────────────────────────────────
 describe("MyFilesPage", () => {
+  it.each([
+    [
+      {
+        version_switch_status: "failed_new_activate",
+        remote_visibility: "current",
+        is_current_version: true,
+      },
+      "summary_failed",
+    ],
+    [
+      {
+        version_switch_status: "local_switched",
+        remote_visibility: "unknown",
+        is_current_version: true,
+      },
+      "summary_candidate",
+    ],
+    [
+      {
+        version_switch_status: "completed",
+        remote_visibility: "unknown",
+        is_current_version: true,
+      },
+      "summary_unknown",
+    ],
+    [
+      {
+        version_switch_status: "completed",
+        remote_visibility: "candidate",
+        is_current_version: true,
+      },
+      "summary_current",
+    ],
+    [
+      {
+        version_switch_status: "completed",
+        remote_visibility: "candidate",
+        is_current_version: false,
+      },
+      "summary_candidate",
+    ],
+    [
+      {
+        version_switch_status: "completed",
+        remote_visibility: "not_current",
+        is_current_version: false,
+      },
+      "summary_history",
+    ],
+  ] as const)(
+    "applies failure > intermediate > unknown > current > candidate > history priority",
+    (file, expected) => {
+      expect(versionSummaryStatus(file)).toBe(expected);
+    },
+  );
+
+  it("canonicalizes a responsible deep link, persists the view, and hides uploader-only actions", async () => {
+    const delegatedFile = {
+      ...mockDraftFile,
+      id: "file-delegated",
+      title: "委派制度",
+      uploader_id: "employee-uploader",
+      owner_id: "employee-1",
+      owner_name: "张三",
+      expires_at: "2026-07-20T08:00:00Z",
+      expiry_status: "expiring",
+    };
+    vi.mocked(listResponsibleDocuments).mockResolvedValue({
+      items: [delegatedFile],
+      total: 1,
+      page: 2,
+      page_size: 20,
+      total_pages: 2,
+    });
+    vi.mocked(listDocuments).mockResolvedValue({
+      items: [],
+      total: 0,
+      page: 1,
+      page_size: 20,
+      total_pages: 0,
+    });
+    vi.mocked(listTags).mockResolvedValue(mockTagsResponse);
+
+    renderWithProviders(<MyFilesPage />, [
+      "/my-files?relationship=responsible&q=制度&expiry_status=expiring&page=2&tag_id=stale-tag",
+    ]);
+
+    await waitFor(() => {
+      const location = screen.getByTestId("location-search").textContent ?? "";
+      expect(location).toContain("relationship=responsible");
+      expect(location).not.toContain("tag_id");
+    });
+
+    expect((await screen.findAllByText("委派制度")).length).toBeGreaterThan(0);
+    expect(listResponsibleDocuments).toHaveBeenCalledWith(
+      expect.objectContaining({
+        page: 2,
+        page_size: 20,
+        q: "制度",
+        expiry_status: "expiring",
+        sort: "updated_at",
+        order: "desc",
+      }),
+    );
+    expect(listDocuments).not.toHaveBeenCalled();
+    expect(listTags).not.toHaveBeenCalled();
+    expect(getEmployeeDashboard).not.toHaveBeenCalled();
+    expect(vi.mocked(listResponsibleDocuments).mock.calls[0][0]).not.toHaveProperty("tag_id");
+    expect(
+      screen.getByText("被指定负责人可查看文件详情与原件，但不能修改、提交、替代或删除文件。"),
+    ).toBeInTheDocument();
+    expect(screen.getAllByRole("link", { name: "委派制度" })[0]).toHaveAttribute(
+      "href",
+      "/files/file-delegated",
+    );
+    expect(screen.getAllByRole("button", { name: "预览原件 委派制度" }).length).toBeGreaterThan(0);
+    expect(screen.getAllByRole("button", { name: "下载原件 委派制度" }).length).toBeGreaterThan(0);
+    expect(screen.queryByRole("button", { name: "提交审核 委派制度" })).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "删除 委派制度" })).not.toBeInTheDocument();
+    const desktopList = document.querySelector(".recent-files-table");
+    expect(desktopList).not.toBeNull();
+    expect(within(desktopList as HTMLElement).getByText("即将过期")).toBeInTheDocument();
+    expect(within(desktopList as HTMLElement).getByText(/^2026-07-20 /)).toBeInTheDocument();
+    expect(within(desktopList as HTMLElement).queryByLabelText(/文档版本/)).not.toBeInTheDocument();
+    const mobileList = screen.getByLabelText("移动端文档列表");
+    expect(within(mobileList).getByText("即将过期")).toBeInTheDocument();
+    expect(within(mobileList).getByText(/^2026-07-20 /)).toBeInTheDocument();
+    expect(within(mobileList).queryByLabelText(/文档版本/)).not.toBeInTheDocument();
+
+    fireEvent.change(screen.getByRole("combobox", { name: "到期状态" }), {
+      target: { value: "expired" },
+    });
+    await waitFor(() => {
+      const location = screen.getByTestId("location-search").textContent ?? "";
+      expect(location).toContain("relationship=responsible");
+      expect(location).toContain("expiry_status=expired");
+      expect(location).toContain("page=1");
+    });
+
+    fireEvent.click(screen.getByText("我上传的"));
+    await waitFor(() => expect(listDocuments).toHaveBeenCalled());
+    expect(screen.getByTestId("location-search")).toHaveTextContent("relationship=uploaded");
+
+    fireEvent.change(await screen.findByRole("combobox", { name: "标签筛选" }), {
+      target: { value: "tag-1" },
+    });
+    await waitFor(() =>
+      expect(screen.getByTestId("location-search")).toHaveTextContent("tag_id=tag-1"),
+    );
+
+    fireEvent.click(screen.getByText("我负责的"));
+    await waitFor(() => {
+      const location = screen.getByTestId("location-search").textContent ?? "";
+      expect(location).toContain("relationship=responsible");
+      expect(location).not.toContain("tag_id");
+    });
+  });
+
+  it("canonicalizes a stale responsible tag reached through back and forward history", async () => {
+    vi.mocked(listDocuments).mockResolvedValue({
+      items: [mockFile1],
+      total: 1,
+      page: 1,
+      page_size: 20,
+      total_pages: 1,
+    });
+    vi.mocked(listTags).mockResolvedValue(mockTagsResponse);
+
+    renderWithProviders(<MyFilesPage />, [
+      "/my-files?relationship=responsible&tag_id=stale-first&q=first",
+      "/my-files?relationship=responsible&tag_id=stale-second&q=second",
+      "/my-files?relationship=uploaded&tag_id=tag-1",
+    ]);
+
+    await waitFor(() => expect(listDocuments).toHaveBeenCalled());
+    expect(screen.getByTestId("location-search")).toHaveTextContent("relationship=uploaded");
+    expect(screen.getByTestId("location-search")).toHaveTextContent("tag_id=tag-1");
+    vi.mocked(listDocuments).mockClear();
+    vi.mocked(listResponsibleDocuments).mockClear();
+    vi.mocked(listTags).mockClear();
+
+    fireEvent.click(screen.getByRole("button", { name: "浏览器后退" }));
+    await waitFor(() => {
+      const location = screen.getByTestId("location-search").textContent ?? "";
+      expect(location).toContain("relationship=responsible");
+      expect(location).toContain("q=second");
+      expect(location).not.toContain("tag_id");
+    });
+    await waitFor(() =>
+      expect(listResponsibleDocuments).toHaveBeenCalledWith(
+        expect.objectContaining({ q: "second" }),
+      ),
+    );
+    for (const [params] of vi.mocked(listResponsibleDocuments).mock.calls) {
+      expect(params).not.toHaveProperty("tag_id");
+    }
+    expect(listDocuments).not.toHaveBeenCalled();
+    expect(listTags).not.toHaveBeenCalled();
+
+    vi.mocked(listResponsibleDocuments).mockClear();
+    fireEvent.click(screen.getByRole("button", { name: "浏览器后退" }));
+    await waitFor(() => {
+      const location = screen.getByTestId("location-search").textContent ?? "";
+      expect(location).toContain("relationship=responsible");
+      expect(location).toContain("q=first");
+      expect(location).not.toContain("tag_id");
+    });
+    await waitFor(() =>
+      expect(listResponsibleDocuments).toHaveBeenCalledWith(
+        expect.objectContaining({ q: "first" }),
+      ),
+    );
+    for (const [params] of vi.mocked(listResponsibleDocuments).mock.calls) {
+      expect(params).not.toHaveProperty("tag_id");
+    }
+    expect(listDocuments).not.toHaveBeenCalled();
+    expect(listTags).not.toHaveBeenCalled();
+
+    fireEvent.click(screen.getByRole("button", { name: "浏览器前进" }));
+    await waitFor(() => {
+      const location = screen.getByTestId("location-search").textContent ?? "";
+      expect(location).toContain("relationship=responsible");
+      expect(location).toContain("q=second");
+      expect(location).not.toContain("tag_id");
+    });
+  });
+
+  it("shows explicit expiry placeholders in responsible desktop and mobile views", async () => {
+    vi.mocked(listResponsibleDocuments).mockResolvedValue({
+      items: [
+        {
+          ...mockDraftFile,
+          id: "file-no-expiry",
+          title: "无到期信息制度",
+          uploader_id: "employee-uploader",
+          owner_id: "employee-1",
+          expires_at: null,
+          expiry_status: null,
+        },
+      ],
+      total: 1,
+      page: 1,
+      page_size: 20,
+      total_pages: 1,
+    });
+
+    renderWithProviders(<MyFilesPage />, ["/my-files?relationship=responsible"]);
+    expect((await screen.findAllByText("无到期信息制度")).length).toBeGreaterThan(0);
+
+    const desktopList = document.querySelector(".recent-files-table");
+    expect(desktopList).not.toBeNull();
+    expect(within(desktopList as HTMLElement).getByText("到期状态未知")).toBeInTheDocument();
+    expect(within(desktopList as HTMLElement).getByText("未设置到期时间")).toBeInTheDocument();
+    const mobileList = screen.getByLabelText("移动端文档列表");
+    expect(within(mobileList).getByText("到期状态未知")).toBeInTheDocument();
+    expect(within(mobileList).getByText("未设置到期时间")).toBeInTheDocument();
+  });
+
   it("blocks upload and submit with a department-assignment recovery action", async () => {
     useAuthStore.setState({
       accessToken: "token",
@@ -430,6 +745,101 @@ describe("MyFilesPage", () => {
     expect(screen.getAllByRole("button", { name: "下载原件 年度产品规划" }).length).toBeGreaterThan(
       0,
     );
+  });
+
+  it("distinguishes retained versions in both desktop and mobile uploaded views", async () => {
+    const versionedFiles = [
+      {
+        ...mockFile1,
+        id: "version-history",
+        original_name: "同名制度.pdf",
+        version_number: 1,
+        is_current_version: false,
+        remote_visibility: "not_current" as const,
+        version_switch_status: "not_required" as const,
+      },
+      {
+        ...mockFile1,
+        id: "version-current",
+        original_name: "同名制度.pdf",
+        version_number: 2,
+        is_current_version: true,
+        remote_visibility: "current" as const,
+        version_switch_status: "completed" as const,
+      },
+      {
+        ...mockFile1,
+        id: "version-candidate",
+        original_name: "候选制度.pdf",
+        version_number: 3,
+        is_current_version: false,
+        remote_visibility: "candidate" as const,
+        version_switch_status: "pending" as const,
+      },
+      {
+        ...mockFile1,
+        id: "version-failed",
+        original_name: "切换失败制度.pdf",
+        version_number: 4,
+        is_current_version: false,
+        remote_visibility: "candidate" as const,
+        version_switch_status: "failed_new_activate" as const,
+      },
+      {
+        ...mockFile1,
+        id: "version-unknown",
+        original_name: "待确认制度.pdf",
+        version_number: 5,
+        is_current_version: false,
+        remote_visibility: "unknown" as const,
+        version_switch_status: "completed" as const,
+      },
+    ];
+    vi.mocked(listDocuments).mockResolvedValue({
+      items: versionedFiles,
+      total: versionedFiles.length,
+    });
+    vi.mocked(listTags).mockResolvedValue(mockTagsResponse);
+
+    renderWithProviders(<MyFilesPage />);
+
+    expect((await screen.findAllByText("同名制度.pdf")).length).toBeGreaterThanOrEqual(4);
+    const desktopList = document.querySelector(".recent-files-table");
+    expect(desktopList).not.toBeNull();
+    const mobileList = screen.getByLabelText("移动端文档列表");
+
+    for (const list of [desktopList as HTMLElement, mobileList]) {
+      const scope = within(list);
+      expect(scope.getByText("v1")).toBeInTheDocument();
+      expect(scope.getByText("v2")).toBeInTheDocument();
+      expect(scope.getByText("v3")).toBeInTheDocument();
+      expect(scope.getByText("v4")).toBeInTheDocument();
+      expect(scope.getByText("v5")).toBeInTheDocument();
+      expect(scope.getByText("历史")).toBeInTheDocument();
+      expect(scope.getByText("当前")).toBeInTheDocument();
+      expect(scope.getByText("候选处理中")).toBeInTheDocument();
+      expect(scope.getByText("切换失败")).toBeInTheDocument();
+      expect(scope.getByText("待确认")).toBeInTheDocument();
+    }
+  });
+
+  it("marks an initial v1 draft as current before remote activation", async () => {
+    vi.mocked(listDocuments).mockResolvedValue({ items: [mockDraftFile], total: 1 });
+    vi.mocked(listTags).mockResolvedValue(mockTagsResponse);
+
+    renderWithProviders(<MyFilesPage />);
+
+    await screen.findAllByText("草稿文件.pdf");
+    const desktopList = document.querySelector(".recent-files-table");
+    expect(desktopList).not.toBeNull();
+    const mobileList = screen.getByLabelText("移动端文档列表");
+
+    for (const list of [desktopList as HTMLElement, mobileList]) {
+      const scope = within(list);
+      expect(scope.getByText("v1")).toBeInTheDocument();
+      expect(scope.getByText("当前")).toBeInTheDocument();
+      expect(scope.queryByText("候选处理中")).not.toBeInTheDocument();
+    }
   });
 
   it("loads one dashboard aggregation while keeping one paginated file request", async () => {
@@ -773,6 +1183,93 @@ describe("MyFilesPage", () => {
     await waitFor(() => {
       expect(submitFileForReview).toHaveBeenCalledWith("file-rejected", undefined);
     });
+  });
+
+  it("suppresses delete invalidation and success UI after a direct ABA session switch", async () => {
+    vi.mocked(listDocuments).mockResolvedValue(mockFilesResponse);
+    vi.mocked(listTags).mockResolvedValue(mockTagsResponse);
+    const deleteDeferred = createDeferred<void>();
+    vi.mocked(deleteFile).mockReturnValue(deleteDeferred.promise);
+    const queryClient = new QueryClient({
+      defaultOptions: { queries: { retry: false }, mutations: { retry: false } },
+    });
+    const invalidate = vi.spyOn(queryClient, "invalidateQueries");
+    const sessionA = {
+      accessToken: useAuthStore.getState().accessToken,
+      user: useAuthStore.getState().user,
+    };
+
+    renderWithProviders(<MyFilesPage />, ["/my-files"], queryClient);
+    await screen.findAllByText("产品规划.pdf");
+    fireEvent.click(screen.getAllByRole("button", { name: /删除/ })[0]);
+    await waitFor(() => expect(deleteFile).toHaveBeenCalledWith("file-1"));
+
+    act(() => {
+      useAuthStore.setState({
+        accessToken: "token-b",
+        user: {
+          id: "employee-b",
+          name: "李四",
+          email: "b@example.com",
+          role: "employee",
+          department_assigned: true,
+          department_id: "dept-tech",
+        },
+      });
+      useAuthStore.setState(sessionA);
+    });
+    await act(async () => {
+      deleteDeferred.resolve(undefined);
+      await deleteDeferred.promise;
+      await Promise.resolve();
+    });
+
+    expect(invalidate).not.toHaveBeenCalled();
+    expect(screen.queryByText("文件已删除")).not.toBeInTheDocument();
+  });
+
+  it("suppresses submit invalidation and success UI after session replacement", async () => {
+    vi.mocked(listDocuments).mockResolvedValue({
+      items: [mockDraftFile],
+      total: 1,
+    });
+    vi.mocked(listTags).mockResolvedValue(mockTagsResponse);
+    const submitDeferred = createDeferred<typeof mockDraftFile>();
+    vi.mocked(submitFileForReview).mockReturnValue(submitDeferred.promise);
+    const queryClient = new QueryClient({
+      defaultOptions: { queries: { retry: false }, mutations: { retry: false } },
+    });
+    const invalidate = vi.spyOn(queryClient, "invalidateQueries");
+
+    renderWithProviders(<MyFilesPage />, ["/my-files"], queryClient);
+    await screen.findAllByText("草稿文件.pdf");
+    fireEvent.click(screen.getAllByRole("button", { name: /提交审核 草稿文件/ })[0]);
+    await waitFor(() => expect(submitFileForReview).toHaveBeenCalledWith("file-draft", undefined));
+
+    act(() => {
+      useAuthStore.setState({
+        accessToken: "token-b",
+        user: {
+          id: "employee-b",
+          name: "李四",
+          email: "b@example.com",
+          role: "employee",
+          department_assigned: true,
+          department_id: "dept-tech",
+        },
+      });
+    });
+    await act(async () => {
+      submitDeferred.resolve({
+        ...mockDraftFile,
+        status: "pending_review",
+      });
+      await submitDeferred.promise;
+      await Promise.resolve();
+    });
+
+    expect(invalidate).not.toHaveBeenCalled();
+    expect(screen.queryByText("已提交审核")).not.toBeInTheDocument();
   });
 
   it("handles 403-like error without crashing and does not re-fetch", async () => {

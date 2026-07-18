@@ -7,6 +7,7 @@ export interface BoundedResponseOptions {
   maxBytes: number;
   sizeError: (maxBytes: number) => Error;
   missingBodyError?: () => Error;
+  assertCanContinue?: () => void;
 }
 
 function parseContentLength(headers: Headers): number | null {
@@ -62,7 +63,9 @@ export async function readBoundedResponseBlob(
   let readerCancelled = false;
   try {
     for (;;) {
+      options.assertCanContinue?.();
       const chunk = await reader.read();
+      options.assertCanContinue?.();
       if (chunk.done) {
         break;
       }
@@ -82,6 +85,7 @@ export async function readBoundedResponseBlob(
       copy.set(chunk.value);
       chunks.push(copy.buffer);
     }
+    options.assertCanContinue?.();
   } catch (error) {
     if (!readerCancelled) {
       try {

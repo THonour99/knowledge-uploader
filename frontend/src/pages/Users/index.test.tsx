@@ -1,7 +1,7 @@
 import type { CSSProperties, ReactNode } from "react";
 import { App as AntdApp, ConfigProvider } from "antd";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { act, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 
 import {
@@ -19,6 +19,7 @@ import {
   setUserDepartment,
 } from "../../api/client";
 import type * as ApiClientModule from "../../api/client";
+import { useAuthStore } from "../../store/auth.store";
 import { themeCssVariables } from "../../theme/tokens";
 import UsersPage from "./index";
 
@@ -131,6 +132,7 @@ function renderWithProviders(node: ReactNode) {
 }
 
 afterEach(() => {
+  useAuthStore.setState({ accessToken: null, user: null });
   vi.clearAllMocks();
 });
 
@@ -220,6 +222,94 @@ describe("UsersPage", () => {
       expect(disableUser).toHaveBeenCalledWith("user-001");
     });
   });
+  it.each(["A→B", "ABA"] as const)(
+    "destroys an imperative disable confirm and rejects its held callback on %s",
+    async (switchMode) => {
+      const sessionA = {
+        accessToken: "token-a",
+        user: {
+          id: "admin-a",
+          name: "管理员 A",
+          email: "a@example.com",
+          role: "system_admin" as const,
+        },
+      };
+      useAuthStore.setState(sessionA);
+      vi.mocked(listAdminUsers).mockResolvedValue(mockUsersResponse);
+      renderWithProviders(<UsersPage />);
+      await screen.findByText("张维");
+
+      fireEvent.click(screen.getAllByRole("button", { name: "禁用" })[0]);
+      const heldOkButton = await waitFor(() => {
+        const button = document.querySelector(
+          ".ant-modal-confirm-btns .ant-btn-primary",
+        ) as HTMLElement | null;
+        expect(button).not.toBeNull();
+        return button!;
+      });
+
+      act(() => {
+        useAuthStore.setState({
+          accessToken: "token-b",
+          user: {
+            ...sessionA.user,
+            id: "admin-b",
+            email: "b@example.com",
+          },
+        });
+        if (switchMode === "ABA") {
+          useAuthStore.setState(sessionA);
+        }
+      });
+
+      await waitFor(() => {
+        expect(screen.queryByText("禁用用户")).not.toBeInTheDocument();
+      });
+      fireEvent.click(heldOkButton);
+      await Promise.resolve();
+      expect(disableUser).not.toHaveBeenCalled();
+    },
+  );
+
+  it.each(["A→B", "ABA"] as const)(
+    "closes a role intent opened by A before confirm on %s",
+    async (switchMode) => {
+      const sessionA = {
+        accessToken: "token-a",
+        user: {
+          id: "admin-a",
+          name: "管理员 A",
+          email: "a@example.com",
+          role: "system_admin" as const,
+        },
+      };
+      useAuthStore.setState(sessionA);
+      vi.mocked(listAdminUsers).mockResolvedValue(mockUsersResponse);
+      renderWithProviders(<UsersPage />);
+      await screen.findByText("李雪");
+      fireEvent.click(screen.getAllByRole("button", { name: "改角色" })[1]);
+      expect(await screen.findByRole("dialog", { name: "变更用户角色" })).toBeInTheDocument();
+
+      act(() => {
+        useAuthStore.setState({
+          accessToken: "token-b",
+          user: {
+            ...sessionA.user,
+            id: "admin-b",
+            email: "b@example.com",
+          },
+        });
+        if (switchMode === "ABA") {
+          useAuthStore.setState(sessionA);
+        }
+      });
+
+      await waitFor(() => {
+        expect(screen.queryByRole("dialog", { name: "变更用户角色" })).not.toBeInTheDocument();
+      });
+      expect(changeUserRole).not.toHaveBeenCalled();
+    },
+  );
 
   it("calls changeUserRole with correct role when role modal submitted", async () => {
     vi.mocked(listAdminUsers).mockResolvedValue(mockUsersResponse);
@@ -277,6 +367,74 @@ describe("UsersPage", () => {
     await waitFor(() => {
       expect(changeUserRole).toHaveBeenCalledWith("user-002", "employee");
     });
+  });
+
+  it("keeps B state untouched when an A role change finishes late", async () => {
+    useAuthStore.setState({
+      accessToken: "token-a",
+      user: {
+        id: "admin-a",
+        name: "管理员 A",
+        email: "admin-a@company.com",
+        role: "system_admin",
+        email_verified: true,
+        department_assigned: true,
+      },
+    });
+    vi.mocked(listAdminUsers).mockResolvedValue(mockUsersResponse);
+    let resolveRoleChange!: (profile: Awaited<ReturnType<typeof changeUserRole>>) => void;
+    vi.mocked(changeUserRole).mockImplementation(
+      () =>
+        new Promise((resolve) => {
+          resolveRoleChange = resolve;
+        }),
+    );
+
+    renderWithProviders(<UsersPage />);
+    await screen.findByText("李雪");
+    fireEvent.click(screen.getAllByRole("button", { name: "改角色" })[1]);
+    const roleSelect = document.querySelector(
+      ".users-role-modal-select .ant-select-selector",
+    ) as HTMLElement;
+    fireEvent.mouseDown(roleSelect);
+    fireEvent.click(await screen.findByTitle("普通员工"));
+    fireEvent.click(screen.getByRole("button", { name: /确\s*定/ }));
+    await waitFor(() => expect(changeUserRole).toHaveBeenCalledWith("user-002", "employee"));
+    const listCallCount = vi.mocked(listAdminUsers).mock.calls.length;
+
+    act(() => {
+      useAuthStore.setState({
+        accessToken: "token-b",
+        user: {
+          id: "admin-b",
+          name: "管理员 B",
+          email: "admin-b@company.com",
+          role: "system_admin",
+          email_verified: true,
+          department_assigned: true,
+        },
+      });
+    });
+    await act(async () => {
+      resolveRoleChange({
+        id: mockUser2.id,
+        name: mockUser2.name,
+        email: mockUser2.email,
+        role: "employee",
+        status: mockUser2.status,
+        email_verified: mockUser2.email_verified,
+        department_id: mockUser2.department_id,
+        department_name: mockUser2.department_name,
+        department_code: mockUser2.department_code,
+        department: mockUser2.department,
+        phone: null,
+      });
+      await Promise.resolve();
+    });
+
+    expect(vi.mocked(listAdminUsers).mock.calls).toHaveLength(listCallCount);
+    expect(screen.queryByText("角色已变更")).not.toBeInTheDocument();
+    expect(screen.queryByRole("dialog", { name: "变更用户角色" })).not.toBeInTheDocument();
   });
 
   it("opens managed department modal for dept admins and saves current scope", async () => {

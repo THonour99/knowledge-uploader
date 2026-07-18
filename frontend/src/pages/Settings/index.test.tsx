@@ -1,7 +1,7 @@
 import type { CSSProperties, ReactNode } from "react";
 import { App as AntdApp, ConfigProvider } from "antd";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { act, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 
 import {
@@ -12,6 +12,7 @@ import {
   updateConfigs,
 } from "../../api/client";
 import type * as ApiClientModule from "../../api/client";
+import { useAuthStore } from "../../store/auth.store";
 import { themeCssVariables } from "../../theme/tokens";
 import SettingsPage from "./index";
 
@@ -179,6 +180,15 @@ const mockRagflowGroup: ConfigGroupResponse = {
       description: "允许高风险文档同步",
       updated_at: "2026-06-10T00:00:00Z",
     },
+    {
+      key: "ragflow.keep_replaced_remote",
+      value: true,
+      value_type: "bool",
+      is_secret: false,
+      masked_value: null,
+      description: "新版本生效时是否保留旧远端文档并将其标记为非当前版本",
+      updated_at: "2026-06-10T00:00:00Z",
+    },
   ],
 };
 
@@ -242,6 +252,7 @@ function renderWithProviders(node: ReactNode) {
 }
 
 afterEach(() => {
+  useAuthStore.setState({ accessToken: null, user: null });
   vi.clearAllMocks();
 });
 
@@ -354,6 +365,47 @@ describe("SettingsPage", () => {
     });
   });
 
+  it("does not submit A configuration from a delayed form continuation after switching to B", async () => {
+    setupMocks();
+    useAuthStore.setState({
+      accessToken: "token-a",
+      user: {
+        id: "admin-a",
+        name: "管理员 A",
+        email: "admin-a@company.com",
+        role: "system_admin",
+        email_verified: true,
+        department_assigned: true,
+      },
+    });
+    vi.mocked(updateConfigs).mockResolvedValue(mockUploadGroup);
+
+    renderWithProviders(<SettingsPage />);
+    fireEvent.click(await screen.findByRole("tab", { name: "上传" }));
+    const sizeInput = await screen.findByDisplayValue("200");
+    fireEvent.change(sizeInput, { target: { value: "512" } });
+    fireEvent.click(await screen.findByRole("button", { name: /保存/ }));
+    act(() => {
+      useAuthStore.setState({
+        accessToken: "token-b",
+        user: {
+          id: "admin-b",
+          name: "管理员 B",
+          email: "admin-b@company.com",
+          role: "system_admin",
+          email_verified: true,
+          department_assigned: true,
+        },
+      });
+    });
+    await act(async () => {
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+
+    expect(updateConfigs).not.toHaveBeenCalled();
+  });
+
   it("loads and saves the review claim timeout and SLA contract", async () => {
     setupMocks();
     vi.mocked(updateConfigs).mockResolvedValue(mockReviewGroup);
@@ -395,6 +447,16 @@ describe("SettingsPage", () => {
     fireEvent.click(await screen.findByRole("tab", { name: "RAGFlow" }));
 
     expect(await screen.findByText("允许高风险文档同步")).toBeInTheDocument();
+  });
+
+  it("shows a product label for the replaced-remote policy instead of its raw key", async () => {
+    setupMocks();
+    renderWithProviders(<SettingsPage />);
+
+    fireEvent.click(await screen.findByRole("tab", { name: "RAGFlow" }));
+
+    expect(await screen.findByText("替代版本生效后保留旧远端")).toBeInTheDocument();
+    expect(screen.queryByText("ragflow.keep_replaced_remote")).not.toBeInTheDocument();
   });
 
   it("locks the critical-risk invariant and excludes it from update payloads", async () => {
@@ -449,6 +511,49 @@ describe("SettingsPage", () => {
       expect(items).not.toHaveProperty("ragflow.api_key");
     });
   });
+  it.each(["A→B", "ABA"] as const)(
+    "clears a RAGFlow secret entered before save on %s",
+    async (switchMode) => {
+      const sessionA = {
+        accessToken: "token-a",
+        user: {
+          id: "admin-a",
+          name: "甲管理员",
+          email: "a@example.com",
+          role: "system_admin" as const,
+        },
+      };
+      useAuthStore.setState(sessionA);
+      setupMocks();
+      renderWithProviders(<SettingsPage />);
+
+      fireEvent.click(await screen.findByRole("tab", { name: "RAGFlow" }));
+      const secretInput = await screen.findByLabelText("RAGFlow API Key");
+      fireEvent.change(secretInput, { target: { value: "sk-session-a-secret" } });
+      expect(secretInput).toHaveValue("sk-session-a-secret");
+
+      act(() => {
+        useAuthStore.setState({
+          accessToken: "token-b",
+          user: {
+            ...sessionA.user,
+            id: "admin-b",
+            email: "b@example.com",
+          },
+        });
+        if (switchMode === "ABA") {
+          useAuthStore.setState(sessionA);
+        }
+      });
+
+      await waitFor(() => {
+        expect(screen.getByLabelText("RAGFlow API Key")).toHaveValue("");
+      });
+      fireEvent.click(screen.getByRole("button", { name: /保存/ }));
+      await Promise.resolve();
+      expect(updateConfigs).not.toHaveBeenCalled();
+    },
+  );
 
   it("shows ragflow test-connection success state with latency", async () => {
     setupMocks();

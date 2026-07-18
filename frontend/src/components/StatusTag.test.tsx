@@ -42,6 +42,12 @@ describe("StatusTag", () => {
     expect(screen.getByText("异常")).toBeInTheDocument();
   });
 
+  it("renders physical capacity freshness without hardcoded colors", () => {
+    render(<StatusTag kind="capacity" value="stale" />);
+
+    expect(screen.getByLabelText("物理容量快照状态：快照已过期")).toBeInTheDocument();
+  });
+
   it("adds readable status semantics to tag and dot variants", () => {
     render(<StatusTag kind="sync" value="syncing" />);
     expect(screen.getByLabelText("同步状态：同步中")).toHaveAttribute("title", "同步状态：同步中");

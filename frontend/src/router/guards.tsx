@@ -10,6 +10,35 @@ interface GuardProps {
 interface RoleGuardProps extends GuardProps {
   roles?: Role[];
 }
+function sourceRouteFromState(state: unknown): string | null {
+  if (
+    typeof state !== "object" ||
+    state === null ||
+    !("from" in state) ||
+    typeof state.from !== "object" ||
+    state.from === null ||
+    !("pathname" in state.from) ||
+    typeof state.from.pathname !== "string" ||
+    !state.from.pathname.startsWith("/") ||
+    state.from.pathname.startsWith("//")
+  ) {
+    return null;
+  }
+
+  const search =
+    "search" in state.from &&
+    typeof state.from.search === "string" &&
+    (state.from.search === "" || state.from.search.startsWith("?"))
+      ? state.from.search
+      : "";
+  const hash =
+    "hash" in state.from &&
+    typeof state.from.hash === "string" &&
+    (state.from.hash === "" || state.from.hash.startsWith("#"))
+      ? state.from.hash
+      : "";
+  return `${state.from.pathname}${search}${hash}`;
+}
 
 export function RequireAuth({ children }: GuardProps) {
   const location = useLocation();
@@ -25,10 +54,12 @@ export function RequireAuth({ children }: GuardProps) {
 
 export function PublicRoute({ children }: GuardProps) {
   const accessToken = useAuthStore((state) => state.accessToken);
+  const location = useLocation();
   const user = useAuthStore((state) => state.user);
 
   if (accessToken && user) {
-    return <Navigate to={defaultRouteForRole[user.role]} replace />;
+    const sourceRoute = sourceRouteFromState(location.state);
+    return <Navigate to={sourceRoute ?? defaultRouteForRole[user.role]} replace />;
   }
 
   return <>{children}</>;

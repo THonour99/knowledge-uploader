@@ -69,6 +69,10 @@ const mockConfig: AiConfigResponse = {
       max_output_tokens: 4096,
       temperature: 0.2,
       top_p: null,
+      input_price_microunits_per_million_tokens: 0,
+      output_price_microunits_per_million_tokens: 0,
+      pricing_currency: "USD",
+      pricing_configured: true,
       has_api_key: true,
       api_key_masked: "sk-****abcd",
       last_test_status: "success",
@@ -175,6 +179,8 @@ describe("AiConfigPage", () => {
     fireEvent.click(screen.getByRole("tab", { name: "模型供应商" }));
     expect(screen.getByRole("heading", { name: "模型供应商" })).toBeInTheDocument();
     expect(screen.getByText("当前维护 1 个供应商，1 个已通过测试")).toBeInTheDocument();
+    expect(screen.getByText("当前估算单价为 0")).toBeInTheDocument();
+    expect(screen.queryByText(/免费/)).not.toBeInTheDocument();
 
     fireEvent.click(screen.getByRole("tab", { name: "Prompt 模板" }));
     expect(screen.getByRole("heading", { name: "Prompt 模板" })).toBeInTheDocument();
@@ -282,6 +288,9 @@ describe("AiConfigPage", () => {
       target: { value: "10" },
     });
     fireEvent.change(screen.getByLabelText("计价币种"), { target: { value: "cny" } });
+    const pricingConfirmation = screen.getByLabelText("价格口径已确认");
+    expect(pricingConfirmation).not.toBeChecked();
+    fireEvent.click(pricingConfirmation);
     fireEvent.click(screen.getByRole("button", { name: /创\s*建/ }));
 
     await waitFor(() => {
@@ -298,6 +307,7 @@ describe("AiConfigPage", () => {
         input_price_microunits_per_million_tokens: 5_250_000,
         output_price_microunits_per_million_tokens: 10_000_000,
         pricing_currency: "CNY",
+        pricing_configured: true,
       }),
     );
   });
@@ -316,6 +326,9 @@ describe("AiConfigPage", () => {
 
     expect(await screen.findByRole("dialog", { name: "编辑模型配置" })).toBeInTheDocument();
     fireEvent.change(screen.getByLabelText("优先级"), { target: { value: "5" } });
+    const pricingConfirmation = screen.getByLabelText("价格口径已确认");
+    expect(pricingConfirmation).toBeChecked();
+    fireEvent.click(pricingConfirmation);
     fireEvent.click(screen.getByRole("button", { name: /保\s*存/ }));
 
     await waitFor(() => {
@@ -325,10 +338,45 @@ describe("AiConfigPage", () => {
           name: "OpenAI 兼容供应商",
           provider_type: "openai_compatible",
           priority: 5,
+          pricing_configured: false,
         }),
       );
     });
     expect(vi.mocked(updateAiProvider).mock.calls[0][1]).not.toHaveProperty("api_key");
+  });
+
+  it("preserves pricing status when an old response omits the compatibility field", async () => {
+    const legacyProvider = { ...mockConfig.providers[0] };
+    delete legacyProvider.pricing_configured;
+    vi.mocked(getAiConfig).mockResolvedValue({
+      ...mockConfig,
+      providers: [legacyProvider],
+    });
+    vi.mocked(updateAiProvider).mockResolvedValue({
+      ...legacyProvider,
+      priority: 5,
+    });
+
+    renderWithProviders(<AiConfigPage />);
+
+    fireEvent.click(await screen.findByRole("tab", { name: "模型供应商" }));
+    expect(await screen.findByText("价格口径状态未知（服务版本兼容）")).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: /编辑/ }));
+
+    expect(await screen.findByRole("dialog", { name: "编辑模型配置" })).toBeInTheDocument();
+    expect(screen.getByText("当前服务版本未返回价格口径状态")).toBeInTheDocument();
+    const pricingConfirmation = screen.getByLabelText("价格口径已确认");
+    expect(pricingConfirmation).toBeDisabled();
+    fireEvent.change(screen.getByLabelText("优先级"), { target: { value: "5" } });
+    fireEvent.click(screen.getByRole("button", { name: /保\s*存/ }));
+
+    await waitFor(() => {
+      expect(updateAiProvider).toHaveBeenCalledWith("provider-1", expect.any(Object));
+    });
+    const payload = vi.mocked(updateAiProvider).mock.calls[0][1];
+    expect(payload).toEqual(expect.objectContaining({ priority: 5 }));
+    expect(payload).not.toHaveProperty("pricing_configured");
+    expect(payload).not.toHaveProperty("api_key");
   });
 
   it("updates feature switches through the feature mutation", async () => {

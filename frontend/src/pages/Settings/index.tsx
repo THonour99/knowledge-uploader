@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import {
   ApiOutlined,
   BellOutlined,
@@ -29,7 +29,7 @@ import {
   Typography,
 } from "antd";
 import type { ColumnsType } from "antd/es/table";
-import { useMutation, useQueries, useQuery, useQueryClient } from "@tanstack/react-query";
+import { useQueries, useQuery, useQueryClient } from "@tanstack/react-query";
 import type { ReactNode } from "react";
 
 import {
@@ -40,10 +40,20 @@ import {
   testRagflowConnection,
   updateConfigs,
 } from "../../api/client";
+import {
+  type AuthSessionIdentity,
+  captureAuthSessionIdentity,
+  isCurrentAuthSessionIdentity,
+  isSessionSupersededError,
+  runAuthSessionCallback,
+  runAuthSessionLifecycleCallback,
+} from "../../sessionIdentity";
 import { KpiCard, type KpiTone } from "../../components/KpiCard";
 import { StatusTag } from "../../components/StatusTag";
 import { PageContainer } from "../../layouts/PageContainer";
+import { useSessionMutation as useMutation } from "../../hooks/useSessionMutation";
 import "./styles.css";
+import { useAuthStore } from "../../store/auth.store";
 
 // ── Label map ────────────────────────────────────────────────────────────────
 
@@ -78,6 +88,7 @@ const labelMap: Record<string, string> = {
   "ragflow.allow_high_risk_sync": "允许高风险文档同步",
   "ragflow.delete_remote_on_file_delete": "删除文件时删除远端",
   "ragflow.keep_remote_on_archive": "归档时保留远端",
+  "ragflow.keep_replaced_remote": "替代版本生效后保留旧远端",
 };
 const IMMUTABLE_SECURITY_CONFIG_KEY = "security.block_critical_sensitive_sync";
 
@@ -441,6 +452,15 @@ function ConfigField({ item }: { item: ConfigItem }) {
 
 type FormValues = Record<string, string | number | boolean | string[] | null | undefined>;
 
+interface ConfigSaveVariables {
+  items: Record<string, unknown>;
+  requestIdentity: AuthSessionIdentity;
+}
+
+function isFormValidationError(error: unknown): boolean {
+  return typeof error === "object" && error !== null && "errorFields" in error;
+}
+
 function buildInitialValues(items: ConfigItem[]): FormValues {
   const values: FormValues = {};
   for (const item of items) {
@@ -574,6 +594,7 @@ function ConfigPanel({ group, cardTitle, dangerConfirm = false }: ConfigPanelPro
   const { message, modal } = AntdApp.useApp();
   const queryClient = useQueryClient();
   const [form] = Form.useForm<FormValues>();
+  const formIntentIdentity = useRef<AuthSessionIdentity | null>(null);
 
   const queryKey = ["configs", group] as const;
 
@@ -588,37 +609,69 @@ function ConfigPanel({ group, cardTitle, dangerConfirm = false }: ConfigPanelPro
       form.setFieldsValue(buildInitialValues(visibleConfigItems(query.data.items)));
     }
   }, [form, query.data]);
+  useEffect(() => {
+    return useAuthStore.subscribe(() => {
+      const identity = formIntentIdentity.current;
+      if (identity && !isCurrentAuthSessionIdentity(identity)) {
+        formIntentIdentity.current = null;
+        form.resetFields();
+      }
+    });
+  }, [form]);
 
   const saveMutation = useMutation({
-    mutationFn: (items: Record<string, unknown>) => updateConfigs(group, items),
-    onSuccess: async () => {
-      void message.success("配置已保存");
-      await queryClient.invalidateQueries({ queryKey });
-    },
-    onError: (err: Error) => {
-      void message.error(err.message);
-    },
+    mutationFn: ({ items, requestIdentity }: ConfigSaveVariables) =>
+      runAuthSessionCallback(requestIdentity, (context) =>
+        context.waitFor(() => updateConfigs(group, items)),
+      ),
+    onSuccess: (_data, variables) =>
+      runAuthSessionLifecycleCallback(variables.requestIdentity, async (context) => {
+        await context.waitFor(() => queryClient.invalidateQueries({ queryKey }));
+        context.run(() => void message.success("配置已保存"));
+      }),
+    onError: (error: Error, variables) =>
+      runAuthSessionLifecycleCallback(variables.requestIdentity, (context) => {
+        context.run(() => void message.error(error.message));
+      }),
   });
 
   function handleSave() {
-    void form.validateFields().then((values: FormValues) => {
+    const requestIdentity = formIntentIdentity.current ?? captureAuthSessionIdentity();
+    const reportUnexpectedError = (error: unknown) => {
+      if (
+        !isFormValidationError(error) &&
+        !isSessionSupersededError(error) &&
+        isCurrentAuthSessionIdentity(requestIdentity)
+      ) {
+        void message.error(error instanceof Error ? error.message : "配置保存失败");
+      }
+    };
+
+    void runAuthSessionCallback(requestIdentity, async (context) => {
+      const values = await context.waitFor(() => form.validateFields());
       const configItems = visibleConfigItems(query.data?.items ?? []);
       const payload = buildPayload(values, configItems);
 
       if (dangerConfirm) {
-        void modal.confirm({
-          title: "确认修改安全配置",
-          content: "安全配置变更将立即生效并影响所有用户，确认保存？",
-          okText: "确认保存",
-          cancelText: "取消",
-          onOk: () => {
-            saveMutation.mutate(payload);
-          },
+        context.run(() => {
+          void modal.confirm({
+            title: "确认修改安全配置",
+            content: "安全配置变更将立即生效并影响所有用户，确认保存？",
+            okText: "确认保存",
+            cancelText: "取消",
+            onOk: () =>
+              runAuthSessionCallback(requestIdentity, (confirmContext) => {
+                confirmContext.run(() => {
+                  saveMutation.mutate({ items: payload, requestIdentity });
+                });
+              }).catch(reportUnexpectedError),
+          });
         });
-      } else {
-        saveMutation.mutate(payload);
+        return;
       }
-    });
+
+      context.run(() => saveMutation.mutate({ items: payload, requestIdentity }));
+    }).catch(reportUnexpectedError);
   }
 
   if (query.isLoading) {
@@ -648,7 +701,14 @@ function ConfigPanel({ group, cardTitle, dangerConfirm = false }: ConfigPanelPro
         message="配置变更会写入审计日志，影响上传、审核与同步链路。"
         style={{ marginBottom: 16 }}
       />
-      <Form form={form} layout="vertical" requiredMark={false}>
+      <Form
+        form={form}
+        layout="vertical"
+        requiredMark={false}
+        onValuesChange={() => {
+          formIntentIdentity.current ??= captureAuthSessionIdentity();
+        }}
+      >
         <div className="settings-form-grid">
           {items.map((item) => (
             <ConfigField key={item.key} item={item} />
@@ -674,6 +734,7 @@ function RagflowPanel() {
   const queryClient = useQueryClient();
   const [form] = Form.useForm<FormValues>();
   const [testResult, setTestResult] = useState<RagflowConnectionTestResult | null>(null);
+  const formIntentIdentity = useRef<AuthSessionIdentity | null>(null);
 
   const group: ConfigGroup = "ragflow";
   const queryKey = ["configs", group] as const;
@@ -688,16 +749,31 @@ function RagflowPanel() {
       form.setFieldsValue(buildInitialValues(visibleConfigItems(query.data.items)));
     }
   }, [form, query.data]);
+  useEffect(() => {
+    return useAuthStore.subscribe(() => {
+      const identity = formIntentIdentity.current;
+      if (identity && !isCurrentAuthSessionIdentity(identity)) {
+        formIntentIdentity.current = null;
+        setTestResult(null);
+        form.resetFields();
+      }
+    });
+  }, [form]);
 
   const saveMutation = useMutation({
-    mutationFn: (items: Record<string, unknown>) => updateConfigs(group, items),
-    onSuccess: async () => {
-      void message.success("RAGFlow 配置已保存");
-      await queryClient.invalidateQueries({ queryKey });
-    },
-    onError: (err: Error) => {
-      void message.error(err.message);
-    },
+    mutationFn: ({ items, requestIdentity }: ConfigSaveVariables) =>
+      runAuthSessionCallback(requestIdentity, (context) =>
+        context.waitFor(() => updateConfigs(group, items)),
+      ),
+    onSuccess: (_data, variables) =>
+      runAuthSessionLifecycleCallback(variables.requestIdentity, async (context) => {
+        await context.waitFor(() => queryClient.invalidateQueries({ queryKey }));
+        context.run(() => void message.success("RAGFlow 配置已保存"));
+      }),
+    onError: (error: Error, variables) =>
+      runAuthSessionLifecycleCallback(variables.requestIdentity, (context) => {
+        context.run(() => void message.error(error.message));
+      }),
   });
 
   const testMutation = useMutation({
@@ -711,9 +787,20 @@ function RagflowPanel() {
   });
 
   function handleSave() {
-    void form.validateFields().then((values: FormValues) => {
+    const requestIdentity = formIntentIdentity.current ?? captureAuthSessionIdentity();
+    void runAuthSessionCallback(requestIdentity, async (context) => {
+      const values = await context.waitFor(() => form.validateFields());
       const configItems = visibleConfigItems(query.data?.items ?? []);
-      saveMutation.mutate(buildPayload(values, configItems));
+      const items = buildPayload(values, configItems);
+      context.run(() => saveMutation.mutate({ items, requestIdentity }));
+    }).catch((error: unknown) => {
+      if (
+        !isFormValidationError(error) &&
+        !isSessionSupersededError(error) &&
+        isCurrentAuthSessionIdentity(requestIdentity)
+      ) {
+        void message.error(error instanceof Error ? error.message : "配置保存失败");
+      }
     });
   }
 
@@ -745,7 +832,14 @@ function RagflowPanel() {
           message="配置变更会写入审计日志，影响上传、审核与同步链路。"
           style={{ marginBottom: 16 }}
         />
-        <Form form={form} layout="vertical" requiredMark={false}>
+        <Form
+          form={form}
+          layout="vertical"
+          requiredMark={false}
+          onValuesChange={() => {
+            formIntentIdentity.current ??= captureAuthSessionIdentity();
+          }}
+        >
           <div className="settings-form-grid">
             {items.map((item) => (
               <ConfigField key={item.key} item={item} />

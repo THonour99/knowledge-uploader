@@ -1,16 +1,13 @@
 /**
  * Upload page tests.
  *
- * Strategy: AntD Upload.Dragger stores files as UploadFile objects in the form
- * field "file". We bypass the DOM file-input (DataTransfer is unavailable in
- * jsdom) by calling uploadDocument directly with the same payload shape the
- * component uses, and asserting on the call-count, argument values, and
- * PromiseSettledResult outcomes that drive the queue state machine.
+ * The session-race cases exercise the real AntD file input and form submission path; smaller
+ * payload-contract cases call the mocked client directly.
  */
 import type { CSSProperties, ReactNode } from "react";
 import { App as AntdApp, ConfigProvider } from "antd";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { render, screen, fireEvent, waitFor } from "@testing-library/react";
+import { act, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { MemoryRouter } from "react-router-dom";
 import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import type { UploadFile } from "antd/es/upload/interface";
@@ -19,6 +16,7 @@ import {
   type KnowledgeFile,
   type UploadPolicy,
   getUploadPolicy,
+  listDocuments,
   uploadDocument,
 } from "../../api/client";
 import type * as ApiClientModule from "../../api/client";
@@ -30,7 +28,12 @@ import UploadPage, { fileSizeValidationMessage } from "./index";
 
 vi.mock("../../api/client", async () => {
   const actual = await vi.importActual<typeof ApiClientModule>("../../api/client");
-  return { ...actual, getUploadPolicy: vi.fn(), uploadDocument: vi.fn() };
+  return {
+    ...actual,
+    getUploadPolicy: vi.fn(),
+    listDocuments: vi.fn(),
+    uploadDocument: vi.fn(),
+  };
 });
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
@@ -45,6 +48,8 @@ const makeKnowledgeFile = (overrides: Partial<KnowledgeFile> = {}): KnowledgeFil
   mime_type: "application/pdf",
   size: 512,
   uploader_id: "user-1",
+  owner_id: "user-1",
+  owner_name: "张三",
   department: null,
   category_id: null,
   dataset_mapping_id: null,
@@ -57,6 +62,17 @@ const makeKnowledgeFile = (overrides: Partial<KnowledgeFile> = {}): KnowledgeFil
   ragflow_document_id: null,
   ragflow_parse_status: null,
   ai_analysis_enabled_at_upload: false,
+  series_id: "file-1",
+  version_number: 1,
+  replaces_file_id: null,
+  is_current_version: true,
+  remote_visibility: "candidate",
+  version_switch_status: "not_required",
+  version_switch_error: null,
+  version_switch_attempt_count: 0,
+  predecessor_remote_deactivated_at: null,
+  local_version_activated_at: null,
+  remote_version_activated_at: null,
   uploaded_at: "2026-06-11T00:00:00Z",
   last_sync_at: null,
   created_at: "2026-06-11T00:00:00Z",
@@ -133,6 +149,23 @@ beforeEach(() => {
     },
   });
   vi.mocked(getUploadPolicy).mockResolvedValue(uploadPolicyResponse);
+  vi.mocked(listDocuments).mockResolvedValue({
+    items: [
+      makeKnowledgeFile({
+        id: "existing-file-1",
+        original_name: "旧版制度.pdf",
+        uploader_id: "employee-1",
+        status: "parsed",
+        version_number: 3,
+        is_current_version: true,
+        remote_visibility: "current",
+      }),
+    ],
+    total: 1,
+    page: 1,
+    page_size: 100,
+    total_pages: 1,
+  });
 });
 
 // ── Render helper ─────────────────────────────────────────────────────────────
@@ -158,6 +191,151 @@ function renderWithProviders(node: ReactNode) {
 // ── Tests ─────────────────────────────────────────────────────────────────────
 
 describe("UploadPage multi-file", () => {
+  it.each(["A→B", "ABA"] as const)(
+    "binds a five-file queue to session A and stops pending work on %s",
+    async (switchMode) => {
+      const sessionA = {
+        accessToken: "token-a",
+        user: {
+          id: "employee-1",
+          name: "张三",
+          email: "a@example.com",
+          role: "employee" as const,
+          email_verified: true,
+          department_assigned: true,
+          department_id: "dept-tech",
+          department_name: "技术部",
+          department_code: "tech",
+        },
+      };
+      useAuthStore.setState(sessionA);
+      vi.mocked(uploadDocument).mockImplementation((_payload, _progress, options) => {
+        const signal = options?.signal;
+        return new Promise<KnowledgeFile>((_resolve, reject) => {
+          if (signal?.aborted) {
+            reject(signal.reason);
+            return;
+          }
+          signal?.addEventListener("abort", () => reject(signal.reason), { once: true });
+        });
+      });
+      const view = renderWithProviders(<UploadPage />);
+      await waitFor(() =>
+        expect(screen.getByRole("button", { name: /开始上传/ })).not.toBeDisabled(),
+      );
+      const files = Array.from({ length: 5 }, (_, index) => makeFile(`queue-${index + 1}.pdf`));
+      const fileInput = view.container.querySelector<HTMLInputElement>('input[type="file"]');
+      if (!fileInput) {
+        throw new Error("上传控件未渲染文件输入框");
+      }
+
+      fireEvent.change(fileInput, { target: { files } });
+      expect((await screen.findAllByText("queue-5.pdf")).length).toBeGreaterThan(1);
+      fireEvent.click(screen.getByRole("button", { name: /开始上传/ }));
+
+      await waitFor(() => expect(uploadDocument).toHaveBeenCalledTimes(3));
+      const startedCalls = vi.mocked(uploadDocument).mock.calls;
+      expect(startedCalls.map(([payload]) => payload.file.name)).toEqual([
+        "queue-1.pdf",
+        "queue-2.pdf",
+        "queue-3.pdf",
+      ]);
+      for (const [, , options] of startedCalls) {
+        expect(options?.requestIdentity).toMatchObject({
+          accessToken: "token-a",
+          userId: "employee-1",
+        });
+        expect(options?.signal?.aborted).toBe(false);
+      }
+
+      act(() => {
+        useAuthStore.setState({
+          accessToken: "token-b",
+          user: {
+            ...sessionA.user,
+            id: "employee-2",
+            email: "b@example.com",
+          },
+        });
+        if (switchMode === "ABA") {
+          useAuthStore.setState(sessionA);
+        }
+      });
+
+      await waitFor(() => {
+        for (const [, , options] of startedCalls) {
+          expect(options?.signal?.aborted).toBe(true);
+        }
+      });
+      await act(async () => {
+        await Promise.resolve();
+        await Promise.resolve();
+      });
+      expect(uploadDocument).toHaveBeenCalledTimes(3);
+      expect(
+        vi.mocked(uploadDocument).mock.calls.some(([, , options]) => {
+          return options?.requestIdentity?.accessToken === "token-b";
+        }),
+      ).toBe(false);
+    },
+  );
+  it.each(["A→B", "ABA"] as const)(
+    "clears a selected file and draft fields before confirmation on %s",
+    async (switchMode) => {
+      const sessionA = {
+        accessToken: "token-a",
+        user: {
+          id: "employee-1",
+          name: "张三",
+          email: "a@example.com",
+          role: "employee" as const,
+          email_verified: true,
+          department_assigned: true,
+          department_id: "dept-tech",
+          department_name: "技术部",
+          department_code: "tech",
+        },
+      };
+      useAuthStore.setState(sessionA);
+      const view = renderWithProviders(<UploadPage />);
+      await waitFor(() =>
+        expect(screen.getByRole("button", { name: /开始上传/ })).not.toBeDisabled(),
+      );
+      const fileInput = view.container.querySelector<HTMLInputElement>('input[type="file"]');
+      if (!fileInput) {
+        throw new Error("上传控件未渲染文件输入框");
+      }
+
+      fireEvent.change(fileInput, { target: { files: [makeFile("pre-confirm.pdf")] } });
+      fireEvent.change(screen.getByLabelText("说明"), {
+        target: { value: "只属于会话 A 的说明" },
+      });
+      expect((await screen.findAllByText("pre-confirm.pdf")).length).toBeGreaterThan(1);
+      expect(screen.getByLabelText("说明")).toHaveValue("只属于会话 A 的说明");
+
+      act(() => {
+        useAuthStore.setState({
+          accessToken: "token-b",
+          user: {
+            ...sessionA.user,
+            id: "employee-2",
+            email: "b@example.com",
+          },
+        });
+        if (switchMode === "ABA") {
+          useAuthStore.setState(sessionA);
+        }
+      });
+
+      await waitFor(() => {
+        expect(screen.queryAllByText("pre-confirm.pdf")).toHaveLength(0);
+        expect(screen.getByLabelText("说明")).toHaveValue("");
+      });
+      fireEvent.click(screen.getByRole("button", { name: /开始上传/ }));
+      await Promise.resolve();
+      expect(uploadDocument).not.toHaveBeenCalled();
+    },
+  );
   it("calls uploadDocument once per selected file (N=3)", async () => {
     vi.mocked(uploadDocument).mockResolvedValue(makeKnowledgeFile());
 
@@ -427,6 +605,158 @@ describe("UploadPage rendering", () => {
 
     expect(screen.queryByText("可见范围")).not.toBeInTheDocument();
     expect(screen.queryByRole("combobox")).not.toBeInTheDocument();
+  });
+
+  it("explains replacement safety and forces a single-file candidate flow", async () => {
+    const view = renderWithProviders(<UploadPage />);
+    await waitFor(() =>
+      expect(screen.getByRole("button", { name: /开始上传/ })).not.toBeDisabled(),
+    );
+
+    fireEvent.click(screen.getByRole("switch", { name: "替代现有文档" }));
+
+    expect(await screen.findByText("将创建候选版本，不会覆盖旧原件")).toBeInTheDocument();
+    expect(screen.getByText(/旧版本仍按当前状态服务/)).toBeInTheDocument();
+    expect(screen.getByText(/上传时冻结的系统策略/)).toBeInTheDocument();
+    await waitFor(() =>
+      expect(listDocuments).toHaveBeenCalledWith({
+        page: 1,
+        page_size: 100,
+        q: undefined,
+        status: "parsed",
+        sort: "updated_at",
+        order: "desc",
+      }),
+    );
+    const candidateSelect = await screen.findByRole("combobox");
+    expect(candidateSelect).toBeEnabled();
+    expect(screen.getByRole("button", { name: /开始上传/ })).toBeDisabled();
+    expect(screen.getByRole("button", { name: /保存草稿/ })).toBeDisabled();
+
+    fireEvent.mouseDown(candidateSelect);
+    fireEvent.click(await screen.findByText("旧版制度.pdf · v3"));
+    await waitFor(() => expect(screen.getByRole("button", { name: /开始上传/ })).toBeEnabled());
+
+    fireEvent.change(candidateSelect, { target: { value: "新版" } });
+    await waitFor(() =>
+      expect(listDocuments).toHaveBeenCalledWith(
+        expect.objectContaining({ page: 1, page_size: 100, q: "新版" }),
+      ),
+    );
+    expect(screen.getByRole("button", { name: /开始上传/ })).toBeDisabled();
+
+    const fileInput = view.container.querySelector<HTMLInputElement>('input[type="file"]');
+    expect(fileInput).not.toBeNull();
+    expect(fileInput).not.toHaveAttribute("multiple");
+  });
+
+  it("keeps replacement candidates after the first 100 accessible through pagination", async () => {
+    const secondPageCandidate = makeKnowledgeFile({
+      id: "existing-file-101",
+      original_name: "第 101 份制度.pdf",
+      uploader_id: "employee-1",
+      status: "parsed",
+      version_number: 101,
+      is_current_version: true,
+      remote_visibility: "current",
+    });
+    vi.mocked(listDocuments).mockImplementation(async (params = {}) => {
+      if (params.page === 2) {
+        return {
+          items: [secondPageCandidate],
+          total: 101,
+          page: 2,
+          page_size: 100,
+          total_pages: 2,
+        };
+      }
+      return {
+        items: [
+          makeKnowledgeFile({
+            id: "existing-file-1",
+            original_name: "旧版制度.pdf",
+            uploader_id: "employee-1",
+            status: "parsed",
+            version_number: 3,
+            is_current_version: true,
+            remote_visibility: "current",
+          }),
+        ],
+        total: 101,
+        page: 1,
+        page_size: 100,
+        total_pages: 2,
+      };
+    });
+    renderWithProviders(<UploadPage />);
+    await waitFor(() =>
+      expect(screen.getByRole("button", { name: /开始上传/ })).not.toBeDisabled(),
+    );
+
+    fireEvent.click(screen.getByRole("switch", { name: "替代现有文档" }));
+    const loadMore = await screen.findByRole("button", { name: "加载更多候选" });
+    fireEvent.click(loadMore);
+
+    await waitFor(() =>
+      expect(listDocuments).toHaveBeenCalledWith(
+        expect.objectContaining({ page: 2, page_size: 100, q: undefined }),
+      ),
+    );
+    const candidateSelect = await screen.findByRole("combobox");
+    fireEvent.mouseDown(candidateSelect);
+    expect(await screen.findByText("第 101 份制度.pdf · v101")).toBeInTheDocument();
+  });
+
+  it("fails closed when loading a later replacement page fails", async () => {
+    vi.mocked(listDocuments).mockImplementation(async (params = {}) => {
+      if (params.page === 2) {
+        throw new Error("second page unavailable");
+      }
+      return {
+        items: [
+          makeKnowledgeFile({
+            id: "existing-file-1",
+            original_name: "旧版制度.pdf",
+            uploader_id: "employee-1",
+            status: "parsed",
+            version_number: 3,
+            is_current_version: true,
+            remote_visibility: "current",
+          }),
+        ],
+        total: 101,
+        page: 1,
+        page_size: 100,
+        total_pages: 2,
+      };
+    });
+    renderWithProviders(<UploadPage />);
+    await waitFor(() =>
+      expect(screen.getByRole("button", { name: /开始上传/ })).not.toBeDisabled(),
+    );
+
+    fireEvent.click(screen.getByRole("switch", { name: "替代现有文档" }));
+    fireEvent.click(await screen.findByRole("button", { name: "加载更多候选" }));
+
+    expect(await screen.findByText("可替代文档加载失败")).toBeInTheDocument();
+    expect(screen.getByText(/候选列表恢复前不会提交上传/)).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: /保存草稿/ })).toBeDisabled();
+    expect(screen.getByRole("button", { name: /开始上传/ })).toBeDisabled();
+  });
+
+  it("fails closed when replacement candidates cannot be loaded", async () => {
+    vi.mocked(listDocuments).mockRejectedValueOnce(new Error("candidate unavailable"));
+    renderWithProviders(<UploadPage />);
+    await waitFor(() =>
+      expect(screen.getByRole("button", { name: /开始上传/ })).not.toBeDisabled(),
+    );
+
+    fireEvent.click(screen.getByRole("switch", { name: "替代现有文档" }));
+
+    expect(await screen.findByText("可替代文档加载失败")).toBeInTheDocument();
+    expect(screen.getByText(/候选列表恢复前不会提交上传/)).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: /保存草稿/ })).toBeDisabled();
+    expect(screen.getByRole("button", { name: /开始上传/ })).toBeDisabled();
   });
 
   it("draft button is present", () => {

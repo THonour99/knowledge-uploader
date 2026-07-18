@@ -40,6 +40,16 @@ import {
 } from "../api/client";
 import { StatusTag } from "../components/StatusTag";
 import { appNavigationRoutes, utilityNavigation } from "../router/routes";
+import {
+  type AuthSessionIdentity,
+  type AuthSessionCallbackContext,
+  assertCurrentAuthSessionIdentity,
+  captureAuthSessionIdentity,
+  isCurrentAuthSessionIdentity,
+  isSessionSupersededError,
+  runAuthSessionCallback,
+  runAuthSessionLifecycleCallback,
+} from "../sessionIdentity";
 import { Roles, useAuthStore } from "../store/auth.store";
 import { useUiStore } from "../store/ui.store";
 import "./TopHeader.notification.css";
@@ -222,22 +232,44 @@ export function TopHeader() {
   const unreadCount = notificationsQuery.data?.unread_count ?? 0;
   const notificationCenterItems = notificationCenterQuery.data?.items ?? [];
   const notificationCenterTotal = notificationCenterQuery.data?.total ?? 0;
-  const refreshNotifications = () => queryClient.invalidateQueries({ queryKey: ["notifications"] });
+  const refreshNotifications = (context: AuthSessionCallbackContext) =>
+    context.waitFor(() => queryClient.invalidateQueries({ queryKey: ["notifications"] }));
   const readMutation = useMutation({
-    mutationFn: markNotificationRead,
-    onSuccess: refreshNotifications,
+    mutationFn: ({
+      notificationId,
+      requestIdentity,
+    }: {
+      notificationId: string;
+      requestIdentity: AuthSessionIdentity;
+    }) => {
+      assertCurrentAuthSessionIdentity(requestIdentity);
+      return markNotificationRead(notificationId);
+    },
+    onSuccess: (_result, variables) =>
+      runAuthSessionLifecycleCallback(variables.requestIdentity, async (context) => {
+        await refreshNotifications(context);
+      }),
   });
   const readAllMutation = useMutation({
-    mutationFn: markAllNotificationsRead,
-    onSuccess: async (result) => {
-      await refreshNotifications();
-      message.success(
-        result.updated_count > 0
-          ? `已将 ${result.updated_count} 条通知标为已读`
-          : "没有新的未读通知",
-      );
+    mutationFn: (requestIdentity: AuthSessionIdentity) => {
+      assertCurrentAuthSessionIdentity(requestIdentity);
+      return markAllNotificationsRead();
     },
-    onError: (error: Error) => {
+    onSuccess: (result, requestIdentity) =>
+      runAuthSessionLifecycleCallback(requestIdentity, async (context) => {
+        await refreshNotifications(context);
+        context.run(() =>
+          message.success(
+            result.updated_count > 0
+              ? `已将 ${result.updated_count} 条通知标为已读`
+              : "没有新的未读通知",
+          ),
+        );
+      }),
+    onError: (error: Error, requestIdentity) => {
+      if (isSessionSupersededError(error) || !isCurrentAuthSessionIdentity(requestIdentity)) {
+        return;
+      }
       message.error(error.message || "全部已读操作失败");
     },
   });
@@ -282,31 +314,41 @@ export function TopHeader() {
   ];
 
   const handleNotificationClick = async (notification: NotificationItem) => {
+    const requestIdentity = captureAuthSessionIdentity();
     try {
-      if (!notification.read_at) {
-        await readMutation.mutateAsync(notification.id);
-      }
-      const target = notificationDeepLink(notification, {
-        canAccessTaskLogs: user?.role !== Roles.EMPLOYEE,
+      await runAuthSessionCallback(requestIdentity, async (context) => {
+        if (!notification.read_at) {
+          await context.waitFor(() =>
+            readMutation.mutateAsync({
+              notificationId: notification.id,
+              requestIdentity,
+            }),
+          );
+        }
+        const target = notificationDeepLink(notification, {
+          canAccessTaskLogs: user?.role !== Roles.EMPLOYEE,
+        });
+        if (target) {
+          context.run(() => setNotificationCenterOpen(false));
+          context.run(() => navigate(target));
+        } else {
+          context.run(() => message.info("该通知没有可访问的详情"));
+        }
       });
-      if (target) {
-        setNotificationCenterOpen(false);
-        navigate(target);
-      } else {
-        message.info("该通知没有可访问的详情");
-      }
     } catch (error) {
+      if (isSessionSupersededError(error) || !isCurrentAuthSessionIdentity(requestIdentity)) {
+        return;
+      }
       message.error(error instanceof Error ? error.message : "通知状态更新失败");
     }
   };
 
   const handleLogout = () => {
-    void logout()
-      .catch(() => undefined)
-      .finally(() => {
-        clearSession();
-        navigate("/login", { replace: true });
-      });
+    const requestIdentity = captureAuthSessionIdentity();
+    void runAuthSessionCallback(requestIdentity, async (context) => {
+      await context.waitFor(() => logout().catch(() => undefined));
+      context.run(clearSession);
+    }).catch(() => undefined);
   };
 
   const handleGlobalSearch = (value: string) => {
@@ -432,7 +474,7 @@ export function TopHeader() {
               (notificationCenterQuery.data?.unread_count ?? unreadCount) === 0
             }
             loading={readAllMutation.isPending}
-            onClick={() => readAllMutation.mutate()}
+            onClick={() => readAllMutation.mutate(captureAuthSessionIdentity())}
           >
             全部标为已读
           </Button>

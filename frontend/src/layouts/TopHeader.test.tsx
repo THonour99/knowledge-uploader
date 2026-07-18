@@ -1,7 +1,7 @@
 import type { CSSProperties, ReactNode } from "react";
 import { App as AntdApp, ConfigProvider } from "antd";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { fireEvent, render, screen, waitFor, within } from "@testing-library/react";
+import { act, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { MemoryRouter, useLocation } from "react-router-dom";
 import { afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 
@@ -9,17 +9,35 @@ import {
   getSystemHealth,
   getSystemReadiness,
   listNotifications,
+  logout,
   markAllNotificationsRead,
   markNotificationRead,
   type NotificationListResponse,
 } from "../api/client";
 import type * as ApiClientModule from "../api/client";
+import { SessionSupersededError } from "../sessionIdentity";
 import { useAuthStore } from "../store/auth.store";
 import { themeCssVariables } from "../theme/tokens";
 import { notificationDeepLink, TopHeader } from "./TopHeader";
 
 const FILE_ID = "11111111-1111-4111-8111-111111111111";
 const TASK_ID = "22222222-2222-4222-8222-222222222222";
+
+interface Deferred<T> {
+  promise: Promise<T>;
+  resolve: (value: T) => void;
+  reject: (reason: unknown) => void;
+}
+
+function createDeferred<T>(): Deferred<T> {
+  let resolve!: (value: T) => void;
+  let reject!: (reason: unknown) => void;
+  const promise = new Promise<T>((resolvePromise, rejectPromise) => {
+    resolve = resolvePromise;
+    reject = rejectPromise;
+  });
+  return { promise, resolve, reject };
+}
 
 vi.mock("../api/client", async () => {
   const actual = await vi.importActual<typeof ApiClientModule>("../api/client");
@@ -89,14 +107,16 @@ beforeAll(() => {
   });
 });
 
-function renderWithProviders(node: ReactNode, initialEntry = "/dashboard") {
-  const queryClient = new QueryClient({
+function renderWithProviders(
+  node: ReactNode,
+  initialEntry = "/dashboard",
+  queryClient = new QueryClient({
     defaultOptions: {
       queries: { retry: false },
       mutations: { retry: false },
     },
-  });
-
+  }),
+) {
   return render(
     <MemoryRouter initialEntries={[initialEntry]}>
       <ConfigProvider>
@@ -265,6 +285,365 @@ describe("TopHeader", () => {
       expect(vi.mocked(markNotificationRead).mock.calls[0]?.[0]).toBe("notice-1");
       expect(screen.getByTestId("current-path")).toHaveTextContent(`/files/${FILE_ID}`);
     });
+  });
+
+  it("ignores a superseded notification mutation without navigating or showing an error", async () => {
+    vi.mocked(getSystemHealth).mockResolvedValue({ status: "ok" });
+    vi.mocked(getSystemReadiness).mockResolvedValue({
+      status: "ok",
+      dependencies: {
+        database: { status: "ok" },
+        rabbitmq: { status: "ok" },
+        redis: { status: "ok" },
+        minio: { status: "ok" },
+      },
+    });
+    vi.mocked(listNotifications).mockResolvedValue(mockNotifications);
+    const readDeferred = createDeferred<NotificationListResponse["items"][number]>();
+    vi.mocked(markNotificationRead).mockReturnValue(readDeferred.promise);
+    useAuthStore.setState({
+      accessToken: "token-a",
+      user: {
+        id: "user-a",
+        name: "甲用户",
+        email: "a@example.com",
+        role: "system_admin",
+      },
+    });
+
+    renderWithProviders(
+      <>
+        <TopHeader />
+        <LocationProbe />
+      </>,
+    );
+
+    fireEvent.click(await screen.findByRole("button", { name: "通知中心" }));
+    fireEvent.click(await screen.findByText("文件审核待处理"));
+    await waitFor(() => {
+      expect(vi.mocked(markNotificationRead).mock.calls[0]?.[0]).toBe("notice-1");
+    });
+
+    act(() => {
+      useAuthStore.setState({
+        accessToken: "token-b",
+        user: {
+          id: "user-b",
+          name: "乙用户",
+          email: "b@example.com",
+          role: "employee",
+        },
+      });
+    });
+    await act(async () => {
+      readDeferred.reject(new SessionSupersededError());
+      await readDeferred.promise.catch(() => undefined);
+      await Promise.resolve();
+    });
+
+    expect(screen.getByTestId("current-path")).toHaveTextContent("/dashboard");
+    expect(screen.queryByText("请求所属登录会话已变更")).not.toBeInTheDocument();
+  });
+
+  it("blocks notification navigation when an ABA switch occurs during cache invalidation", async () => {
+    vi.mocked(getSystemHealth).mockResolvedValue({ status: "ok" });
+    vi.mocked(getSystemReadiness).mockResolvedValue({
+      status: "ok",
+      dependencies: {
+        database: { status: "ok" },
+        rabbitmq: { status: "ok" },
+        redis: { status: "ok" },
+        minio: { status: "ok" },
+      },
+    });
+    vi.mocked(listNotifications).mockResolvedValue(mockNotifications);
+    vi.mocked(markNotificationRead).mockResolvedValue({
+      ...mockNotifications.items[0],
+      read_at: "2026-06-26T10:00:00+08:00",
+    });
+    const invalidationDeferred = createDeferred<void>();
+    const queryClient = new QueryClient({
+      defaultOptions: { queries: { retry: false }, mutations: { retry: false } },
+    });
+    vi.spyOn(queryClient, "invalidateQueries").mockReturnValue(invalidationDeferred.promise);
+    const sessionA = {
+      accessToken: "token-a",
+      user: {
+        id: "user-a",
+        name: "甲用户",
+        email: "a@example.com",
+        role: "system_admin" as const,
+      },
+    };
+    useAuthStore.setState(sessionA);
+
+    renderWithProviders(
+      <>
+        <TopHeader />
+        <LocationProbe />
+      </>,
+      "/dashboard",
+      queryClient,
+    );
+    fireEvent.click(await screen.findByRole("button", { name: "通知中心" }));
+    fireEvent.click(await screen.findByText("文件审核待处理"));
+    await waitFor(() => expect(queryClient.invalidateQueries).toHaveBeenCalled());
+
+    act(() => {
+      useAuthStore.setState({
+        accessToken: "token-b",
+        user: {
+          id: "user-b",
+          name: "乙用户",
+          email: "b@example.com",
+          role: "employee",
+        },
+      });
+      useAuthStore.setState(sessionA);
+    });
+    await act(async () => {
+      invalidationDeferred.resolve(undefined);
+      await invalidationDeferred.promise;
+      await Promise.resolve();
+    });
+
+    expect(screen.getByTestId("current-path")).toHaveTextContent("/dashboard");
+    expect(screen.queryByText("请求所属登录会话已变更")).not.toBeInTheDocument();
+  });
+
+  it("blocks notification continuation after a same-token role downgrade", async () => {
+    vi.mocked(getSystemHealth).mockResolvedValue({ status: "ok" });
+    vi.mocked(getSystemReadiness).mockResolvedValue({
+      status: "ok",
+      dependencies: {
+        database: { status: "ok" },
+        rabbitmq: { status: "ok" },
+        redis: { status: "ok" },
+        minio: { status: "ok" },
+      },
+    });
+    vi.mocked(listNotifications).mockResolvedValue(mockNotifications);
+    vi.mocked(markNotificationRead).mockResolvedValue({
+      ...mockNotifications.items[0],
+      read_at: "2026-06-26T10:00:00+08:00",
+    });
+    const invalidationDeferred = createDeferred<void>();
+    const queryClient = new QueryClient({
+      defaultOptions: { queries: { retry: false }, mutations: { retry: false } },
+    });
+    vi.spyOn(queryClient, "invalidateQueries").mockReturnValue(invalidationDeferred.promise);
+    useAuthStore.setState({
+      accessToken: "same-token",
+      user: {
+        id: "user-a",
+        name: "甲用户",
+        email: "a@example.com",
+        role: "system_admin",
+      },
+    });
+
+    renderWithProviders(
+      <>
+        <TopHeader />
+        <LocationProbe />
+      </>,
+      "/dashboard",
+      queryClient,
+    );
+    fireEvent.click(await screen.findByRole("button", { name: "通知中心" }));
+    fireEvent.click(await screen.findByText("文件审核待处理"));
+    await waitFor(() => expect(queryClient.invalidateQueries).toHaveBeenCalled());
+
+    act(() => {
+      useAuthStore.setState({
+        accessToken: "same-token",
+        user: {
+          id: "user-a",
+          name: "甲用户",
+          email: "a@example.com",
+          role: "employee",
+        },
+      });
+    });
+    await act(async () => {
+      invalidationDeferred.resolve(undefined);
+      await invalidationDeferred.promise;
+      await Promise.resolve();
+    });
+
+    expect(screen.getByTestId("current-path")).toHaveTextContent("/dashboard");
+    expect(screen.queryByText("请求所属登录会话已变更")).not.toBeInTheDocument();
+  });
+  it("suppresses a read-all success toast when session A is replaced during invalidation", async () => {
+    vi.mocked(getSystemHealth).mockResolvedValue({ status: "ok" });
+    vi.mocked(getSystemReadiness).mockResolvedValue({
+      status: "ok",
+      dependencies: {
+        database: { status: "ok" },
+        rabbitmq: { status: "ok" },
+        redis: { status: "ok" },
+        minio: { status: "ok" },
+      },
+    });
+    vi.mocked(listNotifications).mockResolvedValue(mockNotifications);
+    vi.mocked(markAllNotificationsRead).mockResolvedValue({ updated_count: 2 });
+    const invalidationDeferred = createDeferred<void>();
+    const queryClient = new QueryClient({
+      defaultOptions: { queries: { retry: false }, mutations: { retry: false } },
+    });
+    vi.spyOn(queryClient, "invalidateQueries").mockReturnValue(invalidationDeferred.promise);
+    useAuthStore.setState({
+      accessToken: "token-a",
+      user: {
+        id: "user-a",
+        name: "甲用户",
+        email: "a@example.com",
+        role: "system_admin",
+      },
+    });
+
+    renderWithProviders(<TopHeader />, "/dashboard", queryClient);
+    fireEvent.click(await screen.findByRole("button", { name: "通知中心" }));
+    fireEvent.click(await screen.findByText("全部标为已读"));
+    await waitFor(() => expect(queryClient.invalidateQueries).toHaveBeenCalled());
+
+    act(() => {
+      useAuthStore.setState({
+        accessToken: "token-b",
+        user: {
+          id: "user-b",
+          name: "乙用户",
+          email: "b@example.com",
+          role: "employee",
+        },
+      });
+    });
+    await act(async () => {
+      invalidationDeferred.resolve(undefined);
+      await invalidationDeferred.promise;
+      await Promise.resolve();
+    });
+
+    expect(screen.queryByText("已将 2 条通知标为已读")).not.toBeInTheDocument();
+  });
+
+  it("does not let a late logout clear a direct ABA return to session A", async () => {
+    vi.mocked(getSystemHealth).mockResolvedValue({ status: "ok" });
+    vi.mocked(getSystemReadiness).mockResolvedValue({
+      status: "ok",
+      dependencies: {
+        database: { status: "ok" },
+        rabbitmq: { status: "ok" },
+        redis: { status: "ok" },
+        minio: { status: "ok" },
+      },
+    });
+    vi.mocked(listNotifications).mockResolvedValue({ ...mockNotifications, items: [] });
+    const logoutDeferred = createDeferred<void>();
+    vi.mocked(logout).mockReturnValueOnce(logoutDeferred.promise);
+    const sessionA = {
+      accessToken: "token-a",
+      user: {
+        id: "user-a",
+        name: "甲用户",
+        email: "a@example.com",
+        role: "system_admin" as const,
+      },
+    };
+    useAuthStore.setState(sessionA);
+
+    renderWithProviders(
+      <>
+        <TopHeader />
+        <LocationProbe />
+      </>,
+    );
+    fireEvent.click((await screen.findByText("甲用户")).closest("button")!);
+    fireEvent.click(await screen.findByText("退出登录"));
+    await waitFor(() => expect(logout).toHaveBeenCalledOnce());
+
+    act(() => {
+      useAuthStore.setState({
+        accessToken: "token-b",
+        user: {
+          id: "user-b",
+          name: "乙用户",
+          email: "b@example.com",
+          role: "employee",
+        },
+      });
+      useAuthStore.setState(sessionA);
+    });
+    await act(async () => {
+      logoutDeferred.resolve(undefined);
+      await logoutDeferred.promise;
+      await Promise.resolve();
+    });
+
+    expect(useAuthStore.getState()).toMatchObject({
+      accessToken: "token-a",
+      user: { id: "user-a" },
+    });
+    expect(screen.getByTestId("current-path")).toHaveTextContent("/dashboard");
+  });
+
+  it("keeps session B when session A logout completes late", async () => {
+    vi.mocked(getSystemHealth).mockResolvedValue({ status: "ok" });
+    vi.mocked(getSystemReadiness).mockResolvedValue({
+      status: "ok",
+      dependencies: {
+        database: { status: "ok" },
+        rabbitmq: { status: "ok" },
+        redis: { status: "ok" },
+        minio: { status: "ok" },
+      },
+    });
+    vi.mocked(listNotifications).mockResolvedValue({ ...mockNotifications, items: [] });
+    const logoutDeferred = createDeferred<void>();
+    vi.mocked(logout).mockReturnValueOnce(logoutDeferred.promise);
+    useAuthStore.setState({
+      accessToken: "token-a",
+      user: {
+        id: "user-a",
+        name: "甲用户",
+        email: "a@example.com",
+        role: "system_admin",
+      },
+    });
+
+    renderWithProviders(
+      <>
+        <TopHeader />
+        <LocationProbe />
+      </>,
+    );
+
+    fireEvent.click((await screen.findByText("甲用户")).closest("button")!);
+    fireEvent.click(await screen.findByText("退出登录"));
+    await waitFor(() => expect(logout).toHaveBeenCalledOnce());
+
+    act(() => {
+      useAuthStore.setState({
+        accessToken: "token-b",
+        user: {
+          id: "user-b",
+          name: "乙用户",
+          email: "b@example.com",
+          role: "employee",
+        },
+      });
+    });
+    await act(async () => {
+      logoutDeferred.resolve(undefined);
+      await logoutDeferred.promise;
+      await Promise.resolve();
+    });
+
+    expect(useAuthStore.getState()).toMatchObject({
+      accessToken: "token-b",
+      user: { id: "user-b" },
+    });
+    expect(screen.getByTestId("current-path")).toHaveTextContent("/dashboard");
   });
 
   it("uses the read-all response contract and ignores arbitrary metadata URLs", async () => {

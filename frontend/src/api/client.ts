@@ -1,5 +1,17 @@
-import axios, { type AxiosError } from "axios";
+import axios, {
+  type AxiosError,
+  type AxiosRequestConfig,
+  type InternalAxiosRequestConfig,
+} from "axios";
 
+import {
+  type AuthSessionIdentity,
+  SessionSupersededError,
+  assertCurrentAuthSessionIdentity,
+  captureAuthSessionIdentity,
+  createAuthSessionAbortScope,
+  isCurrentAuthSessionIdentity,
+} from "../sessionIdentity";
 import { type CurrentUser, useAuthStore } from "../store/auth.store";
 import { cancelResponseBody, readBoundedResponseBlob } from "../utils/boundedResponse";
 
@@ -158,7 +170,8 @@ export interface FileAnalysis {
   completion_tokens?: number;
   latency_ms?: number;
   failure_category?: string | null;
-  estimated_cost_microunits?: number | string;
+  estimated_cost_microunits: number | string | null;
+  cost_status?: "known" | "unknown_pricing" | "unknown_usage" | "legacy_unverifiable";
   cost_currency?: string;
   summary: string | null;
   sensitive_risk_level: string;
@@ -197,6 +210,45 @@ export type SimilarFileReference =
       score?: number | null;
     };
 
+export type RemoteVisibility = "candidate" | "current" | "not_current" | "unknown";
+export type ReplacementRemoteAction = "delete" | "archive";
+
+export type VersionSwitchStatus =
+  | "not_required"
+  | "pending"
+  | "old_remote_deactivated"
+  | "local_switched"
+  | "completed"
+  | "failed_old_deactivate"
+  | "failed_new_activate";
+
+export interface DocumentVersionChainItem {
+  id: string;
+  version_number: number;
+  replaces_file_id: string | null;
+  replacement_remote_action?: ReplacementRemoteAction | null;
+  title: string;
+  status: string;
+  is_current_version: boolean;
+  remote_visibility: RemoteVisibility;
+  version_switch_status: VersionSwitchStatus;
+  version_switch_error: string | null;
+  created_at: string;
+}
+
+export interface DocumentOwnerOption {
+  id: string;
+  name: string;
+}
+
+export interface DocumentOwnerOptionListResponse {
+  items: DocumentOwnerOption[];
+  total: number;
+  page: number;
+  page_size: number;
+  total_pages: number;
+}
+
 export interface KnowledgeFile {
   id: string;
   original_name: string;
@@ -207,6 +259,8 @@ export interface KnowledgeFile {
   size: number;
   uploader_id: string;
   uploader_name?: string | null;
+  owner_id: string | null;
+  owner_name?: string | null;
   department_id?: string | null;
   department_name?: string | null;
   department_code?: string | null;
@@ -230,6 +284,18 @@ export interface KnowledgeFile {
   ragflow_document_id: string | null;
   ragflow_parse_status: string | null;
   ai_analysis_enabled_at_upload: boolean;
+  series_id: string;
+  version_number: number;
+  replaces_file_id: string | null;
+  replacement_remote_action?: ReplacementRemoteAction | null;
+  is_current_version: boolean;
+  remote_visibility: RemoteVisibility;
+  version_switch_status: VersionSwitchStatus;
+  version_switch_error: string | null;
+  version_switch_attempt_count: number;
+  predecessor_remote_deactivated_at: string | null;
+  local_version_activated_at: string | null;
+  remote_version_activated_at: string | null;
   uploaded_at: string;
   expires_at?: string | null;
   expiry_status?: string | null;
@@ -244,6 +310,8 @@ export interface KnowledgeFile {
   analysis?: FileAnalysis | null;
   /** 仅文件详情接口返回; 最近一次失败同步任务的错误信息 */
   sync_error?: string | null;
+  /** 仅文件详情接口返回；按 version_number 降序。 */
+  version_chain?: DocumentVersionChainItem[];
 }
 
 export interface FileListResponse {
@@ -339,6 +407,7 @@ export interface AiProviderConfig {
   input_price_microunits_per_million_tokens?: number;
   output_price_microunits_per_million_tokens?: number;
   pricing_currency?: string;
+  pricing_configured?: boolean | null;
   has_api_key: boolean;
   api_key_masked?: string | null;
   last_test_status?: string | null;
@@ -367,6 +436,7 @@ export interface AiProviderPayload {
   input_price_microunits_per_million_tokens: number;
   output_price_microunits_per_million_tokens: number;
   pricing_currency: string;
+  pricing_configured?: boolean;
 }
 
 export interface AiPromptTemplate {
@@ -560,6 +630,136 @@ export interface StatisticsExpiryResponse {
   items: StatisticsExpiryStatusRow[];
 }
 
+export type GovernanceCapacityGroupBy =
+  | "none"
+  | "department"
+  | "file_type"
+  | "processing_stage"
+  | "day";
+export type GovernanceLlmGroupBy = "none" | "department" | "provider" | "model" | "day";
+export type GovernanceRagflowGroupBy =
+  | "none"
+  | "department"
+  | "operation"
+  | "result"
+  | "failure_category"
+  | "day";
+export type GovernancePhysicalDimension = "cluster" | "department" | "file_type";
+
+export interface GovernanceMetricsWindow {
+  start_at: string;
+  end_before: string;
+  timezone: "UTC";
+}
+
+export interface GovernanceMetricsPagination {
+  page: number;
+  page_size: number;
+  total: number;
+  total_pages: number;
+}
+
+export interface GovernanceMetricsBaseQuery {
+  start_at?: string;
+  end_before?: string;
+  page?: number;
+  page_size?: number;
+}
+
+export interface GovernanceCapacityQuery extends GovernanceMetricsBaseQuery {
+  group_by?: GovernanceCapacityGroupBy;
+  physical_dimension?: GovernancePhysicalDimension;
+}
+
+export interface GovernanceLlmQuery extends GovernanceMetricsBaseQuery {
+  group_by?: GovernanceLlmGroupBy;
+}
+
+export interface GovernanceRagflowQuery extends GovernanceMetricsBaseQuery {
+  group_by?: GovernanceRagflowGroupBy;
+}
+
+export interface GovernanceCapacityRow {
+  dimension_key: string;
+  dimension_label: string;
+  file_count: string;
+  active_logical_bytes: string;
+  retained_inactive_bytes: string;
+  total_referenced_bytes: string;
+}
+
+export interface GovernancePhysicalCapacity {
+  status: "available" | "stale" | "unavailable" | "unsupported_dimension";
+  requested_dimension: GovernancePhysicalDimension;
+  scope: "cluster";
+  measurement_basis: "minio_raw_cluster_capacity" | null;
+  source_kind: "minio_cluster_metrics" | null;
+  total_bytes: string | null;
+  used_bytes: string | null;
+  free_bytes: string | null;
+  captured_at: string | null;
+  collected_at: string | null;
+}
+
+export interface GovernanceCapacityResponse {
+  basis: "database_file_rows_uploaded_in_window";
+  group_by: GovernanceCapacityGroupBy;
+  window: GovernanceMetricsWindow;
+  physical: GovernancePhysicalCapacity;
+  items: GovernanceCapacityRow[];
+  pagination: GovernanceMetricsPagination;
+}
+
+export interface GovernanceKnownCurrencyCost {
+  currency: string;
+  calls: string;
+  prompt_tokens: string;
+  completion_tokens: string;
+  estimated_cost_microunits: string;
+}
+
+export interface GovernanceUnknownCostBucket {
+  status: "unknown_pricing" | "unknown_usage" | "legacy_unverifiable";
+  calls: string;
+  known_prompt_tokens: string;
+  known_completion_tokens: string;
+  calls_with_unknown_tokens: string;
+}
+
+export interface GovernanceLlmUsageRow {
+  dimension_key: string;
+  dimension_label: string;
+  total_calls: string;
+  known_costs: GovernanceKnownCurrencyCost[];
+  unknown_costs: GovernanceUnknownCostBucket[];
+}
+
+export interface GovernanceLlmUsageResponse {
+  basis: "ai_usage_logs_created_in_window";
+  group_by: GovernanceLlmGroupBy;
+  window: GovernanceMetricsWindow;
+  items: GovernanceLlmUsageRow[];
+  pagination: GovernanceMetricsPagination;
+}
+
+export interface GovernanceRagflowUsageRow {
+  dimension_key: string;
+  dimension_label: string;
+  calls: string;
+  completed_calls: string;
+  failure_calls: string;
+  in_progress_calls: string;
+  total_latency_ms: string;
+}
+
+export interface GovernanceRagflowUsageResponse {
+  basis: "ragflow_api_calls_started_in_window";
+  group_by: GovernanceRagflowGroupBy;
+  window: GovernanceMetricsWindow;
+  items: GovernanceRagflowUsageRow[];
+  pagination: GovernanceMetricsPagination;
+}
+
 export interface UpdateAiFeaturePayload {
   enabled: boolean;
 }
@@ -597,6 +797,16 @@ export interface UploadDocumentPayload {
   visibility: KnowledgeFile["visibility"];
   submitAfterUpload?: boolean;
   aiAnalysisEnabled?: boolean;
+  replacesFileId?: string;
+}
+
+export interface UpdateDocumentDraftPayload {
+  expected_version: number;
+  title?: string;
+  description?: string | null;
+  visibility?: KnowledgeFile["visibility"];
+  owner_id?: string;
+  expires_at?: string | null;
 }
 
 export const apiClient = axios.create({
@@ -605,20 +815,67 @@ export const apiClient = axios.create({
   withCredentials: false,
 });
 
-apiClient.interceptors.request.use((config) => {
-  const token = useAuthStore.getState().accessToken;
+const REQUEST_SESSION_GENERATION = "__knowledgeUploaderSessionGeneration" as const;
 
-  if (token) {
-    config.headers.Authorization = `Bearer ${token}`;
-  }
+interface SessionBoundRequestConfig extends InternalAxiosRequestConfig {
+  [REQUEST_SESSION_GENERATION]?: number;
+}
 
-  return config;
-});
+interface SessionBoundAxiosRequestConfig extends AxiosRequestConfig {
+  [REQUEST_SESSION_GENERATION]?: number;
+}
+
+apiClient.interceptors.request.use(
+  (config) => {
+    const requestConfig = config as SessionBoundRequestConfig;
+    const boundGeneration = requestConfig[REQUEST_SESSION_GENERATION];
+    const requestIdentity = captureAuthSessionIdentity();
+    if (
+      boundGeneration !== undefined &&
+      (!Number.isSafeInteger(boundGeneration) ||
+        boundGeneration < 0 ||
+        boundGeneration !== requestIdentity.generation)
+    ) {
+      throw new SessionSupersededError();
+    }
+    assertCurrentAuthSessionIdentity(requestIdentity);
+    requestConfig[REQUEST_SESSION_GENERATION] = requestIdentity.generation;
+
+    if (requestIdentity.accessToken) {
+      config.headers.Authorization = `Bearer ${requestIdentity.accessToken}`;
+    }
+
+    return config;
+  },
+  (error: unknown) => {
+    throw error;
+  },
+  { synchronous: true },
+);
 
 apiClient.interceptors.response.use(
-  (response) => response,
+  (response) => {
+    const requestGeneration = (response.config as SessionBoundRequestConfig)[
+      REQUEST_SESSION_GENERATION
+    ];
+    const currentGeneration = captureAuthSessionIdentity().generation;
+    if (requestGeneration === undefined || requestGeneration !== currentGeneration) {
+      throw new SessionSupersededError();
+    }
+    return response;
+  },
   (error: AxiosError<ApiEnvelope<unknown>>) => {
-    if (error.response?.status === 401) {
+    if (error instanceof SessionSupersededError) {
+      return Promise.reject(error);
+    }
+    const requestGeneration = (error.config as SessionBoundRequestConfig | undefined)?.[
+      REQUEST_SESSION_GENERATION
+    ];
+    const currentGeneration = captureAuthSessionIdentity().generation;
+    if (requestGeneration === undefined || requestGeneration !== currentGeneration) {
+      return Promise.reject(new SessionSupersededError());
+    }
+    if (error.response?.status === 401 && requestGeneration === currentGeneration) {
       useAuthStore.getState().clearSession();
 
       if (window.location.pathname !== "/login") {
@@ -745,6 +1002,7 @@ export interface DocumentListQuery {
   sort?: string;
   order?: "asc" | "desc";
 }
+export type ResponsibleDocumentListQuery = Omit<DocumentListQuery, "tag_id" | "review_status">;
 
 export async function getUploadPolicy(): Promise<UploadPolicy> {
   const response = await apiClient.get<ApiEnvelope<UploadPolicy> | UploadPolicy>("/files/policy");
@@ -752,9 +1010,15 @@ export async function getUploadPolicy(): Promise<UploadPolicy> {
   return unwrapResponse(response.data);
 }
 
+export interface UploadDocumentRequestOptions {
+  signal?: AbortSignal;
+  requestIdentity?: AuthSessionIdentity;
+}
+
 export async function uploadDocument(
   payload: UploadDocumentPayload,
   onUploadProgress?: (percent: number) => void,
+  options: UploadDocumentRequestOptions = {},
 ): Promise<KnowledgeFile> {
   const formData = new FormData();
   formData.append("file", payload.file);
@@ -766,11 +1030,17 @@ export async function uploadDocument(
     formData.append("description", payload.description.trim());
   }
 
+  if (payload.replacesFileId) {
+    formData.append("replaces_file_id", payload.replacesFileId);
+  }
+
   const response = await apiClient.post<ApiEnvelope<KnowledgeFile> | KnowledgeFile>(
     "/files/upload",
     formData,
     {
       timeout: 60_000,
+      signal: options.signal,
+      [REQUEST_SESSION_GENERATION]: options.requestIdentity?.generation,
       onUploadProgress: onUploadProgress
         ? (event) => {
             if (event.total && event.total > 0) {
@@ -778,7 +1048,7 @@ export async function uploadDocument(
             }
           }
         : undefined,
-    },
+    } as SessionBoundAxiosRequestConfig,
   );
 
   return unwrapResponse(response.data);
@@ -788,6 +1058,17 @@ export async function listDocuments(params: DocumentListQuery = {}): Promise<Fil
   const response = await apiClient.get<ApiEnvelope<FileListResponse> | FileListResponse>("/files", {
     params,
   });
+
+  return unwrapResponse(response.data);
+}
+
+export async function listResponsibleDocuments(
+  params: ResponsibleDocumentListQuery = {},
+): Promise<FileListResponse> {
+  const response = await apiClient.get<ApiEnvelope<FileListResponse> | FileListResponse>(
+    "/files/responsible",
+    { params },
+  );
 
   return unwrapResponse(response.data);
 }
@@ -811,6 +1092,7 @@ export interface DocumentContent {
 export interface DocumentContentRequestOptions {
   maxBytes?: number;
   fetchImpl?: typeof fetch;
+  signal?: AbortSignal;
 }
 
 function documentContentSizeError(maxBytes: number): Error {
@@ -828,51 +1110,72 @@ export async function getDocumentContent(
   if (!Number.isSafeInteger(maxBytes) || maxBytes <= 0) {
     throw new Error("原件预览缓冲上限配置无效");
   }
-  const token = useAuthStore.getState().accessToken;
-  if (!token) {
+  const requestIdentity = captureAuthSessionIdentity();
+  if (!requestIdentity.accessToken) {
     throw new ApiError("登录状态已失效，请重新登录后查看原件", { status: 401 });
   }
 
-  const endpoint = `${getApiBaseUrl().replace(/\/$/, "")}/files/${encodeURIComponent(
-    id,
-  )}/content?disposition=${encodeURIComponent(disposition)}`;
-  const response = await (options.fetchImpl ?? fetch)(endpoint, {
-    method: "GET",
-    headers: {
-      Accept:
-        disposition === "inline"
-          ? "application/pdf,image/*,text/plain,text/csv,text/markdown"
-          : "application/octet-stream",
-      Authorization: `Bearer ${token}`,
-    },
-    credentials: "same-origin",
-  });
-
-  if (!response.ok) {
-    const error = new ApiError(`原件读取失败（HTTP ${response.status}）`, {
-      status: response.status,
+  const sessionScope = createAuthSessionAbortScope(requestIdentity, options.signal);
+  let clearedCurrentSessionForUnauthorized = false;
+  try {
+    const endpoint = `${getApiBaseUrl().replace(/\/$/, "")}/files/${encodeURIComponent(
+      id,
+    )}/content?disposition=${encodeURIComponent(disposition)}`;
+    const response = await (options.fetchImpl ?? fetch)(endpoint, {
+      method: "GET",
+      headers: {
+        Accept:
+          disposition === "inline"
+            ? "application/pdf,image/*,text/plain,text/csv,text/markdown"
+            : "application/octet-stream",
+        Authorization: `Bearer ${requestIdentity.accessToken}`,
+      },
+      credentials: "same-origin",
+      signal: sessionScope.signal,
     });
-    await cancelResponseBody(response, error);
-    if (response.status === 401) {
-      useAuthStore.getState().clearSession();
+    if (!isCurrentAuthSessionIdentity(requestIdentity)) {
+      const error = new SessionSupersededError();
+      await cancelResponseBody(response, error);
+      throw error;
+    }
+
+    if (!response.ok) {
+      const error = new ApiError(`原件读取失败（HTTP ${response.status}）`, {
+        status: response.status,
+      });
+      await cancelResponseBody(response, error);
+      assertCurrentAuthSessionIdentity(requestIdentity);
+      if (response.status === 401) {
+        clearedCurrentSessionForUnauthorized = true;
+        useAuthStore.getState().clearSession();
+      }
+      throw error;
+    }
+
+    const contentType = response.headers.get("content-type") ?? "application/octet-stream";
+    const content = await readBoundedResponseBlob(response, {
+      maxBytes,
+      sizeError: documentContentSizeError,
+      missingBodyError: () => new Error("浏览器未提供可读取的原件预览流"),
+      assertCanContinue: () => assertCurrentAuthSessionIdentity(requestIdentity),
+    });
+    assertCurrentAuthSessionIdentity(requestIdentity);
+
+    return {
+      blob: content.blob,
+      contentType,
+      contentDisposition: response.headers.get("content-disposition"),
+      contentLength: content.contentLength,
+      etag: response.headers.get("etag"),
+    };
+  } catch (error) {
+    if (!clearedCurrentSessionForUnauthorized && !isCurrentAuthSessionIdentity(requestIdentity)) {
+      throw new SessionSupersededError();
     }
     throw error;
+  } finally {
+    sessionScope.dispose();
   }
-
-  const contentType = response.headers.get("content-type") ?? "application/octet-stream";
-  const content = await readBoundedResponseBlob(response, {
-    maxBytes,
-    sizeError: documentContentSizeError,
-    missingBodyError: () => new Error("浏览器未提供可读取的原件预览流"),
-  });
-
-  return {
-    blob: content.blob,
-    contentType,
-    contentDisposition: response.headers.get("content-disposition"),
-    contentLength: content.contentLength,
-    etag: response.headers.get("etag"),
-  };
 }
 
 export async function listCategories(): Promise<CategoryListResponse> {
@@ -1010,6 +1313,36 @@ export async function getStatisticsExpiry(
   const response = await apiClient.get<
     ApiEnvelope<StatisticsExpiryResponse> | StatisticsExpiryResponse
   >("/admin/statistics/expiry", { params });
+
+  return unwrapResponse(response.data);
+}
+
+export async function getGovernanceCapacity(
+  params: GovernanceCapacityQuery = {},
+): Promise<GovernanceCapacityResponse> {
+  const response = await apiClient.get<
+    ApiEnvelope<GovernanceCapacityResponse> | GovernanceCapacityResponse
+  >("/admin/statistics/capacity", { params });
+
+  return unwrapResponse(response.data);
+}
+
+export async function getGovernanceLlmUsage(
+  params: GovernanceLlmQuery = {},
+): Promise<GovernanceLlmUsageResponse> {
+  const response = await apiClient.get<
+    ApiEnvelope<GovernanceLlmUsageResponse> | GovernanceLlmUsageResponse
+  >("/admin/statistics/llm-usage", { params });
+
+  return unwrapResponse(response.data);
+}
+
+export async function getGovernanceRagflowUsage(
+  params: GovernanceRagflowQuery = {},
+): Promise<GovernanceRagflowUsageResponse> {
+  const response = await apiClient.get<
+    ApiEnvelope<GovernanceRagflowUsageResponse> | GovernanceRagflowUsageResponse
+  >("/admin/statistics/ragflow-usage", { params });
 
   return unwrapResponse(response.data);
 }
@@ -1396,6 +1729,27 @@ export async function retryTask(id: string): Promise<SyncTask> {
   return unwrapResponse(response.data);
 }
 
+export const VERSION_SWITCH_RECONCILE_REASON_MAX_LENGTH = 1000;
+
+export interface VersionSwitchReconcilePayload {
+  reason: string;
+}
+
+export async function reconcileVersionSwitchTask(
+  id: string,
+  payload: VersionSwitchReconcilePayload,
+): Promise<SyncTask> {
+  const reason = payload.reason.trim();
+  if (!reason || reason.length > VERSION_SWITCH_RECONCILE_REASON_MAX_LENGTH) {
+    throw new Error("人工协调原因必须为 1 至 1000 个字符");
+  }
+  const response = await apiClient.post<ApiEnvelope<SyncTask> | SyncTask>(
+    `/tasks/${id}/reconcile-version-switch`,
+    { reason },
+  );
+  return unwrapResponse(response.data);
+}
+
 export async function cancelTask(id: string): Promise<SyncTask> {
   const response = await apiClient.post<ApiEnvelope<SyncTask> | SyncTask>(`/tasks/${id}/cancel`);
 
@@ -1774,4 +2128,26 @@ export async function getSystemReadiness(): Promise<SystemReadiness> {
   });
 
   return response.data;
+}
+
+export async function listDocumentOwnerOptions(
+  params: { q?: string; page?: number; page_size?: number } = {},
+): Promise<DocumentOwnerOptionListResponse> {
+  const response = await apiClient.get<
+    ApiEnvelope<DocumentOwnerOptionListResponse> | DocumentOwnerOptionListResponse
+  >("/files/owner-options", { params });
+
+  return unwrapResponse(response.data);
+}
+
+export async function updateDocumentDraft(
+  id: string,
+  payload: UpdateDocumentDraftPayload,
+): Promise<KnowledgeFile> {
+  const response = await apiClient.patch<ApiEnvelope<KnowledgeFile> | KnowledgeFile>(
+    `/files/${id}`,
+    payload,
+  );
+
+  return unwrapResponse(response.data);
 }

@@ -8,8 +8,6 @@ import {
   Form,
   Input,
   InputNumber,
-  Modal,
-  Popconfirm,
   Select,
   Space,
   Switch,
@@ -29,7 +27,7 @@ import {
   ThunderboltOutlined,
   UndoOutlined,
 } from "@ant-design/icons";
-import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import { useQuery, useQueryClient } from "@tanstack/react-query";
 import type { ColumnsType } from "antd/es/table";
 import dayjs from "dayjs";
 
@@ -62,6 +60,11 @@ import {
 import { KpiCard } from "../../components/KpiCard";
 import { StatusTag } from "../../components/StatusTag";
 import { PageContainer } from "../../layouts/PageContainer";
+import {
+  SessionBoundModal as Modal,
+  SessionBoundPopconfirm as Popconfirm,
+} from "../../components/SessionBoundActions";
+import { useSessionMutation as useMutation } from "../../hooks/useSessionMutation";
 import "./styles.css";
 
 const aiConfigQueryKey = ["ai-config"] as const;
@@ -201,6 +204,7 @@ const providerDefaultValues: AiProviderFormValues = {
   input_price_microunits_per_million_tokens: 0,
   output_price_microunits_per_million_tokens: 0,
   pricing_currency: "USD",
+  pricing_configured: false,
 };
 
 const promptDefaultValues: AiPromptTemplateFormValues = {
@@ -260,6 +264,22 @@ const PRICE_MICROUNIT_SCALE = 1_000_000;
 
 function priceFromMicrounits(value?: number | null): number {
   return (value ?? 0) / PRICE_MICROUNIT_SCALE;
+}
+
+function pricingStatusLabel(provider: AiProviderConfig): string {
+  if (typeof provider.pricing_configured !== "boolean") {
+    return "价格口径状态未知（服务版本兼容）";
+  }
+  if (!provider.pricing_configured) {
+    return "价格口径待确认";
+  }
+  if (
+    provider.input_price_microunits_per_million_tokens === 0 &&
+    provider.output_price_microunits_per_million_tokens === 0
+  ) {
+    return "当前估算单价为 0";
+  }
+  return "价格口径已确认";
 }
 
 function priceToMicrounits(value?: number | null): number {
@@ -344,10 +364,14 @@ function providerFormValues(provider?: AiProviderConfig): AiProviderFormValues {
       provider.output_price_microunits_per_million_tokens,
     ),
     pricing_currency: provider.pricing_currency ?? "USD",
+    pricing_configured: provider.pricing_configured ?? undefined,
   };
 }
 
-function providerPayloadFromValues(values: AiProviderFormValues): AiProviderPayload {
+function providerPayloadFromValues(
+  values: AiProviderFormValues,
+  includePricingConfigured: boolean,
+): AiProviderPayload {
   const apiKey = optionalText(values.api_key);
   const modelName = optionalText(values.model_name);
   const payload: AiProviderPayload = {
@@ -374,6 +398,9 @@ function providerPayloadFromValues(values: AiProviderFormValues): AiProviderPayl
     pricing_currency: values.pricing_currency.trim().toUpperCase(),
   };
 
+  if (includePricingConfigured) {
+    payload.pricing_configured = Boolean(values.pricing_configured);
+  }
   if (apiKey) {
     payload.api_key = apiKey;
   }
@@ -633,6 +660,8 @@ function ProviderFormModal({
   const selectedType = Form.useWatch("provider_type", form);
   const clearApiKey = Form.useWatch("clear_api_key", form);
   const requiresEndpoint = !providerTypesWithoutEndpoint.has(selectedType ?? "openai_compatible");
+  const pricingContractAvailable =
+    mode === "create" || typeof provider?.pricing_configured === "boolean";
 
   useEffect(() => {
     if (open) {
@@ -659,11 +688,20 @@ function ProviderFormModal({
         showIcon
         message="Base URL 填 OpenAI 协议根地址；此处仅配置文档分析使用的对话模型。"
       />
+      {!pricingContractAvailable ? (
+        <Alert
+          className="ai-provider-form-alert"
+          type="warning"
+          showIcon
+          message="当前服务版本未返回价格口径状态"
+          description="编辑其他字段不会修改价格口径；请在后端升级后再确认该设置。"
+        />
+      ) : null}
       <Form<AiProviderFormValues>
         form={form}
         layout="vertical"
         requiredMark={false}
-        onFinish={(values) => onSubmit(providerPayloadFromValues(values))}
+        onFinish={(values) => onSubmit(providerPayloadFromValues(values, pricingContractAvailable))}
       >
         <div className="ai-provider-form-grid">
           <Form.Item
@@ -828,6 +866,23 @@ function ProviderFormModal({
             ]}
           >
             <Input maxLength={3} placeholder="USD" />
+          </Form.Item>
+          <Form.Item
+            className="ai-provider-form-grid__wide"
+            label="价格口径已确认"
+            name="pricing_configured"
+            valuePropName="checked"
+            extra={
+              pricingContractAvailable
+                ? "开启表示已核实当前输入/输出单价与币种；两项均为 0 时仅表示“当前估算单价为 0”。关闭时成本归入“未知价格”，不会伪装成 0。"
+                : "旧服务未返回此字段；当前开关只读，保存其他设置不会提交默认值。"
+            }
+          >
+            <Switch
+              disabled={!pricingContractAvailable}
+              checkedChildren="已确认"
+              unCheckedChildren="待确认"
+            />
           </Form.Item>
           <Form.Item label="内部服务" name="is_internal" valuePropName="checked">
             <Switch />
@@ -1188,6 +1243,17 @@ function ProvidersPanel({
       align: "right",
     },
     {
+      title: "价格口径",
+      dataIndex: "pricing_configured",
+      key: "pricing_configured",
+      width: 110,
+      render: (configured: boolean, provider) => (
+        <Typography.Text type={configured ? "success" : "warning"}>
+          {pricingStatusLabel(provider)}
+        </Typography.Text>
+      ),
+    },
+    {
       title: "启用",
       dataIndex: "enabled",
       key: "enabled",
@@ -1283,7 +1349,7 @@ function ProvidersPanel({
         dataSource={providers}
         locale={{ emptyText: "暂无模型供应商" }}
         pagination={false}
-        scroll={{ x: 1460 }}
+        scroll={{ x: 1570 }}
       />
     </Card>
   );

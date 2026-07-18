@@ -64,6 +64,8 @@ function makeReviewFile(overrides: Partial<KnowledgeFile> = {}): KnowledgeFile {
     size: 1024,
     uploader_id: "employee-1",
     uploader_name: "张三",
+    owner_id: "employee-1",
+    owner_name: "张三",
     department: "技术部",
     category_id: null,
     dataset_mapping_id: null,
@@ -76,6 +78,17 @@ function makeReviewFile(overrides: Partial<KnowledgeFile> = {}): KnowledgeFile {
     ragflow_document_id: null,
     ragflow_parse_status: null,
     ai_analysis_enabled_at_upload: true,
+    series_id: "review-file-1",
+    version_number: 1,
+    replaces_file_id: null,
+    is_current_version: true,
+    remote_visibility: "candidate",
+    version_switch_status: "not_required",
+    version_switch_error: null,
+    version_switch_attempt_count: 0,
+    predecessor_remote_deactivated_at: null,
+    local_version_activated_at: null,
+    remote_version_activated_at: null,
     uploaded_at: "2026-07-15T08:00:00Z",
     submitted_at: "2026-07-15T09:00:00Z",
     review_due_at: "2026-07-15T10:00:00Z",
@@ -416,6 +429,59 @@ describe("FileManagementPage", () => {
         reason: null,
       });
     });
+  });
+
+  it("suppresses late batch-review UI, selection changes, and refreshes after A switches to B", async () => {
+    const file = makeReviewFile({
+      claimed_by: "admin-1",
+      claimed_by_name: "部门管理员",
+    });
+    vi.mocked(listReviewFiles).mockResolvedValue({ items: [file], total: 1 });
+    let resolveApproval!: (file: KnowledgeFile) => void;
+    vi.mocked(approveFile).mockImplementation(
+      () =>
+        new Promise<KnowledgeFile>((resolve) => {
+          resolveApproval = resolve;
+        }),
+    );
+
+    renderWorkbench();
+    const fileName = await screen.findByText("待审核制度.pdf");
+    const row = fileName.closest("tr");
+    if (!row) {
+      throw new Error("review row was not rendered");
+    }
+    const rowCheckbox = within(row).getByRole("checkbox");
+    fireEvent.click(rowCheckbox);
+    const bulkButton = screen.getByRole("button", { name: /批量仅批准/ });
+    await waitFor(() => expect(bulkButton).toBeEnabled());
+    fireEvent.click(bulkButton);
+    fireEvent.click(await screen.findByRole("button", { name: /确\s*定/ }));
+    await waitFor(() => expect(approveFile).toHaveBeenCalledOnce());
+    expect(bulkButton).toHaveClass("ant-btn-loading");
+    const listCallCount = vi.mocked(listReviewFiles).mock.calls.length;
+
+    act(() => {
+      useAuthStore.setState({
+        accessToken: "token-b",
+        user: {
+          id: "admin-2",
+          name: "另一个部门管理员",
+          email: "admin-2@company.com",
+          role: "dept_admin",
+          department_assigned: true,
+        },
+      });
+    });
+    await act(async () => {
+      resolveApproval({ ...file, status: "approved" });
+      await Promise.resolve();
+    });
+
+    expect(vi.mocked(listReviewFiles).mock.calls).toHaveLength(listCallCount);
+    expect(screen.queryByText(/已批量审核/)).not.toBeInTheDocument();
+    expect(rowCheckbox).toBeChecked();
+    expect(bulkButton).toHaveClass("ant-btn-loading");
   });
 
   it("clears an existing Dataset mapping when building a batch approve-only decision", () => {

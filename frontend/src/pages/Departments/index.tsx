@@ -1,17 +1,5 @@
 import { useMemo, useState } from "react";
-import {
-  App as AntdApp,
-  Button,
-  Card,
-  Form,
-  Input,
-  Modal,
-  Popconfirm,
-  Select,
-  Space,
-  Table,
-  Typography,
-} from "antd";
+import { App as AntdApp, Button, Card, Form, Input, Select, Space, Table, Typography } from "antd";
 import type { ColumnsType } from "antd/es/table";
 import {
   CheckCircleOutlined,
@@ -22,7 +10,7 @@ import {
   TeamOutlined,
   UndoOutlined,
 } from "@ant-design/icons";
-import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import { useQuery, useQueryClient } from "@tanstack/react-query";
 import dayjs from "dayjs";
 
 import {
@@ -36,6 +24,11 @@ import {
 import { KpiCard } from "../../components/KpiCard";
 import { StatusTag } from "../../components/StatusTag";
 import { PageContainer } from "../../layouts/PageContainer";
+import {
+  SessionBoundModal as Modal,
+  SessionBoundPopconfirm as Popconfirm,
+} from "../../components/SessionBoundActions";
+import { useSessionMutation as useMutation } from "../../hooks/useSessionMutation";
 import "./styles.css";
 
 const UNASSIGNED_DEPARTMENT_ID = "00000000-0000-0000-0000-000000000001";

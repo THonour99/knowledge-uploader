@@ -1,10 +1,10 @@
 import { useState } from "react";
 import { Alert, App as AntdApp, Button, Form, Input, Typography } from "antd";
 import { useMutation } from "@tanstack/react-query";
-import { Link, useLocation, useNavigate } from "react-router-dom";
+import { Link, useLocation } from "react-router-dom";
 
 import { isApiError, login, resendVerification } from "../../api/client";
-import { defaultRouteForRole, useAuthStore } from "../../store/auth.store";
+import { useAuthStore } from "../../store/auth.store";
 import { AuthLayout } from "../AuthLayout";
 
 interface LoginFormValues {
@@ -13,7 +13,6 @@ interface LoginFormValues {
 }
 
 export default function LoginPage() {
-  const navigate = useNavigate();
   const location = useLocation();
   const { message } = AntdApp.useApp();
   const setSession = useAuthStore((state) => state.setSession);
@@ -45,7 +44,6 @@ export default function LoginPage() {
     onSuccess: (session) => {
       setUnverifiedEmail(null);
       setSession(session.access_token, session.user);
-      navigate(defaultRouteForRole[session.user.role], { replace: true });
     },
     onError: (error, values) => {
       if (isApiError(error) && error.code === "EMAIL_NOT_VERIFIED") {

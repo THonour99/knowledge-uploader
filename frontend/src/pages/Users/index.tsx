@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   ApartmentOutlined,
   ExclamationCircleOutlined,
@@ -16,7 +16,7 @@ import {
   Button,
   Card,
   Input,
-  Modal,
+  Modal as AntdModal,
   Progress,
   Select,
   Space,
@@ -24,7 +24,7 @@ import {
   Typography,
 } from "antd";
 import type { ColumnsType } from "antd/es/table";
-import { useQuery, useQueryClient } from "@tanstack/react-query";
+import { useQuery, useQueryClient, type QueryKey } from "@tanstack/react-query";
 import dayjs from "dayjs";
 
 import {
@@ -42,9 +42,19 @@ import {
   resetUserPassword,
   setUserDepartment,
 } from "../../api/client";
+import {
+  type AuthSessionCallbackContext,
+  type AuthSessionIdentity,
+  captureAuthSessionIdentity,
+  isCurrentAuthSessionIdentity,
+  isSessionSupersededError,
+  runAuthSessionCallback,
+} from "../../sessionIdentity";
 import { KpiCard } from "../../components/KpiCard";
 import { StatusTag } from "../../components/StatusTag";
+import { useAuthStore } from "../../store/auth.store";
 import { PageContainer } from "../../layouts/PageContainer";
+import { SessionBoundModal as Modal } from "../../components/SessionBoundActions";
 import "./styles.css";
 
 const roleLabels: Record<AdminUserRole, string> = {
@@ -99,11 +109,19 @@ interface UserDepartmentModalState {
   selectedDepartmentId: string;
 }
 
+interface UserActionOptions {
+  requestIdentity: AuthSessionIdentity;
+  loadingKey: string;
+  work: () => PromiseLike<unknown>;
+  queryKeys?: readonly QueryKey[];
+  onSuccess: (context: AuthSessionCallbackContext) => void;
+}
 
 export default function UsersPage() {
   const { message, modal } = App.useApp();
   const queryClient = useQueryClient();
 
+  const mountIdentity = useRef(captureAuthSessionIdentity()).current;
   const [search, setSearch] = useState("");
   const [searchInput, setSearchInput] = useState("");
   const [roleFilter, setRoleFilter] = useState<AdminUserRole | "">("");
@@ -136,6 +154,25 @@ export default function UsersPage() {
   });
   const [actionLoading, setActionLoading] = useState<Record<string, boolean>>({});
 
+  useEffect(() => {
+    return useAuthStore.subscribe(() => {
+      if (isCurrentAuthSessionIdentity(mountIdentity)) {
+        return;
+      }
+      AntdModal.destroyAll();
+      setRoleModal({
+        open: false,
+        userId: "",
+        userName: "",
+        currentRole: "employee",
+        selectedRole: "employee",
+      });
+      setResetModal({ open: false, userId: "", userName: "" });
+      setManagedDepartmentsModal({ open: false, user: null, selectedDepartmentIds: [] });
+      setUserDepartmentModal({ open: false, user: null, selectedDepartmentId: "" });
+      setActionLoading({});
+    });
+  }, [modal, mountIdentity]);
   const queryParams: AdminUserListQuery = {
     page,
     page_size: pageSize,
@@ -144,8 +181,9 @@ export default function UsersPage() {
     ...(statusFilter ? { status: statusFilter } : {}),
   };
 
+  const usersQueryKey = ["admin-users", queryParams] as const;
   const usersQuery = useQuery({
-    queryKey: ["admin-users", queryParams],
+    queryKey: usersQueryKey,
     queryFn: () => listAdminUsers(queryParams),
   });
 
@@ -219,9 +257,41 @@ export default function UsersPage() {
     [managedDepartmentsQuery.data],
   );
 
-  const invalidate = useCallback(() => {
-    void queryClient.invalidateQueries({ queryKey: ["admin-users", queryParams] });
-  }, [queryClient, queryParams]);
+  const runUserAction = useCallback(
+    async ({ requestIdentity, loadingKey, work, queryKeys = [], onSuccess }: UserActionOptions) => {
+      try {
+        await runAuthSessionCallback(requestIdentity, async (context) => {
+          context.run(() => {
+            setActionLoading((previous) => ({ ...previous, [loadingKey]: true }));
+          });
+          try {
+            await context.waitFor(work);
+            if (queryKeys.length > 0) {
+              await context.waitFor(() =>
+                Promise.all(
+                  queryKeys.map((queryKey) => queryClient.invalidateQueries({ queryKey })),
+                ),
+              );
+            }
+            context.run(() => onSuccess(context));
+          } catch (error) {
+            context.run(() => {
+              message.error(error instanceof Error ? error.message : "操作失败");
+            });
+          } finally {
+            context.runIfCurrent(() => {
+              setActionLoading((previous) => ({ ...previous, [loadingKey]: false }));
+            });
+          }
+        });
+      } catch (error) {
+        if (!isSessionSupersededError(error) && isCurrentAuthSessionIdentity(requestIdentity)) {
+          message.error(error instanceof Error ? error.message : "操作失败");
+        }
+      }
+    },
+    [message, queryClient],
+  );
 
   useEffect(() => {
     if (!managedDepartmentsModal.open || !managedDepartmentsQuery.isSuccess) {
@@ -251,52 +321,52 @@ export default function UsersPage() {
 
   const handleDisable = useCallback(
     (record: AdminUserItem) => {
+      const requestIdentity = captureAuthSessionIdentity();
       modal.confirm({
         title: "禁用用户",
         icon: <ExclamationCircleOutlined />,
         content: `确定要禁用 ${record.name} 的账号吗？禁用后该用户将无法登录。`,
         okText: "确定",
         cancelText: "取消",
-        onOk: async () => {
-          setActionLoading((prev) => ({ ...prev, [`disable-${record.id}`]: true }));
-          try {
-            await disableUser(record.id);
-            message.success("用户已禁用");
-            invalidate();
-          } catch (err) {
-            message.error(err instanceof Error ? err.message : "操作失败");
-          } finally {
-            setActionLoading((prev) => ({ ...prev, [`disable-${record.id}`]: false }));
-          }
+        onOk: () => {
+          return runUserAction({
+            requestIdentity,
+            loadingKey: `disable-${record.id}`,
+            work: () => disableUser(record.id),
+            queryKeys: [usersQueryKey],
+            onSuccess: () => {
+              message.success("用户已禁用");
+            },
+          });
         },
       });
     },
-    [modal, message, invalidate],
+    [message, modal, runUserAction, usersQueryKey],
   );
 
   const handleEnable = useCallback(
     (record: AdminUserItem) => {
+      const requestIdentity = captureAuthSessionIdentity();
       modal.confirm({
         title: "启用用户",
         icon: <ExclamationCircleOutlined />,
         content: `确定要启用 ${record.name} 的账号吗？`,
         okText: "确定",
         cancelText: "取消",
-        onOk: async () => {
-          setActionLoading((prev) => ({ ...prev, [`enable-${record.id}`]: true }));
-          try {
-            await enableUser(record.id);
-            message.success("用户已启用");
-            invalidate();
-          } catch (err) {
-            message.error(err instanceof Error ? err.message : "操作失败");
-          } finally {
-            setActionLoading((prev) => ({ ...prev, [`enable-${record.id}`]: false }));
-          }
+        onOk: () => {
+          return runUserAction({
+            requestIdentity,
+            loadingKey: `enable-${record.id}`,
+            work: () => enableUser(record.id),
+            queryKeys: [usersQueryKey],
+            onSuccess: () => {
+              message.success("用户已启用");
+            },
+          });
         },
       });
     },
-    [modal, message, invalidate],
+    [message, modal, runUserAction, usersQueryKey],
   );
 
   const openRoleModal = useCallback((record: AdminUserItem) => {
@@ -309,19 +379,19 @@ export default function UsersPage() {
     });
   }, []);
 
-  const handleRoleChange = useCallback(async () => {
-    setActionLoading((prev) => ({ ...prev, [`role-${roleModal.userId}`]: true }));
-    try {
-      await changeUserRole(roleModal.userId, roleModal.selectedRole);
-      message.success("角色已变更");
-      setRoleModal((prev) => ({ ...prev, open: false }));
-      invalidate();
-    } catch (err) {
-      message.error(err instanceof Error ? err.message : "操作失败");
-    } finally {
-      setActionLoading((prev) => ({ ...prev, [`role-${roleModal.userId}`]: false }));
-    }
-  }, [roleModal, message, invalidate]);
+  const handleRoleChange = useCallback(() => {
+    const requestIdentity = captureAuthSessionIdentity();
+    return runUserAction({
+      requestIdentity,
+      loadingKey: `role-${roleModal.userId}`,
+      work: () => changeUserRole(roleModal.userId, roleModal.selectedRole),
+      queryKeys: [usersQueryKey],
+      onSuccess: () => {
+        message.success("角色已变更");
+        setRoleModal((previous) => ({ ...previous, open: false }));
+      },
+    });
+  }, [message, roleModal, runUserAction, usersQueryKey]);
 
   const openResetModal = useCallback((record: AdminUserItem) => {
     setResetModal({ open: true, userId: record.id, userName: record.name });
@@ -347,59 +417,56 @@ export default function UsersPage() {
     setManagedDepartmentsModal((prev) => ({ ...prev, selectedDepartmentIds: departmentIds }));
   }, []);
 
-  const handleSaveManagedDepartments = useCallback(async () => {
+  const handleSaveManagedDepartments = useCallback(() => {
+    const requestIdentity = captureAuthSessionIdentity();
     const userId = managedDepartmentsModal.user?.id;
     if (!userId) {
-      return;
+      return Promise.resolve();
     }
 
-    setActionLoading((prev) => ({ ...prev, [`managed-${userId}`]: true }));
-    try {
-      await replaceManagedDepartments(userId, managedDepartmentsModal.selectedDepartmentIds);
-      message.success("管辖部门已更新");
-      setManagedDepartmentsModal({ open: false, user: null, selectedDepartmentIds: [] });
-      invalidate();
-      void queryClient.invalidateQueries({
-        queryKey: ["admin-users", userId, "managed-departments"],
-      });
-    } catch (err) {
-      message.error(err instanceof Error ? err.message : "操作失败");
-    } finally {
-      setActionLoading((prev) => ({ ...prev, [`managed-${userId}`]: false }));
-    }
-  }, [invalidate, managedDepartmentsModal, message, queryClient]);
+    return runUserAction({
+      requestIdentity,
+      loadingKey: `managed-${userId}`,
+      work: () => replaceManagedDepartments(userId, managedDepartmentsModal.selectedDepartmentIds),
+      queryKeys: [usersQueryKey, ["admin-users", userId, "managed-departments"]],
+      onSuccess: () => {
+        message.success("管辖部门已更新");
+        setManagedDepartmentsModal({ open: false, user: null, selectedDepartmentIds: [] });
+      },
+    });
+  }, [managedDepartmentsModal, message, runUserAction, usersQueryKey]);
 
-  const handleSaveUserDepartment = useCallback(async () => {
+  const handleSaveUserDepartment = useCallback(() => {
+    const requestIdentity = captureAuthSessionIdentity();
     const userId = userDepartmentModal.user?.id;
     if (!userId || !userDepartmentModal.selectedDepartmentId) {
-      return;
+      return Promise.resolve();
     }
 
-    setActionLoading((prev) => ({ ...prev, [`department-${userId}`]: true }));
-    try {
-      await setUserDepartment(userId, userDepartmentModal.selectedDepartmentId);
-      message.success("所属部门已更新");
-      setUserDepartmentModal({ open: false, user: null, selectedDepartmentId: "" });
-      invalidate();
-    } catch (err) {
-      message.error(err instanceof Error ? err.message : "操作失败");
-    } finally {
-      setActionLoading((prev) => ({ ...prev, [`department-${userId}`]: false }));
-    }
-  }, [invalidate, message, userDepartmentModal]);
+    return runUserAction({
+      requestIdentity,
+      loadingKey: `department-${userId}`,
+      work: () => setUserDepartment(userId, userDepartmentModal.selectedDepartmentId),
+      queryKeys: [usersQueryKey],
+      onSuccess: () => {
+        message.success("所属部门已更新");
+        setUserDepartmentModal({ open: false, user: null, selectedDepartmentId: "" });
+      },
+    });
+  }, [message, runUserAction, userDepartmentModal, usersQueryKey]);
 
-  const handleResetPassword = useCallback(async () => {
-    setActionLoading((prev) => ({ ...prev, [`reset-${resetModal.userId}`]: true }));
-    try {
-      await resetUserPassword(resetModal.userId);
-      message.success("重置邮件已发送");
-      setResetModal((prev) => ({ ...prev, open: false }));
-    } catch (err) {
-      message.error(err instanceof Error ? err.message : "操作失败");
-    } finally {
-      setActionLoading((prev) => ({ ...prev, [`reset-${resetModal.userId}`]: false }));
-    }
-  }, [resetModal, message]);
+  const handleResetPassword = useCallback(() => {
+    const requestIdentity = captureAuthSessionIdentity();
+    return runUserAction({
+      requestIdentity,
+      loadingKey: `reset-${resetModal.userId}`,
+      work: () => resetUserPassword(resetModal.userId),
+      onSuccess: () => {
+        message.success("重置邮件已发送");
+        setResetModal((previous) => ({ ...previous, open: false }));
+      },
+    });
+  }, [message, resetModal, runUserAction]);
 
   const columns: ColumnsType<AdminUserItem> = [
     {
@@ -677,7 +744,7 @@ export default function UsersPage() {
         title="变更用户角色"
         open={roleModal.open}
         onCancel={() => setRoleModal((prev) => ({ ...prev, open: false }))}
-        onOk={() => void handleRoleChange()}
+        onOk={handleRoleChange}
         confirmLoading={actionLoading[`role-${roleModal.userId}`]}
         okText="确定"
         cancelText="取消"
@@ -724,7 +791,7 @@ export default function UsersPage() {
         onCancel={() =>
           setUserDepartmentModal({ open: false, user: null, selectedDepartmentId: "" })
         }
-        onOk={() => void handleSaveUserDepartment()}
+        onOk={handleSaveUserDepartment}
         confirmLoading={
           Boolean(userDepartmentModal.user?.id) &&
           actionLoading[`department-${userDepartmentModal.user?.id}`]
@@ -778,7 +845,7 @@ export default function UsersPage() {
         onCancel={() =>
           setManagedDepartmentsModal({ open: false, user: null, selectedDepartmentIds: [] })
         }
-        onOk={() => void handleSaveManagedDepartments()}
+        onOk={handleSaveManagedDepartments}
         confirmLoading={
           Boolean(managedDepartmentsModal.user?.id) &&
           actionLoading[`managed-${managedDepartmentsModal.user?.id}`]
@@ -828,7 +895,7 @@ export default function UsersPage() {
         title="重置密码"
         open={resetModal.open}
         onCancel={() => setResetModal((prev) => ({ ...prev, open: false }))}
-        onOk={() => void handleResetPassword()}
+        onOk={handleResetPassword}
         confirmLoading={actionLoading[`reset-${resetModal.userId}`]}
         okText="确定"
         cancelText="取消"

@@ -1,31 +1,40 @@
-import type { CSSProperties } from "react";
+import { type CSSProperties, type ReactNode, useSyncExternalStore } from "react";
 import { App as AntdApp, ConfigProvider } from "antd";
-import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
+import { QueryClientProvider } from "@tanstack/react-query";
 import { RouterProvider } from "react-router-dom";
 
+import { queryClient } from "./queryClient";
 import { router } from "./router";
+import { getAuthSessionGeneration, subscribeAuthSessionGeneration } from "./sessionIdentity";
 import { antdTheme } from "./theme/antd-theme";
 import { themeCssVariables } from "./theme/tokens";
 
-const queryClient = new QueryClient({
-  defaultOptions: {
-    queries: {
-      staleTime: 30_000,
-      retry: 1,
-    },
-  },
-});
+interface SessionApplicationProps {
+  children?: ReactNode;
+}
+
+export function SessionApplication({ children }: SessionApplicationProps) {
+  const sessionGeneration = useSyncExternalStore(
+    subscribeAuthSessionGeneration,
+    getAuthSessionGeneration,
+    getAuthSessionGeneration,
+  );
+
+  return (
+    <AntdApp key={sessionGeneration}>
+      <QueryClientProvider client={queryClient}>
+        <div className="app-root" style={themeCssVariables as CSSProperties}>
+          {children ?? <RouterProvider router={router} />}
+        </div>
+      </QueryClientProvider>
+    </AntdApp>
+  );
+}
 
 export default function App() {
   return (
     <ConfigProvider theme={antdTheme}>
-      <AntdApp>
-        <QueryClientProvider client={queryClient}>
-          <div className="app-root" style={themeCssVariables as CSSProperties}>
-            <RouterProvider router={router} />
-          </div>
-        </QueryClientProvider>
-      </AntdApp>
+      <SessionApplication />
     </ConfigProvider>
   );
 }

@@ -1,8 +1,8 @@
 import type { CSSProperties, ReactNode } from "react";
 import { App as AntdApp, ConfigProvider } from "antd";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { fireEvent, render, screen, waitFor } from "@testing-library/react";
-import { MemoryRouter, Route, Routes, useNavigate } from "react-router-dom";
+import { act, fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { MemoryRouter, Route, Routes, useLocation, useNavigate } from "react-router-dom";
 import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 
 import {
@@ -31,6 +31,22 @@ import FileDetailPage, {
   validateInlinePreviewContent,
 } from "./index";
 
+interface Deferred<T> {
+  promise: Promise<T>;
+  resolve: (value: T) => void;
+  reject: (reason: unknown) => void;
+}
+
+function createDeferred<T>(): Deferred<T> {
+  let resolve!: (value: T) => void;
+  let reject!: (reason: unknown) => void;
+  const promise = new Promise<T>((resolvePromise, rejectPromise) => {
+    resolve = resolvePromise;
+    reject = rejectPromise;
+  });
+  return { promise, resolve, reject };
+}
+
 vi.mock("../../api/client", async () => {
   const actual = await vi.importActual<typeof ApiClientModule>("../../api/client");
 
@@ -54,6 +70,8 @@ const baseFile: KnowledgeFile = {
   mime_type: "application/pdf",
   size: 2048,
   uploader_id: "user-1",
+  owner_id: "user-1",
+  owner_name: "张三",
   department: null,
   category_id: "cat-1",
   dataset_mapping_id: null,
@@ -66,6 +84,17 @@ const baseFile: KnowledgeFile = {
   ragflow_document_id: null,
   ragflow_parse_status: null,
   ai_analysis_enabled_at_upload: true,
+  series_id: "file-1",
+  version_number: 1,
+  replaces_file_id: null,
+  is_current_version: true,
+  remote_visibility: "candidate",
+  version_switch_status: "not_required",
+  version_switch_error: null,
+  version_switch_attempt_count: 0,
+  predecessor_remote_deactivated_at: null,
+  local_version_activated_at: null,
+  remote_version_activated_at: null,
   uploaded_at: "2026-06-10T08:00:00Z",
   last_sync_at: null,
   created_at: "2026-06-10T08:00:00Z",
@@ -73,6 +102,20 @@ const baseFile: KnowledgeFile = {
   duplicate: false,
   duplicate_file_id: null,
   category_name: "制度文档",
+  version_chain: [
+    {
+      id: "file-1",
+      version_number: 1,
+      replaces_file_id: null,
+      title: "员工手册",
+      status: "analyzed",
+      is_current_version: true,
+      remote_visibility: "candidate",
+      version_switch_status: "not_required",
+      version_switch_error: null,
+      created_at: "2026-06-10T08:00:00Z",
+    },
+  ],
   analysis: {
     status: "succeeded",
     engine_type: "hybrid",
@@ -90,6 +133,7 @@ const baseFile: KnowledgeFile = {
     latency_ms: 780,
     failure_category: null,
     estimated_cost_microunits: 2_500_000,
+    cost_status: "known",
     cost_currency: "CNY",
     summary: "这是一份员工手册的摘要。",
     sensitive_risk_level: "medium",
@@ -193,7 +237,7 @@ function renderFileDetail(node: ReactNode = <FileDetailPage />, initialEntry = "
               <Routes>
                 <Route path="/files/:id" element={node} />
                 <Route path="/files" element={<span>审核工作台落点</span>} />
-                <Route path="/my-files" element={<span>我的文件落点</span>} />
+                <Route path="/my-files" element={<MyFilesLanding />} />
               </Routes>
             </MemoryRouter>
           </div>
@@ -213,6 +257,11 @@ function setAdminSession() {
       role: "dept_admin",
     },
   });
+}
+
+function MyFilesLanding() {
+  const location = useLocation();
+  return <span>我的文件落点{location.search}</span>;
 }
 
 function FileRouteSwitcher() {
@@ -329,6 +378,137 @@ describe("FileDetailPage", () => {
     expect(screen.getAllByText("员工手册.pdf").length).toBeGreaterThan(0);
   });
 
+  it("does not render the previous account's cached detail while the next account request is pending", async () => {
+    const firstAccountFile = { ...baseFile, title: "第一账号私有文件" };
+    const secondAccountFile = { ...baseFile, title: "第二账号可见文件" };
+    let resolveSecondRequest!: (file: KnowledgeFile) => void;
+    vi.mocked(getDocument)
+      .mockResolvedValueOnce(firstAccountFile)
+      .mockImplementationOnce(
+        () =>
+          new Promise<KnowledgeFile>((resolve) => {
+            resolveSecondRequest = resolve;
+          }),
+      );
+    useAuthStore.setState({
+      accessToken: "first-token",
+      user: {
+        id: "user-1",
+        name: "第一账号",
+        email: "first@example.com",
+        role: "employee",
+        department_assigned: true,
+        department_id: "dept-1",
+      },
+    });
+    renderFileDetail();
+
+    expect((await screen.findAllByText("第一账号私有文件")).length).toBeGreaterThan(0);
+    act(() => {
+      useAuthStore.setState({
+        accessToken: "second-token",
+        user: {
+          id: "user-2",
+          name: "第二账号",
+          email: "second@example.com",
+          role: "employee",
+          department_assigned: true,
+          department_id: "dept-1",
+        },
+      });
+    });
+
+    await waitFor(() => expect(getDocument).toHaveBeenCalledTimes(2));
+    expect(screen.queryByText("第一账号私有文件")).not.toBeInTheDocument();
+
+    await act(async () => {
+      resolveSecondRequest(secondAccountFile);
+      await Promise.resolve();
+    });
+    expect((await screen.findAllByText("第二账号可见文件")).length).toBeGreaterThan(0);
+  });
+
+  it("keeps a delegated department administrator in the responsible read-only context", async () => {
+    useAuthStore.setState({
+      accessToken: "owner-token",
+      user: {
+        id: "owner-1",
+        name: "责任人",
+        email: "owner@example.com",
+        role: "dept_admin",
+        department_assigned: true,
+        department_id: "dept-1",
+      },
+    });
+    vi.mocked(getDocument).mockResolvedValue({
+      ...baseFile,
+      title: "委派给我的制度",
+      uploader_id: "uploader-1",
+      owner_id: "owner-1",
+      owner_name: "责任人",
+    });
+
+    renderFileDetail();
+
+    expect((await screen.findAllByText("委派给我的制度")).length).toBeGreaterThan(0);
+    expect(screen.getByRole("button", { name: /加载预览/ })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: /下载原件/ })).toBeInTheDocument();
+    expect(screen.queryByText("版本与责任治理")).not.toBeInTheDocument();
+    expect(screen.queryByText("版本链")).not.toBeInTheDocument();
+    expect(screen.queryByText(/v1 ·/)).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: /重试切换任务/ })).not.toBeInTheDocument();
+    expect(listTasks).not.toHaveBeenCalled();
+    expect(listDatasetMappings).not.toHaveBeenCalled();
+
+    fireEvent.click(screen.getByRole("button", { name: /返回/ }));
+    expect(await screen.findByText("我的文件落点?relationship=responsible")).toBeInTheDocument();
+  });
+
+  it("keeps system-admin governance access when the admin is also the delegated owner", async () => {
+    useAuthStore.setState({
+      accessToken: "system-admin-token",
+      user: {
+        id: "owner-1",
+        name: "系统管理员",
+        email: "sysadmin@example.com",
+        role: "system_admin",
+      },
+    });
+    vi.mocked(getDocument).mockResolvedValue({
+      ...baseFile,
+      title: "系统管理员负责的候选版本",
+      status: "parsed",
+      uploader_id: "uploader-1",
+      owner_id: "owner-1",
+      owner_name: "系统管理员",
+      replaces_file_id: "old-file-1",
+      version_switch_status: "failed_new_activate",
+      version_switch_error: "远端激活结果未确认",
+    });
+    vi.mocked(listTasks).mockResolvedValue({
+      items: [
+        {
+          ...taskListResponse.items[0],
+          file_id: "file-1",
+          retry_count: 3,
+          max_retry_count: 3,
+        },
+      ],
+      total: 1,
+    });
+
+    renderFileDetail();
+
+    expect((await screen.findAllByText("系统管理员负责的候选版本")).length).toBeGreaterThan(0);
+    await waitFor(() => {
+      expect(listTasks).toHaveBeenCalledWith({ file_id: "file-1" });
+      expect(listDatasetMappings).toHaveBeenCalled();
+    });
+    expect(screen.getByText("版本与责任治理")).toBeInTheDocument();
+    expect(screen.getByText("版本链")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "人工协调版本切换" })).toBeInTheDocument();
+    expect(screen.getByText("上传 RAGFlow 超时")).toBeInTheDocument();
+  });
   it("rejects SVG and HTML from inline preview metadata and response headers", () => {
     expect(canPreviewInline({ ...baseFile, mime_type: "image/svg+xml" })).toBe(false);
     expect(canPreviewInline({ ...baseFile, mime_type: "text/html" })).toBe(false);
@@ -440,6 +620,41 @@ describe("FileDetailPage", () => {
     view.unmount();
 
     expect(URL.revokeObjectURL).toHaveBeenCalledWith("blob:preview-file-1");
+  });
+
+  it("aborts a pending preview on route change and never creates an orphan object URL", async () => {
+    vi.mocked(getDocument).mockImplementation(async (id) => ({
+      ...baseFile,
+      id,
+      original_name: id === "file-1" ? "员工手册.pdf" : "安全规范.pdf",
+    }));
+    const contentDeferred = createDeferred<Awaited<ReturnType<typeof getDocumentContent>>>();
+    vi.mocked(getDocumentContent).mockReturnValue(contentDeferred.promise);
+
+    renderFileDetail(<FileRouteSwitcher />);
+    fireEvent.click(await screen.findByRole("button", { name: /加载预览/ }));
+    await waitFor(() => expect(getDocumentContent).toHaveBeenCalledOnce());
+    const signal = vi.mocked(getDocumentContent).mock.calls[0]?.[2]?.signal;
+    expect(signal?.aborted).toBe(false);
+
+    fireEvent.click(screen.getByRole("button", { name: "切换到下一份文件" }));
+    expect(await screen.findByRole("heading", { name: "安全规范.pdf" })).toBeInTheDocument();
+    expect(signal?.aborted).toBe(true);
+
+    await act(async () => {
+      contentDeferred.resolve({
+        blob: new Blob(["%PDF"], { type: "application/pdf" }),
+        contentType: "application/pdf",
+        contentDisposition: "inline",
+        contentLength: 4,
+        etag: null,
+      });
+      await contentDeferred.promise;
+      await Promise.resolve();
+    });
+
+    expect(URL.createObjectURL).not.toHaveBeenCalled();
+    expect(screen.queryByTitle("安全规范.pdf 原件预览")).not.toBeInTheDocument();
   });
 
   it("revokes the previous document preview when the route id changes", async () => {
@@ -556,7 +771,7 @@ describe("FileDetailPage", () => {
     expect(screen.getAllByText("未调用模型")).toHaveLength(5);
   });
 
-  it("formats a large LLM cost without precision loss", async () => {
+  it("formats a known cost above 2^53 without precision loss", async () => {
     vi.mocked(getDocument).mockResolvedValue({
       ...baseFile,
       analysis: {
@@ -574,6 +789,53 @@ describe("FileDetailPage", () => {
 
     expect(screen.getByText("CNY 9007199254740993.123456")).toBeInTheDocument();
   });
+
+  it("labels a missing rolling-deploy cost status without guessing legacy", async () => {
+    vi.mocked(getDocument).mockResolvedValue({
+      ...baseFile,
+      analysis: {
+        ...baseFile.analysis!,
+        cost_status: undefined,
+        estimated_cost_microunits: null,
+      },
+    });
+
+    renderFileDetail();
+
+    expect((await screen.findAllByText("AI 分析")).length).toBeGreaterThan(0);
+    fireEvent.click(screen.getByText("提取文本预览"));
+    expect(screen.getByText("未知（成本状态缺失）")).toBeInTheDocument();
+    expect(screen.queryByText("未知（历史记录不可核验）")).not.toBeInTheDocument();
+  });
+
+  it.each([
+    ["known", 0, "CNY 0.000000"],
+    ["unknown_pricing", null, "未知（定价未确认）"],
+    ["unknown_usage", null, "未知（Token 用量未知）"],
+    ["legacy_unverifiable", null, "未知（历史记录不可核验）"],
+  ] as const)(
+    "renders cost status %s without collapsing unknown values to zero",
+    async (costStatus, estimatedCost, expectedLabel) => {
+      vi.mocked(getDocument).mockResolvedValue({
+        ...baseFile,
+        analysis: {
+          ...baseFile.analysis!,
+          cost_status: costStatus,
+          estimated_cost_microunits: estimatedCost,
+          cost_currency: "CNY",
+        },
+      });
+
+      renderFileDetail();
+
+      expect((await screen.findAllByText("AI 分析")).length).toBeGreaterThan(0);
+      fireEvent.click(screen.getByText("提取文本预览"));
+      expect(screen.getByText(expectedLabel)).toBeInTheDocument();
+      if (costStatus !== "known") {
+        expect(screen.queryByText("CNY 0.000000")).not.toBeInTheDocument();
+      }
+    },
+  );
 
   it("renders advanced analysis quality, similarity, table and expiry fields when present", async () => {
     vi.mocked(getDocument).mockResolvedValue({
@@ -636,7 +898,8 @@ describe("FileDetailPage", () => {
         failure_category: "timeout",
         prompt_tokens: 0,
         completion_tokens: 0,
-        estimated_cost_microunits: 0,
+        estimated_cost_microunits: null,
+        cost_status: "unknown_usage",
         summary: null,
         sensitive_risk_level: "none",
         quality_score: null,
@@ -651,7 +914,7 @@ describe("FileDetailPage", () => {
     expect(await screen.findByText("AI 分析失败")).toBeInTheDocument();
     expect(screen.getByText("模型调用超时")).toBeInTheDocument();
     expect(screen.getByText("供应商未返回用量")).toBeInTheDocument();
-    expect(screen.getByText("成本不可估算")).toBeInTheDocument();
+    expect(screen.getByText("未知（Token 用量未知）")).toBeInTheDocument();
   });
 
   it("shows sync error alert inside the sync card", async () => {

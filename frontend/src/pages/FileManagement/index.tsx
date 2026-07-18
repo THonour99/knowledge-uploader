@@ -8,9 +8,7 @@ import {
   Dropdown,
   Form,
   Input,
-  Modal,
   Pagination,
-  Popconfirm,
   Progress,
   Radio,
   Select,
@@ -36,7 +34,7 @@ import {
   ReloadOutlined,
   UnlockOutlined,
 } from "@ant-design/icons";
-import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import { useQuery, useQueryClient } from "@tanstack/react-query";
 import dayjs from "dayjs";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { Key } from "react";
@@ -64,6 +62,17 @@ import { StatusTag } from "../../components/StatusTag";
 import { useMediaQuery } from "../../hooks/useMediaQuery";
 import { useNow } from "../../hooks/useNow";
 import { PageContainer } from "../../layouts/PageContainer";
+import {
+  SessionBoundModal as Modal,
+  SessionBoundPopconfirm as Popconfirm,
+} from "../../components/SessionBoundActions";
+import { useSessionMutation as useMutation } from "../../hooks/useSessionMutation";
+import {
+  captureAuthSessionIdentity,
+  isCurrentAuthSessionIdentity,
+  isSessionSupersededError,
+  runAuthSessionCallback,
+} from "../../sessionIdentity";
 import { Roles, useAuthStore } from "../../store/auth.store";
 import { documentDisplayTitle, originalFileNameLabel } from "../../utils/documentTitle";
 import { allowedExtensionsFromPolicy } from "../../utils/uploadConfig";
@@ -655,31 +664,44 @@ export default function FileManagementPage() {
   };
 
   const handleBulkApprove = async () => {
-    const targets = eligibleReviewTargets(selectedFiles, user?.id, now);
+    const requestIdentity = captureAuthSessionIdentity();
 
-    if (targets.length === 0) {
-      message.warning("已选文件中没有可批量审核项");
-      return;
-    }
-
-    setBulkApproving(true);
     try {
-      const results = await Promise.allSettled(
-        targets.map((file) => approveFile(file.id, buildBulkApproveOnlyPayload(file))),
-      );
-      const failedCount = results.filter((result) => result.status === "rejected").length;
-      const successCount = targets.length - failedCount;
+      await runAuthSessionCallback(requestIdentity, async (context) => {
+        const targets = eligibleReviewTargets(selectedFiles, user?.id, now);
 
-      if (failedCount > 0) {
-        message.warning(`批量审核完成，成功 ${successCount} 项，失败 ${failedCount} 项`);
-      } else {
-        message.success(`已批量审核 ${successCount} 个文件`);
+        if (targets.length === 0) {
+          context.run(() => message.warning("已选文件中没有可批量审核项"));
+          return;
+        }
+
+        context.run(() => setBulkApproving(true));
+        try {
+          const results = await context.waitFor(() =>
+            Promise.allSettled(
+              targets.map((file) => approveFile(file.id, buildBulkApproveOnlyPayload(file))),
+            ),
+          );
+          const failedCount = results.filter((result) => result.status === "rejected").length;
+          const successCount = targets.length - failedCount;
+
+          context.run(() => {
+            if (failedCount > 0) {
+              message.warning(`批量审核完成，成功 ${successCount} 项，失败 ${failedCount} 项`);
+            } else {
+              message.success(`已批量审核 ${successCount} 个文件`);
+            }
+            setSelectedRowKeys([]);
+          });
+          await context.waitFor(refreshFiles);
+        } finally {
+          context.runIfCurrent(() => setBulkApproving(false));
+        }
+      });
+    } catch (error) {
+      if (!isSessionSupersededError(error) && isCurrentAuthSessionIdentity(requestIdentity)) {
+        message.error(error instanceof Error ? error.message : "批量审核失败");
       }
-
-      setSelectedRowKeys([]);
-      await refreshFiles();
-    } finally {
-      setBulkApproving(false);
     }
   };
 

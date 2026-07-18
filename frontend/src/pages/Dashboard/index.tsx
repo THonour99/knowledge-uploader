@@ -13,7 +13,7 @@ import type { EChartsOption } from "echarts";
 import ReactECharts from "echarts-for-react";
 import { useMemo, useState, type CSSProperties } from "react";
 import { useNavigate } from "react-router-dom";
-import { useQuery, useQueryClient } from "@tanstack/react-query";
+import { useIsFetching, useQuery, useQueryClient } from "@tanstack/react-query";
 
 import {
   exportStatistics,
@@ -32,8 +32,16 @@ import { KpiCard } from "../../components/KpiCard";
 import { QueryBoundary } from "../../components/QueryBoundary";
 import { StatusTag } from "../../components/StatusTag";
 import { PageContainer } from "../../layouts/PageContainer";
+import {
+  captureAuthSessionIdentity,
+  isCurrentAuthSessionIdentity,
+  isSessionSupersededError,
+  runAuthSessionCallback,
+} from "../../sessionIdentity";
+import { Roles, useAuthStore } from "../../store/auth.store";
 import { downloadBlob } from "../../utils/download";
 import { formatDateTime, formatNumber, formatPercent } from "../../utils/format";
+import { GovernanceMetricsPanel } from "./GovernanceMetricsPanel";
 import "./styles.css";
 
 // ---------------------------------------------------------------------------
@@ -340,6 +348,8 @@ function DashboardHealthTimeline({ points }: { points: StatisticsTrendPoint[] })
 export default function DashboardPage() {
   const navigate = useNavigate();
   const queryClient = useQueryClient();
+  const currentRole = useAuthStore((state) => state.user?.role);
+  const dashboardFetchCount = useIsFetching({ queryKey: ["dashboard"] });
   const { message } = AntdApp.useApp();
   const [exporting, setExporting] = useState(false);
 
@@ -374,13 +384,7 @@ export default function DashboardPage() {
     queryFn: getSystemReadiness,
   });
 
-  const isFetching =
-    overviewQuery.isFetching ||
-    usersQuery.isFetching ||
-    categoriesQuery.isFetching ||
-    trendsQuery.isFetching ||
-    failuresQuery.isFetching ||
-    readinessQuery.isFetching;
+  const isFetching = dashboardFetchCount > 0;
 
   const overview = overviewQuery.data;
   const users = usersQuery.data?.items ?? [];
@@ -429,15 +433,29 @@ export default function DashboardPage() {
   }
 
   async function handleExport() {
-    setExporting(true);
+    const requestIdentity = captureAuthSessionIdentity();
+
     try {
-      const blob = await exportStatistics({});
-      downloadBlob(blob, `知识库统计报表_${formatDateTime(new Date(), "YYYYMMDD_HHmm")}.csv`);
-      message.success("报表已开始下载");
+      await runAuthSessionCallback(requestIdentity, async (context) => {
+        context.run(() => setExporting(true));
+        try {
+          const blob = await context.waitFor(() => exportStatistics({}));
+          context.run(() => {
+            downloadBlob(blob, `知识库统计报表_${formatDateTime(new Date(), "YYYYMMDD_HHmm")}.csv`);
+            message.success("报表已开始下载");
+          });
+        } catch (error) {
+          context.run(() => {
+            message.error(error instanceof Error ? error.message : "导出失败");
+          });
+        } finally {
+          context.runIfCurrent(() => setExporting(false));
+        }
+      });
     } catch (error) {
-      message.error(error instanceof Error ? error.message : "导出失败");
-    } finally {
-      setExporting(false);
+      if (!isSessionSupersededError(error) && isCurrentAuthSessionIdentity(requestIdentity)) {
+        message.error(error instanceof Error ? error.message : "导出失败");
+      }
     }
   }
 
@@ -776,6 +794,8 @@ export default function DashboardPage() {
             </div>
           </QueryBoundary>
         </Card>
+
+        {currentRole === Roles.SYSTEM_ADMIN ? <GovernanceMetricsPanel /> : null}
       </div>
     </PageContainer>
   );

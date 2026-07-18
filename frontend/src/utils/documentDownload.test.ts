@@ -1,12 +1,47 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
-import { useAuthStore } from "../store/auth.store";
+import { SESSION_SUPERSEDED_CODE } from "../sessionIdentity";
+import { type CurrentUser, useAuthStore } from "../store/auth.store";
 import {
   DownloadCapabilityError,
   SAFE_BUFFERED_DOWNLOAD_MAX_BYTES,
   downloadDocument,
   fileNameFromContentDisposition,
 } from "./documentDownload";
+
+interface Deferred<T> {
+  promise: Promise<T>;
+  resolve: (value: T) => void;
+  reject: (reason: unknown) => void;
+}
+
+function createDeferred<T>(): Deferred<T> {
+  let resolve!: (value: T) => void;
+  let reject!: (reason: unknown) => void;
+  const promise = new Promise<T>((resolvePromise, rejectPromise) => {
+    resolve = resolvePromise;
+    reject = rejectPromise;
+  });
+  return { promise, resolve, reject };
+}
+
+const firstUser: CurrentUser = {
+  id: "employee-a",
+  name: "甲用户",
+  email: "a@example.com",
+  role: "employee",
+  department_id: "dept-1",
+  email_verified: true,
+  department_assigned: true,
+  department_code: "tech",
+};
+
+const secondUser: CurrentUser = {
+  ...firstUser,
+  id: "employee-b",
+  name: "乙用户",
+  email: "b@example.com",
+};
 
 function attachmentResponse(body: BodyInit, fileName = "server.pdf"): Response {
   return new Response(body, {
@@ -16,7 +51,7 @@ function attachmentResponse(body: BodyInit, fileName = "server.pdf"): Response {
 }
 
 beforeEach(() => {
-  useAuthStore.setState({ accessToken: "download-token" });
+  useAuthStore.setState({ accessToken: "download-token", user: firstUser });
   Object.defineProperty(URL, "createObjectURL", {
     configurable: true,
     writable: true,
@@ -326,6 +361,302 @@ describe("downloadDocument", () => {
       }
     },
   );
+
+  it.each(["streamed", "buffered"] as const)(
+    "preserves the current-session %s 401 error while clearing that session",
+    async (mode) => {
+      const cancelBody = vi.fn().mockResolvedValue(undefined);
+      const response = {
+        ok: false,
+        status: 401,
+        headers: new Headers({
+          "content-disposition": 'attachment; filename="server.pdf"',
+        }),
+        body: { cancel: cancelBody },
+      } as unknown as Response;
+      const fetchImpl = vi.fn().mockResolvedValue(response);
+      const writable = {
+        write: vi.fn().mockResolvedValue(undefined),
+        close: vi.fn().mockResolvedValue(undefined),
+        abort: vi.fn().mockResolvedValue(undefined),
+      };
+      const picker = vi.fn().mockResolvedValue({
+        createWritable: vi.fn().mockResolvedValue(writable),
+      });
+
+      await expect(
+        downloadDocument({
+          id: "file-a",
+          fileName: "原件.pdf",
+          sizeBytes: 6,
+          fetchImpl: fetchImpl as typeof fetch,
+          saveFilePicker: mode === "streamed" ? picker : undefined,
+        }),
+      ).rejects.toThrow("登录状态已失效，请重新登录后下载");
+
+      expect(cancelBody).toHaveBeenCalledOnce();
+      expect(useAuthStore.getState().accessToken).toBeNull();
+      expect(URL.createObjectURL).not.toHaveBeenCalled();
+    },
+  );
+
+  it.each(["streamed", "buffered"] as const)(
+    "cancels a deferred %s 401 from session A without clearing session B",
+    async (mode) => {
+      const responseDeferred = createDeferred<Response>();
+      const cancelBody = vi.fn().mockResolvedValue(undefined);
+      const response = {
+        ok: false,
+        status: 401,
+        headers: new Headers({
+          "content-disposition": 'attachment; filename="server.pdf"',
+        }),
+        body: { cancel: cancelBody },
+      } as unknown as Response;
+      const fetchImpl = vi.fn(() => responseDeferred.promise) as unknown as typeof fetch;
+      const writable = {
+        write: vi.fn(async () => undefined),
+        close: vi.fn(async () => undefined),
+        abort: vi.fn(async () => undefined),
+      };
+      const picker = vi.fn(async () => ({ createWritable: async () => writable }));
+      const pending = downloadDocument({
+        id: "file-a",
+        fileName: "甲用户原件.pdf",
+        sizeBytes: 6,
+        fetchImpl,
+        saveFilePicker: mode === "streamed" ? picker : undefined,
+      });
+      const rejection = expect(pending).rejects.toMatchObject({
+        code: SESSION_SUPERSEDED_CODE,
+      });
+
+      await vi.waitFor(() => expect(fetchImpl).toHaveBeenCalledOnce());
+      useAuthStore.setState({ accessToken: "token-b", user: secondUser });
+      responseDeferred.resolve(response);
+
+      await rejection;
+      expect(cancelBody).toHaveBeenCalledWith(
+        expect.objectContaining({ code: SESSION_SUPERSEDED_CODE }),
+      );
+      expect(useAuthStore.getState()).toMatchObject({
+        accessToken: "token-b",
+        user: { id: "employee-b" },
+      });
+      expect(writable.write).not.toHaveBeenCalled();
+      expect(writable.close).not.toHaveBeenCalled();
+      if (mode === "streamed") {
+        expect(writable.abort).toHaveBeenCalledOnce();
+      } else {
+        expect(URL.createObjectURL).not.toHaveBeenCalled();
+      }
+    },
+  );
+
+  it("cancels an active stream before writing a chunk after the session changes", async () => {
+    const firstRead = createDeferred<ReadableStreamReadResult<Uint8Array>>();
+    const reader = {
+      read: vi.fn(() => firstRead.promise),
+      cancel: vi.fn().mockResolvedValue(undefined),
+      releaseLock: vi.fn(),
+    };
+    const response = {
+      ok: true,
+      status: 200,
+      headers: new Headers({
+        "content-disposition": 'attachment; filename="server.pdf"',
+      }),
+      body: {
+        getReader: vi.fn().mockReturnValue(reader),
+        cancel: vi.fn().mockResolvedValue(undefined),
+      },
+    } as unknown as Response;
+    const fetchImpl = vi.fn().mockResolvedValue(response) as unknown as typeof fetch;
+    const writable = {
+      write: vi.fn(async () => undefined),
+      close: vi.fn(async () => undefined),
+      abort: vi.fn(async () => undefined),
+    };
+    const picker = vi.fn(async () => ({ createWritable: async () => writable }));
+    const pending = downloadDocument({
+      id: "file-a",
+      fileName: "甲用户原件.pdf",
+      sizeBytes: 6,
+      fetchImpl,
+      saveFilePicker: picker,
+    });
+    const rejection = expect(pending).rejects.toMatchObject({
+      code: SESSION_SUPERSEDED_CODE,
+    });
+
+    await vi.waitFor(() => expect(reader.read).toHaveBeenCalledOnce());
+    useAuthStore.setState({ accessToken: "token-b", user: secondUser });
+    firstRead.resolve({ done: false, value: new Uint8Array([1, 2, 3]) });
+
+    await rejection;
+    expect(writable.write).not.toHaveBeenCalled();
+    expect(writable.close).not.toHaveBeenCalled();
+    expect(writable.abort).toHaveBeenCalledWith(
+      expect.objectContaining({ code: SESSION_SUPERSEDED_CODE }),
+    );
+    expect(reader.cancel).toHaveBeenCalledWith(
+      expect.objectContaining({ code: SESSION_SUPERSEDED_CODE }),
+    );
+    expect(reader.releaseLock).toHaveBeenCalledOnce();
+  });
+
+  it("aborts a pending download when the department changes under the same token", async () => {
+    const responseDeferred = createDeferred<Response>();
+    const fetchImpl = vi.fn(() => responseDeferred.promise) as unknown as typeof fetch;
+    const pending = downloadDocument({
+      id: "file-a",
+      fileName: "甲用户原件.pdf",
+      sizeBytes: 6,
+      fetchImpl,
+      saveFilePicker: undefined,
+    });
+    const rejection = expect(pending).rejects.toMatchObject({
+      code: SESSION_SUPERSEDED_CODE,
+    });
+
+    await vi.waitFor(() => expect(fetchImpl).toHaveBeenCalledOnce());
+    const signal = (vi.mocked(fetchImpl).mock.calls[0]?.[1] as RequestInit).signal;
+    useAuthStore.setState({
+      accessToken: "download-token",
+      user: { ...firstUser, department_id: "dept-2" },
+    });
+
+    expect(signal?.aborted).toBe(true);
+    responseDeferred.reject(new DOMException("aborted", "AbortError"));
+    await rejection;
+    expect(URL.createObjectURL).not.toHaveBeenCalled();
+  });
+  it.each(["picker", "create", "fetch", "read", "write", "close"] as const)(
+    "reclassifies a stale %s rejection and suppresses completion effects",
+    async (phase) => {
+      const phaseDeferred = createDeferred<unknown>();
+      const read = vi.fn(() =>
+        phase === "read"
+          ? (phaseDeferred.promise as Promise<ReadableStreamReadResult<Uint8Array>>)
+          : Promise.resolve(
+              phase === "write"
+                ? { done: false as const, value: new Uint8Array([1]) }
+                : { done: true as const, value: undefined },
+            ),
+      );
+      const reader = {
+        read,
+        cancel: vi.fn().mockResolvedValue(undefined),
+        releaseLock: vi.fn(),
+      };
+      const response = {
+        ok: true,
+        status: 200,
+        headers: new Headers({
+          "content-disposition": 'attachment; filename="server.pdf"',
+        }),
+        body: { getReader: vi.fn().mockReturnValue(reader) },
+      } as unknown as Response;
+      const writable = {
+        write: vi.fn(() =>
+          phase === "write" ? (phaseDeferred.promise as Promise<void>) : Promise.resolve(undefined),
+        ),
+        close: vi.fn(() =>
+          phase === "close" ? (phaseDeferred.promise as Promise<void>) : Promise.resolve(undefined),
+        ),
+        abort: vi.fn().mockResolvedValue(undefined),
+      };
+      const createWritable = vi.fn(() =>
+        phase === "create"
+          ? (phaseDeferred.promise as Promise<typeof writable>)
+          : Promise.resolve(writable),
+      );
+      const handle = { createWritable };
+      const picker = vi.fn(() =>
+        phase === "picker"
+          ? (phaseDeferred.promise as Promise<typeof handle>)
+          : Promise.resolve(handle),
+      );
+      const fetchImpl = vi.fn(() =>
+        phase === "fetch"
+          ? (phaseDeferred.promise as Promise<Response>)
+          : Promise.resolve(response),
+      );
+      const pending = downloadDocument({
+        id: "file-a",
+        fileName: "甲用户原件.pdf",
+        sizeBytes: 6,
+        fetchImpl: fetchImpl as typeof fetch,
+        saveFilePicker: picker,
+      });
+      const rejection = expect(pending).rejects.toMatchObject({
+        code: SESSION_SUPERSEDED_CODE,
+      });
+      const phaseSpy = {
+        picker,
+        create: createWritable,
+        fetch: fetchImpl,
+        read,
+        write: writable.write,
+        close: writable.close,
+      }[phase];
+
+      await vi.waitFor(() => expect(phaseSpy).toHaveBeenCalledOnce());
+      useAuthStore.setState({ accessToken: "token-b", user: secondUser });
+      phaseDeferred.reject(new Error(`${phase} failed`));
+      await rejection;
+
+      expect(URL.createObjectURL).not.toHaveBeenCalled();
+      if (phase === "read" || phase === "write") {
+        expect(read).toHaveBeenCalledOnce();
+      }
+      if (phase !== "close") {
+        expect(writable.close).not.toHaveBeenCalled();
+      }
+    },
+  );
+
+  it("rejects a buffered direct ABA race without reading a later chunk or creating a Blob URL", async () => {
+    const firstRead = createDeferred<ReadableStreamReadResult<Uint8Array>>();
+    const reader = {
+      read: vi.fn(() => firstRead.promise),
+      cancel: vi.fn().mockResolvedValue(undefined),
+      releaseLock: vi.fn(),
+    };
+    const response = {
+      ok: true,
+      status: 200,
+      headers: new Headers({
+        "content-disposition": 'attachment; filename="server.pdf"',
+      }),
+      body: { getReader: vi.fn().mockReturnValue(reader) },
+    } as unknown as Response;
+    const fetchImpl = vi.fn().mockResolvedValue(response) as unknown as typeof fetch;
+    const pending = downloadDocument({
+      id: "file-a",
+      fileName: "甲用户原件.pdf",
+      sizeBytes: 6,
+      fetchImpl,
+      saveFilePicker: undefined,
+    });
+    const rejection = expect(pending).rejects.toMatchObject({
+      code: SESSION_SUPERSEDED_CODE,
+    });
+
+    await vi.waitFor(() => expect(reader.read).toHaveBeenCalledOnce());
+    const signal = (vi.mocked(fetchImpl).mock.calls[0]?.[1] as RequestInit).signal;
+    useAuthStore.setState({ accessToken: "token-b", user: secondUser });
+    useAuthStore.setState({ accessToken: "download-token", user: firstUser });
+    expect(signal?.aborted).toBe(true);
+    firstRead.resolve({ done: false, value: new Uint8Array([1, 2, 3]) });
+
+    await rejection;
+    expect(reader.read).toHaveBeenCalledOnce();
+    expect(reader.cancel).toHaveBeenCalledWith(
+      expect.objectContaining({ code: SESSION_SUPERSEDED_CODE }),
+    );
+    expect(URL.createObjectURL).not.toHaveBeenCalled();
+  });
 
   it("sanitizes RFC 5987 filenames", () => {
     expect(
