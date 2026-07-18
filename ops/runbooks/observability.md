@@ -15,14 +15,44 @@ textfile exporter。公网 Nginx
 必须通过 `ALERTMANAGER_CONFIG_FILE` 挂载由 secret manager 管理的真实 receiver 配置，并保存
 一次测试告警从 firing 到 resolved 的通知证据；缺少任一项时 protected release gate 必须失败。
 
-staging/production 还必须叠加 `docker-compose.observability.protected.yml`，显式设置 `PROMETHEUS_CONFIG_FILE=./ops/observability/prometheus.protected.yml` 和 `PROMETHEUS_TLS_DIR=<只含 ca.crt 的目录>`。MinIO 抓取必须显示为 `https://minio:9000/minio/v2/metrics/cluster`，`server_name=minio`，且 `/api/v1/targets` 中 `job=minio` 的 health 必须为 `up`；禁止通过 HTTP 或 `insecure_skip_verify` 规避证书问题。
+staging/production 还必须叠加 `docker-compose.observability.protected.yml`，显式设置 `PROMETHEUS_CONFIG_FILE=./ops/observability/prometheus.protected.yml` 和 `MINIO_TLS_DIR=<含 public.crt、private.key、ca.crt 的目录>`。`public.crt` 的 SAN 必须包含 `DNS:minio`，MinIO 健康检查和 Prometheus 都必须用 `ca.crt` 校验该名称。MinIO 抓取必须显示为 `https://minio:9000/minio/v2/metrics/cluster`，`server_name=minio`，且 `/api/v1/targets` 中 `job=minio` 的 health 必须为 `up`；禁止通过 HTTP 或 `insecure_skip_verify` 规避证书问题。
+
+MinIO root 凭据只允许进入 MinIO、`minio-bootstrap`、`minio-metrics-token-init`。幂等 `minio-bootstrap` 使用 root 创建桶、独立数据面用户和桶级最小策略；应用只获得数据面凭据，`operational-metrics` 不获得任何可用 S3 凭据。两组凭据相同或 bootstrap 失败时，后端与指标消费者必须拒绝启动。
+
+MinIO 指标在所有环境都固定使用 `MINIO_PROMETHEUS_AUTH_TYPE=jwt`。一次性
+`minio-metrics-token-init` 用管理员凭据调用 `mc admin prometheus generate`，把唯一 bearer
+token 原子写入命名卷 `/run/secrets/minio-metrics/token`，权限必须为 `0440`、属主/属组必须为
+`65534:65534`。`operational-metrics` 与 Prometheus 只读挂载该目录；token 不得出现在环境变量、
+Compose 参数、API 响应或日志中，初始化容器必须 `exited 0` 且日志为空。匿名访问 cluster
+endpoint 必须返回 401/403，不能改回 public，也不能把 MinIO 管理员密钥交给采集器。
+
+常规 JWT 刷新只是签发新 token 并通过原子文件替换让既有消费者动态读取，不是吊销；不得重启消费者来掩盖动态读取缺陷。MinIO 在同一 root 凭据下重新签发后，旧 JWT 在其 `exp` 前仍可返回 200；禁止把“文件已替换”写成“旧凭据已失效”。执行前必须已导出非默认且彼此独立的 `MINIO_ROOT_USER` / `MINIO_ROOT_PASSWORD`、`MINIO_ACCESS_KEY` / `MINIO_SECRET_KEY`，以及 `MINIO_TLS_DIR` 和 `PROMETHEUS_CONFIG_FILE`。所有 protected 命令都必须叠加完整三个 Compose 文件：
+
+    docker compose -f docker-compose.yml -f docker-compose.observability.yml -f docker-compose.observability.protected.yml run --rm --no-deps minio-metrics-token-init
+
+刷新后必须验证 token 文件权限与单行三段 JWT 形状、初始化输出不含 JWT、旧 JWT 与新 JWT 均为 200 的自动化语义证据、两个消费者容器 ID 刷新前后不变、`component="minio_capacity"` 的 last-success 前进，以及 Prometheus `job=minio` 刷新前后均为 `up`。TERM/HUP/INT 会清理本次唯一临时文件；SIGKILL 可能留下 `.token.tmp.*`，但没有共享锁且下一次 init 必须成功。只有在以下命令证明没有初始化器运行后，才可清理孤立临时文件；不得读取、复制或输出文件内容：
+
+    docker compose -f docker-compose.yml -f docker-compose.observability.yml -f docker-compose.observability.protected.yml ps --all minio-metrics-token-init
+    docker compose -f docker-compose.yml -f docker-compose.observability.yml -f docker-compose.observability.protected.yml run --rm --no-deps --entrypoint /bin/sh minio-metrics-token-init -c 'rm -f /run/secrets/minio-metrics/.token.tmp.*'
+    docker compose -f docker-compose.yml -f docker-compose.observability.yml -f docker-compose.observability.protected.yml run --rm --no-deps minio-metrics-token-init
+
+紧急吊销只允许在已批准维护窗执行。root 凭据变化会让 MinIO 重启前签发的全部 metrics JWT 在重启后返回 403，同时 MinIO 数据面和两条指标链会出现短暂中断；预期窗口从 MinIO 停止开始，到 bootstrap、重签和两个消费者恢复且连续两个抓取周期为 `up` 结束。执行顺序固定为：在 secret manager 生成新的非默认 root 凭据版本；强制重建 MinIO；重新协调数据面用户/策略；重新签发；保持 `operational-metrics` 和 Prometheus 原进程不变，等待它们原地自动恢复：
+
+    docker compose -f docker-compose.yml -f docker-compose.observability.yml -f docker-compose.observability.protected.yml up -d --no-build --force-recreate minio
+    docker compose -f docker-compose.yml -f docker-compose.observability.yml -f docker-compose.observability.protected.yml run --rm --no-deps minio-bootstrap
+    docker compose -f docker-compose.yml -f docker-compose.observability.yml -f docker-compose.observability.protected.yml run --rm --no-deps minio-metrics-token-init
+
+上线证据必须在不输出 token 或摘要的前提下证明：轮换前 token 在常规刷新后仍为 200；root 轮换并重启后轮换前 token 为 403；新 token 为 200；两个消费者容器 ID 不变且 collector / Prometheus 原地自动恢复；匿名请求为 401/403；数据面目标桶读写正常且第二桶 list/get/put 与 admin 操作全部拒绝。任一项失败都阻塞发布；任一消费者只有重启才能恢复也视为发布失败，不得把 recreate 后绿灯当作动态切换证据。
+
+若 root 轮换因配置错误失败且事件并非凭据泄露，可在同一维护窗恢复 secret manager 中上一版本 root 凭据，强制重建 MinIO，并按 bootstrap → token init → 消费者原地恢复 的同一顺序回滚。若事件涉及凭据泄露，禁止回滚到已暴露版本；应保留服务中断、修复新凭据或切换到另一个未暴露版本。无论成功或回滚，都必须记录中断起止时间、secret 版本的安全引用、旧/新 HTTP 状态和消费者恢复时间；不得记录凭据、JWT 或 JWT 摘要。
 
 指标标签只允许方法、路由模板、状态类别、固定任务/服务族和固定结果。禁止增加用户 ID、
 文件 ID、邮箱、原始 URL、token、prompt、异常文本或对象 key。
 
 `knowledge_uploader_logical_document_references_bytes{backend="minio"}` 只统计状态不为
-`deleted` 或 `ragflow_cleanup_failed` 的文件行所引用字节之和；后者表示本地文件已经删除、仅远端
-RAGFlow 清理失败。去重后共用同一对象的多个文件行仍分别计数，因此不代表 MinIO 物理磁盘。
+`disabled`、`deleted` 或 `ragflow_cleanup_failed` 的活动文件行引用字节。三类状态均在治理 API
+单列为 retained inactive；其中 cleanup failed 表示本地原件已删除、仅远端清理失败。去重后共用
+同一对象的多个文件行仍分别计数，因此该指标不代表 MinIO 物理磁盘。
 `knowledge_uploader_postgres_database_size_bytes` 是
 `pg_database_size()` 返回的数据库物理大小，二者不得聚合。MinIO 物理容量来自其 exporter，
 PostgreSQL 所在宿主文件系统来自 Linux node exporter。
@@ -49,13 +79,14 @@ PostgreSQL 所在宿主文件系统来自 Linux node exporter。
 
 ## KnowledgeUploaderReadyConsecutiveFailures
 
-collector 每 30 秒请求一次真实 /api/system/ready，连续三次失败才触发。按响应中的 PostgreSQL、
+collector 按 `OPERATIONAL_METRICS_INTERVAL_SECONDS` 请求真实 /api/system/ready，连续三次失败才触发。按响应中的 PostgreSQL、
 Redis、RabbitMQ、MinIO 分类逐项修复；不能用 /health 的进程存活代替 ready。
 
 ## KnowledgeUploaderOperationalCollectorStale
 
 collector 进程在线但数据库采集时间戳过旧时也会报警。检查数据库 schema 是否已迁移到当前
-head，尤其是 review_due_at；修复后确认时间戳每 30 秒前进。时间戳超过当前时间五分钟同样
+head，尤其是 review_due_at；修复后确认时间戳按配置周期前进。stale 阈值为配置周期的两倍且
+不低于 120 秒；合法的 300 秒周期不会被固定两分钟阈值持续误报。时间戳超过当前时间五分钟同样
 报警，必须修复 collector/Prometheus 主机时钟，不能让未来时间掩盖 stale。
 
 ## KnowledgeUploaderOutboxBacklog
@@ -134,6 +165,8 @@ exactly-once。若指标缺失，同时检查 Redis 与 operational collector；
 检查 Redis 连通性、认证与 email metrics key 的读取错误。修复后必须确认 last-success 每个采集
 周期继续前进且 errors 不再增长；旧的 persisted_total 数值本身不能作为恢复证据。数据库 component
 仍可正常更新，这不代表邮件投递可观测性已恢复。
+若采集周期 Gauge 缺失，本组件告警也会独立 fail closed；先恢复 collector 的周期指标，再按
+last-success 判断陈旧程度，不能因时间戳暂时新鲜而静默。
 
 ## KnowledgeUploaderReviewSlaOverdue
 
@@ -151,10 +184,43 @@ exactly-once。若指标缺失，同时检查 Redis 与 operational collector；
 至少五个成功/失败文档后才计算失败率。核对 RAGFlow 协议、
 allowlist 与密钥解密告警，不在指标中加入 dataset/file ID。
 
+## KnowledgeUploaderRagflowCallTelemetryCollectorUnavailable
+
+该 component 按配置周期检查持久化的 `ragflow_api_calls`。先看
+`component="ragflow_call_telemetry"` 的 last-success 是否持续前进，再检查 errors 增量和
+数据库迁移是否已到当前 head。采集失败不得把旧 Gauge 当成实时值，也不得删除 started 行来
+解除告警；修复后确认 last-success 前进且 errors 不再增长。
+若采集周期 Gauge 缺失，本组件告警也会独立 fail closed；必须先恢复周期指标，不能把无法计算
+陈旧阈值解释为遥测健康。
+
+## KnowledgeUploaderRagflowApiCallStale
+
+`started` 超过 15 分钟进入 stale Gauge，超过 30 分钟由 collector 以
+`failure_category="unknown"` 批量收敛为终态，每轮最多 1000 条并使用行锁避免重复处理。
+先关联业务任务状态和固定 operation 排查 worker/数据库中断；遥测表不保存 dataset、file、
+URL、请求体、响应体或异常文本。自动收敛只修复遥测生命周期，不代表远端操作可以安全重试。
+终态调用保留 400 天（API 最大查询窗为 366 天）后由同一 collector 清理；`started` 行在完成
+收敛前不得按保留期直接删除。
+
 ## KnowledgeUploaderMinioCapacityLow
 
 Prometheus 通过私网 v2 cluster endpoint 读取 MinIO 实际 usable free/total bytes；低于 15%
 持续十分钟报警。MinIO metrics down 单独报警，避免把缺失数据误判为容量充足。
+即使 scrape `up=1`，任一 usable free/total 指标缺失仍必须触发 metrics down；先核对 MinIO
+版本和 v2 指标名称，再恢复容量阈值判断。
+
+## KnowledgeUploaderMinioCapacityCollectorUnavailable
+
+该告警覆盖应用侧 `/minio/v2/metrics/cluster` 快照采集的缺失、超过“配置周期两倍且不低于
+120 秒”未成功或最近五分钟出现错误；它与 Prometheus 直接抓取 MinIO 的 `KnowledgeUploaderMinioMetricsDown` 相互独立。
+若采集周期 Gauge 缺失，本组件告警也会独立 fail closed；必须先恢复周期指标，不能因快照时间戳
+暂时新鲜而判定容量采集健康。
+检查 TLS CA、只读 token 文件是否存在且权限为 `0440/65534:65534`、初始化容器是否
+`exited 0` 且无日志、私网端点和 raw total/free 指标一致性，以及数据库迁移。匿名请求返回
+401/403 是正确安全基线；带 token 的采集仍返回 401/403 才是故障。不得切换 public、不得回退
+到管理员密钥 URL，也不得在排障输出中打印 bearer token。修复后确认
+`component="minio_capacity"` 的 last-success 持续前进；旧快照超过 15 分钟必须继续显示 stale，
+不能把缺失采集解释为零使用量或容量充足。
 
 ## KnowledgeUploaderLinuxHostMetricsDown
 

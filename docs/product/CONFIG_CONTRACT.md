@@ -20,6 +20,16 @@ require_email_verification=true 等策略放宽。
 ConfigChanged 只使 TTL 缓存失效；历史任务保存创建时快照的字段不得被新配置追溯改写。
 security.block_critical_sensitive_sync 永远强制为 true，任何持久化 false 都记指标并纠正。
 
+AI Provider 的输入价、输出价和币种不属于 `system_configs`，由 `ai_providers` 的独立价格确认契约
+管理。管理 API 返回的 `pricing_configured` 是有效值：仅当原始声明为 true，且内部保存的输入价、
+输出价、币种确认快照均存在并与当前三元组完全一致时才为 true。旧版本 writer 修改任一价格字段或
+币种、或插入带价格但无确认快照的 Provider，均必须返回 false 并把后续成本归入
+`unknown_pricing`。明确的 0 价格只有由新版本 writer 同步包含 0 和币种的完整确认快照后才是
+已知口径；设置页不得自行从价格数值推断确认状态，也不得把未知显示成 0 成本。
+
+PATCH 中值为 null 的价格/币种字段是 no-op，不得触发隐式确认或审计伪变更；只有非 null 价格字段
+才构成兼容隐式确认输入。
+
 ## 2. Active 配置（26）
 
 | Key | 类型；默认；范围 | 真实消费者 | 生效边界 | 无可信缓存时 fail-closed |
@@ -99,9 +109,16 @@ security.block_critical_sensitive_sync 永远强制为 true，任何持久化 fa
 | OUTBOX_METRICS_PORT | 9101；1..65535 | outbox-dispatcher 私网 metrics；Prometheus target 必须同步 |
 | OPERATIONAL_METRICS_PORT | 9102；1..65535 | operational-metrics 私网 metrics；Prometheus target 必须同步 |
 | OPERATIONAL_METRICS_INTERVAL_SECONDS | 30；5..3600 | operational collector 采集周期 |
+| MINIO_ROOT_USER / MINIO_ROOT_PASSWORD | 无生产默认 | 仅 MinIO 与两个一次性 init；不得进入业务服务 |
+| MINIO_ACCESS_KEY / MINIO_SECRET_KEY | 无生产默认 | 独立数据面用户；由 minio-bootstrap 幂等创建，仅授予指定桶对象权限 |
+| MINIO_SERVER_IMAGE | approved `minio/minio:RELEASE...@sha256:<64hex>` | protected and E2E accept only the repository-approved multi-arch manifest digest; tag-only or alternate-digest overrides fail closed |
+| MINIO_MC_IMAGE | approved `minio/mc:RELEASE...@sha256:<64hex>` | every CI backend build forwards this value; backend and ops consume mc only from a `TARGETPLATFORM` stage |
+| MINIO_TLS_DIR | 无默认 | protected overlay 的 `public.crt` / `private.key` / `ca.crt`；证书 SAN 必须含 `DNS:minio` |
+| MINIO_METRICS_BEARER_TOKEN_FILE | `/run/secrets/minio-metrics/token` | 仅 operational-metrics 注入并 fail closed；其他后端 Settings 不要求且不得看到该路径，禁止传 token 原文 |
 
 两个 metrics 服务位于不同容器，但 Prometheus 配置固定使用 9101/9102；修改端口而不同时修改
-Prometheus target 会触发 Down 告警。不得把这些端口发布到公网。
+Prometheus target 会触发 Down 告警。不得把这些端口发布到公网。MinIO exporter 必须保持
+JWT 鉴权；protected 环境的 root 凭据必须显式提供、拒绝已知默认值，并在 MinIO 与两个一次性 init 间完全一致；root 与数据面凭据必须分离。bootstrap 每次删除并重建目标数据面用户和专用策略，清除旧直接策略与组成员漂移后再授予指定桶权限。token init 每次向服务端重新签发，使用同卷唯一临时文件校验后原子发布，不使用跨容器 PID 文件名或永久锁。Prometheus 和 operational-metrics 只读消费；token 禁止进入环境变量、system_configs、API 返回、日志或发布证据。常规刷新不是吊销，旧 JWT 在 `exp` 前仍有效；紧急吊销必须轮换 root 凭据并重启 MinIO。两种流程均不得重启 Prometheus 或 operational-metrics 来掩盖 bearer 文件动态读取缺陷；容器 ID 不变且原地恢复才能通过上线门禁。
 
 ## 5. 自动化一致性门禁
 

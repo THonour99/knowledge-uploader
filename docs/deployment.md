@@ -67,13 +67,17 @@ Copy-Item docker-compose.override.yml.example docker-compose.override.yml
 | 数据库 | `POSTGRES_DB`, `POSTGRES_USER`, `POSTGRES_PASSWORD`, `DATABASE_URL`, `ALEMBIC_DATABASE_URL` |
 | RabbitMQ | `RABBITMQ_USER`, `RABBITMQ_PASSWORD`, `CELERY_BROKER_URL` |
 | Redis | `REDIS_PASSWORD`, `CACHE_REDIS_URL` |
-| MinIO | `MINIO_ENDPOINT`, `MINIO_ACCESS_KEY`, `MINIO_SECRET_KEY`, `MINIO_BUCKET`, `MINIO_SECURE`, `MINIO_CA_CERT_FILE` |
+| MinIO | `MINIO_ENDPOINT`, `MINIO_ROOT_USER`, `MINIO_ROOT_PASSWORD`, `MINIO_ACCESS_KEY`, `MINIO_SECRET_KEY`, `MINIO_BUCKET`, `MINIO_SECURE`, `MINIO_CA_CERT_FILE` |
 | 上传 | `UPLOAD_MAX_FILE_SIZE_BYTES`, `UPLOAD_RATE_LIMIT_PER_MINUTE`, `UPLOAD_ALLOWED_EXTENSIONS`, `UPLOAD_ALLOWED_MIME_TYPES` |
 | 认证 | `ALLOWED_EMAIL_DOMAINS`, `LOGIN_MAX_FAILED_ATTEMPTS`, `LOGIN_LOCK_MINUTES`, `AUTH_*_RATE_LIMIT_PER_HOUR` |
 | RAGFlow | `RAGFLOW_BASE_URL`, `RAGFLOW_ALLOWED_BASE_URLS`, `RAGFLOW_API_KEY`, `RAGFLOW_ALLOWED_DATASET_IDS` |
 | AI | `AI_ANALYSIS_ENABLED`, `ALLOW_EXTERNAL_LLM`, `LLM_PROVIDER`, `LLM_BASE_URL`, `LLM_ALLOWED_BASE_URLS`, `LLM_API_KEY`, `LLM_MODEL` |
 | SMTP | `SMTP_HOST`, `SMTP_PORT`, `SMTP_USER`, `SMTP_PASSWORD`, `SMTP_FROM`, `SMTP_TLS`, `SMTP_CA_CERT_FILE`, `SMTP_TIMEOUT_SECONDS` |
-| 指标 | `OUTBOX_METRICS_PORT`, `OPERATIONAL_METRICS_PORT`, `OPERATIONAL_METRICS_INTERVAL_SECONDS`, `PROMETHEUS_CONFIG_FILE`, `PROMETHEUS_TLS_DIR` |
+| 指标 | `OUTBOX_METRICS_PORT`, `OPERATIONAL_METRICS_PORT`, `OPERATIONAL_METRICS_INTERVAL_SECONDS`, `PROMETHEUS_CONFIG_FILE`, `MINIO_TLS_DIR` |
+
+`MINIO_SERVER_IMAGE` and `MINIO_MC_IMAGE` are pinned to repository-approved `tag@sha256:<64hex>` multi-arch manifests. Protected and E2E overrides must equal those approved digests; tag-only or alternate digests fail the resolved-Compose gate. Every CI backend build explicitly forwards `MINIO_MC_IMAGE`, and backend/ops obtain mc only from a `TARGETPLATFORM` stage.
+
+`MINIO_ROOT_USER` / `MINIO_ROOT_PASSWORD` 是控制面凭据，只能注入 MinIO、`minio-bootstrap` 与 `minio-metrics-token-init`；`MINIO_ACCESS_KEY` / `MINIO_SECRET_KEY` 是桶级数据面凭据，只能由幂等 `minio-bootstrap` 创建并授予指定桶的最小对象权限。两组凭据必须不同，业务服务不得获得 root，`operational-metrics` 只接收无数据权限哨兵值与 bearer 文件路径。
 
 `APP_ENV=production`、`prod` 或 `staging` 时，启动校验会拒绝占位 `JWT_SECRET`、默认 `ENCRYPTION_KEY`、默认数据库 / RabbitMQ / Redis / MinIO 凭据、`MINIO_SECURE=false` 和空的 `MINIO_CA_CERT_FILE`。受保护环境必须配置 SMTP 且必须启用 TLS：必须同时具备 `SMTP_HOST` 与 `SMTP_FROM`（或 `SMTP_USER`）；用户名与密码必须成对出现，认证 relay 的 `SMTP_PASSWORD` 还必须是非占位密钥；仅配置 host + from 的匿名 TLS relay 不要求密码。端口范围为 `1..65535`，超时范围为 `(0, 300]` 秒。
 
@@ -81,6 +85,7 @@ Copy-Item docker-compose.override.yml.example docker-compose.override.yml
 
 ### TLS 信任链
 
+- protected overlay 的 `MINIO_TLS_DIR` 必须恰好提供 `public.crt`、`private.key`、`ca.crt`；`public.crt` 的 SAN 必须包含 Compose 服务名 `DNS:minio`，健康检查固定通过 CA 访问 `https://minio:9000/minio/health/cluster`，不得使用 `-k` / `--insecure`。`private.key` 只挂入 MinIO。
 - `MINIO_CA_CERT_FILE` 指向后端容器内只读挂载的 PEM CA bundle。安全 MinIO 客户端会保留 SDK 的 5 分钟连接/读取超时、连接池大小 10，以及对 `500/502/503/504` 的 5 次退避重试；CA 文件缺失或无效时在客户端构造或 readiness 阶段安全失败，响应不回显宿主路径。
 - `SMTP_CA_CERT_FILE` 可指定企业 SMTP CA bundle。587 端口使用 STARTTLS，465 端口使用隐式 TLS；CA 文件缺失或无效会被归类为不可重试的配置错误，错误信息不回显路径。配置 CA 时禁止关闭 `SMTP_TLS`。
 - 企业 RAGFlow HTTPS CA 应加入后端容器信任链（例如只读挂载并设置 `SSL_CERT_FILE`）。禁止使用 `--insecure`、`CERT_NONE` 或关闭证书校验来通过联调。
@@ -95,13 +100,14 @@ Copy-Item docker-compose.override.yml.example docker-compose.override.yml
 | `OUTBOX_METRICS_PORT` | `9101` | `1..65535` | outbox-dispatcher 容器私网监听端口 |
 | `OPERATIONAL_METRICS_PORT` | `9102` | `1..65535` | operational-metrics 容器私网监听端口 |
 | `OPERATIONAL_METRICS_INTERVAL_SECONDS` | `30` | `5..3600` | 数据库、对象存储和邮件投递聚合采样周期 |
+| `MINIO_METRICS_BEARER_TOKEN_FILE` | `/run/secrets/minio-metrics/token` | 容器内绝对路径 | 仅 `operational-metrics` 读取；由命名卷只读挂载 |
 
 `docker-compose.observability.yml` 的 Prometheus target 默认固定为
 `outbox-dispatcher:9101` 和 `operational-metrics:9102`。修改任一监听端口时必须在同一次
 发布中同步修改 target 并运行 Prometheus 规则测试；否则采集目标会 Down。两个端口只能在
 Compose 私网内访问，不得发布到公网或绕过 Nginx 暴露。
 
-开发环境继续使用 `ops/observability/prometheus.yml`，其中 MinIO 仅用于本地 HTTP 联调。staging/production 必须额外叠加 `docker-compose.observability.protected.yml`，显式把 `PROMETHEUS_CONFIG_FILE` 指向 `ops/observability/prometheus.protected.yml`，并把只含公开 CA bundle `ca.crt` 的 `PROMETHEUS_TLS_DIR` 只读挂载到 Prometheus。受保护配置固定使用 `https://minio:9000`、`server_name: minio` 且禁止跳过证书校验；仅有 promtool 语法通过不构成上线证据，基础设施 E2E 还必须从 Prometheus targets API 证明该 target 为 `up`。
+开发环境继续使用 `ops/observability/prometheus.yml` 的 HTTP 私网 target，staging/production 必须额外叠加 `docker-compose.observability.protected.yml`，显式把 `PROMETHEUS_CONFIG_FILE` 指向 `ops/observability/prometheus.protected.yml`，并通过 `MINIO_TLS_DIR` 把公开 CA bundle `ca.crt` 只读挂载到 Prometheus；同一目录还向 MinIO 提供 `public.crt` 和仅服务端可见的 `private.key`。两种配置都必须使用 `authorization.credentials_file=/run/secrets/minio-metrics/token`；MinIO 固定为 JWT，禁止公开 exporter。受保护配置固定使用 `https://minio:9000`、`server_name: minio` 且禁止跳过证书校验。一次性 init 必须成功、日志为空、token 文件为 `0440/65534:65534`，匿名访问返回 401/403，应用 collector 与 Prometheus 均使用同一只读卷。仅有 promtool 语法通过不构成上线证据，基础设施 E2E 还必须证明 collector last-success、每次由服务端重新签发 token 后两个消费者不重启便完成动态切换，以及 Prometheus target 为 `up`。常规刷新不会吊销旧 JWT，旧 JWT 在 `exp` 前仍可能有效；紧急吊销必须轮换 MinIO root 凭据并重启 MinIO，再重新签发 token；两个消费者必须保持原容器 ID 并原地自动恢复，否则阻塞发布。
 
 ## RAGFlow
 
