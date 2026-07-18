@@ -39,11 +39,48 @@ TEST_DATABASE_NAME = "knowledge_uploader_governance_acceptance_test"
 TEST_REDIS_DB = "15"
 EVIDENCE_SCHEMA_VERSION = "governance-acceptance.v1"
 TOOL_ENVIRONMENT_PREFIXES = ("COMPOSE_", "GIT_")
+MINIMAL_HOST_ENVIRONMENT_KEYS = frozenset(
+    {
+        "COMSPEC",
+        "PATH",
+        "PATHEXT",
+        "SYSTEMDRIVE",
+        "SYSTEMROOT",
+        "WINDIR",
+    }
+)
 COMPOSE_CONFIG_ARGUMENTS = ("config", "--no-interpolate")
 COMPOSE_CONFIG_PHASE_NAMES = frozenset({"compose_config_before", "compose_config_after"})
 COMPOSE_INTERPOLATION_PATTERN = re.compile(rb"\$\{([A-Za-z_][A-Za-z0-9_]*)")
+COMPOSE_VERSION_PATTERN = re.compile(rb"\bversion\s+v?(\d+)\.", re.IGNORECASE)
 CONTROLLED_RUNTIME_ENVIRONMENT_KEYS = frozenset(
     {"APP_ENV", "BACKEND_BUILD_TARGET", "BACKEND_IMAGE", "VCS_REF"}
+)
+CONTROLLED_TOOL_ENVIRONMENT_KEYS = frozenset(
+    {
+        "APPDATA",
+        "CI",
+        "DOCKER_CONFIG",
+        "GIT_CONFIG_GLOBAL",
+        "GIT_CONFIG_NOSYSTEM",
+        "GIT_TERMINAL_PROMPT",
+        "HOME",
+        "LOCALAPPDATA",
+        "NPM_CONFIG_AUDIT",
+        "NPM_CONFIG_CACHE",
+        "NPM_CONFIG_FUND",
+        "NPM_CONFIG_GLOBALCONFIG",
+        "NPM_CONFIG_IGNORE_SCRIPTS",
+        "NPM_CONFIG_PROGRESS",
+        "NPM_CONFIG_UPDATE_NOTIFIER",
+        "NPM_CONFIG_USERCONFIG",
+        "TEMP",
+        "TMP",
+        "TMPDIR",
+        "USERPROFILE",
+        "XDG_CACHE_HOME",
+        "XDG_CONFIG_HOME",
+    }
 )
 
 Executor = Literal["backend_pytest", "frontend_vitest"]
@@ -106,7 +143,18 @@ class RuntimeLayout:
     reports_root: Path
     backend_report_path: Path
     frontend_report_path: Path
-    compose_prefix: tuple[str, ...]
+    home_root: Path
+    temporary_root: Path
+    appdata_root: Path
+    local_appdata_root: Path
+    xdg_config_root: Path
+    xdg_cache_root: Path
+    npm_cache_root: Path
+    npm_userconfig: Path
+    npm_globalconfig: Path
+    docker_config_root: Path
+    git_hooks_root: Path
+    git_global_config: Path
 
 
 ACCEPTANCE_PLAN: tuple[AcceptancePlan, ...] = (
@@ -312,6 +360,28 @@ def _sha256(payload: bytes) -> str:
     return hashlib.sha256(payload).hexdigest()
 
 
+def _minimal_host_environment(source: dict[str, str]) -> tuple[dict[str, str], list[str]]:
+    normalized_source: dict[str, str] = {}
+    for key, value in source.items():
+        normalized = key.upper()
+        if normalized in normalized_source:
+            raise GovernanceAcceptanceError(
+                f"ambiguous case-insensitive host environment key: {normalized}"
+            )
+        normalized_source[normalized] = value
+    environment: dict[str, str] = {}
+    for key in sorted(MINIMAL_HOST_ENVIRONMENT_KEYS):
+        candidate_value = normalized_source.get(key)
+        if candidate_value:
+            environment[key] = candidate_value
+    if "PATH" not in environment:
+        raise GovernanceAcceptanceError("minimal subprocess environment requires PATH")
+    removed = sorted(
+        {key.upper() for key in source if key.upper() not in MINIMAL_HOST_ENVIRONMENT_KEYS}
+    )
+    return environment, removed
+
+
 def _sanitized_environment(
     source: dict[str, str],
     *,
@@ -354,6 +424,36 @@ def _controlled_runtime_environment(*, image_tag: str, expected_sha: str) -> dic
     return environment
 
 
+def _controlled_tool_environment(layout: RuntimeLayout) -> dict[str, str]:
+    environment = {
+        "APPDATA": str(layout.appdata_root),
+        "CI": "true",
+        "DOCKER_CONFIG": str(layout.docker_config_root),
+        "GIT_CONFIG_GLOBAL": str(layout.git_global_config),
+        "GIT_CONFIG_NOSYSTEM": "1",
+        "GIT_TERMINAL_PROMPT": "0",
+        "HOME": str(layout.home_root),
+        "LOCALAPPDATA": str(layout.local_appdata_root),
+        "NPM_CONFIG_AUDIT": "false",
+        "NPM_CONFIG_CACHE": str(layout.npm_cache_root),
+        "NPM_CONFIG_FUND": "false",
+        "NPM_CONFIG_GLOBALCONFIG": str(layout.npm_globalconfig),
+        "NPM_CONFIG_IGNORE_SCRIPTS": "true",
+        "NPM_CONFIG_PROGRESS": "false",
+        "NPM_CONFIG_UPDATE_NOTIFIER": "false",
+        "NPM_CONFIG_USERCONFIG": str(layout.npm_userconfig),
+        "TEMP": str(layout.temporary_root),
+        "TMP": str(layout.temporary_root),
+        "TMPDIR": str(layout.temporary_root),
+        "USERPROFILE": str(layout.home_root),
+        "XDG_CACHE_HOME": str(layout.xdg_cache_root),
+        "XDG_CONFIG_HOME": str(layout.xdg_config_root),
+    }
+    if set(environment) != CONTROLLED_TOOL_ENVIRONMENT_KEYS:
+        raise GovernanceAcceptanceError("controlled tool environment contract drifted")
+    return environment
+
+
 def _runtime_environment_is_controlled(
     environment: dict[str, str],
     *,
@@ -361,35 +461,119 @@ def _runtime_environment_is_controlled(
     controlled_environment: dict[str, str],
 ) -> bool:
     interpolation_keys = {key.upper() for key in compose_interpolation_keys}
-    if not set(controlled_environment).issubset(interpolation_keys):
+    compose_controls = set(CONTROLLED_RUNTIME_ENVIRONMENT_KEYS)
+    if not compose_controls.issubset(interpolation_keys):
+        return False
+    if not compose_controls.issubset(controlled_environment):
+        return False
+    if set(controlled_environment) - (
+        CONTROLLED_RUNTIME_ENVIRONMENT_KEYS | CONTROLLED_TOOL_ENVIRONMENT_KEYS
+    ):
         return False
     for key, value in environment.items():
         normalized = key.upper()
-        if normalized.startswith(TOOL_ENVIRONMENT_PREFIXES):
+        if (
+            normalized not in MINIMAL_HOST_ENVIRONMENT_KEYS
+            and normalized not in controlled_environment
+        ):
             return False
-        if normalized in interpolation_keys and (
+        if (
+            normalized.startswith(TOOL_ENVIRONMENT_PREFIXES)
+            or normalized in interpolation_keys
+            or normalized in controlled_environment
+        ) and (
             key != normalized
             or normalized not in controlled_environment
             or value != controlled_environment[normalized]
         ):
             return False
-    return all(environment.get(key) == value for key, value in controlled_environment.items())
+    return "PATH" in environment and all(
+        environment.get(key) == value for key, value in controlled_environment.items()
+    )
 
 
 def _compose_prefix(
-    docker_executable: str,
+    compose_command: Sequence[str],
     project_name: str,
     candidate_root: Path,
 ) -> tuple[str, ...]:
+    if not compose_command:
+        raise GovernanceAcceptanceError("Docker Compose command is empty")
     return (
-        docker_executable,
-        "compose",
+        *compose_command,
         "--project-name",
         project_name,
         "--project-directory",
         str(candidate_root),
         "--file",
         str(candidate_root / "docker-compose.yml"),
+    )
+
+
+def _compose_command_supports_v2(
+    compose_command: Sequence[str],
+    *,
+    cwd: Path,
+    environment: dict[str, str],
+) -> bool:
+    try:
+        completed = subprocess.run(
+            (*compose_command, "version"),
+            cwd=cwd,
+            env=environment,
+            check=False,
+            capture_output=True,
+            timeout=30,
+        )
+    except (OSError, subprocess.TimeoutExpired):
+        return False
+    if completed.returncode != 0:
+        return False
+    version_match = COMPOSE_VERSION_PATTERN.search(completed.stdout + b"\n" + completed.stderr)
+    return version_match is not None and int(version_match.group(1)) >= 2
+
+
+def _resolve_compose_command(
+    docker_executable: str,
+    compose_executable: str | None,
+    *,
+    cwd: Path,
+    environment: dict[str, str],
+) -> tuple[str, ...]:
+    candidates: list[tuple[str, ...]] = [(docker_executable, "compose")]
+    if compose_executable is not None:
+        candidates.append((compose_executable,))
+    for candidate in candidates:
+        if _compose_command_supports_v2(
+            candidate,
+            cwd=cwd,
+            environment=environment,
+        ):
+            return candidate
+    raise GovernanceAcceptanceError("Docker Compose v2+ is unavailable in the isolated environment")
+
+
+def _git_command_prefix(
+    git_executable: str,
+    disabled_hooks_directory: Path,
+) -> tuple[str, ...]:
+    try:
+        hooks_are_disabled = disabled_hooks_directory.is_dir() and not any(
+            disabled_hooks_directory.iterdir()
+        )
+    except OSError as error:
+        raise GovernanceAcceptanceError("cannot verify disabled Git hooks directory") from error
+    if not hooks_are_disabled:
+        raise GovernanceAcceptanceError("Git hooks directory must exist and remain empty")
+    return (
+        git_executable,
+        "--no-replace-objects",
+        "-c",
+        f"core.hooksPath={disabled_hooks_directory}",
+        "-c",
+        "credential.helper=",
+        "-c",
+        "core.fsmonitor=false",
     )
 
 
@@ -450,12 +634,11 @@ def _validate_test_database_name(value: str) -> str:
 def _git_bytes(
     repo_root: Path,
     *arguments: str,
-    environment: dict[str, str] | None = None,
+    environment: dict[str, str],
+    git_prefix: Sequence[str],
 ) -> bytes:
-    if environment is None:
-        environment, _removed = _sanitized_environment(dict(os.environ))
     completed = subprocess.run(
-        ("git", *arguments),
+        (*git_prefix, *arguments),
         cwd=repo_root,
         env=environment,
         check=False,
@@ -466,13 +649,63 @@ def _git_bytes(
     return bytes(completed.stdout)
 
 
+def _assert_no_git_replacement_sources(
+    repo_root: Path,
+    *,
+    environment: dict[str, str],
+    git_prefix: Sequence[str],
+) -> None:
+    replacement_refs = _git_bytes(
+        repo_root,
+        "for-each-ref",
+        "--format=%(refname)",
+        "refs/replace",
+        environment=environment,
+        git_prefix=git_prefix,
+    )
+    if replacement_refs.strip():
+        raise GovernanceAcceptanceError("Git refs/replace must be empty")
+
+    raw_common_directory = _git_bytes(
+        repo_root,
+        "rev-parse",
+        "--git-common-dir",
+        environment=environment,
+        git_prefix=git_prefix,
+    )
+    try:
+        common_directory_text = raw_common_directory.decode("utf-8", errors="strict").strip()
+    except UnicodeError as error:
+        raise GovernanceAcceptanceError("Git common directory is not valid UTF-8") from error
+    if not common_directory_text:
+        raise GovernanceAcceptanceError("Git common directory is empty")
+    common_directory = Path(common_directory_text)
+    if not common_directory.is_absolute():
+        common_directory = repo_root / common_directory
+    grafts_path = common_directory.resolve() / "info" / "grafts"
+    try:
+        if grafts_path.is_symlink():
+            raise GovernanceAcceptanceError("Git info/grafts must not be a symlink")
+        if grafts_path.exists() and (not grafts_path.is_file() or grafts_path.stat().st_size != 0):
+            raise GovernanceAcceptanceError("Git info/grafts must be absent or empty")
+    except OSError as error:
+        raise GovernanceAcceptanceError("cannot verify Git info/grafts") from error
+
+
 def candidate_identity(
     repo_root: Path,
     *,
-    environment: dict[str, str] | None = None,
+    environment: dict[str, str],
+    git_prefix: Sequence[str],
 ) -> CandidateIdentity:
     sha = (
-        _git_bytes(repo_root, "rev-parse", "HEAD", environment=environment)
+        _git_bytes(
+            repo_root,
+            "rev-parse",
+            "HEAD",
+            environment=environment,
+            git_prefix=git_prefix,
+        )
         .decode("ascii")
         .strip()
         .lower()
@@ -484,6 +717,7 @@ def candidate_identity(
             "--porcelain=v1",
             "--untracked-files=all",
             environment=environment,
+            git_prefix=git_prefix,
         )
         .decode("utf-8", errors="strict")
         .strip()
@@ -993,10 +1227,15 @@ def _runtime_names(expected_sha: str) -> tuple[str, str]:
 def _safe_candidate_identity(
     repo_root: Path,
     *,
-    environment: dict[str, str] | None = None,
+    environment: dict[str, str],
+    git_prefix: Sequence[str],
 ) -> CandidateIdentity | None:
     try:
-        return candidate_identity(repo_root, environment=environment)
+        return candidate_identity(
+            repo_root,
+            environment=environment,
+            git_prefix=git_prefix,
+        )
     except (GovernanceAcceptanceError, UnicodeError, OSError):
         return None
 
@@ -1051,20 +1290,56 @@ def _remove_tree_result(name: str, target: Path) -> ProcessResult:
 def _initialize_runtime_layout(
     *,
     project_name: str,
-    docker_executable: str,
 ) -> RuntimeLayout:
     runtime_root = Path(tempfile.mkdtemp(prefix=f"{project_name}-"))
     try:
         candidate_root = runtime_root / "candidate"
         reports_root = runtime_root / "reports"
-        reports_root.mkdir()
+        home_root = runtime_root / "home"
+        temporary_root = runtime_root / "tmp"
+        appdata_root = runtime_root / "appdata"
+        local_appdata_root = runtime_root / "local-appdata"
+        xdg_config_root = runtime_root / "xdg-config"
+        xdg_cache_root = runtime_root / "xdg-cache"
+        npm_cache_root = runtime_root / "npm-cache"
+        docker_config_root = runtime_root / "docker-config"
+        git_hooks_root = runtime_root / "git-hooks-disabled"
+        for directory in (
+            reports_root,
+            home_root,
+            temporary_root,
+            appdata_root,
+            local_appdata_root,
+            xdg_config_root,
+            xdg_cache_root,
+            npm_cache_root,
+            docker_config_root,
+            git_hooks_root,
+        ):
+            directory.mkdir()
+        npm_userconfig = runtime_root / "npm-user.npmrc"
+        npm_globalconfig = runtime_root / "npm-global.npmrc"
+        git_global_config = runtime_root / "git-global.config"
+        for config_file in (npm_userconfig, npm_globalconfig, git_global_config):
+            config_file.write_text("", encoding="utf-8", newline="\n")
         return RuntimeLayout(
             root=runtime_root,
             candidate_root=candidate_root,
             reports_root=reports_root,
             backend_report_path=reports_root / "backend.junit.xml",
             frontend_report_path=reports_root / "frontend.vitest.json",
-            compose_prefix=_compose_prefix(docker_executable, project_name, candidate_root),
+            home_root=home_root,
+            temporary_root=temporary_root,
+            appdata_root=appdata_root,
+            local_appdata_root=local_appdata_root,
+            xdg_config_root=xdg_config_root,
+            xdg_cache_root=xdg_cache_root,
+            npm_cache_root=npm_cache_root,
+            npm_userconfig=npm_userconfig,
+            npm_globalconfig=npm_globalconfig,
+            docker_config_root=docker_config_root,
+            git_hooks_root=git_hooks_root,
+            git_global_config=git_global_config,
         )
     except BaseException as error:
         cleanup = _remove_tree_result("runtime_initialization_tree_remove", runtime_root)
@@ -1085,50 +1360,113 @@ def _execute(*, repo_root: Path, expected_sha: str, output_dir: Path) -> int:
     npm_executable = _resolve_executable("npm")
     docker_executable = _resolve_executable("docker")
     git_executable = _resolve_executable("git")
-    tool_environment, removed_tool_environment = _sanitized_environment(dict(os.environ))
-    before = candidate_identity(repo_root, environment=tool_environment)
-    _assert_candidate(before, expected_sha)
-    expected_tree = (
-        _git_bytes(
-            repo_root,
-            "rev-parse",
-            f"{expected_sha}^{{tree}}",
+    try:
+        compose_executable: str | None = _resolve_executable("docker-compose")
+    except GovernanceAcceptanceError:
+        compose_executable = None
+    minimal_host_environment, removed_minimal_host_environment = _minimal_host_environment(
+        dict(os.environ)
+    )
+    project_name, image_tag = _runtime_names(expected_sha)
+    runtime_layout = _initialize_runtime_layout(
+        project_name=project_name,
+    )
+    runtime_root = runtime_layout.root
+    candidate_root = runtime_layout.candidate_root
+    reports_root = runtime_layout.reports_root
+    backend_report_path = runtime_layout.backend_report_path
+    frontend_report_path = runtime_layout.frontend_report_path
+    compose: tuple[str, ...] = ()
+    git_prefix: tuple[str, ...] = ()
+    git_guard_before_passed = False
+
+    try:
+        git_prefix = _git_command_prefix(git_executable, runtime_layout.git_hooks_root)
+        controlled_tool_environment = _controlled_tool_environment(runtime_layout)
+        tool_environment = dict(minimal_host_environment)
+        tool_environment.update(controlled_tool_environment)
+        compose_command = _resolve_compose_command(
+            docker_executable,
+            compose_executable,
+            cwd=repo_root,
             environment=tool_environment,
         )
-        .decode("ascii")
-        .strip()
-    )
-    if not EXPECTED_SHA_PATTERN.fullmatch(expected_tree):
-        raise GovernanceAcceptanceError("candidate Git tree identity is invalid")
-    expected_compose_source = _git_bytes(
-        repo_root,
-        "show",
-        f"{expected_sha}:docker-compose.yml",
-        environment=tool_environment,
-    )
-    expected_compose_source_sha256 = _sha256(expected_compose_source)
-    expected_compose_interpolation_keys = _compose_interpolation_keys(expected_compose_source)
+        compose = _compose_prefix(
+            compose_command,
+            project_name,
+            candidate_root,
+        )
+        _assert_no_git_replacement_sources(
+            repo_root,
+            environment=tool_environment,
+            git_prefix=git_prefix,
+        )
+        git_guard_before_passed = True
+        before = candidate_identity(
+            repo_root,
+            environment=tool_environment,
+            git_prefix=git_prefix,
+        )
+        _assert_candidate(before, expected_sha)
+        expected_tree = (
+            _git_bytes(
+                repo_root,
+                "rev-parse",
+                f"{expected_sha}^{{tree}}",
+                environment=tool_environment,
+                git_prefix=git_prefix,
+            )
+            .decode("ascii")
+            .strip()
+        )
+        if not EXPECTED_SHA_PATTERN.fullmatch(expected_tree):
+            raise GovernanceAcceptanceError("candidate Git tree identity is invalid")
+        expected_compose_source = _git_bytes(
+            repo_root,
+            "show",
+            f"{expected_sha}:docker-compose.yml",
+            environment=tool_environment,
+            git_prefix=git_prefix,
+        )
+        expected_compose_source_sha256 = _sha256(expected_compose_source)
+        expected_compose_interpolation_keys = _compose_interpolation_keys(expected_compose_source)
 
-    project_name, image_tag = _runtime_names(expected_sha)
-    environment, removed_interpolation_environment = _sanitized_environment(
-        tool_environment,
-        compose_interpolation_keys=expected_compose_interpolation_keys,
-    )
-    removed_host_environment = sorted(
-        set(removed_tool_environment) | set(removed_interpolation_environment)
-    )
-    controlled_runtime_environment = _controlled_runtime_environment(
-        image_tag=image_tag,
-        expected_sha=expected_sha,
-    )
-    environment.update(controlled_runtime_environment)
-    runtime_environment_policy_passed = _runtime_environment_is_controlled(
-        environment,
-        compose_interpolation_keys=expected_compose_interpolation_keys,
-        controlled_environment=controlled_runtime_environment,
-    )
-    if not runtime_environment_policy_passed:
-        raise GovernanceAcceptanceError("governance runtime environment is not fully controlled")
+        environment, removed_interpolation_environment = _sanitized_environment(
+            tool_environment,
+            compose_interpolation_keys=expected_compose_interpolation_keys,
+        )
+        removed_host_environment = sorted(
+            set(removed_minimal_host_environment) | set(removed_interpolation_environment)
+        )
+        controlled_compose_environment = _controlled_runtime_environment(
+            image_tag=image_tag,
+            expected_sha=expected_sha,
+        )
+        controlled_environment = {
+            **controlled_tool_environment,
+            **controlled_compose_environment,
+        }
+        environment.update(controlled_environment)
+        runtime_environment_policy_passed = _runtime_environment_is_controlled(
+            environment,
+            compose_interpolation_keys=expected_compose_interpolation_keys,
+            controlled_environment=controlled_environment,
+        )
+        if not runtime_environment_policy_passed:
+            raise GovernanceAcceptanceError(
+                "governance runtime environment is not fully controlled"
+            )
+    except BaseException as error:
+        cleanup = _remove_tree_result("runtime_preparation_tree_remove", runtime_root)
+        if cleanup.returncode != 0:
+            raise GovernanceAcceptanceError(
+                "governance runtime preparation and exact temporary tree cleanup failed"
+            ) from error
+        if isinstance(error, KeyboardInterrupt) or isinstance(error, SystemExit):
+            raise
+        if isinstance(error, GovernanceAcceptanceError):
+            raise
+        raise GovernanceAcceptanceError("governance runtime preparation failed") from error
     phases: list[ProcessResult] = []
     backend_expected = _backend_nodes()
     frontend_expected = _frontend_report_nodes()
@@ -1153,26 +1491,18 @@ def _execute(*, repo_root: Path, expected_sha: str, output_dir: Path) -> int:
     candidate_bound = False
     compose_bound = False
     candidate_targets_valid = False
+    candidate_git_guard_passed = False
+    git_guard_after_passed = False
+    git_hooks_empty_after = False
     image_bound = False
     image_revision = ""
     internal_error = False
-
-    runtime_layout = _initialize_runtime_layout(
-        project_name=project_name,
-        docker_executable=docker_executable,
-    )
-    runtime_root = runtime_layout.root
-    candidate_root = runtime_layout.candidate_root
-    reports_root = runtime_layout.reports_root
-    backend_report_path = runtime_layout.backend_report_path
-    frontend_report_path = runtime_layout.frontend_report_path
-    compose = runtime_layout.compose_prefix
 
     try:
         worktree_add = _run_process(
             "candidate_worktree_add",
             (
-                git_executable,
+                *git_prefix,
                 "worktree",
                 "add",
                 "--detach",
@@ -1185,7 +1515,17 @@ def _execute(*, repo_root: Path, expected_sha: str, output_dir: Path) -> int:
         )
         phases.append(worktree_add)
         if worktree_add.returncode == 0:
-            candidate_before = _safe_candidate_identity(candidate_root, environment=environment)
+            _assert_no_git_replacement_sources(
+                candidate_root,
+                environment=environment,
+                git_prefix=git_prefix,
+            )
+            candidate_git_guard_passed = True
+            candidate_before = _safe_candidate_identity(
+                candidate_root,
+                environment=environment,
+                git_prefix=git_prefix,
+            )
             try:
                 _validate_test_targets(candidate_root)
                 candidate_targets_valid = True
@@ -1193,7 +1533,7 @@ def _execute(*, repo_root: Path, expected_sha: str, output_dir: Path) -> int:
                 candidate_targets_valid = False
             tree_inspect = _run_process(
                 "candidate_tree_identity",
-                (git_executable, "-C", str(candidate_root), "rev-parse", "HEAD^{tree}"),
+                (*git_prefix, "-C", str(candidate_root), "rev-parse", "HEAD^{tree}"),
                 cwd=repo_root,
                 env=environment,
                 timeout_seconds=30,
@@ -1205,7 +1545,9 @@ def _execute(*, repo_root: Path, expected_sha: str, output_dir: Path) -> int:
             ) = _compose_file_contract(candidate_root / "docker-compose.yml")
         phases.append(tree_inspect)
         candidate_bound = (
-            candidate_targets_valid
+            git_guard_before_passed
+            and candidate_git_guard_passed
+            and candidate_targets_valid
             and candidate_before is not None
             and candidate_before.git_sha == expected_sha
             and candidate_before.clean
@@ -1303,6 +1645,7 @@ def _execute(*, repo_root: Path, expected_sha: str, output_dir: Path) -> int:
                     "--prefix",
                     str(candidate_root / "frontend"),
                     "ci",
+                    "--ignore-scripts",
                     "--prefer-offline",
                     "--no-audit",
                     "--no-fund",
@@ -1343,7 +1686,23 @@ def _execute(*, repo_root: Path, expected_sha: str, output_dir: Path) -> int:
         else:
             frontend = _not_run_result("frontend_notification_vitest", "npm_ci_failed")
         phases.append(frontend)
-        candidate_after = _safe_candidate_identity(candidate_root, environment=environment)
+        git_hooks_empty_after = (
+            _git_command_prefix(
+                git_executable,
+                runtime_layout.git_hooks_root,
+            )
+            == git_prefix
+        )
+        _assert_no_git_replacement_sources(
+            candidate_root,
+            environment=environment,
+            git_prefix=git_prefix,
+        )
+        candidate_after = _safe_candidate_identity(
+            candidate_root,
+            environment=environment,
+            git_prefix=git_prefix,
+        )
         (
             candidate_source_sha256_after,
             candidate_interpolation_keys_after,
@@ -1373,7 +1732,22 @@ def _execute(*, repo_root: Path, expected_sha: str, output_dir: Path) -> int:
         )
     finally:
         if candidate_after is None and candidate_root.is_dir():
-            candidate_after = _safe_candidate_identity(candidate_root, environment=environment)
+            try:
+                git_hooks_empty_after = (
+                    _git_command_prefix(
+                        git_executable,
+                        runtime_layout.git_hooks_root,
+                    )
+                    == git_prefix
+                )
+            except GovernanceAcceptanceError:
+                git_hooks_empty_after = False
+            if git_hooks_empty_after:
+                candidate_after = _safe_candidate_identity(
+                    candidate_root,
+                    environment=environment,
+                    git_prefix=git_prefix,
+                )
         cleanup_cwd = (
             candidate_root if (candidate_root / "docker-compose.yml").is_file() else repo_root
         )
@@ -1447,7 +1821,7 @@ def _execute(*, repo_root: Path, expected_sha: str, output_dir: Path) -> int:
         phases.append(image_absent)
         worktree_remove = _run_process(
             "candidate_worktree_remove",
-            (git_executable, "worktree", "remove", "--force", str(candidate_root)),
+            (*git_prefix, "worktree", "remove", "--force", str(candidate_root)),
             cwd=repo_root,
             env=environment,
             timeout_seconds=300,
@@ -1460,7 +1834,7 @@ def _execute(*, repo_root: Path, expected_sha: str, output_dir: Path) -> int:
         phases.append(candidate_fallback_remove)
         worktree_list = _run_process(
             "candidate_worktree_cleanup_check",
-            (git_executable, "worktree", "list", "--porcelain"),
+            (*git_prefix, "worktree", "list", "--porcelain"),
             cwd=repo_root,
             env=environment,
             timeout_seconds=60,
@@ -1497,12 +1871,32 @@ def _execute(*, repo_root: Path, expected_sha: str, output_dir: Path) -> int:
         and worktree_removed
         and reports_removed
     )
-    after = _safe_candidate_identity(repo_root, environment=environment)
+    if git_hooks_empty_after:
+        try:
+            _assert_no_git_replacement_sources(
+                repo_root,
+                environment=environment,
+                git_prefix=git_prefix,
+            )
+            git_guard_after_passed = True
+        except GovernanceAcceptanceError:
+            git_guard_after_passed = False
+    after = (
+        _safe_candidate_identity(
+            repo_root,
+            environment=environment,
+            git_prefix=git_prefix,
+        )
+        if git_guard_after_passed
+        else None
+    )
     candidate_unchanged = (
         after == before
         and candidate_tree_unchanged
         and candidate_bound
         and compose_bound
+        and git_guard_after_passed
+        and git_hooks_empty_after
         and not internal_error
     )
     build_passed = build.returncode == 0
@@ -1569,10 +1963,13 @@ def _execute(*, repo_root: Path, expected_sha: str, output_dir: Path) -> int:
             "compose_files": ["docker-compose.yml"],
             "compose_environment_keys_removed": removed_host_environment,
             "compose_environment_values_archived": False,
-            "compose_controlled_environment_keys": sorted(controlled_runtime_environment),
+            "compose_controlled_environment_keys": sorted(controlled_compose_environment),
             "host_compose_interpolation_values_inherited": False,
             "runtime_environment_policy_passed": runtime_environment_policy_passed,
             "tool_environment_prefixes_removed": list(TOOL_ENVIRONMENT_PREFIXES),
+            "minimal_host_environment_keys": sorted(MINIMAL_HOST_ENVIRONMENT_KEYS),
+            "runtime_controlled_environment_keys": sorted(controlled_environment),
+            "host_environment_values_archived": False,
         },
         "runtime_isolation": {
             "compose_project": project_name,
@@ -1585,6 +1982,15 @@ def _execute(*, repo_root: Path, expected_sha: str, output_dir: Path) -> int:
             "networks_removed": _resource_check_passed(network_check),
             "reports_removed": reports_removed,
             "cleanup_passed": cleanup_passed,
+            "npm_user_config_isolated": True,
+            "npm_global_config_isolated": True,
+            "npm_cache_isolated": True,
+            "npm_lifecycle_scripts_disabled_during_install": True,
+            "git_no_replace_objects": True,
+            "git_hooks_disabled": git_hooks_empty_after,
+            "git_replace_and_grafts_guard_before": git_guard_before_passed,
+            "git_replace_and_grafts_guard_candidate": candidate_git_guard_passed,
+            "git_replace_and_grafts_guard_after": git_guard_after_passed,
         },
         "candidate_image": {
             "tag": image_tag,
