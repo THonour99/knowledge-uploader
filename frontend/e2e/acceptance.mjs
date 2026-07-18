@@ -328,6 +328,7 @@ const requiredArtifactNames = [
   "employee-mobile-390",
   "employee-mobile-768",
   "admin-desktop-claimed-sla",
+  "admin-desktop-saved-view",
   "admin-mobile-360",
   "admin-mobile-390",
   "admin-mobile-768",
@@ -834,6 +835,32 @@ async function assertHealthyPage(targetPage, label) {
   );
 }
 
+function savedViewFixtures(user) {
+  return Array.from({ length: 121 }, (_, index) => {
+    const isHistorical = index === 120;
+    return {
+      id: `saved-view-${String(index + 1).padStart(3, "0")}`,
+      owner_id: user.id,
+      scope: "private",
+      department_id: null,
+      page_key: "review_files",
+      name: isHistorical ? "历史审核视图-001" : `审核视图-${String(index + 1).padStart(3, "0")}`,
+      stored_schema_version: 2,
+      effective_schema_version: 2,
+      compatibility: "current",
+      effective_definition: {
+        query_definition: isHistorical
+          ? { queue: "overdue", order: "asc", page_size: 20 }
+          : { queue: "unclaimed", order: "asc", page_size: 20 },
+        column_preferences: {},
+      },
+      row_version: 1,
+      created_at: new Date(Date.now() - index * 60_000).toISOString(),
+      updated_at: new Date(Date.now() - index * 60_000).toISOString(),
+    };
+  });
+}
+
 async function createWorkbenchPage(role) {
   const context = await browser.newContext({ viewport: { width: 1440, height: 900 } });
   const targetPage = await context.newPage();
@@ -844,6 +871,8 @@ async function createWorkbenchPage(role) {
     reviewFiles: reviewFixtures.scoped,
     otherReviewFiles: reviewFixtures.otherDepartment,
     notifications: workbenchNotifications(),
+    savedViews: savedViewFixtures(user),
+    savedViewQueries: [],
     fileQueries: [],
     reviewQueries: [],
     notificationQueries: [],
@@ -1046,7 +1075,27 @@ async function createWorkbenchPage(role) {
         return;
       }
       if (pathname === "/api/saved-views" && method === "GET") {
-        await fulfill({ items: [], total: 0, page: 1, page_size: 100 });
+        const q = (url.searchParams.get("q") ?? "").trim().toLocaleLowerCase("zh-CN");
+        const pageKey = url.searchParams.get("page_key");
+        const scope = url.searchParams.get("scope");
+        const visibleViews = state.savedViews.filter((view) => {
+          const searchMatch = !q || view.name.toLocaleLowerCase("zh-CN").includes(q);
+          return (
+            searchMatch &&
+            (!pageKey || view.page_key === pageKey) &&
+            (!scope || view.scope === scope)
+          );
+        });
+        const result = paginate(visibleViews, url);
+        state.savedViewQueries.push(url.search);
+        await fulfill({
+          ...result,
+          total_pages: Math.ceil(result.total / result.page_size),
+          quota: {
+            private_per_owner_page: 100,
+            department_per_department_page: 100,
+          },
+        });
         return;
       }
       if (pathname.startsWith("/api/files/")) {
@@ -1464,7 +1513,7 @@ async function validateAdminWorkbench() {
     const url = new URL(response.url());
     return url.pathname === "/api/review/files" && url.searchParams.get("page") === "2";
   });
-  await targetPage.locator(".ant-pagination-item-2").first().click();
+  await targetPage.locator(".file-management-table .ant-pagination-item-2").click();
   await pageResponse;
   assertCondition(new URL(targetPage.url()).searchParams.get("page") === "2", "admin page URL");
   await expectVisible(
@@ -1494,6 +1543,77 @@ async function validateAdminWorkbench() {
   );
   await expectVisible(targetPage.getByText("领取已失效", { exact: true }), "overdue expired claim");
   await captureScreenshot(targetPage, "admin-desktop-claimed-sla");
+
+  const initialSavedViewsResponse = targetPage.waitForResponse((response) => {
+    const url = new URL(response.url());
+    return (
+      url.pathname === "/api/saved-views" &&
+      url.searchParams.get("page_key") === "review_files" &&
+      url.searchParams.get("page") === "1" &&
+      !url.searchParams.get("q")
+    );
+  });
+  await targetPage.goto(`${baseUrl}/files`, { waitUntil: "domcontentloaded" });
+  await initialSavedViewsResponse;
+  const savedViewSelect = targetPage.getByRole("combobox", { name: "选择保存视图" });
+  await expectVisible(savedViewSelect, "saved-view remote selector");
+  assertCondition(
+    session.state.savedViews.length === 121,
+    "saved-view fixture must exceed one hundred rows",
+  );
+
+  const savedViewPagination = targetPage.getByLabel("保存视图分页");
+  await expectVisible(savedViewPagination, "saved-view explicit pagination");
+  const lastPageResponse = targetPage.waitForResponse((response) => {
+    const url = new URL(response.url());
+    return (
+      url.pathname === "/api/saved-views" &&
+      url.searchParams.get("page_key") === "review_files" &&
+      url.searchParams.get("page") === "7"
+    );
+  });
+  await savedViewPagination.locator(".ant-pagination-item-7").click();
+  await lastPageResponse;
+
+  const historicalSearchResponse = targetPage.waitForResponse((response) => {
+    const url = new URL(response.url());
+    return (
+      url.pathname === "/api/saved-views" &&
+      url.searchParams.get("page_key") === "review_files" &&
+      url.searchParams.get("q") === "历史审核视图-001"
+    );
+  });
+  await savedViewSelect.click();
+  await savedViewSelect.fill("历史审核视图-001");
+  await historicalSearchResponse;
+  await targetPage.getByText("历史审核视图-001（仅自己）", { exact: true }).click();
+
+  const appliedViewResponse = targetPage.waitForResponse((response) => {
+    const url = new URL(response.url());
+    return (
+      url.pathname === "/api/review/files" &&
+      url.searchParams.get("queue") === "overdue" &&
+      url.searchParams.get("order") === "asc"
+    );
+  });
+  await targetPage.getByRole("button", { name: "应用保存视图" }).click();
+  await appliedViewResponse;
+  await targetPage.waitForURL((url) => url.searchParams.get("queue") === "overdue");
+  await expectVisible(
+    targetPage.getByRole("tab", { name: /已超时/ }),
+    "saved-view applied overdue queue",
+  );
+  await captureScreenshot(targetPage, "admin-desktop-saved-view");
+  assertCondition(
+    session.state.savedViewQueries.some((query) => {
+      const params = new URLSearchParams(query);
+      return params.get("page") === "7" && params.get("page_size") === "20";
+    }) &&
+      session.state.savedViewQueries.some(
+        (query) => new URLSearchParams(query).get("q") === "历史审核视图-001",
+      ),
+    "saved-view >100 pagination and remote-search evidence missing",
+  );
 
   const otherDepartmentFile = session.state.otherReviewFiles[0];
   const deniedPath = `/api/files/${otherDepartmentFile.id}`;

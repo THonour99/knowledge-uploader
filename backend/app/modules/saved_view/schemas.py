@@ -61,12 +61,18 @@ class SavedViewItem(BaseModel):
     updated_at: datetime
 
 
+class SavedViewQuotaPolicy(BaseModel):
+    private_per_owner_page: int = Field(ge=1)
+    department_per_department_page: int = Field(ge=1)
+
+
 class SavedViewListResponse(BaseModel):
     items: list[SavedViewItem]
     total: int
     page: int
     page_size: int
     total_pages: int
+    quota: SavedViewQuotaPolicy
 
 
 class ColumnPreferences(BaseModel):

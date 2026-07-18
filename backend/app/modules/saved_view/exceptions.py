@@ -44,6 +44,14 @@ def conflict(message: str) -> SavedViewError:
     )
 
 
+def quota_exceeded(limit: int) -> SavedViewError:
+    return SavedViewError(
+        status_code=status.HTTP_409_CONFLICT,
+        error_code="SAVED_VIEW_QUOTA_EXCEEDED",
+        message=f"saved view namespace quota of {limit} has been reached",
+    )
+
+
 def unsupported_schema() -> SavedViewError:
     return SavedViewError(
         status_code=status.HTTP_409_CONFLICT,

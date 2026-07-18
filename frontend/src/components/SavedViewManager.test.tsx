@@ -8,6 +8,7 @@ import {
   ApiError,
   createSavedView,
   deleteSavedView,
+  getSavedView,
   listSavedViews,
   type SavedViewItem,
   updateSavedView,
@@ -23,6 +24,7 @@ vi.mock("../api/client", async () => {
     ...actual,
     createSavedView: vi.fn(),
     deleteSavedView: vi.fn(),
+    getSavedView: vi.fn(),
     listSavedViews: vi.fn(),
     updateSavedView: vi.fn(),
   };
@@ -64,13 +66,19 @@ const savedView: SavedViewItem = {
   updated_at: "2026-07-18T00:00:00Z",
 };
 
+const quota = {
+  private_per_owner_page: 100,
+  department_per_department_page: 100,
+};
+
 function savedViewList(view: SavedViewItem) {
   return {
     items: [view],
     total: 1,
     page: 1,
-    page_size: 100,
+    page_size: 20,
     total_pages: 1,
+    quota,
   };
 }
 
@@ -128,13 +136,7 @@ function renderWithProviders(node: ReactNode) {
 
 describe("SavedViewManager", () => {
   it("ignores stored column preferences and applies only the effective query definition", async () => {
-    vi.mocked(listSavedViews).mockResolvedValue({
-      items: [savedView],
-      total: 1,
-      page: 1,
-      page_size: 100,
-      total_pages: 1,
-    });
+    vi.mocked(listSavedViews).mockResolvedValue(savedViewList(savedView));
     const onApply = vi.fn();
 
     renderWithProviders(
@@ -149,7 +151,7 @@ describe("SavedViewManager", () => {
       expect(listSavedViews).toHaveBeenCalledWith({
         page_key: "task_logs",
         page: 1,
-        page_size: 100,
+        page_size: 20,
       }),
     );
     fireEvent.mouseDown(screen.getByRole("combobox", { name: "选择保存视图" }));
@@ -163,13 +165,139 @@ describe("SavedViewManager", () => {
     expect(screen.queryByText(/已应用.*列偏好|列偏好.*已应用/)).not.toBeInTheDocument();
   });
 
+  it("pages and remotely searches more than one hundred views before applying an old view", async () => {
+    const pageTwoView = {
+      ...savedView,
+      id: "44444444-4444-4444-8444-444444444444",
+      name: "第二页视图",
+    };
+    const historicalView = {
+      ...savedView,
+      id: "55555555-5555-4555-8555-555555555555",
+      name: "历史视图-001",
+      effective_definition: {
+        query_definition: {
+          status: "failed",
+          sort: "created_at",
+          order: "asc",
+          page_size: 20,
+        },
+        column_preferences: {},
+      },
+    };
+    vi.mocked(listSavedViews).mockImplementation(async (params) => {
+      if (params.q === "历史视图-001") {
+        return savedViewList(historicalView);
+      }
+      if (params.page === 2) {
+        return {
+          items: [pageTwoView],
+          total: 121,
+          page: 2,
+          page_size: 20,
+          total_pages: 7,
+          quota,
+        };
+      }
+      return {
+        items: [savedView],
+        total: 121,
+        page: 1,
+        page_size: 20,
+        total_pages: 7,
+        quota,
+      };
+    });
+    const onApply = vi.fn();
+
+    renderWithProviders(
+      <SavedViewManager
+        pageKey="task_logs"
+        queryDefinition={{ status: "running" }}
+        onApply={onApply}
+      />,
+    );
+
+    expect(await screen.findByText("共 121 个保存视图")).toBeInTheDocument();
+    const pageTwoButton = await waitFor(() => {
+      const button = document.querySelector(".ant-pagination-item-2");
+      expect(button).not.toBeNull();
+      return button;
+    });
+    fireEvent.click(pageTwoButton as HTMLElement);
+    await waitFor(() =>
+      expect(listSavedViews).toHaveBeenCalledWith({
+        page_key: "task_logs",
+        page: 2,
+        page_size: 20,
+      }),
+    );
+
+    const combobox = screen.getByRole("combobox", { name: "选择保存视图" });
+    fireEvent.mouseDown(combobox);
+    fireEvent.change(combobox, { target: { value: "历史视图-001" } });
+    await waitFor(() =>
+      expect(listSavedViews).toHaveBeenCalledWith({
+        page_key: "task_logs",
+        q: "历史视图-001",
+        page: 1,
+        page_size: 20,
+      }),
+    );
+    fireEvent.click(await screen.findByText(/历史视图-001（部门共享/));
+    fireEvent.click(screen.getByRole("button", { name: "应用保存视图" }));
+
+    expect(onApply).toHaveBeenCalledWith(historicalView.effective_definition.query_definition);
+  });
+
+  it("shows the explicit quota and maps quota rejection to a recovery action", async () => {
+    vi.mocked(listSavedViews).mockResolvedValue({
+      items: [],
+      total: 0,
+      page: 1,
+      page_size: 20,
+      total_pages: 0,
+      quota,
+    });
+    vi.mocked(createSavedView).mockRejectedValue(
+      new ApiError("quota reached", {
+        status: 409,
+        code: "SAVED_VIEW_QUOTA_EXCEEDED",
+      }),
+    );
+
+    renderWithProviders(
+      <SavedViewManager
+        pageKey="task_logs"
+        queryDefinition={{ status: "failed" }}
+        onApply={vi.fn()}
+      />,
+    );
+
+    fireEvent.click(await screen.findByRole("button", { name: /保存当前筛选/ }));
+    expect(screen.getByText(/每个页面最多保存/)).toHaveTextContent(
+      "每个页面最多保存 100 个私人视图；部门共享按部门和页面最多 100 个。",
+    );
+    fireEvent.change(screen.getByRole("textbox", { name: "视图名称" }), {
+      target: { value: "超过上限" },
+    });
+    const okButton = document.querySelector(".ant-modal-footer .ant-btn-primary");
+    expect(okButton).not.toBeNull();
+    fireEvent.click(okButton as HTMLElement);
+
+    expect(
+      await screen.findByText("已达到当前页面和共享范围的保存上限，请删除不再使用的视图后重试"),
+    ).toBeInTheDocument();
+  });
+
   it("creates a department-shared view from filters without persisting result rows", async () => {
     vi.mocked(listSavedViews).mockResolvedValue({
       items: [],
       total: 0,
       page: 1,
-      page_size: 100,
+      page_size: 20,
       total_pages: 0,
+      quota,
     });
     vi.mocked(createSavedView).mockResolvedValue(savedView);
     const queryDefinition = {
@@ -225,6 +353,7 @@ describe("SavedViewManager", () => {
     vi.mocked(listSavedViews)
       .mockResolvedValueOnce(savedViewList(savedView))
       .mockResolvedValue(savedViewList(refreshedView));
+    vi.mocked(getSavedView).mockResolvedValue(refreshedView);
     vi.mocked(updateSavedView)
       .mockRejectedValueOnce(new ApiError("row version conflict", { status: 409 }))
       .mockResolvedValueOnce({ ...refreshedView, row_version: 5 });

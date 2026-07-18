@@ -73,12 +73,11 @@ class SavedViewRepository:
         access: SavedViewAccess,
         page_key: str,
         scope: str | None,
+        q: str | None,
         limit: int,
         offset: int,
     ) -> list[SavedView]:
-        statement = self._visible_query(access=access).where(SavedView.page_key == page_key)
-        if scope is not None:
-            statement = statement.where(SavedView.scope == scope)
+        statement = self._list_query(access=access, page_key=page_key, scope=scope, q=q)
         result = await self._session.execute(
             statement.order_by(SavedView.updated_at.desc(), SavedView.id.desc())
             .offset(offset)
@@ -92,10 +91,9 @@ class SavedViewRepository:
         access: SavedViewAccess,
         page_key: str,
         scope: str | None,
+        q: str | None,
     ) -> int:
-        source = self._visible_query(access=access).where(SavedView.page_key == page_key)
-        if scope is not None:
-            source = source.where(SavedView.scope == scope)
+        source = self._list_query(access=access, page_key=page_key, scope=scope, q=q)
         result = await self._session.execute(select(func.count()).select_from(source.subquery()))
         return int(result.scalar_one())
 
@@ -147,6 +145,64 @@ class SavedViewRepository:
             )
         )
         return result.scalar_one_or_none() is not None
+
+    async def lock_quota_namespace(
+        self,
+        *,
+        owner_id: uuid.UUID,
+        scope: str,
+        department_id: uuid.UUID | None,
+        page_key: str,
+    ) -> None:
+        namespace_id = owner_id if scope == "private" else department_id
+        if namespace_id is None:
+            raise ValueError("department quota namespace requires department_id")
+        namespace = f"saved-view:{scope}:{namespace_id}:{page_key}"
+        await self._session.execute(
+            select(func.pg_advisory_xact_lock(func.hashtextextended(namespace, 0)))
+        )
+
+    async def count_in_quota_namespace(
+        self,
+        *,
+        owner_id: uuid.UUID,
+        scope: str,
+        department_id: uuid.UUID | None,
+        page_key: str,
+    ) -> int:
+        statement = select(func.count(SavedView.id)).where(
+            SavedView.scope == scope,
+            SavedView.page_key == page_key,
+        )
+        if scope == "private":
+            statement = statement.where(SavedView.owner_id == owner_id)
+        else:
+            if department_id is None:
+                raise ValueError("department quota namespace requires department_id")
+            statement = statement.where(SavedView.department_id == department_id)
+        result = await self._session.execute(statement)
+        return int(result.scalar_one())
+
+    @classmethod
+    def _list_query(
+        cls,
+        *,
+        access: SavedViewAccess,
+        page_key: str,
+        scope: str | None,
+        q: str | None,
+    ) -> Select[tuple[SavedView]]:
+        statement = cls._visible_query(access=access).where(SavedView.page_key == page_key)
+        if scope is not None:
+            statement = statement.where(SavedView.scope == scope)
+        if q is not None:
+            escaped_query = cls._escape_like(q)
+            statement = statement.where(SavedView.name.ilike(f"%{escaped_query}%", escape="\\"))
+        return statement
+
+    @staticmethod
+    def _escape_like(value: str) -> str:
+        return value.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
 
     @staticmethod
     def _visible_query(*, access: SavedViewAccess) -> Select[tuple[SavedView]]:

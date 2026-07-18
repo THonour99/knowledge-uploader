@@ -12,6 +12,7 @@ import {
   getGovernanceCapacity,
   getGovernanceLlmUsage,
   getGovernanceRagflowUsage,
+  getSavedView,
   getUploadPolicy,
   getUserFacingErrorMessage,
   listSavedViews,
@@ -863,12 +864,21 @@ describe("task and saved-view API contracts", () => {
       items: [view],
       total: 1,
       page: 1,
-      page_size: 100,
+      page_size: 20,
       total_pages: 1,
+      quota: {
+        private_per_owner_page: 100,
+        department_per_department_page: 100,
+      },
     };
-    const get = vi.spyOn(apiClient, "get").mockResolvedValue({
-      data: { success: true, data: listResponse, message: "ok" },
-    } as never);
+    const get = vi
+      .spyOn(apiClient, "get")
+      .mockResolvedValueOnce({
+        data: { success: true, data: view, message: "ok" },
+      } as never)
+      .mockResolvedValueOnce({
+        data: { success: true, data: listResponse, message: "ok" },
+      } as never);
     const post = vi.spyOn(apiClient, "post").mockResolvedValue({
       data: { success: true, data: view, message: "ok" },
     } as never);
@@ -885,7 +895,8 @@ describe("task and saved-view API contracts", () => {
       column_preferences: {},
     };
 
-    await listSavedViews({ page_key: "my_files", page: 1, page_size: 100 });
+    await getSavedView(view.id);
+    await listSavedViews({ page_key: "my_files", q: "待处理", page: 1, page_size: 20 });
     await createSavedView(createPayload);
     await updateSavedView(view.id, {
       row_version: 1,
@@ -894,8 +905,9 @@ describe("task and saved-view API contracts", () => {
     });
     await deleteSavedView(view.id);
 
-    expect(get).toHaveBeenCalledWith("/saved-views", {
-      params: { page_key: "my_files", page: 1, page_size: 100 },
+    expect(get).toHaveBeenNthCalledWith(1, "/saved-views/" + view.id);
+    expect(get).toHaveBeenNthCalledWith(2, "/saved-views", {
+      params: { page_key: "my_files", q: "待处理", page: 1, page_size: 20 },
     });
     expect(post).toHaveBeenCalledWith("/saved-views", createPayload);
     expect(patch).toHaveBeenCalledWith("/saved-views/" + view.id, {

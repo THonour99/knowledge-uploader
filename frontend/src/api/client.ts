@@ -1689,17 +1689,24 @@ export interface SavedViewItem {
   updated_at: string;
 }
 
+export interface SavedViewQuotaPolicy {
+  private_per_owner_page: number;
+  department_per_department_page: number;
+}
+
 export interface SavedViewListResponse {
   items: SavedViewItem[];
   total: number;
   page: number;
   page_size: number;
   total_pages: number;
+  quota: SavedViewQuotaPolicy;
 }
 
 export interface SavedViewListQuery {
   page_key: SavedViewPageKey;
   scope?: SavedViewScope;
+  q?: string;
   page?: number;
   page_size?: number;
 }
@@ -1802,6 +1809,14 @@ export async function listTasks(params: TaskListQuery = {}): Promise<SyncTaskLis
 
   return unwrapResponse(response.data);
 }
+export async function getSavedView(id: string): Promise<SavedViewItem> {
+  const response = await apiClient.get<ApiEnvelope<SavedViewItem> | SavedViewItem>(
+    `/saved-views/${id}`,
+  );
+
+  return unwrapResponse(response.data);
+}
+
 export async function listSavedViews(params: SavedViewListQuery): Promise<SavedViewListResponse> {
   const response = await apiClient.get<ApiEnvelope<SavedViewListResponse> | SavedViewListResponse>(
     "/saved-views",

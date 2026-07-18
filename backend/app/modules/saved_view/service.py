@@ -27,6 +27,7 @@ from .schemas import (
     SavedViewCreateRequest,
     SavedViewItem,
     SavedViewListResponse,
+    SavedViewQuotaPolicy,
     SavedViewUpdateRequest,
     StatisticsQueryDefinition,
     TaskLogsQueryDefinition,
@@ -36,6 +37,7 @@ CURRENT_DEFINITION_SCHEMA_VERSION: Final = 2
 MAX_JSON_DEPTH: Final = 4
 MAX_QUERY_BYTES: Final = 8192
 MAX_COLUMN_BYTES: Final = 4096
+MAX_SAVED_VIEWS_PER_NAMESPACE: Final = 100
 
 PAGE_ROLES: Final[dict[str, frozenset[str]]] = {
     "my_files": frozenset({"employee", "dept_admin", "system_admin"}),
@@ -155,16 +157,20 @@ class SavedViewService:
         current_user: AuthUserRecord,
         page_key: str,
         scope: str | None,
+        q: str | None,
         page: int,
         page_size: int,
     ) -> SavedViewListResponse:
         access = await self._build_access(current_user)
         self._require_page_access(access=access, page_key=page_key)
         self._validate_requested_scope(access=access, page_key=page_key, scope=scope)
+        normalized_q = q.strip() if q is not None else None
+        normalized_q = normalized_q or None
         views = await self._repository.list_visible(
             access=access,
             page_key=page_key,
             scope=scope,
+            q=normalized_q,
             limit=page_size,
             offset=(page - 1) * page_size,
         )
@@ -172,6 +178,7 @@ class SavedViewService:
             access=access,
             page_key=page_key,
             scope=scope,
+            q=normalized_q,
         )
         items = [await self._to_item(view=view, access=access) for view in views]
         return SavedViewListResponse(
@@ -180,6 +187,10 @@ class SavedViewService:
             page=page,
             page_size=page_size,
             total_pages=(total + page_size - 1) // page_size,
+            quota=SavedViewQuotaPolicy(
+                private_per_owner_page=MAX_SAVED_VIEWS_PER_NAMESPACE,
+                department_per_department_page=MAX_SAVED_VIEWS_PER_NAMESPACE,
+            ),
         )
 
     async def get_saved_view(
@@ -226,13 +237,29 @@ class SavedViewService:
             query_definition=request.query_definition,
             column_preferences=request.column_preferences,
         )
+        cleaned_name = _clean_name(request.name)
+        await self._repository.lock_quota_namespace(
+            owner_id=access.actor_id,
+            scope=request.scope,
+            department_id=department_id,
+            page_key=request.page_key,
+        )
+        namespace_count = await self._repository.count_in_quota_namespace(
+            owner_id=access.actor_id,
+            scope=request.scope,
+            department_id=department_id,
+            page_key=request.page_key,
+        )
+        if namespace_count >= MAX_SAVED_VIEWS_PER_NAMESPACE:
+            await self._session.rollback()
+            raise exceptions.quota_exceeded(MAX_SAVED_VIEWS_PER_NAMESPACE)
         try:
             view = await self._repository.create(
                 owner_id=access.actor_id,
                 scope=request.scope,
                 department_id=department_id,
                 page_key=request.page_key,
-                name=_clean_name(request.name),
+                name=cleaned_name,
                 definition_schema_version=CURRENT_DEFINITION_SCHEMA_VERSION,
                 query_definition=definition.query_definition,
                 column_preferences=definition.column_preferences,

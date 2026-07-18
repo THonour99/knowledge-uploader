@@ -1,12 +1,13 @@
 import { DeleteOutlined, EditOutlined, SaveOutlined } from "@ant-design/icons";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
-import { Alert, App, Button, Input, Radio, Select, Space, Typography } from "antd";
-import { useEffect, useMemo, useState } from "react";
+import { Alert, App, Button, Input, Pagination, Radio, Select, Space, Typography } from "antd";
+import { useDeferredValue, useEffect, useMemo, useState } from "react";
 
 import {
   SAVED_VIEW_DEFINITION_SCHEMA_VERSION,
   createSavedView,
   deleteSavedView,
+  getSavedView,
   getUserFacingErrorMessage,
   isApiError,
   listSavedViews,
@@ -39,6 +40,10 @@ interface CreateVariables {
   scope: SavedViewScope;
   departmentId?: string;
 }
+
+const SAVED_VIEW_PAGE_SIZE = 20;
+const SAVED_VIEW_QUOTA_EXCEEDED_CODE = "SAVED_VIEW_QUOTA_EXCEEDED";
+const EMPTY_SAVED_VIEWS: SavedViewItem[] = [];
 
 function viewLabel(view: SavedViewItem): string {
   const scope = view.scope === "department" ? "部门共享" : "仅自己";
@@ -73,19 +78,33 @@ export function SavedViewManager({
   const { message } = App.useApp();
   const queryClient = useQueryClient();
   const user = useAuthStore((state) => state.user);
-  const [selectedId, setSelectedId] = useState<string>();
+  const [selectedView, setSelectedView] = useState<SavedViewItem>();
   const [createOpen, setCreateOpen] = useState(false);
   const [name, setName] = useState("");
   const [scope, setScope] = useState<SavedViewScope>("private");
   const [departmentId, setDepartmentId] = useState<string>();
+  const [page, setPage] = useState(1);
+  const [searchInput, setSearchInput] = useState("");
+  const deferredSearch = useDeferredValue(searchInput.trim());
 
   const savedViewsQuery = useQuery({
-    queryKey: ["saved-views", pageKey, user?.id ?? null, user?.role ?? null],
-    queryFn: () => listSavedViews({ page_key: pageKey, page: 1, page_size: 100 }),
+    queryKey: ["saved-views", pageKey, user?.id ?? null, user?.role ?? null, page, deferredSearch],
+    queryFn: () =>
+      listSavedViews({
+        page_key: pageKey,
+        ...(deferredSearch ? { q: deferredSearch } : {}),
+        page,
+        page_size: SAVED_VIEW_PAGE_SIZE,
+      }),
     enabled: Boolean(user?.id),
   });
-  const views = savedViewsQuery.data?.items ?? [];
-  const selectedView = views.find((view) => view.id === selectedId);
+  const views = savedViewsQuery.data?.items ?? EMPTY_SAVED_VIEWS;
+  const selectableViews = useMemo(() => {
+    if (!selectedView || views.some((view) => view.id === selectedView.id)) {
+      return views;
+    }
+    return [selectedView, ...views];
+  }, [selectedView, views]);
   const normalizedDepartments = useMemo(
     () => dedupeDepartmentOptions(departmentOptions),
     [departmentOptions],
@@ -100,21 +119,38 @@ export function SavedViewManager({
   const selectedDefinition = selectedView?.effective_definition;
 
   useEffect(() => {
-    if (selectedId && !views.some((view) => view.id === selectedId)) {
-      setSelectedId(undefined);
-    }
-  }, [selectedId, views]);
+    setSelectedView((current) => {
+      if (!current) {
+        return current;
+      }
+      return views.find((view) => view.id === current.id) ?? current;
+    });
+  }, [views]);
 
   const refreshViews = async () => {
     await queryClient.invalidateQueries({ queryKey: ["saved-views", pageKey] });
   };
 
-  const recoverMutationFailure = async (error: unknown, action: "更新" | "删除"): Promise<void> => {
-    await refreshViews();
+  const recoverMutationFailure = async (
+    error: unknown,
+    action: "更新" | "删除",
+    view: SavedViewItem,
+  ): Promise<void> => {
     if (action === "更新" && isApiError(error) && error.status === 409) {
+      try {
+        setSelectedView(await getSavedView(view.id));
+      } catch {
+        setSelectedView(undefined);
+      }
+      setPage(1);
+      await refreshViews();
       void message.error("视图已被其他人更新，已刷新为最新版本，请确认后重试");
       return;
     }
+    if (isApiError(error) && error.status === 404) {
+      setSelectedView(undefined);
+    }
+    await refreshViews();
     void message.error(
       `${getUserFacingErrorMessage(error, `${action}视图失败`)}；已刷新保存视图列表`,
     );
@@ -136,8 +172,10 @@ export function SavedViewManager({
         column_preferences: {},
       }),
     onSuccess: async (created) => {
+      setSelectedView(created);
+      setPage(1);
+      setSearchInput("");
       await refreshViews();
-      setSelectedId(created.id);
       setCreateOpen(false);
       setName("");
       setScope("private");
@@ -145,6 +183,10 @@ export function SavedViewManager({
       void message.success("视图已保存");
     },
     onError: (error) => {
+      if (isApiError(error) && error.code === SAVED_VIEW_QUOTA_EXCEEDED_CODE) {
+        void message.error("已达到当前页面和共享范围的保存上限，请删除不再使用的视图后重试");
+        return;
+      }
       void message.error(getUserFacingErrorMessage(error, "保存视图失败"));
     },
   });
@@ -158,21 +200,22 @@ export function SavedViewManager({
         column_preferences: view.effective_definition?.column_preferences ?? {},
       }),
     onSuccess: async (updated) => {
+      setSelectedView(updated);
+      setPage(1);
       await refreshViews();
-      setSelectedId(updated.id);
       void message.success("视图已更新为当前筛选");
     },
-    onError: (error) => recoverMutationFailure(error, "更新"),
+    onError: (error, view) => recoverMutationFailure(error, "更新", view),
   });
 
   const deleteMutation = useMutation({
     mutationFn: (view: SavedViewItem) => deleteSavedView(view.id),
     onSuccess: async () => {
-      setSelectedId(undefined);
+      setSelectedView(undefined);
       await refreshViews();
       void message.success("视图已删除");
     },
-    onError: (error) => recoverMutationFailure(error, "删除"),
+    onError: (error, view) => recoverMutationFailure(error, "删除", view),
   });
 
   const openCreate = () => {
@@ -210,21 +253,33 @@ export function SavedViewManager({
   return (
     <>
       <Space wrap aria-label="保存视图">
-        <Select
+        <Select<string>
           aria-label="选择保存视图"
-          placeholder={savedViewsQuery.isLoading ? "正在加载保存视图" : "选择保存视图"}
-          value={selectedId}
-          loading={savedViewsQuery.isLoading}
+          placeholder={savedViewsQuery.isLoading ? "正在加载保存视图" : "选择或搜索保存视图"}
+          value={selectedView?.id}
+          loading={savedViewsQuery.isFetching}
           allowClear
           showSearch
-          optionFilterProp="label"
+          filterOption={false}
+          searchValue={searchInput}
+          notFoundContent={savedViewsQuery.isFetching ? "正在搜索" : "未找到匹配视图"}
           style={{ minWidth: 220 }}
-          options={views.map((view) => ({
+          options={selectableViews.map((view) => ({
             label: viewLabel(view),
             value: view.id,
             disabled: view.compatibility === "unsupported" || !view.effective_definition,
           }))}
-          onChange={setSelectedId}
+          onSearch={(value) => {
+            setSearchInput(value);
+            setPage(1);
+          }}
+          onClear={() => {
+            setSearchInput("");
+            setPage(1);
+          }}
+          onChange={(value) =>
+            setSelectedView(value ? selectableViews.find((view) => view.id === value) : undefined)
+          }
         />
         <Button disabled={!selectedDefinition} onClick={applySelected} aria-label="应用保存视图">
           应用
@@ -258,6 +313,18 @@ export function SavedViewManager({
           </Button>
         </Popconfirm>
       </Space>
+      {(savedViewsQuery.data?.total_pages ?? 0) > 1 ? (
+        <Pagination
+          aria-label="保存视图分页"
+          size="small"
+          current={page}
+          pageSize={SAVED_VIEW_PAGE_SIZE}
+          total={savedViewsQuery.data?.total ?? 0}
+          showSizeChanger={false}
+          showTotal={(total) => `共 ${total} 个保存视图`}
+          onChange={setPage}
+        />
+      ) : null}
 
       {savedViewsQuery.isError ? (
         <Alert
@@ -325,6 +392,15 @@ export function SavedViewManager({
             <Typography.Text type="secondary">
               当前页面将保存为私人视图；部门共享仅在有明确管理范围的审核或任务页面开放。
             </Typography.Text>
+          )}
+          {savedViewsQuery.data?.quota ? (
+            <Typography.Text type="secondary">
+              每个页面最多保存 {savedViewsQuery.data.quota.private_per_owner_page}{" "}
+              个私人视图；部门共享按部门和页面最多{" "}
+              {savedViewsQuery.data.quota.department_per_department_page} 个。
+            </Typography.Text>
+          ) : (
+            <Typography.Text type="secondary">保存上限将在视图列表加载后显示。</Typography.Text>
           )}
           <Typography.Text type="secondary">
             本页面不应用或修改列偏好；只保存筛选和排序，不保存结果行、文件内容或权限范围。

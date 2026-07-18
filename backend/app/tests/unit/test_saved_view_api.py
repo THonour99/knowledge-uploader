@@ -1,7 +1,9 @@
 from __future__ import annotations
 
+import asyncio
 import uuid
 from collections.abc import AsyncGenerator
+from datetime import UTC, datetime, timedelta
 from importlib import import_module
 from typing import Any
 
@@ -166,6 +168,38 @@ def _create_payload(
         "query_definition": query_definition or {},
         "column_preferences": column_preferences or {},
     }
+
+
+async def _insert_saved_views(
+    *,
+    owner_id: uuid.UUID,
+    names: list[str],
+    page_key: str = "my_files",
+    scope: str = "private",
+    department_id: uuid.UUID | None = None,
+) -> None:
+    from app.core.database import AsyncSessionFactory
+    from app.modules.saved_view.models import SavedView
+
+    baseline = datetime(2026, 1, 1, tzinfo=UTC)
+    views = [
+        SavedView(
+            owner_id=owner_id,
+            scope=scope,
+            department_id=department_id,
+            page_key=page_key,
+            name=name,
+            definition_schema_version=2,
+            query_definition={"q": name},
+            column_preferences={},
+            created_at=baseline + timedelta(seconds=index),
+            updated_at=baseline + timedelta(seconds=index),
+        )
+        for index, name in enumerate(names)
+    ]
+    async with AsyncSessionFactory() as session:
+        session.add_all(views)
+        await session.commit()
 
 
 async def test_private_views_are_owner_only_and_page_permissions_are_enforced() -> None:
@@ -454,6 +488,92 @@ async def test_definition_size_depth_urls_and_columns_are_bounded() -> None:
             ),
         )
         assert response.status_code == 422, response.text
+
+
+async def test_search_and_pagination_reach_legacy_views_beyond_first_hundred() -> None:
+    department_id = await _create_department(name="遗留视图", code="legacy-views")
+    employee = await _create_user(
+        email="legacy-views@company.com",
+        role="employee",
+        department_id=department_id,
+    )
+    names = ["历史%_视图-000", *(f"历史视图-{index:03d}" for index in range(1, 121))]
+    await _insert_saved_views(owner_id=employee.id, names=names)
+
+    last_page = await _request(
+        employee,
+        "GET",
+        "/api/saved-views?page_key=my_files&page=7&page_size=20",
+    )
+    assert last_page.status_code == 200, last_page.text
+    last_page_data = last_page.json()["data"]
+    assert last_page_data["total"] == 121
+    assert last_page_data["total_pages"] == 7
+    assert [item["name"] for item in last_page_data["items"]] == ["历史%_视图-000"]
+    assert last_page_data["quota"] == {
+        "private_per_owner_page": 100,
+        "department_per_department_page": 100,
+    }
+
+    searched = await _request(
+        employee,
+        "GET",
+        "/api/saved-views?page_key=my_files&q=%20%25_%20&page=1&page_size=20",
+    )
+    assert searched.status_code == 200, searched.text
+    searched_data = searched.json()["data"]
+    assert searched_data["total"] == 1
+    assert [item["name"] for item in searched_data["items"]] == ["历史%_视图-000"]
+
+    blocked_create = await _request(
+        employee,
+        "POST",
+        "/api/saved-views",
+        json=_create_payload(name="超过遗留配额"),
+    )
+    assert blocked_create.status_code == 409
+    assert blocked_create.json()["detail"]["error_code"] == "SAVED_VIEW_QUOTA_EXCEEDED"
+
+
+async def test_concurrent_creates_cannot_exceed_namespace_quota() -> None:
+    department_id = await _create_department(name="并发配额", code="quota-race")
+    employee = await _create_user(
+        email="quota-race@company.com",
+        role="employee",
+        department_id=department_id,
+    )
+    await _insert_saved_views(
+        owner_id=employee.id,
+        names=[f"已有视图-{index:03d}" for index in range(99)],
+    )
+
+    responses = await asyncio.gather(
+        _request(
+            employee,
+            "POST",
+            "/api/saved-views",
+            json=_create_payload(name="并发视图-A"),
+        ),
+        _request(
+            employee,
+            "POST",
+            "/api/saved-views",
+            json=_create_payload(name="并发视图-B"),
+        ),
+    )
+
+    assert sorted(response.status_code for response in responses) == [201, 409]
+    rejected = next(response for response in responses if response.status_code == 409)
+    assert rejected.json()["detail"]["error_code"] == "SAVED_VIEW_QUOTA_EXCEEDED"
+
+    visible = await _request(
+        employee,
+        "GET",
+        "/api/saved-views?page_key=my_files&page=1&page_size=20",
+    )
+    assert visible.status_code == 200
+    assert visible.json()["data"]["total"] == 100
+    assert visible.json()["data"]["total_pages"] == 5
 
 
 async def test_optimistic_lock_unique_name_pagination_and_admin_audit() -> None:

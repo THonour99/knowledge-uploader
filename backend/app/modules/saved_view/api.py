@@ -53,6 +53,7 @@ async def list_saved_views(
     session: SessionDep,
     page_key: Annotated[PageKey, Query()],
     scope: Annotated[SavedViewScope | None, Query()] = None,
+    q: Annotated[str | None, Query(max_length=200)] = None,
     page: Annotated[int, Query(ge=1)] = 1,
     page_size: Annotated[int, Query(ge=1, le=100)] = 20,
 ) -> dict[str, object]:
@@ -61,6 +62,7 @@ async def list_saved_views(
             current_user=current_user,
             page_key=page_key,
             scope=scope,
+            q=q,
             page=page,
             page_size=page_size,
         )
