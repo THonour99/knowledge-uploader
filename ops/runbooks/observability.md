@@ -22,6 +22,18 @@ OBS-001 本机运行时验收使用唯一 Compose project、node-exporter textfi
 
     python scripts/run_observability_acceptance.py --expected-git-sha <40位SHA> --output-dir <仓库外新目录>
 
+本机验收编排只允许以下两份批准的官方 manifest 引用，禁止回退为可变 tag：
+
+- `prom/prometheus:v3.12.0@sha256:69f5241418838263316593f7274a304b095c40bcf22e57272865da91bd60a8ac`
+- `quay.io/prometheus/node-exporter:v1.11.1@sha256:0f422f62c15f154af8d8572b23d623aebfb10cec73a5c654d18f911f3f9df241`
+
+运行器必须先解析 `docker compose config --format json` 并逐项精确比对引用，随后才允许启动
+promtool 一次性容器和常驻服务。常驻服务启动后还必须同时核对容器 `Config.Image`、容器实际
+image ID、本机镜像 ID 与 `RepoDigests` 中的批准 repository digest；任一缺失或不一致均
+fail closed。证据只记录引用、digest、镜像/容器 ID、OS 与架构，不归档容器环境或原始 inspect
+输出。该镜像身份校验仍只是本机 OBS-001 证据，不能替代真实 Alertmanager/receiver 与
+`EXT-WEBHOOK-001` 门禁。
+
 证据有效期为 24 小时；合并产生新 SHA 后必须重跑，失败、过期、候选不一致或清理不完整的证据
 不得填为“通过”。该验收不会启动 Alertmanager，也不会发送或伪造 Webhook；它只能证明本机
 Prometheus 抓取、生产规则窗口、状态转换与 runbook 绑定。`EXT-WEBHOOK-001` 仍必须在受保护环境

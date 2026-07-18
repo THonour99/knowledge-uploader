@@ -31,12 +31,40 @@ ALERTS_PATH = ROOT / "ops" / "observability" / "alerts.yml"
 ALERT_TEST_PATH = ROOT / "ops" / "observability" / "alerts.test.yml"
 PROMETHEUS_PATH = ROOT / "ops" / "observability" / "prometheus.yml"
 RUNBOOK_PATH = ROOT / "ops" / "runbooks" / "observability.md"
-PROMETHEUS_IMAGE = "prom/prometheus:v3.12.0"
-NODE_EXPORTER_IMAGE = "quay.io/prometheus/node-exporter:v1.11.1"
+PROMETHEUS_MANIFEST_DIGEST = (
+    "sha256:69f5241418838263316593f7274a304b095c40bcf22e57272865da91bd60a8ac"
+)
+PROMETHEUS_IMAGE = f"prom/prometheus:v3.12.0@{PROMETHEUS_MANIFEST_DIGEST}"
+PROMETHEUS_REPOSITORY_DIGEST = f"prom/prometheus@{PROMETHEUS_MANIFEST_DIGEST}"
+NODE_EXPORTER_MANIFEST_DIGEST = (
+    "sha256:0f422f62c15f154af8d8572b23d623aebfb10cec73a5c654d18f911f3f9df241"
+)
+NODE_EXPORTER_IMAGE = f"quay.io/prometheus/node-exporter:v1.11.1@{NODE_EXPORTER_MANIFEST_DIGEST}"
+NODE_EXPORTER_REPOSITORY_DIGEST = (
+    f"quay.io/prometheus/node-exporter@{NODE_EXPORTER_MANIFEST_DIGEST}"
+)
+APPROVED_IMAGE_CONTRACTS = (
+    (
+        "prometheus",
+        "prometheus",
+        PROMETHEUS_IMAGE,
+        PROMETHEUS_MANIFEST_DIGEST,
+        PROMETHEUS_REPOSITORY_DIGEST,
+    ),
+    (
+        "metrics-fixture",
+        "node_exporter",
+        NODE_EXPORTER_IMAGE,
+        NODE_EXPORTER_MANIFEST_DIGEST,
+        NODE_EXPORTER_REPOSITORY_DIGEST,
+    ),
+)
 EVIDENCE_SCHEMA = "knowledge-uploader.observability-local-evidence.v1"
 EVIDENCE_TTL_SECONDS = 24 * 60 * 60
 EXPECTED_SHA_PATTERN = re.compile(r"^[0-9a-f]{40}$")
 EVALUATION_INTERVAL_SECONDS = 5
+CONTAINER_ID_PATTERN = re.compile(r"^[0-9a-f]{64}$")
+IMAGE_ID_PATTERN = re.compile(r"^sha256:[0-9a-f]{64}$")
 PROMETHEUS_JOB = "observability-acceptance"
 
 
@@ -120,7 +148,11 @@ REQUIRED_PHASES = frozenset(
         "promtool_production_rules",
         "promtool_rule_transitions",
         "compose_up",
+        "prometheus_container_lookup",
+        "prometheus_container_identity",
         "prometheus_image_identity",
+        "node_exporter_container_lookup",
+        "node_exporter_container_identity",
         "node_exporter_image_identity",
         "compose_down",
         "container_cleanup",
@@ -627,34 +659,136 @@ def _compose_command(project: str, *arguments: str) -> tuple[str, ...]:
     )
 
 
+def _resolved_image_contract(
+    services: dict[str, object],
+) -> dict[str, dict[str, object]]:
+    evidence: dict[str, dict[str, object]] = {}
+    for (
+        service_name,
+        evidence_name,
+        approved_reference,
+        approved_manifest_digest,
+        approved_repository_digest,
+    ) in APPROVED_IMAGE_CONTRACTS:
+        service = _mapping(
+            services.get(service_name),
+            f"{evidence_name}_compose_service",
+        )
+        resolved_reference = service.get("image")
+        if resolved_reference != approved_reference:
+            raise ObservabilityAcceptanceError(f"{evidence_name}_compose_image_identity")
+        evidence[evidence_name] = {
+            "approved_reference": approved_reference,
+            "approved_manifest_digest": approved_manifest_digest,
+            "approved_repository_digest": approved_repository_digest,
+            "resolved_compose_reference": resolved_reference,
+            "verified_before_start": True,
+        }
+    return evidence
+
+
 def _image_identity(
-    name: str,
-    image: str,
+    evidence_name: str,
+    service_name: str,
+    approved_reference: str,
+    approved_manifest_digest: str,
+    approved_repository_digest: str,
+    resolved_reference: str,
     *,
+    project: str,
     environment: dict[str, str],
-) -> tuple[ProcessResult, dict[str, object]]:
-    result = _run_process(
-        name,
+) -> tuple[list[ProcessResult], dict[str, object]]:
+    lookup = _run_process(
+        f"{evidence_name}_container_lookup",
+        _compose_command(project, "ps", "--quiet", service_name),
+        environment=environment,
+        timeout_seconds=30,
+    )
+    _require(lookup)
+    container_ids = [
+        line.strip().lower()
+        for line in lookup.stdout.decode("ascii", errors="strict").splitlines()
+        if line.strip()
+    ]
+    if len(container_ids) != 1 or CONTAINER_ID_PATTERN.fullmatch(container_ids[0]) is None:
+        raise ObservabilityAcceptanceError(f"{evidence_name}_container_lookup")
+    container_id = container_ids[0]
+
+    container = _run_process(
+        f"{evidence_name}_container_identity",
         (
             "docker",
-            "image",
+            "container",
             "inspect",
-            image,
+            container_id,
             "--format",
-            "{{.Id}}|{{.Os}}|{{.Architecture}}",
+            "{{.Id}}|{{.Image}}|{{.Config.Image}}",
         ),
         environment=environment,
         timeout_seconds=30,
     )
-    _require(result)
-    fields = result.stdout.decode("utf-8", errors="replace").strip().split("|")
-    if len(fields) != 3 or not fields[0].startswith("sha256:"):
-        raise ObservabilityAcceptanceError(name)
-    return result, {
-        "reference": image,
-        "image_id": fields[0],
-        "os": fields[1],
-        "architecture": fields[2],
+    _require(container)
+    container_fields = container.stdout.decode("utf-8", errors="strict").strip().split("|")
+    if (
+        len(container_fields) != 3
+        or container_fields[0].lower() != container_id
+        or IMAGE_ID_PATTERN.fullmatch(container_fields[1].lower()) is None
+        or container_fields[2] != resolved_reference
+        or container_fields[2] != approved_reference
+    ):
+        raise ObservabilityAcceptanceError(f"{evidence_name}_container_identity")
+    container_image_id = container_fields[1].lower()
+
+    image = _run_process(
+        f"{evidence_name}_image_identity",
+        (
+            "docker",
+            "image",
+            "inspect",
+            approved_reference,
+            "--format",
+            "{{json .RepoDigests}}|{{.Id}}|{{.Os}}|{{.Architecture}}",
+        ),
+        environment=environment,
+        timeout_seconds=30,
+    )
+    _require(image)
+    image_fields = image.stdout.decode("utf-8", errors="strict").strip().split("|")
+    try:
+        raw_repository_digests: object = json.loads(image_fields[0])
+    except (IndexError, json.JSONDecodeError) as exc:
+        raise ObservabilityAcceptanceError(f"{evidence_name}_image_identity") from exc
+    repository_digests = (
+        sorted(raw_repository_digests)
+        if isinstance(raw_repository_digests, list)
+        and all(isinstance(item, str) for item in raw_repository_digests)
+        else []
+    )
+    if (
+        len(image_fields) != 4
+        or IMAGE_ID_PATTERN.fullmatch(image_fields[1].lower()) is None
+        or image_fields[1].lower() != container_image_id
+        or image_fields[2] != "linux"
+        or not image_fields[3]
+        or approved_repository_digest not in repository_digests
+        or not approved_reference.endswith(f"@{approved_manifest_digest}")
+        or not approved_repository_digest.endswith(f"@{approved_manifest_digest}")
+    ):
+        raise ObservabilityAcceptanceError(f"{evidence_name}_image_identity")
+    return [lookup, container, image], {
+        "reference": approved_reference,
+        "approved_reference": approved_reference,
+        "approved_manifest_digest": approved_manifest_digest,
+        "approved_repository_digest": approved_repository_digest,
+        "resolved_compose_reference": resolved_reference,
+        "container_config_reference": container_fields[2],
+        "container_id": container_id,
+        "container_image_id": container_image_id,
+        "local_image_id": image_fields[1].lower(),
+        "repository_digests": repository_digests,
+        "repository_digest_match": True,
+        "os": image_fields[2],
+        "architecture": image_fields[3],
     }
 
 
@@ -775,6 +909,57 @@ def _mapping_or_empty(value: object) -> dict[str, object]:
     return cast(dict[str, object], value)
 
 
+def _image_evidence_errors(runtime: dict[str, object]) -> list[str]:
+    errors: list[str] = []
+    resolved_images = _mapping_or_empty(runtime.get("resolved_compose_images"))
+    actual_images = _mapping_or_empty(runtime.get("images"))
+    for (
+        _service_name,
+        evidence_name,
+        approved_reference,
+        approved_manifest_digest,
+        approved_repository_digest,
+    ) in APPROVED_IMAGE_CONTRACTS:
+        resolved = _mapping_or_empty(resolved_images.get(evidence_name))
+        actual = _mapping_or_empty(actual_images.get(evidence_name))
+        raw_repository_digests = actual.get("repository_digests")
+        repository_digests = (
+            raw_repository_digests
+            if isinstance(raw_repository_digests, list)
+            and all(isinstance(item, str) for item in raw_repository_digests)
+            else []
+        )
+        container_id = actual.get("container_id")
+        container_image_id = actual.get("container_image_id")
+        local_image_id = actual.get("local_image_id")
+        architecture = actual.get("architecture")
+        if (
+            resolved.get("approved_reference") != approved_reference
+            or resolved.get("approved_manifest_digest") != approved_manifest_digest
+            or resolved.get("approved_repository_digest") != approved_repository_digest
+            or resolved.get("resolved_compose_reference") != approved_reference
+            or resolved.get("verified_before_start") is not True
+            or actual.get("reference") != approved_reference
+            or actual.get("approved_reference") != approved_reference
+            or actual.get("approved_manifest_digest") != approved_manifest_digest
+            or actual.get("approved_repository_digest") != approved_repository_digest
+            or actual.get("resolved_compose_reference") != approved_reference
+            or actual.get("container_config_reference") != approved_reference
+            or not isinstance(container_id, str)
+            or CONTAINER_ID_PATTERN.fullmatch(container_id) is None
+            or not isinstance(container_image_id, str)
+            or IMAGE_ID_PATTERN.fullmatch(container_image_id) is None
+            or local_image_id != container_image_id
+            or approved_repository_digest not in repository_digests
+            or actual.get("repository_digest_match") is not True
+            or actual.get("os") != "linux"
+            or not isinstance(architecture, str)
+            or not architecture
+        ):
+            errors.append(f"image:{evidence_name}")
+    return errors
+
+
 def evidence_errors(
     evidence: dict[str, object],
     *,
@@ -840,6 +1025,7 @@ def evidence_errors(
         or runtime.get("host_runtime_dir_removed") is not True
     ):
         errors.append("cleanup")
+    errors.extend(_image_evidence_errors(runtime))
 
     raw_alerts = runtime.get("alerts")
     alerts = (
@@ -941,6 +1127,7 @@ def _execute(
     resolved_metrics: dict[str, float] = {}
     transitions: dict[str, dict[str, object]] = {}
     images: dict[str, object] = {}
+    resolved_images: dict[str, dict[str, object]] = {}
     compose_sha256: str | None = None
     docker_cleanup_passed = False
     host_runtime_dir_removed = False
@@ -981,6 +1168,7 @@ def _execute(
         if set(services) != {"metrics-fixture", "prometheus"} or "alertmanager" in services:
             raise ObservabilityAcceptanceError("compose_contract")
         compose_sha256 = _sha256_bytes(compose_contract.stdout)
+        resolved_images = _resolved_image_contract(services)
 
         commands = (
             (
@@ -1057,17 +1245,27 @@ def _execute(
         phases.append(up)
         _require(up)
 
-        prom_result, prom_identity = _image_identity(
-            "prometheus_image_identity",
+        prom_results, prom_identity = _image_identity(
+            "prometheus",
+            "prometheus",
             PROMETHEUS_IMAGE,
+            PROMETHEUS_MANIFEST_DIGEST,
+            PROMETHEUS_REPOSITORY_DIGEST,
+            str(resolved_images["prometheus"]["resolved_compose_reference"]),
+            project=project,
             environment=environment,
         )
-        node_result, node_identity = _image_identity(
-            "node_exporter_image_identity",
+        node_results, node_identity = _image_identity(
+            "node_exporter",
+            "metrics-fixture",
             NODE_EXPORTER_IMAGE,
+            NODE_EXPORTER_MANIFEST_DIGEST,
+            NODE_EXPORTER_REPOSITORY_DIGEST,
+            str(resolved_images["node_exporter"]["resolved_compose_reference"]),
+            project=project,
             environment=environment,
         )
-        phases.extend((prom_result, node_result))
+        phases.extend((*prom_results, *node_results))
         images = {
             "prometheus": prom_identity,
             "node_exporter": node_identity,
@@ -1167,6 +1365,7 @@ def _execute(
             "resolved_metric_values": resolved_metrics,
             "alerts": alert_evidence,
             "images": images,
+            "resolved_compose_images": resolved_images,
             "production_for_windows_used": True,
             "cleanup_passed": cleanup_passed,
             "docker_cleanup_passed": docker_cleanup_passed,

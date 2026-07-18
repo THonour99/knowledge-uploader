@@ -48,6 +48,39 @@ def _valid_evidence(now: datetime) -> dict[str, object]:
                 "resolved_state": "inactive",
             }
         )
+    resolved_images: dict[str, dict[str, object]] = {}
+    images: dict[str, dict[str, object]] = {}
+    for index, (
+        _service_name,
+        evidence_name,
+        approved_reference,
+        approved_manifest_digest,
+        approved_repository_digest,
+    ) in enumerate(acceptance.APPROVED_IMAGE_CONTRACTS):
+        container_id = str(index + 1) * 64
+        image_id = f"sha256:{chr(ord('b') + index) * 64}"
+        resolved_images[evidence_name] = {
+            "approved_reference": approved_reference,
+            "approved_manifest_digest": approved_manifest_digest,
+            "approved_repository_digest": approved_repository_digest,
+            "resolved_compose_reference": approved_reference,
+            "verified_before_start": True,
+        }
+        images[evidence_name] = {
+            "reference": approved_reference,
+            "approved_reference": approved_reference,
+            "approved_manifest_digest": approved_manifest_digest,
+            "approved_repository_digest": approved_repository_digest,
+            "resolved_compose_reference": approved_reference,
+            "container_config_reference": approved_reference,
+            "container_id": container_id,
+            "container_image_id": image_id,
+            "local_image_id": image_id,
+            "repository_digests": [approved_repository_digest],
+            "repository_digest_match": True,
+            "os": "linux",
+            "architecture": "amd64",
+        }
     return {
         "schema": acceptance.EVIDENCE_SCHEMA,
         "status": "candidate_passed",
@@ -77,6 +110,8 @@ def _valid_evidence(now: datetime) -> dict[str, object]:
                 "last_error_empty": True,
             },
             "alerts": alerts,
+            "resolved_compose_images": resolved_images,
+            "images": images,
             "cleanup_passed": True,
             "production_for_windows_used": True,
             "docker_cleanup_passed": True,
@@ -166,6 +201,101 @@ def test_compose_is_isolated_and_never_starts_alertmanager() -> None:
     assert services["metrics-fixture"]["read_only"] is True
     assert services["prometheus"]["read_only"] is True
     assert "127.0.0.1:" in services["prometheus"]["ports"][0]
+    assert services["metrics-fixture"]["image"] == acceptance.NODE_EXPORTER_IMAGE
+    assert services["prometheus"]["image"] == acceptance.PROMETHEUS_IMAGE
+    assert "@sha256:" in services["metrics-fixture"]["image"]
+    assert "@sha256:" in services["prometheus"]["image"]
+
+
+def test_resolved_compose_images_must_match_approved_digests() -> None:
+    payload = yaml.safe_load(acceptance.COMPOSE_PATH.read_text(encoding="utf-8"))
+    services = payload["services"]
+
+    evidence = acceptance._resolved_image_contract(services)
+
+    assert evidence["prometheus"]["verified_before_start"] is True
+    assert (
+        evidence["node_exporter"]["approved_repository_digest"]
+        == acceptance.NODE_EXPORTER_REPOSITORY_DIGEST
+    )
+
+    mutated = copy.deepcopy(services)
+    mutated["metrics-fixture"]["image"] = "quay.io/prometheus/node-exporter:v1.11.1"
+    with pytest.raises(acceptance.ObservabilityAcceptanceError) as caught:
+        acceptance._resolved_image_contract(mutated)
+    assert caught.value.step == "node_exporter_compose_image_identity"
+
+
+def test_running_image_identity_binds_container_config_id_and_repo_digest(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    container_id = "1" * 64
+    image_id = "sha256:" + "b" * 64
+    results = iter(
+        (
+            acceptance.ProcessResult(
+                name="prometheus_container_lookup",
+                command=(),
+                returncode=0,
+                stdout=f"{container_id}\n".encode(),
+                stderr=b"",
+                duration_ms=1,
+            ),
+            acceptance.ProcessResult(
+                name="prometheus_container_identity",
+                command=(),
+                returncode=0,
+                stdout=(f"{container_id}|{image_id}|{acceptance.PROMETHEUS_IMAGE}\n".encode()),
+                stderr=b"",
+                duration_ms=1,
+            ),
+            acceptance.ProcessResult(
+                name="prometheus_image_identity",
+                command=(),
+                returncode=0,
+                stdout=(
+                    f'["{acceptance.PROMETHEUS_REPOSITORY_DIGEST}"]|{image_id}|linux|amd64\n'
+                ).encode(),
+                stderr=b"",
+                duration_ms=1,
+            ),
+        )
+    )
+
+    def fake_run_process(
+        name: str,
+        _command: object,
+        *,
+        environment: dict[str, str],
+        timeout_seconds: int,
+    ) -> object:
+        assert environment == {}
+        assert timeout_seconds == 30
+        result = next(results)
+        assert result.name == name
+        return result
+
+    monkeypatch.setattr(acceptance, "_run_process", fake_run_process)
+
+    phases, identity = acceptance._image_identity(
+        "prometheus",
+        "prometheus",
+        acceptance.PROMETHEUS_IMAGE,
+        acceptance.PROMETHEUS_MANIFEST_DIGEST,
+        acceptance.PROMETHEUS_REPOSITORY_DIGEST,
+        acceptance.PROMETHEUS_IMAGE,
+        project="ku-obs-test",
+        environment={},
+    )
+
+    assert [phase.name for phase in phases] == [
+        "prometheus_container_lookup",
+        "prometheus_container_identity",
+        "prometheus_image_identity",
+    ]
+    assert identity["container_image_id"] == image_id
+    assert identity["local_image_id"] == image_id
+    assert identity["repository_digest_match"] is True
 
 
 def test_fixture_metrics_use_only_aggregate_fixed_labels() -> None:
@@ -351,6 +481,10 @@ def test_evidence_accepts_current_candidate_bound_local_runtime() -> None:
         "cleanup_failed",
         "phase_failed",
         "source_drift",
+        "resolved_compose_image",
+        "container_config_image",
+        "repository_digest_missing",
+        "container_image_id_mismatch",
     ),
 )
 def test_evidence_rejects_failed_stale_or_overclaimed_receipts(mutation: str) -> None:
@@ -424,6 +558,38 @@ def test_evidence_rejects_failed_stale_or_overclaimed_receipts(mutation: str) ->
         phase["returncode"] = 1
     elif mutation == "source_drift":
         evidence["source_sha256"] = {"alerts.yml": "0" * 64}
+    elif mutation == "resolved_compose_image":
+        runtime = evidence["runtime"]
+        assert isinstance(runtime, dict)
+        resolved_images = runtime["resolved_compose_images"]
+        assert isinstance(resolved_images, dict)
+        image = resolved_images["prometheus"]
+        assert isinstance(image, dict)
+        image["resolved_compose_reference"] = "prom/prometheus:v3.12.0"
+    elif mutation == "container_config_image":
+        runtime = evidence["runtime"]
+        assert isinstance(runtime, dict)
+        images = runtime["images"]
+        assert isinstance(images, dict)
+        image = images["prometheus"]
+        assert isinstance(image, dict)
+        image["container_config_reference"] = "prom/prometheus:v3.12.0"
+    elif mutation == "repository_digest_missing":
+        runtime = evidence["runtime"]
+        assert isinstance(runtime, dict)
+        images = runtime["images"]
+        assert isinstance(images, dict)
+        image = images["prometheus"]
+        assert isinstance(image, dict)
+        image["repository_digests"] = []
+    elif mutation == "container_image_id_mismatch":
+        runtime = evidence["runtime"]
+        assert isinstance(runtime, dict)
+        images = runtime["images"]
+        assert isinstance(images, dict)
+        image = images["prometheus"]
+        assert isinstance(image, dict)
+        image["local_image_id"] = "sha256:" + "f" * 64
 
     assert acceptance.evidence_errors(
         evidence,
