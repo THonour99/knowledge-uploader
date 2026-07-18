@@ -175,8 +175,7 @@
       "effect_boundary": "new_registration_and_login",
       "assertion_type": "value_ab",
       "pytest_nodes": [
-        "backend/app/tests/unit/test_auth_api.py::test_register_creates_active_user_without_email_verification_by_default",
-        "backend/app/tests/unit/test_auth_api.py::test_register_writes_verification_outbox_without_replayable_token"
+        "backend/app/tests/unit/test_auth_api.py::test_runtime_email_verification_policy_controls_registration_with_settings_disabled"
       ]
     },
     {

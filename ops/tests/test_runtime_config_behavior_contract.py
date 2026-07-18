@@ -18,6 +18,10 @@ ALLOWED_ASSERTION_TYPES = frozenset(
 REQUIRED_ENTRY_FIELDS = frozenset(
     {"key", "consumer", "effect_boundary", "assertion_type", "pytest_nodes"}
 )
+EMAIL_VERIFICATION_AB_NODE = (
+    "backend/app/tests/unit/test_auth_api.py::"
+    "test_runtime_email_verification_policy_controls_registration_with_settings_disabled"
+)
 
 
 def _load_guard() -> ModuleType:
@@ -146,3 +150,11 @@ def test_registered_pytest_nodes_are_collectable() -> None:
     for nodeid in nodeids:
         collected_nodeid = nodeid.removeprefix("backend/")
         assert nodeid in normalized_stdout or collected_nodeid in normalized_stdout
+
+
+def test_email_verification_value_ab_uses_one_runtime_policy_node() -> None:
+    entries = {entry["key"]: entry for entry in _entries(_load_registry())}
+    contract = entries["security.require_email_verification"]
+
+    assert contract["assertion_type"] == "value_ab"
+    assert contract["pytest_nodes"] == [EMAIL_VERIFICATION_AB_NODE]

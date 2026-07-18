@@ -486,6 +486,63 @@ async def test_register_creates_active_user_without_email_verification_by_defaul
     assert user.email_verified is True
 
 
+async def test_runtime_email_verification_policy_controls_registration_with_settings_disabled(
+    client: AsyncClient,
+    set_system_config: Callable[[str, object], Awaitable[None]],
+) -> None:
+    from sqlalchemy import select
+
+    from app.core.database import AsyncSessionFactory
+    from app.modules.user.models import User
+
+    await set_system_config("security.require_email_verification", False)
+    disabled = await client.post(
+        "/api/auth/register",
+        json={
+            "name": "Runtime Disabled",
+            "email": "runtime-disabled@company.com",
+            "password": "password123",
+        },
+    )
+
+    await set_system_config("security.require_email_verification", True)
+    enabled = await client.post(
+        "/api/auth/register",
+        json={
+            "name": "Runtime Enabled",
+            "email": "runtime-enabled@company.com",
+            "password": "password123",
+        },
+    )
+
+    assert disabled.status_code == 201
+    assert enabled.status_code == 201
+    async with AsyncSessionFactory() as session:
+        users = {
+            user.email: user
+            for user in (
+                await session.execute(
+                    select(User).where(
+                        User.email.in_(
+                            (
+                                "runtime-disabled@company.com",
+                                "runtime-enabled@company.com",
+                            )
+                        )
+                    )
+                )
+            ).scalars()
+        }
+
+    disabled_user = users["runtime-disabled@company.com"]
+    enabled_user = users["runtime-enabled@company.com"]
+    assert (disabled_user.status, disabled_user.email_verified) == ("active", True)
+    assert (enabled_user.status, enabled_user.email_verified) == (
+        "pending_email_verification",
+        False,
+    )
+
+
 async def test_register_writes_verification_outbox_without_replayable_token(
     verification_client: AsyncClient,
     monkeypatch: pytest.MonkeyPatch,
