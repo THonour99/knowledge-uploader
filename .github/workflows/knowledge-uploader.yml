@@ -161,8 +161,9 @@ jobs:
           E2E_ACCEPTANCE_MODE: protected
           E2E_ARTIFACT_DIR: ${{ runner.temp }}/knowledge-uploader-ui-${{ github.sha }}
           E2E_BASE_URL: http://127.0.0.1:4173
+          E2E_GIT_SHA: ${{ github.sha }}
         run: |
-          mkdir -p "${E2E_ARTIFACT_DIR}"
+          test ! -e "${E2E_ARTIFACT_DIR}"
           : > "${RUNNER_TEMP}/knowledge-uploader-ui-server.log"
           (cd frontend && npx --no-install playwright install --with-deps chromium)
           npm run preview --prefix frontend -- --host 127.0.0.1 --port 4173 \
@@ -180,9 +181,10 @@ jobs:
             sleep 1
           done
           npm run e2e:acceptance --prefix frontend
+          test -f "${E2E_ARTIFACT_DIR}/evidence-manifest.json"
 
       - name: Upload UI acceptance evidence
-        if: ${{ always() && !env.ACT }}
+        if: ${{ success() && !env.ACT }}
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
           name: ui-acceptance-${{ github.sha }}-${{ github.run_id }}-${{ github.run_attempt }}

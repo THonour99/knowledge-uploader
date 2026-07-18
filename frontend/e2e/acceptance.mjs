@@ -1,33 +1,164 @@
 #!/usr/bin/env node
 
-import { mkdir, stat } from "node:fs/promises";
+import { execFile } from "node:child_process";
+import { createHash } from "node:crypto";
+import { rmSync } from "node:fs";
+import {
+  lstat,
+  mkdir,
+  mkdtemp,
+  readFile,
+  realpath,
+  rename,
+  stat,
+  writeFile,
+} from "node:fs/promises";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
+import { promisify } from "node:util";
 
+const execFileAsync = promisify(execFile);
+const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../..");
 const baseUrl = process.env.E2E_BASE_URL ?? "http://127.0.0.1:5173";
 const acceptanceMode = process.env.E2E_ACCEPTANCE_MODE?.trim() || "smoke";
-const artifactDir = process.env.E2E_ARTIFACT_DIR?.trim();
+const requestedArtifactDir = process.env.E2E_ARTIFACT_DIR?.trim();
 const protectedAcceptance = acceptanceMode === "protected";
+let artifactDir = requestedArtifactDir;
+let protectedArtifactDestination;
+let protectedStagingDir;
+let protectedSourceIdentity;
+
+function normalizedPathKey(value) {
+  const normalized = path.normalize(value);
+  return process.platform === "win32" ? normalized.toLocaleLowerCase("en-US") : normalized;
+}
+
+function assertPathOutsideRepository(candidate) {
+  const relativePath = path.relative(repoRoot, candidate);
+  const insideRepository =
+    relativePath === "" || (!relativePath.startsWith("..") && !path.isAbsolute(relativePath));
+  if (insideRepository) {
+    throw new Error("Protected acceptance artifacts must be stored outside the repository");
+  }
+}
+
+async function gitOutput(args) {
+  try {
+    const result = await execFileAsync("git", args, {
+      cwd: repoRoot,
+      encoding: "utf8",
+      maxBuffer: 1024 * 1024,
+      windowsHide: true,
+    });
+    return result.stdout.trim();
+  } catch (error) {
+    throw new Error(`Protected acceptance Git preflight failed: git ${args.join(" ")}`, {
+      cause: error,
+    });
+  }
+}
+
+async function validateProtectedSourceIdentity() {
+  const expectedGitSha = process.env.E2E_GIT_SHA?.trim();
+  if (!expectedGitSha || !/^[0-9a-f]{40}$/.test(expectedGitSha)) {
+    throw new Error("Protected acceptance requires exact lowercase 40-hex E2E_GIT_SHA");
+  }
+
+  const gitTopLevel = await gitOutput(["rev-parse", "--show-toplevel"]);
+  const [canonicalRepoRoot, canonicalGitTopLevel] = await Promise.all([
+    realpath(repoRoot),
+    realpath(gitTopLevel),
+  ]);
+  if (normalizedPathKey(canonicalRepoRoot) !== normalizedPathKey(canonicalGitTopLevel)) {
+    throw new Error("Protected acceptance Git root does not match the repository under test");
+  }
+
+  const gitSha = await gitOutput(["rev-parse", "--verify", "HEAD"]);
+  if (gitSha !== expectedGitSha) {
+    throw new Error(`E2E_GIT_SHA does not match HEAD: expected ${expectedGitSha}, got ${gitSha}`);
+  }
+  const gitTree = await gitOutput(["rev-parse", "--verify", `${gitSha}^{tree}`]);
+  if (!/^[0-9a-f]{40}$/.test(gitTree)) {
+    throw new Error("Protected acceptance could not resolve an exact Git tree");
+  }
+
+  const worktreeStatus = await gitOutput(["status", "--porcelain=v1", "--untracked-files=all"]);
+  if (worktreeStatus) {
+    throw new Error(
+      "Protected acceptance requires a clean non-ignored worktree:\n" + worktreeStatus,
+    );
+  }
+  return { gitSha, gitTree };
+}
+
+async function pathExists(candidate) {
+  try {
+    await lstat(candidate);
+    return true;
+  } catch (error) {
+    if (error && typeof error === "object" && "code" in error && error.code === "ENOENT") {
+      return false;
+    }
+    throw error;
+  }
+}
+
+async function prepareProtectedArtifactDirectory(rawArtifactDir) {
+  if (!rawArtifactDir) {
+    throw new Error("Protected acceptance requires E2E_ARTIFACT_DIR");
+  }
+  if (!path.isAbsolute(rawArtifactDir)) {
+    throw new Error("E2E_ARTIFACT_DIR must be an absolute path");
+  }
+
+  const resolvedDestination = path.resolve(rawArtifactDir);
+  const artifactName = path.basename(resolvedDestination);
+  if (!artifactName) {
+    throw new Error("E2E_ARTIFACT_DIR must name a dedicated evidence directory");
+  }
+  assertPathOutsideRepository(resolvedDestination);
+
+  const requestedParent = path.dirname(resolvedDestination);
+  const [canonicalParent, canonicalRepoRoot] = await Promise.all([
+    realpath(requestedParent),
+    realpath(repoRoot),
+  ]);
+  const destination = path.join(canonicalParent, artifactName);
+  const relativeCanonicalPath = path.relative(canonicalRepoRoot, destination);
+  const canonicalInsideRepository =
+    relativeCanonicalPath === "" ||
+    (!relativeCanonicalPath.startsWith("..") && !path.isAbsolute(relativeCanonicalPath));
+  if (canonicalInsideRepository) {
+    throw new Error("Protected acceptance artifacts resolve inside the repository");
+  }
+  if (await pathExists(destination)) {
+    throw new Error("E2E_ARTIFACT_DIR must not already exist; stale evidence is forbidden");
+  }
+
+  const stagingDir = await mkdtemp(path.join(canonicalParent, `.${artifactName}.tmp-`));
+  return { destination, stagingDir };
+}
 
 if (!["smoke", "protected"].includes(acceptanceMode)) {
   throw new Error(`Unknown E2E_ACCEPTANCE_MODE: ${acceptanceMode}`);
 }
 
 if (protectedAcceptance) {
-  if (!artifactDir) {
-    throw new Error("Protected acceptance requires E2E_ARTIFACT_DIR");
-  }
-  if (!path.isAbsolute(artifactDir)) {
-    throw new Error("E2E_ARTIFACT_DIR must be an absolute path");
-  }
-  const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../..");
-  const relativeArtifactPath = path.relative(repoRoot, artifactDir);
-  const artifactInsideRepo =
-    relativeArtifactPath === "" ||
-    (!relativeArtifactPath.startsWith("..") && !path.isAbsolute(relativeArtifactPath));
-  if (artifactInsideRepo) {
-    throw new Error("Protected acceptance artifacts must be stored outside the repository");
-  }
+  protectedSourceIdentity = await validateProtectedSourceIdentity();
+  const preparedArtifacts = await prepareProtectedArtifactDirectory(requestedArtifactDir);
+  protectedArtifactDestination = preparedArtifacts.destination;
+  protectedStagingDir = preparedArtifacts.stagingDir;
+  artifactDir = protectedStagingDir;
+  process.once("exit", () => {
+    if (!protectedStagingDir) {
+      return;
+    }
+    try {
+      rmSync(protectedStagingDir, { force: true, recursive: true });
+    } catch {
+      // Best-effort cleanup cannot turn a failed run into published evidence.
+    }
+  });
 }
 
 async function loadPlaywright() {
@@ -73,6 +204,7 @@ if (!playwright?.chromium) {
 }
 
 const browser = await playwright.chromium.launch({ headless: true });
+const browserVersion = browser.version();
 const page = await browser.newPage({ viewport: { width: 1366, height: 900 } });
 const runtimeErrors = [];
 const runtimeWarnings = [];
@@ -321,6 +453,12 @@ const workbenchIds = {
   otherReviewer: "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb",
 };
 
+const protectedScenarioNames = [
+  "upload-controls",
+  "document-detail-analysis",
+  "employee-workbench-notifications-responsive",
+  "admin-review-claim-sla-saved-view-scope-responsive",
+];
 const requiredArtifactNames = [
   "employee-desktop-workbench",
   "employee-desktop-notification",
@@ -695,15 +833,21 @@ async function captureScreenshot(targetPage, name) {
     assertCondition(!protectedAcceptance, `Protected screenshot missing directory: ${name}`);
     return;
   }
+  assertCondition(!capturedArtifacts.has(name), `Screenshot captured more than once: ${name}`);
   await mkdir(artifactDir, { recursive: true });
-  const screenshotPath = path.join(artifactDir, `${name}.png`);
+  const fileName = `${name}.png`;
+  const screenshotPath = path.join(artifactDir, fileName);
   await targetPage.screenshot({ path: screenshotPath, fullPage: true });
   const screenshotStat = await stat(screenshotPath);
   assertCondition(
     screenshotStat.isFile() && screenshotStat.size >= 1_024,
     `Invalid screenshot: ${name}`,
   );
-  capturedArtifacts.set(name, { path: screenshotPath, size: screenshotStat.size });
+  capturedArtifacts.set(name, {
+    fileName,
+    path: screenshotPath,
+    size: screenshotStat.size,
+  });
 }
 
 function validateProtectedArtifacts() {
@@ -717,6 +861,117 @@ function validateProtectedArtifacts() {
     capturedArtifacts.size === requiredArtifactNames.length,
     `Unexpected protected artifact set: ${[...capturedArtifacts.keys()].join(", ")}`,
   );
+}
+
+async function buildProtectedScreenshotEvidence() {
+  const screenshots = [];
+  for (const name of requiredArtifactNames) {
+    const artifact = capturedArtifacts.get(name);
+    assertCondition(artifact, `Required screenshot was not captured: ${name}`);
+    const relativeFileName = path.relative(artifactDir, artifact.path).split(path.sep).join("/");
+    assertCondition(
+      relativeFileName === artifact.fileName && !relativeFileName.startsWith("../"),
+      `Screenshot escaped the evidence directory: ${name}`,
+    );
+    const [currentStat, contents] = await Promise.all([
+      stat(artifact.path),
+      readFile(artifact.path),
+    ]);
+    assertCondition(
+      currentStat.isFile() && currentStat.size === artifact.size && currentStat.size >= 1_024,
+      `Screenshot changed after capture: ${name}`,
+    );
+    assertCondition(
+      contents.subarray(0, 8).toString("hex") === "89504e470d0a1a0a",
+      `Screenshot is not a PNG: ${name}`,
+    );
+    screenshots.push({
+      filename: relativeFileName,
+      size_bytes: currentStat.size,
+      sha256: createHash("sha256").update(contents).digest("hex"),
+    });
+  }
+  return screenshots;
+}
+
+async function sealProtectedEvidence() {
+  assertCondition(protectedAcceptance, "Evidence sealing is only available in protected mode");
+  assertCondition(protectedSourceIdentity, "Protected Git source identity was not established");
+  assertCondition(protectedStagingDir, "Protected evidence staging directory was not established");
+  assertCondition(
+    protectedArtifactDestination,
+    "Protected evidence destination directory was not established",
+  );
+  const finalSourceIdentity = await validateProtectedSourceIdentity();
+  assertCondition(
+    finalSourceIdentity.gitSha === protectedSourceIdentity.gitSha &&
+      finalSourceIdentity.gitTree === protectedSourceIdentity.gitTree,
+    "Git source identity changed during protected acceptance",
+  );
+  validateProtectedArtifacts();
+  assertCondition(
+    runtimeWarnings.length === 0,
+    `Browser runtime warnings: ${runtimeWarnings.join(" | ")}`,
+  );
+  assertCondition(
+    runtimeErrors.length === 0,
+    `Browser runtime errors: ${runtimeErrors.join(" | ")}`,
+  );
+
+  const screenshots = await buildProtectedScreenshotEvidence();
+  const manifest = {
+    schema: "knowledge-uploader.protected-ui-evidence/v1",
+    status: "passed",
+    generated_at: new Date().toISOString(),
+    git_sha: protectedSourceIdentity.gitSha,
+    git_tree: protectedSourceIdentity.gitTree,
+    base_url: baseUrl,
+    acceptance_mode: "protected",
+    source_boundary: {
+      head_matches_e2e_git_sha: true,
+      nonignored_worktree: "clean",
+    },
+    browser: {
+      name: "chromium",
+      version: browserVersion,
+      headless: true,
+    },
+    scenarios: protectedScenarioNames.map((name) => ({ name, status: "passed" })),
+    screenshots,
+    runtime_boundary: {
+      status: "passed",
+      maximum_errors: 0,
+      observed_errors: runtimeErrors.length,
+      maximum_warnings: 0,
+      observed_warnings: runtimeWarnings.length,
+      monitored_channels: [
+        "pageerror",
+        "console.error",
+        "console.warning",
+        "unexpected_http_status_gte_400",
+        "missing_api_bearer",
+      ],
+    },
+  };
+
+  const stagingDir = protectedStagingDir;
+  const manifestTempPath = path.join(stagingDir, ".evidence-manifest.json.tmp");
+  const manifestPath = path.join(stagingDir, "evidence-manifest.json");
+  await writeFile(manifestTempPath, JSON.stringify(manifest, null, 2) + "\n", {
+    encoding: "utf8",
+    flag: "wx",
+  });
+  await rename(manifestTempPath, manifestPath);
+  const publishSourceIdentity = await validateProtectedSourceIdentity();
+  assertCondition(
+    publishSourceIdentity.gitSha === protectedSourceIdentity.gitSha &&
+      publishSourceIdentity.gitTree === protectedSourceIdentity.gitTree,
+    "Git source identity changed while sealing protected evidence",
+  );
+  await rename(stagingDir, protectedArtifactDestination);
+  artifactDir = protectedArtifactDestination;
+  protectedStagingDir = undefined;
+  return manifest;
 }
 
 async function focusAndActivate(targetPage, locator, label) {
@@ -1749,26 +2004,25 @@ try {
 
   await validateEmployeeWorkbench();
   await validateAdminWorkbench();
-  validateProtectedArtifacts();
-
   if (runtimeWarnings.length > 0) {
     throw new Error(`Browser runtime warnings: ${runtimeWarnings.join(" | ")}`);
   }
   if (runtimeErrors.length > 0) {
     throw new Error(`Browser runtime errors: ${runtimeErrors.join(" | ")}`);
   }
-
-  if (protectedAcceptance) {
-    console.log(
-      "Protected UI acceptance passed: status drill-down, claim/release/conflict/expiry/SLA, notifications, " +
-        "role-scoped pagination, responsive keyboard actions and screenshots",
-    );
-  } else {
-    console.log(
-      "Browser smoke passed; protected UI acceptance was not attested " +
-        "(set E2E_ACCEPTANCE_MODE=protected and E2E_ARTIFACT_DIR)",
-    );
-  }
 } finally {
   await browser.close();
+}
+
+if (protectedAcceptance) {
+  const evidenceManifest = await sealProtectedEvidence();
+  console.log(
+    "Protected UI acceptance passed and sealed: " +
+      `${evidenceManifest.screenshots.length} screenshots, Git ${evidenceManifest.git_sha}`,
+  );
+} else {
+  console.log(
+    "Browser smoke passed; protected UI acceptance was not attested " +
+      "(set E2E_ACCEPTANCE_MODE=protected, E2E_ARTIFACT_DIR and exact E2E_GIT_SHA)",
+  );
 }

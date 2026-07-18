@@ -431,19 +431,22 @@ def test_main_ci_runs_sha_scoped_protected_ui_acceptance() -> None:
         "E2E_ACCEPTANCE_MODE": "protected",
         "E2E_ARTIFACT_DIR": ("${{ runner.temp }}/knowledge-uploader-ui-${{ github.sha }}"),
         "E2E_BASE_URL": "http://127.0.0.1:4173",
+        "E2E_GIT_SHA": "${{ github.sha }}",
     }
     command = acceptance.get("run")
     assert isinstance(command, str)
     for marker in (
+        'test ! -e "${E2E_ARTIFACT_DIR}"',
         "npx --no-install playwright install --with-deps chromium",
         "npm run preview --prefix frontend -- --host 127.0.0.1 --port 4173",
         'curl --fail --silent --show-error "${E2E_BASE_URL}"',
         "npm run e2e:acceptance --prefix frontend",
+        'test -f "${E2E_ARTIFACT_DIR}/evidence-manifest.json"',
     ):
         assert marker in command
 
     upload = steps[upload_name]
-    assert upload.get("if") == "${{ always() && !env.ACT }}"
+    assert upload.get("if") == "${{ success() && !env.ACT }}"
     assert upload.get("uses") == (
         "actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02"
     )
