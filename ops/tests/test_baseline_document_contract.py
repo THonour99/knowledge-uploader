@@ -7,7 +7,6 @@ from pathlib import Path
 from urllib.parse import unquote
 
 import pytest
-
 import scripts.check_baseline_contract as baseline_contract
 from scripts.check_baseline_contract import (
     BaselineContractError,
