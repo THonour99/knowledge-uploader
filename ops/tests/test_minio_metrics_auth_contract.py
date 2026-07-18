@@ -296,7 +296,7 @@ def test_protected_initializer_trusts_the_private_minio_ca_without_disabling_tls
     volumes = initializer["volumes"]
     assert isinstance(volumes, list)
     assert volumes == [
-        "${MINIO_TLS_DIR:?MINIO_TLS_DIR is required}" "/ca.crt:/run/secrets/minio-ca/ca.crt:ro"
+        "${MINIO_TLS_DIR:?MINIO_TLS_DIR is required}/ca.crt:/run/secrets/minio-ca/ca.crt:ro"
     ]
     assert bootstrap["volumes"] == volumes
 
@@ -312,10 +312,8 @@ def test_protected_minio_tls_covers_server_health_and_every_backend_client() -> 
     minio = services["minio"]
     assert isinstance(minio, dict)
     assert set(minio["volumes"]) == {
-        "${MINIO_TLS_DIR:?MINIO_TLS_DIR is required}/public.crt:"
-        "/root/.minio/certs/public.crt:ro",
-        "${MINIO_TLS_DIR:?MINIO_TLS_DIR is required}/private.key:"
-        "/root/.minio/certs/private.key:ro",
+        "${MINIO_TLS_DIR:?MINIO_TLS_DIR is required}/public.crt:/root/.minio/certs/public.crt:ro",
+        "${MINIO_TLS_DIR:?MINIO_TLS_DIR is required}/private.key:/root/.minio/certs/private.key:ro",
         "${MINIO_TLS_DIR:?MINIO_TLS_DIR is required}/ca.crt:"
         "/root/.minio/certs/CAs/protected-ca.crt:ro",
     }
@@ -325,7 +323,7 @@ def test_protected_minio_tls_covers_server_health_and_every_backend_client() -> 
     assert "--insecure" not in healthcheck and " -k " not in healthcheck
 
     expected_ca = (
-        "${MINIO_TLS_DIR:?MINIO_TLS_DIR is required}/ca.crt:" "/run/secrets/minio-ca/ca.crt:ro"
+        "${MINIO_TLS_DIR:?MINIO_TLS_DIR is required}/ca.crt:/run/secrets/minio-ca/ca.crt:ro"
     )
     for service_name in (
         "rabbitmq-topology",
@@ -388,17 +386,32 @@ def test_root_credentials_and_writable_token_volume_are_least_privilege() -> Non
     protected = _yaml("docker-compose.observability.protected.yml")
     protected_services = protected["services"]
     assert isinstance(protected_services, dict)
-    services_with_root = {
+    services_with_root_user = {
         name
         for name, raw_service in protected_services.items()
         if isinstance(raw_service, dict)
         and isinstance(raw_service.get("environment"), dict)
-        and (
-            "MINIO_ROOT_USER" in raw_service["environment"]
-            or "MINIO_ROOT_PASSWORD" in raw_service["environment"]
-        )
+        and "MINIO_ROOT_USER" in raw_service["environment"]
     }
-    assert services_with_root == privileged
+    services_with_root_password = {
+        name
+        for name, raw_service in protected_services.items()
+        if isinstance(raw_service, dict)
+        and isinstance(raw_service.get("environment"), dict)
+        and "MINIO_ROOT_PASSWORD" in raw_service["environment"]
+    }
+    assert services_with_root_user == privileged | {"backup-restore"}
+    assert services_with_root_password == privileged
+
+    backup_restore = protected_services["backup-restore"]
+    assert isinstance(backup_restore, dict)
+    backup_environment = backup_restore["environment"]
+    assert isinstance(backup_environment, dict)
+    assert backup_environment["MINIO_ROOT_USER"] == (
+        "${MINIO_ROOT_USER:?MINIO_ROOT_USER is required}"
+    )
+    assert "MINIO_ROOT_PASSWORD" not in backup_environment
+    assert all("MINIO_ROOT_PASSWORD" not in str(value) for value in backup_environment.values())
 
 
 def test_protected_minio_runbook_uses_complete_compose_stack_and_exact_semantics() -> None:

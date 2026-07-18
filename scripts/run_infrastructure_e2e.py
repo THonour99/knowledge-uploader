@@ -13,6 +13,7 @@ import re
 import secrets
 import socket
 import ssl
+import stat
 import subprocess
 import sys
 import tempfile
@@ -25,6 +26,9 @@ from pathlib import Path
 from typing import Any
 from urllib.error import HTTPError, URLError
 from urllib.request import urlopen
+
+from cryptography import x509
+from cryptography.hazmat.primitives import serialization
 
 from infrastructure_e2e_probe import (
     BusinessProbeState,
@@ -95,6 +99,17 @@ BACKEND_IMAGE_SERVICES = (
 )
 BACKEND_TLS_CLIENT_SERVICES = tuple(
     service for service in BACKEND_IMAGE_SERVICES if service not in {"mock-ragflow", "mock-smtp"}
+)
+RAGFLOW_CLIENT_SERVICES = (
+    "backend-api",
+    "rabbitmq-topology",
+    "outbox-dispatcher",
+    "operational-metrics",
+    "worker-document",
+    "worker-ai",
+    "worker-ragflow",
+    "worker-notification",
+    "scheduler",
 )
 MAIN_QUEUES = (
     "document_queue",
@@ -592,6 +607,34 @@ def _tls_evidence(metadata: dict[str, Any]) -> dict[str, object]:
     }
 
 
+def _ragflow_tls_spki_pin_mapping(certificate_path: Path) -> str:
+    try:
+        certificate_stat = certificate_path.lstat()
+        if (
+            certificate_path.is_symlink()
+            or not stat.S_ISREG(certificate_stat.st_mode)
+            or certificate_stat.st_size <= 0
+            or certificate_stat.st_size > 1_048_576
+        ):
+            raise ValueError("invalid certificate file")
+        certificate_bytes = certificate_path.read_bytes()
+        certificate = x509.load_pem_x509_certificate(certificate_bytes)
+        if certificate.public_bytes(serialization.Encoding.PEM) != certificate_bytes:
+            raise ValueError("certificate file is not canonical PEM")
+        subject_public_key = certificate.public_key().public_bytes(
+            serialization.Encoding.DER,
+            serialization.PublicFormat.SubjectPublicKeyInfo,
+        )
+    except (OSError, TypeError, ValueError) as error:
+        raise InfrastructureE2EError("ragflow_spki_pin") from error
+    pin = "sha256/" + base64.b64encode(hashlib.sha256(subject_public_key).digest()).decode("ascii")
+    return json.dumps(
+        {"https://mock-ragflow:9380": [pin]},
+        separators=(",", ":"),
+        sort_keys=True,
+    )
+
+
 def _service_has_volume(
     service: object,
     *,
@@ -626,6 +669,7 @@ def _validate_resolved_compose(
     *,
     backend_image: str,
     frontend_image: str,
+    ragflow_tls_spki_pins: str,
 ) -> None:
     services = resolved.get("services")
     if not isinstance(services, dict):
@@ -666,9 +710,18 @@ def _validate_resolved_compose(
         or backend_environment.get("SMTP_CA_CERT_FILE") != "/e2e-certs/ca.crt"
         or str(backend_environment.get("SMTP_TIMEOUT_SECONDS")) != "10"
         or backend_environment.get("RAGFLOW_BASE_URL") != "https://mock-ragflow:9380"
+        or backend_environment.get("RAGFLOW_TLS_SPKI_PINS") != ragflow_tls_spki_pins
         or not str(backend_environment.get("SMTP_FROM", "")).strip()
     ):
         raise InfrastructureE2EError("resolved_compose_contract")
+    for service_name in RAGFLOW_CLIENT_SERVICES:
+        service = services.get(service_name)
+        service_environment = service.get("environment") if isinstance(service, dict) else None
+        if (
+            not isinstance(service_environment, dict)
+            or service_environment.get("RAGFLOW_TLS_SPKI_PINS") != ragflow_tls_spki_pins
+        ):
+            raise InfrastructureE2EError("resolved_compose_contract")
     serialized_backend = json.dumps(backend, sort_keys=True)
     serialized_minio = json.dumps(services.get("minio"), sort_keys=True)
     prometheus = services.get("prometheus")
@@ -2214,7 +2267,7 @@ def _replace_invalid_minio_metrics_token(
         ("lexical", "a.b.c"),
         (
             "decoded_non_object",
-            "cHJlZml4ImFsZyI6IkhTMjU2InN1ZmZpeA." "cHJlZml4InN1YiI6Im1pbmlvInN1ZmZpeA.eA",
+            "cHJlZml4ImFsZyI6IkhTMjU2InN1ZmZpeA.cHJlZml4InN1YiI6Im1pbmlvInN1ZmZpeA.eA",
         ),
     )
     recovered: dict[str, object] = {}
@@ -3657,6 +3710,8 @@ def run_gate(arguments: GateArguments) -> tuple[Path, Path, str]:
                 cert_parent=cert_parent,
             )
             tls_evidence = _tls_evidence(certificate_metadata)
+            ragflow_tls_spki_pins = _ragflow_tls_spki_pin_mapping(cert_dir / "ragflow.crt")
+            runner.update_environment({"RAGFLOW_TLS_SPKI_PINS": ragflow_tls_spki_pins})
             resolved_result = _compose(
                 runner,
                 project,
@@ -3671,6 +3726,7 @@ def run_gate(arguments: GateArguments) -> tuple[Path, Path, str]:
                 resolved_compose,
                 backend_image=arguments.backend_image,
                 frontend_image=arguments.frontend_image,
+                ragflow_tls_spki_pins=ragflow_tls_spki_pins,
             )
             resolved_compose_sha256 = hashlib.sha256(
                 resolved_result.stdout.encode("utf-8")
@@ -4053,7 +4109,7 @@ def run_gate(arguments: GateArguments) -> tuple[Path, Path, str]:
             failure.__cause__ = error
         except (ValueError, KeyError, TypeError, OSError, RuntimeError, AssertionError) as error:
             sys.stderr.write(
-                f"[infrastructure-e2e] unexpected={current_phase} " f"type={type(error).__name__}\n"
+                f"[infrastructure-e2e] unexpected={current_phase} type={type(error).__name__}\n"
             )
             sys.stderr.flush()
             failure = InfrastructureE2EError(f"{current_phase}_unexpected")

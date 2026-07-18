@@ -3,6 +3,18 @@
 This runbook covers validated PostgreSQL and MinIO backups. A backup is not reported as
 successful until its database dump has been restored into an isolated verification database,
 its object mirror has been hashed, and the manifest has passed the secret-leak guard.
+The one-shot container requires a dedicated short-lived MinIO DR operator through
+`DR_MINIO_ACCESS_KEY` and `DR_MINIO_SECRET_KEY`. The account must be distinct from both
+the application data-plane identity and the MinIO root identity. The drill needs source-bucket
+read/list plus create/read/write/delete for its isolated `restore-*` target, after which the
+operator is revoked. Compose and runtime checks prove only that the configured identities are
+different, the alias declares the same DR operator, and protected traffic uses the mounted CA;
+they do not prove the server-side policy is least privilege. Only a real isolated drill can prove
+the required operations work, and only explicit denied-operation evidence outside the approved
+source and restore scope can support a least-privilege claim. Compose fails closed when either
+credential is absent; secret-manager values must be URL-safe because MinIO's `MC_HOST_source`
+alias is a URL. Never place either value in phase reports, exceptions, or command output.
+
 
 ## Create a validated backup
 
@@ -13,6 +25,8 @@ docker compose up -d postgres minio
 docker compose -f docker-compose.yml -f docker-compose.ops.yml --profile ops run --rm \
   backup-restore backup
 ```
+
+This two-file HTTP form is development-only and requires `APP_ENV=development`.
 
 The backup is written to the `backups` volume only after validation. The manifest records table
 row counts (without row-content digests), the Alembic revision, object key/size/ETag/SHA-256 metadata, and only
@@ -40,6 +54,33 @@ docker compose -f docker-compose.yml -f docker-compose.ops.yml --profile ops run
   --cleanup-after-validation \
   --evidence-dir /evidence
 ```
+
+The two-file HTTP form above is development-only. For protected staging, both commands must use
+the full Compose stack so the final overlay replaces `MC_HOST_source` with HTTPS and mounts only
+the CA certificate into the operations container:
+
+## Protected staging backup and restore
+
+Set `APP_ENV=staging`. The deployment secret owner must provision every protected-stack MinIO
+credential pair: `MINIO_ROOT_USER` / `MINIO_ROOT_PASSWORD`, `MINIO_ACCESS_KEY` /
+`MINIO_SECRET_KEY`, and `DR_MINIO_ACCESS_KEY` / `DR_MINIO_SECRET_KEY`. Access-key and secret
+values must come from the deployment secret owner; never accept the development defaults or copy
+values from `.env.example`. The deployment configuration owner must also provide `MINIO_TLS_DIR`
+and `PROMETHEUS_CONFIG_FILE`. `MINIO_ENDPOINT` and `MINIO_BUCKET` may retain their
+deployment-approved values; the protected overlay fixes `MINIO_SECURE` to `true`,
+`MINIO_CA_CERT_FILE`, and `SSL_CERT_FILE` to the mounted in-container CA path. Then run:
+
+```bash
+docker compose -f docker-compose.yml -f docker-compose.observability.yml -f docker-compose.ops.yml -f docker-compose.observability.protected.yml --profile ops run --rm backup-restore backup
+docker compose -f docker-compose.yml -f docker-compose.observability.yml -f docker-compose.ops.yml -f docker-compose.observability.protected.yml --profile ops run --rm backup-restore restore --backup-dir /backups/<backup-id> --target-environment staging --target-database restore_validation --target-bucket restore-validation --cleanup-after-validation --evidence-dir /evidence
+```
+
+With `APP_ENV=staging`, `prod`, or `production`, the tool rejects an HTTP MinIO alias before any
+backup or restore command runs. Production backup uses the same protected stack; restore remains
+forbidden whenever either `APP_ENV` or `--target-environment` is `prod`/`production`. Do not omit
+the protected overlay, add `--insecure`, or print the rendered `MC_HOST_source` value. A passing
+configuration/unit test is not a capability receipt: preserve the real drill's non-secret read,
+write, delete, checksum, RPO/RTO, and denied-scope evidence before making a least-privilege claim.
 
 Restore is refused when either `APP_ENV` or `--target-environment` is production, when the target
 does not use the `restore_` / `restore-` namespace, when a target already exists, or when a target

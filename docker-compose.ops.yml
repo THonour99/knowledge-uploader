@@ -13,7 +13,11 @@ services:
       PGPORT: "${POSTGRES_PORT:-5432}"
       PGUSER: "${POSTGRES_USER:-knowledge}"
       PGPASSWORD: "${POSTGRES_PASSWORD:-knowledge_password}"
-      MC_HOST_source: "http://${MINIO_ACCESS_KEY:-knowledge}:${MINIO_SECRET_KEY:-knowledge_password}@minio:9000"
+      DR_MINIO_ACCESS_KEY: "${DR_MINIO_ACCESS_KEY:?DR_MINIO_ACCESS_KEY is required}"
+      DR_MINIO_SECRET_KEY: "${DR_MINIO_SECRET_KEY:?DR_MINIO_SECRET_KEY is required}"
+      MINIO_ACCESS_KEY: "${MINIO_ACCESS_KEY:-knowledge}"
+      MINIO_ROOT_USER: "${MINIO_ROOT_USER:-knowledge-root}"
+      MC_HOST_source: "http://${DR_MINIO_ACCESS_KEY:?DR_MINIO_ACCESS_KEY is required}:${DR_MINIO_SECRET_KEY:?DR_MINIO_SECRET_KEY is required}@minio:9000"
     volumes:
       - backups:/backups
       - backup-metrics:/metrics

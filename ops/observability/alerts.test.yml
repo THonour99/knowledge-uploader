@@ -550,3 +550,114 @@ tests:
       - eval_time: 4m
         alertname: KnowledgeUploaderMinioCapacityCollectorUnavailable
         exp_alerts: []
+  - interval: 1m
+    input_series:
+      - series: knowledge_uploader_outbox_pending
+        values: 101x12
+      - series: knowledge_uploader_outbox_oldest_seconds
+        values: 301x12
+      - series: knowledge_uploader_outbox_dead_letters{status="pending"}
+        values: 1x12
+      - series: rabbitmq_detailed_queue_messages_ready{queue="ragflow_queue.dlq"}
+        values: 1x12
+      - series: rabbitmq_detailed_queue_consumers{queue="document_queue"}
+        values: 0x12
+      - series: rabbitmq_detailed_queue_consumers{queue="ai_queue"}
+        values: 0x12
+      - series: rabbitmq_detailed_queue_consumers{queue="ragflow_queue"}
+        values: 0x12
+      - series: rabbitmq_detailed_queue_consumers{queue="notification_queue"}
+        values: 0x12
+      - series: knowledge_uploader_review_overdue
+        values: 1x12
+      - series: knowledge_uploader_ragflow_sync_outcomes_window{result="success"}
+        values: 4x12
+      - series: knowledge_uploader_ragflow_sync_outcomes_window{result="failure"}
+        values: 1x12
+    alert_rule_test:
+      - eval_time: 11m
+        alertname: KnowledgeUploaderOutboxBacklog
+        exp_alerts:
+          - exp_labels:
+              severity: warning
+            exp_annotations:
+              summary: More than 100 outbox events are waiting
+              runbook: ops/runbooks/observability.md#knowledgeuploaderoutboxbacklog
+      - eval_time: 11m
+        alertname: KnowledgeUploaderOutboxOldestTooOld
+        exp_alerts:
+          - exp_labels:
+              severity: critical
+            exp_annotations:
+              summary: Oldest deliverable outbox event is over five minutes old
+              runbook: ops/runbooks/observability.md#knowledgeuploaderoutboxoldesttooold
+      - eval_time: 11m
+        alertname: KnowledgeUploaderDeadLetterPresent
+        exp_alerts:
+          - exp_labels:
+              status: pending
+              severity: critical
+            exp_annotations:
+              summary: Outbox dead letters require an explicit replay decision
+              runbook: ops/runbooks/observability.md#knowledgeuploaderdeadletterpresent
+      - eval_time: 11m
+        alertname: KnowledgeUploaderRabbitTaskDeadLetterPresent
+        exp_alerts:
+          - exp_labels:
+              queue: ragflow_queue.dlq
+              severity: critical
+            exp_annotations:
+              summary: A Celery task dead-letter queue requires an audited replay decision
+              runbook: ops/runbooks/observability.md#knowledgeuploaderrabbittaskdeadletterpresent
+      - eval_time: 11m
+        alertname: KnowledgeUploaderDocumentWorkerOffline
+        exp_alerts:
+          - exp_labels:
+              queue: document_queue
+              severity: critical
+            exp_annotations:
+              summary: Document queue has no active consumer
+              runbook: ops/runbooks/observability.md#knowledgeuploaderworkeroffline
+      - eval_time: 11m
+        alertname: KnowledgeUploaderAiWorkerOffline
+        exp_alerts:
+          - exp_labels:
+              queue: ai_queue
+              severity: critical
+            exp_annotations:
+              summary: AI queue has no active consumer
+              runbook: ops/runbooks/observability.md#knowledgeuploaderworkeroffline
+      - eval_time: 11m
+        alertname: KnowledgeUploaderRagflowWorkerOffline
+        exp_alerts:
+          - exp_labels:
+              queue: ragflow_queue
+              severity: critical
+            exp_annotations:
+              summary: RAGFlow queue has no active consumer
+              runbook: ops/runbooks/observability.md#knowledgeuploaderworkeroffline
+      - eval_time: 11m
+        alertname: KnowledgeUploaderNotificationWorkerOffline
+        exp_alerts:
+          - exp_labels:
+              queue: notification_queue
+              severity: critical
+            exp_annotations:
+              summary: Notification queue has no active consumer
+              runbook: ops/runbooks/observability.md#knowledgeuploaderworkeroffline
+      - eval_time: 11m
+        alertname: KnowledgeUploaderReviewSlaOverdue
+        exp_alerts:
+          - exp_labels:
+              severity: warning
+            exp_annotations:
+              summary: One or more persisted review deadlines are overdue
+              runbook: ops/runbooks/observability.md#knowledgeuploaderreviewslaoverdue
+      - eval_time: 11m
+        alertname: KnowledgeUploaderRagflowSyncFailureRateHigh
+        exp_alerts:
+          - exp_labels:
+              severity: critical
+            exp_annotations:
+              summary: RAGFlow sync failure ratio exceeds 10 percent in the 15 minute window
+              runbook: ops/runbooks/observability.md#knowledgeuploaderragflowsyncfailureratehigh

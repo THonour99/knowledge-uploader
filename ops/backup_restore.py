@@ -3,12 +3,15 @@
 from __future__ import annotations
 
 import argparse
+import errno
 import hashlib
 import json
 import os
 import re
 import secrets
 import shutil
+import ssl
+import stat
 import subprocess
 import sys
 import tempfile
@@ -23,6 +26,14 @@ from urllib.request import urlopen
 BACKUP_FORMAT_VERSION = 2
 DATABASE_NAME_RE = re.compile(r"^[A-Za-z][A-Za-z0-9_]{0,62}$")
 PRODUCTION_ENVIRONMENTS = frozenset({"prod", "production"})
+MINIO_TLS_REQUIRED_ENVIRONMENTS = frozenset({"staging", "prod", "production"})
+MINIO_DR_ENVIRONMENT = (
+    "MC_HOST_source",
+    "DR_MINIO_ACCESS_KEY",
+    "DR_MINIO_SECRET_KEY",
+    "MINIO_ACCESS_KEY",
+    "MINIO_ROOT_USER",
+)
 RESTORE_DATABASE_PREFIX = "restore_"
 RESTORE_BUCKET_PREFIX = "restore-"
 MC_ALIAS = "source"
@@ -57,7 +68,8 @@ def backup(
 ) -> Path:
     _validate_database_name(database_name)
     _validate_bucket_name(bucket)
-    _require_environment(("PGHOST", "PGPORT", "PGUSER", "PGPASSWORD", "MC_HOST_source"))
+    _require_environment(("PGHOST", "PGPORT", "PGUSER", "PGPASSWORD", *MINIO_DR_ENVIRONMENT))
+    _validate_minio_dr_configuration()
     _write_attempt_metric(metrics_file, "knowledge_uploader_backup", success=False)
     backup_id = _backup_id()
     output_root = output_dir.resolve()
@@ -170,7 +182,8 @@ def restore(
     started_monotonic = time.monotonic()
     _require_non_production(target_environment)
     _validate_restore_target_names(target_database, target_bucket)
-    _require_environment(("PGHOST", "PGPORT", "PGUSER", "PGPASSWORD", "MC_HOST_source"))
+    _require_environment(("PGHOST", "PGPORT", "PGUSER", "PGPASSWORD", *MINIO_DR_ENVIRONMENT))
+    _validate_minio_dr_configuration()
     _write_attempt_metric(
         metrics_file,
         "knowledge_uploader_logical_restore_validation",
@@ -737,9 +750,7 @@ def _assert_manifest_has_no_secrets(manifest: Mapping[str, object]) -> None:
             raise RuntimeError("backup manifest contains runtime config values")
         if not isinstance(config["key"], str):
             raise RuntimeError("backup manifest runtime config key is invalid")
-        if not isinstance(config["is_secret"], bool) or not isinstance(
-            config["has_value"], bool
-        ):
+        if not isinstance(config["is_secret"], bool) or not isinstance(config["has_value"], bool):
             raise RuntimeError("backup manifest runtime config flags are invalid")
 
     serialized = json.dumps(manifest, ensure_ascii=False)
@@ -790,6 +801,85 @@ def _require_environment(names: Sequence[str]) -> None:
     missing = [name for name in names if not os.environ.get(name)]
     if missing:
         raise RuntimeError(f"required environment variables are missing: {', '.join(missing)}")
+
+
+def _validate_minio_dr_configuration() -> None:
+    dr_access_key = os.environ["DR_MINIO_ACCESS_KEY"]
+    dr_secret_key = os.environ["DR_MINIO_SECRET_KEY"]
+    application_access_key = os.environ["MINIO_ACCESS_KEY"]
+    root_user = os.environ["MINIO_ROOT_USER"]
+
+    if secrets.compare_digest(dr_access_key, application_access_key) or secrets.compare_digest(
+        dr_access_key,
+        root_user,
+    ):
+        raise RuntimeError("MinIO DR operator must use a dedicated access-key identity")
+
+    try:
+        source = urlsplit(os.environ["MC_HOST_source"])
+        declared_access_key = source.username
+        declared_secret_key = source.password
+        hostname = source.hostname
+        _ = source.port
+    except ValueError:
+        raise RuntimeError("MC_HOST_source must be an absolute HTTP(S) alias URL") from None
+
+    if (
+        source.scheme not in {"http", "https"}
+        or not hostname
+        or declared_access_key is None
+        or declared_secret_key is None
+        or source.path not in {"", "/"}
+        or source.query
+        or source.fragment
+    ):
+        raise RuntimeError("MC_HOST_source must be an absolute HTTP(S) alias URL")
+    if not secrets.compare_digest(
+        declared_access_key,
+        dr_access_key,
+    ) or not secrets.compare_digest(declared_secret_key, dr_secret_key):
+        raise RuntimeError("MC_HOST_source must declare exactly the configured MinIO DR operator")
+
+    app_environment = os.environ.get("APP_ENV", "").strip().lower()
+    if app_environment in MINIO_TLS_REQUIRED_ENVIRONMENTS:
+        if source.scheme != "https":
+            raise RuntimeError(
+                "MinIO DR endpoint must use HTTPS when APP_ENV is staging or production"
+            )
+        _validate_minio_ca_configuration()
+
+
+def _validate_minio_ca_configuration() -> None:
+    minio_ca_value = os.environ.get("MINIO_CA_CERT_FILE", "").strip()
+    ssl_ca_value = os.environ.get("SSL_CERT_FILE", "").strip()
+    if not minio_ca_value or not ssl_ca_value:
+        raise RuntimeError("MinIO DR TLS requires a private CA bundle")
+
+    try:
+        minio_ca_file = Path(minio_ca_value).resolve(strict=True)
+        ssl_ca_file = Path(ssl_ca_value).resolve(strict=True)
+        same_file = minio_ca_file.samefile(ssl_ca_file)
+        metadata = minio_ca_file.stat()
+    except OSError:
+        raise RuntimeError("MinIO DR TLS requires a valid private CA bundle") from None
+
+    if not same_file or not stat.S_ISREG(metadata.st_mode) or not _is_read_only_file(minio_ca_file):
+        raise RuntimeError("MinIO DR TLS requires one read-only regular CA bundle")
+
+    try:
+        ssl.create_default_context(cafile=str(minio_ca_file))
+    except (OSError, ValueError):
+        raise RuntimeError("MinIO DR TLS requires a loadable PEM CA bundle") from None
+
+
+def _is_read_only_file(path: Path) -> bool:
+    flags = os.O_WRONLY | getattr(os, "O_CLOEXEC", 0)
+    try:
+        descriptor = os.open(path, flags)
+    except OSError as error:
+        return error.errno in {errno.EACCES, errno.EPERM, errno.EROFS}
+    os.close(descriptor)
+    return False
 
 
 def _quote_identifier(identifier: str) -> str:

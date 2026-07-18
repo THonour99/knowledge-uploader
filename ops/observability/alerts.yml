@@ -326,7 +326,7 @@ groups:
         expr: |
           (
             knowledge_uploader_ragflow_sync_outcomes_window{result="failure"}
-            /
+            / on()
             clamp_min(
               sum(knowledge_uploader_ragflow_sync_outcomes_window{
                 result=~"success|failure"
@@ -334,7 +334,7 @@ groups:
               1
             )
           ) > 0.10
-          and
+          and on()
           sum(knowledge_uploader_ragflow_sync_outcomes_window{
             result=~"success|failure"
           }) >= 5

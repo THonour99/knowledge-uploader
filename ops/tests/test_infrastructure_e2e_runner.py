@@ -10,6 +10,10 @@ from types import ModuleType, SimpleNamespace
 
 import pytest
 
+TEST_RAGFLOW_TLS_SPKI_PINS = (
+    '{"https://mock-ragflow:9380":["sha256/AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA="]}'
+)
+
 
 def _load_runner() -> ModuleType:
     scripts_dir = Path(__file__).parents[2] / "scripts"
@@ -27,6 +31,18 @@ def _load_runner() -> ModuleType:
         sys.path.remove(str(scripts_dir))
 
 
+def _load_certificate_generator() -> ModuleType:
+    generator_path = (
+        Path(__file__).parents[2] / "backend" / "scripts" / "generate_e2e_certificates.py"
+    )
+    spec = importlib.util.spec_from_file_location("generate_e2e_certificates", generator_path)
+    if spec is None or spec.loader is None:
+        raise RuntimeError("could not load E2E certificate generator")
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
 def _resolved_compose(runner: ModuleType) -> dict[str, object]:
     backend_image = "backend:test"
     services: dict[str, object] = {
@@ -35,6 +51,7 @@ def _resolved_compose(runner: ModuleType) -> dict[str, object]:
             "environment": {
                 "SSL_CERT_FILE": "/e2e-certs/ca.crt",
                 "MINIO_CA_CERT_FILE": "/e2e-certs/ca.crt",
+                "RAGFLOW_TLS_SPKI_PINS": TEST_RAGFLOW_TLS_SPKI_PINS,
             },
             "volumes": [{"target": "/e2e-certs/ca.crt"}],
         }
@@ -55,6 +72,7 @@ def _resolved_compose(runner: ModuleType) -> dict[str, object]:
             "SSL_CERT_FILE": "/e2e-certs/ca.crt",
             "MINIO_CA_CERT_FILE": "/e2e-certs/ca.crt",
             "RAGFLOW_BASE_URL": "https://mock-ragflow:9380",
+            "RAGFLOW_TLS_SPKI_PINS": TEST_RAGFLOW_TLS_SPKI_PINS,
         },
         "volumes": [{"target": "/e2e-certs/ca.crt"}],
         "ports": [{"host_ip": "127.0.0.1"}],
@@ -169,6 +187,7 @@ def _resolved_compose(runner: ModuleType) -> dict[str, object]:
     operational["environment"] = {
         "SSL_CERT_FILE": "/e2e-certs/ca.crt",
         "MINIO_CA_CERT_FILE": "/e2e-certs/ca.crt",
+        "RAGFLOW_TLS_SPKI_PINS": TEST_RAGFLOW_TLS_SPKI_PINS,
         "MINIO_ACCESS_KEY": "metrics-bearer-only-no-data-plane",
         "MINIO_SECRET_KEY": "metrics-bearer-only-no-data-plane",
         "MINIO_METRICS_BEARER_TOKEN_FILE": "/run/secrets/minio-metrics/token",
@@ -202,6 +221,80 @@ def _resolved_compose(runner: ModuleType) -> dict[str, object]:
         "depends_on": {"minio-metrics-token-init": {"condition": "service_completed_successfully"}},
     }
     return {"services": services}
+
+
+def test_ragflow_spki_pin_is_derived_from_ephemeral_certificate(tmp_path: Path) -> None:
+    runner = _load_runner()
+    generator = _load_certificate_generator()
+    certificate_dir = tmp_path / "certificates"
+    generator.generate_certificates(certificate_dir)
+
+    certificate_path = certificate_dir / "ragflow.crt"
+    certificate_bytes = certificate_path.read_bytes()
+    certificate = runner.x509.load_pem_x509_certificate(certificate_bytes)
+    subject_public_key = certificate.public_key().public_bytes(
+        runner.serialization.Encoding.DER,
+        runner.serialization.PublicFormat.SubjectPublicKeyInfo,
+    )
+    expected_pin = "sha256/" + runner.base64.b64encode(
+        runner.hashlib.sha256(subject_public_key).digest()
+    ).decode("ascii")
+
+    mapping = runner._ragflow_tls_spki_pin_mapping(certificate_path)
+    assert runner.json.loads(mapping) == {"https://mock-ragflow:9380": [expected_pin]}
+    encoded_mapping = mapping.encode("utf-8")
+    assert certificate_bytes not in encoded_mapping
+    assert (certificate_dir / "ragflow.key").read_bytes() not in encoded_mapping
+    assert b"BEGIN " not in encoded_mapping
+
+
+@pytest.mark.parametrize("payload", (b"", b"not-a-certificate"))
+def test_ragflow_spki_pin_rejects_invalid_certificate(
+    tmp_path: Path,
+    payload: bytes,
+) -> None:
+    runner = _load_runner()
+    certificate_path = tmp_path / "ragflow.crt"
+    certificate_path.write_bytes(payload)
+
+    with pytest.raises(runner.InfrastructureE2EError, match="ragflow_spki_pin"):
+        runner._ragflow_tls_spki_pin_mapping(certificate_path)
+
+
+def test_ragflow_spki_pin_rejects_missing_and_noncanonical_certificate(tmp_path: Path) -> None:
+    runner = _load_runner()
+    missing_path = tmp_path / "missing.crt"
+    with pytest.raises(runner.InfrastructureE2EError, match="ragflow_spki_pin"):
+        runner._ragflow_tls_spki_pin_mapping(missing_path)
+
+    generator = _load_certificate_generator()
+    certificate_dir = tmp_path / "certificates"
+    generator.generate_certificates(certificate_dir)
+    certificate_path = certificate_dir / "ragflow.crt"
+    certificate_path.write_bytes(certificate_path.read_bytes() + b"\n")
+    with pytest.raises(runner.InfrastructureE2EError, match="ragflow_spki_pin"):
+        runner._ragflow_tls_spki_pin_mapping(certificate_path)
+
+
+def test_resolved_compose_contract_rejects_missing_or_mismatched_ragflow_pin() -> None:
+    runner = _load_runner()
+    for replacement in ("", TEST_RAGFLOW_TLS_SPKI_PINS.replace("A", "B", 1)):
+        resolved = _resolved_compose(runner)
+        services = resolved["services"]
+        assert isinstance(services, dict)
+        worker = services["worker-ragflow"]
+        assert isinstance(worker, dict)
+        environment = worker["environment"]
+        assert isinstance(environment, dict)
+        environment["RAGFLOW_TLS_SPKI_PINS"] = replacement
+
+        with pytest.raises(runner.InfrastructureE2EError, match="resolved_compose_contract"):
+            runner._validate_resolved_compose(
+                resolved,
+                backend_image="backend:test",
+                frontend_image="frontend:test",
+                ragflow_tls_spki_pins=TEST_RAGFLOW_TLS_SPKI_PINS,
+            )
 
 
 def test_service_has_volume_treats_omitted_read_only_as_writable() -> None:
@@ -652,6 +745,7 @@ def test_resolved_compose_contract_requires_exact_images_tls_and_loopback_ports(
         resolved,
         backend_image="backend:test",
         frontend_image="frontend:test",
+        ragflow_tls_spki_pins=TEST_RAGFLOW_TLS_SPKI_PINS,
     )
 
     services = resolved["services"]
@@ -665,6 +759,7 @@ def test_resolved_compose_contract_requires_exact_images_tls_and_loopback_ports(
             resolved,
             backend_image="backend:test",
             frontend_image="frontend:test",
+            ragflow_tls_spki_pins=TEST_RAGFLOW_TLS_SPKI_PINS,
         )
 
 
@@ -738,6 +833,7 @@ def test_resolved_compose_contract_rejects_minio_metrics_auth_downgrade(
             resolved,
             backend_image="backend:test",
             frontend_image="frontend:test",
+            ragflow_tls_spki_pins=TEST_RAGFLOW_TLS_SPKI_PINS,
         )
 
 
@@ -755,6 +851,7 @@ def test_resolved_compose_contract_rejects_tls_bypass() -> None:
             resolved,
             backend_image="backend:test",
             frontend_image="frontend:test",
+            ragflow_tls_spki_pins=TEST_RAGFLOW_TLS_SPKI_PINS,
         )
 
 
@@ -777,6 +874,7 @@ def test_resolved_compose_contract_rejects_unprotected_prometheus_config() -> No
             resolved,
             backend_image="backend:test",
             frontend_image="frontend:test",
+            ragflow_tls_spki_pins=TEST_RAGFLOW_TLS_SPKI_PINS,
         )
 
 
@@ -816,6 +914,7 @@ def test_resolved_compose_secret_material_is_parse_only(
         parsed,
         backend_image="backend:test",
         frontend_image="frontend:test",
+        ragflow_tls_spki_pins=TEST_RAGFLOW_TLS_SPKI_PINS,
     )
 
     digest = runner.hashlib.sha256(result.stdout.encode("utf-8")).hexdigest()
@@ -835,6 +934,7 @@ def test_resolved_compose_secret_material_is_parse_only(
             parsed,
             backend_image="backend:test",
             frontend_image="frontend:test",
+            ragflow_tls_spki_pins=TEST_RAGFLOW_TLS_SPKI_PINS,
         )
     assert canary not in str(captured_error.value)
     assert canary not in repr(captured_error.value)

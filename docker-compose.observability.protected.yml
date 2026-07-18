@@ -81,6 +81,15 @@ services:
     environment: *protected-minio-client-environment
     volumes: *protected-minio-client-volumes
 
+  backup-restore:
+    environment:
+      MINIO_ACCESS_KEY: "${MINIO_ACCESS_KEY:?MINIO_ACCESS_KEY is required}"
+      MINIO_ROOT_USER: "${MINIO_ROOT_USER:?MINIO_ROOT_USER is required}"
+      MC_HOST_source: "https://${DR_MINIO_ACCESS_KEY:?DR_MINIO_ACCESS_KEY is required}:${DR_MINIO_SECRET_KEY:?DR_MINIO_SECRET_KEY is required}@minio:9000"
+      MINIO_CA_CERT_FILE: /run/secrets/minio-ca/ca.crt
+      SSL_CERT_FILE: /run/secrets/minio-ca/ca.crt
+    volumes: *protected-minio-client-volumes
+
   prometheus:
     volumes:
       - "${PROMETHEUS_CONFIG_FILE:?PROMETHEUS_CONFIG_FILE is required}:/etc/prometheus/prometheus.yml:ro"
