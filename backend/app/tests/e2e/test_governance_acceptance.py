@@ -12,7 +12,7 @@ from __future__ import annotations
 import hashlib
 import json
 import os
-from collections.abc import AsyncGenerator
+from collections.abc import AsyncGenerator, Callable
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from importlib import import_module
@@ -20,13 +20,15 @@ from typing import cast
 from uuid import UUID
 
 import pytest
-from redis.asyncio import from_url
+from redis.asyncio import Redis, from_url
 from sqlalchemy import select
 
 from app.adapters.llm.base import LLMCompletion, LLMUsage
 from app.tests.safety import require_safe_test_database_reset, require_safe_test_redis_reset
 
 pytestmark = pytest.mark.asyncio
+
+_redis_from_url = cast(Callable[..., Redis], from_url)
 
 
 @dataclass
@@ -93,7 +95,7 @@ async def _reset_database() -> None:
         await connection.run_sync(Base.metadata.create_all)
     await engine.dispose()
 
-    redis_client = from_url(
+    redis_client = _redis_from_url(
         os.environ["CACHE_REDIS_URL"],
         encoding="utf-8",
         decode_responses=True,
@@ -104,7 +106,7 @@ async def _reset_database() -> None:
         await redis_client.aclose()
 
 
-@pytest.fixture(autouse=True)  # type: ignore[misc]
+@pytest.fixture(autouse=True)
 async def clean_database() -> AsyncGenerator[None, None]:
     await _reset_database()
     yield
@@ -163,7 +165,7 @@ async def _seed_file() -> UUID:
         )
         session.add(file)
         await session.commit()
-        return cast(UUID, file.id)
+        return file.id
 
 
 async def test_ai_001_persists_prompt_version_and_unknown_pricing_safely(
