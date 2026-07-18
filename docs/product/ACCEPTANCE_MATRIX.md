@@ -13,29 +13,29 @@
 | AUTH-002 | 无部门门禁 | 兼容客户端不传部门后登录、上传 | 可登录并在工作台看到恢复提示/联系管理员；上传/提交返回 403 稳定错误；不建立独立补全页 | 进行中（probe 已实现，本地聚合 3/3 与 auth 回归 50/50；最终候选 SHA 日志待归档） |
 | AUTH-003 | 邮箱验证门禁 | 开启配置，注册、未验证登录、验证、重放 token | 未验证无 JWT；验证后可登；重放失败 | 进行中（probe 已实现，本地聚合 3/3 与 auth 回归 50/50；最终候选 SHA 日志待归档） |
 | AUTH-004 | 重置不激活 | 未验证账号完成密码重置 | 密码改变但仍未验证、无 JWT | 进行中（probe 已实现，本地聚合 3/3 与 auth 回归 50/50；最终候选 SHA 日志待归档） |
-| DOC-001 | AI 关闭手工提交 | 关闭 AI，上传且不自动提交，再提交 | 仅 `uploaded -> pending_review`，无 AI 状态/任务 | 待执行 |
-| DOC-002 | AI 开启自动提交 | 开 AI + submit_after，运行真实 worker | 分析完成后才待审；事件/审计完整 | 待执行 |
-| DOC-003 | critical 阻断 | 上传命中 critical 且自动提交 | 停敏感复核；无法选择同步 | 待执行 |
-| DOC-004 | 原件访问 | 本人/同部门管理员/越域管理员请求 inline/download/Range | 授权流式；越域 404；跨用户读取有审计 | 待执行 |
-| DOC-005 | 驳回重提 | 驳回后员工修正并重提 | `rejected -> pending_review`；历史记录保留 | 待执行 |
-| REV-001 | 明确批准分支 | 分别提交 sync 与 approve_only；sync 不传 Dataset | 两条结果无歧义；缺 Dataset 422 且不批准 | 待执行 |
-| REV-002 | 并发决定 | 两管理员同时审批同一文件 | 仅一个成功，另一个 409，无重复任务 | 待执行 |
-| SEC-001 | 数据域与审计 | 员工/部门管理员枚举 UUID、搜索、分页 | 不泄露存在性/total；管理员动作全审计 | 待执行 |
+| DOC-001 | AI 关闭手工提交 | 关闭 AI，上传且不自动提交，再提交 | 仅 `uploaded -> pending_review`，无 AI 状态/任务 | 进行中（实现与本机聚焦验收已完成；最终 clean SHA 证据待归档） |
+| DOC-002 | AI 开启自动提交 | 开 AI + submit_after，运行真实 worker | 分析完成后才待审；事件/审计完整 | 进行中（实现与本机聚焦验收已完成；最终 clean SHA 证据待归档） |
+| DOC-003 | critical 阻断 | 上传命中 critical 且自动提交 | 停敏感复核；无法选择同步 | 进行中（实现与本机聚焦验收已完成；最终 clean SHA 证据待归档） |
+| DOC-004 | 原件访问 | 本人/同部门管理员/越域管理员请求 inline/download/Range | 授权流式；越域 404；跨用户读取有审计 | 进行中（实现与本机聚焦验收已完成；最终 clean SHA 证据待归档） |
+| DOC-005 | 驳回重提 | 驳回后员工修正并重提 | `rejected -> pending_review`；历史记录保留 | 进行中（实现与本机聚焦验收已完成；最终 clean SHA 证据待归档） |
+| REV-001 | 明确批准分支 | 分别提交 sync 与 approve_only；sync 不传 Dataset | 两条结果无歧义；缺 Dataset 422 且不批准 | 进行中（实现与本机聚焦验收已完成；最终 clean SHA 证据待归档） |
+| REV-002 | 并发决定 | 两管理员同时审批同一文件 | 仅一个成功，另一个 409，无重复任务 | 进行中（实现与本机聚焦验收已完成；最终 clean SHA 证据待归档） |
+| SEC-001 | 数据域与审计 | 员工/部门管理员枚举 UUID、搜索、分页 | 不泄露存在性/total；管理员动作全审计 | 进行中（实现与本机聚焦验收已完成；最终 clean SHA 证据待归档） |
 
 ## P1：工作台与上线门禁
 
 | ID | 验收场景 | 执行要点 | 预期 | 当前 |
 |---|---|---|---|---|
-| UI-001 | 员工工作台 | 草稿/驳回/待审/成功各造数据 | KPI、待办、下钻筛选一致 | 待执行 |
-| UI-002 | 审核领取与 SLA | 并发领取、释放、超时、转派 | 冲突 409；队列/SLA 口径一致；有审计 | 待执行 |
-| UI-003 | 通知闭环 | 产生通知、看未读、深链、单条/全部已读 | 未读数实时一致；无权深链不泄露 | 待执行 |
-| UI-004 | 分页搜索 | >100 文档，多角色查询和返回详情 | 服务端分页；URL 恢复；total 不越域 | 待执行 |
-| UI-005 | 移动端 | 360/390/768px 键盘与触控走主链 | 无常驻侧栏溢出；主操作可达；焦点可见 | 待执行 |
-| CFG-001 | 配置消费者 | 对 CONFIG_CONTRACT 每个 key 做行为差异测试 | 无死 key；secret 不回显；生效时间符合契约 | 待执行 |
-| E2E-001 | 真实基础设施主链 | PostgreSQL/RabbitMQ/Redis/MinIO + API + dispatcher + workers；仅 mock 外部协议 | 上传至 parsed 全链自动完成且可追踪 | 待执行 |
-| E2E-002 | 故障恢复 | 分别中断 broker/Redis/MinIO/RAGFlow 替身后恢复 | 无丢事件/重复远端文档；状态可恢复 | 待执行 |
-| DLQ-001 | 毒消息 | 固定失败超过 max attempts | 进入 DLQ、告警、可安全查看/重放 | 待执行 |
-| OBS-001 | 指标告警 | 制造 outbox 积压、worker 离线、SLA 超时、同步失败 | 指标可抓取；告警在约定窗口触发并有 runbook | 待执行 |
+| UI-001 | 员工工作台 | 草稿/驳回/待审/成功各造数据 | KPI、待办、下钻筛选一致 | 进行中（实现、本机组件测试与受保护浏览器验收已完成；最终 clean SHA 证据待归档） |
+| UI-002 | 审核领取与 SLA | 并发领取、释放、超时、转派 | 冲突 409；队列/SLA 口径一致；有审计 | 进行中（实现、本机组件测试与受保护浏览器验收已完成；最终 clean SHA 证据待归档） |
+| UI-003 | 通知闭环 | 产生通知、看未读、深链、单条/全部已读 | 未读数实时一致；无权深链不泄露 | 进行中（实现、本机组件测试与受保护浏览器验收已完成；最终 clean SHA 证据待归档） |
+| UI-004 | 分页搜索 | >100 文档，多角色查询和返回详情 | 服务端分页；URL 恢复；total 不越域 | 进行中（实现、本机组件测试与受保护浏览器验收已完成；最终 clean SHA 证据待归档） |
+| UI-005 | 移动端 | 360/390/768px 键盘与触控走主链 | 无常驻侧栏溢出；主操作可达；焦点可见 | 进行中（实现、本机组件测试与受保护浏览器验收已完成；最终 clean SHA 证据待归档） |
+| CFG-001 | 配置消费者 | 对 CONFIG_CONTRACT 每个 key 做行为差异测试 | 无死 key；secret 不回显；生效时间符合契约 | 进行中（全部配置消费者与行为契约已完成本机聚焦验收；最终 clean SHA 证据待归档） |
+| E2E-001 | 真实基础设施主链 | PostgreSQL/RabbitMQ/Redis/MinIO + API + dispatcher + workers；仅 mock 外部协议 | 上传至 parsed 全链自动完成且可追踪 | 进行中（真实基础设施 runner 已实现并通过开发期检查；最终 clean SHA 全链实跑证据待归档） |
+| E2E-002 | 故障恢复 | 分别中断 broker/Redis/MinIO/RAGFlow 替身后恢复 | 无丢事件/重复远端文档；状态可恢复 | 进行中（四类依赖故障恢复 runner 已实现并通过开发期检查；最终 clean SHA 实跑证据待归档） |
+| DLQ-001 | 毒消息 | 固定失败超过 max attempts | 进入 DLQ、告警、可安全查看/重放 | 进行中（真实 RabbitMQ DLQ 与安全重放 runner 已实现并通过开发期检查；最终 clean SHA 实跑证据待归档） |
+| OBS-001 | 指标告警 | 制造 outbox 积压、worker 离线、SLA 超时、同步失败 | 指标可抓取；告警在约定窗口触发并有 runbook | 进行中（生产规则、promtool 时序与 live runner 已实现并通过聚焦验收；最终 clean SHA 十分钟窗口证据待归档） |
 | EXT-SMTP-001 | 真实 SMTP 投递 | 在同一 protected environment 完成注册验证与密码重置投递，由独立 SMTP probe 生成 source receipt | `smtp-delivery-source.v1`/`smtp-delivery-evidence.v1` 通过 exact-key、身份、新鲜度与隐私校验，并绑定最终发布授权 | 待执行（schema 与发布绑定已实现；真实收据待补） |
 | EXT-WEBHOOK-001 | 真实告警 Webhook | 触发 firing/resolved 告警，由独立 Alertmanager Webhook receiver 生成 source receipt | `alertmanager-webhook-source.v1`/`alertmanager-webhook-evidence.v1` 绑定真实 receiver、投递结果与最终发布授权 | 待执行（schema 与发布绑定已实现；真实收据待补） |
 | EXT-RAGFLOW-001 | 真实 RAGFlow 外部链路 | 独立受保护 workflow 在隔离 Dataset 完成上传、解析、幂等重试与清理；验证 HTTPS/SPKI，并取得环境所有者签名的 endpoint attestation | 收据绑定 exact Git SHA/environment/workflow run id/attempt、受控 endpoint 与 Dataset、main CI artifact，以及应用部署所有者签名；密钥/原文不入证据；mock 或 source-dir 自填 JSON 不能替代 | 待执行（可信 attestation/workflow 与发布绑定已实现；真实受保护证据待补） |
@@ -48,12 +48,12 @@
 
 | ID | 验收场景 | 执行要点 | 预期 | 当前 |
 |---|---|---|---|---|
-| AI-001 | LLM 协议与失败分类 | 协议替身断言请求；成功/畸形/429/超时 | 结构化结果、模型/prompt 版本、token/成本与失败类别完整；不作为真实 Provider 证据 | 待执行 |
+| AI-001 | LLM 协议与失败分类 | 协议替身断言请求；成功/畸形/429/超时 | 结构化结果、模型/prompt 版本、token/成本与失败类别完整；不作为真实 Provider 证据 | 进行中（协议替身、结构化结果与失败分类聚焦验收已完成；最终 clean SHA 证据待归档） |
 | EXT-LLM-001 | 真实 LLM Provider | 仅对已批准的内部非计费真实 Provider 执行独立受保护验收；验证 endpoint 身份、模型响应、用量与成本状态，证据不含 prompt/原文/密钥 | 可信 provider attestation/workflow 与 exact Git SHA/environment/workflow run id/attempt、main CI 及不可变 artifact 绑定；mock 或 source-dir 自填 JSON 不能替代；任何外部计费 Provider 仍须先通过 `COST-002` | 待执行（可信 attestation/workflow 与发布绑定已实现；真实受保护证据待补） |
-| VER-001 | 版本替代 | v2 替代 v1，模拟新同步成功/失败与旧清理失败 | 无环；切换原子可恢复；历史可追溯 | 待执行 |
-| EXP-001 | 到期负责人 | 临期/到期/换负责人/禁用用户 | 通知正确；工作台可下钻；不静默删除 | 待执行 |
+| VER-001 | 版本替代 | v2 替代 v1，模拟新同步成功/失败与旧清理失败 | 无环；切换原子可恢复；历史可追溯 | 进行中（实现与本机聚焦验收已完成；最终 clean SHA 证据待归档） |
+| EXP-001 | 到期负责人 | 临期/到期/换负责人/禁用用户 | 通知正确；工作台可下钻；不静默删除 | 进行中（实现与本机聚焦验收已完成；最终 clean SHA 证据待归档） |
 | VIEW-001 | 保存视图 | 造 121 条遗留视图，验证第 7 页与 `q` 远程搜索可达并应用；造 99 条后并发创建 2 条；检查配额 409 | 无首 100 条隐藏截断；每 owner/page 私人及每 department/page 共享上限 100，并发不超限；遗留超额仍可读/搜/改/删；只存查询定义和列偏好、不存结果，越域条件不能扩权 | 进行中（实现、本地聚焦测试及 Playwright 渲染交互已补；最终候选 SHA 日志待归档） |
-| COST-001 | 容量成本可视化 | 以独立 SQL/采集证据复算部门、日期等分组；分别造 known、unknown pricing、unknown usage、legacy、物理 stale/unavailable/unsupported、RAGFlow success/failure；用 system_admin 与越权角色访问；在系统管理员前端工作台验证筛选、分页、加载、空态、unknown、陈旧/不可用和错误态 | 三类 API 与工作台一致；已知成本按币种可复算，未知成本 fail-safe 且绝不显示为 0；物理容量只展示集群实测、不虚构部门分摊；403/422/空数据契约稳定；响应、审计、指标与前端均无文件名、对象 key、prompt/原文、邮箱、API Key、Bearer/access/邮箱验证/重置密码等认证令牌或个人维度标签；仅允许去标识化的聚合 LLM token 计数 | 待执行 |
+| COST-001 | 容量成本可视化 | 以独立 SQL/采集证据复算部门、日期等分组；分别造 known、unknown pricing、unknown usage、legacy、物理 stale/unavailable/unsupported、RAGFlow success/failure；用 system_admin 与越权角色访问；在系统管理员前端工作台验证筛选、分页、加载、空态、unknown、陈旧/不可用和错误态 | 三类 API 与工作台一致；已知成本按币种可复算，未知成本 fail-safe 且绝不显示为 0；物理容量只展示集群实测、不虚构部门分摊；403/422/空数据契约稳定；响应、审计、指标与前端均无文件名、对象 key、prompt/原文、邮箱、API Key、Bearer/access/邮箱验证/重置密码等认证令牌或个人维度标签；仅允许去标识化的聚合 LLM token 计数 | 进行中（真实 PostgreSQL/API/独立 SQL 复算与前端聚焦验收已完成；最终 clean SHA 证据待归档） |
 | COST-002 | 月度预算门禁 | **契约尚未定版，禁止从现有价格字段或统计 API 猜实现。** 先由产品、财务与安全共同定版预算主体、币种/汇率、自然月时区、软/硬限额、并发扣减、超额行为、授权覆盖、通知/告警和审计，再补 API/配置/数据迁移、前端与并发/故障验收证据 | 契约批准且可追溯；计费调用在并发、重试、未知用量和跨月边界下都按定版策略执行；覆盖权限和审计完整；在证据归档前不得宣称预算治理完成 | 未完成（发布阻断） |
 
 ## 发布证据模板
