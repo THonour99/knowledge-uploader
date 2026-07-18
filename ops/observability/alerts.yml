@@ -51,23 +51,39 @@ groups:
 
       - alert: KnowledgeUploaderOperationalCollectorStale
         expr: |
-          absent(knowledge_uploader_operational_collector_last_success_timestamp_seconds)
+          absent(knowledge_uploader_operational_collector_last_success_timestamp_seconds{
+            job="knowledge-uploader-operations"
+          })
+          or
+          absent(knowledge_uploader_operational_collector_interval_seconds{
+            job="knowledge-uploader-operations"
+          })
           or
           (
             time()
-            - knowledge_uploader_operational_collector_last_success_timestamp_seconds
-            > 120
+            - knowledge_uploader_operational_collector_last_success_timestamp_seconds{
+              job="knowledge-uploader-operations"
+            }
+            > on(job, instance)
+            clamp_min(
+              knowledge_uploader_operational_collector_interval_seconds{
+                job="knowledge-uploader-operations"
+              } * 2,
+              120
+            )
           )
         for: 2m
         labels:
           severity: critical
         annotations:
-          summary: Operational database metrics have not refreshed for two minutes
+          summary: Operational database metrics exceeded the configured collection cadence
           runbook: ops/runbooks/observability.md#knowledgeuploaderoperationalcollectorstale
 
       - alert: KnowledgeUploaderOperationalCollectorTimestampInFuture
         expr: |
-          knowledge_uploader_operational_collector_last_success_timestamp_seconds
+          knowledge_uploader_operational_collector_last_success_timestamp_seconds{
+            job="knowledge-uploader-operations"
+          }
           > time() + 300
         for: 2m
         labels:
@@ -226,20 +242,36 @@ groups:
         expr: |
           absent(
             knowledge_uploader_operational_collector_component_last_success_timestamp_seconds{
+              job="knowledge-uploader-operations",
               component="email_redis"
             }
+          )
+          or
+          label_replace(
+            absent(knowledge_uploader_operational_collector_interval_seconds{
+              job="knowledge-uploader-operations"
+            }),
+            "component", "email_redis", "", ".*"
           )
           or
           (
             time()
             - knowledge_uploader_operational_collector_component_last_success_timestamp_seconds{
+              job="knowledge-uploader-operations",
               component="email_redis"
             }
-            > 120
+            > on(job, instance) group_left
+            clamp_min(
+              knowledge_uploader_operational_collector_interval_seconds{
+                job="knowledge-uploader-operations"
+              } * 2,
+              120
+            )
           )
           or
           increase(
             knowledge_uploader_operational_collector_component_errors_total{
+              job="knowledge-uploader-operations",
               component="email_redis"
             }[5m]
           ) > 0
@@ -313,6 +345,59 @@ groups:
           summary: RAGFlow sync failure ratio exceeds 10 percent in the 15 minute window
           runbook: ops/runbooks/observability.md#knowledgeuploaderragflowsyncfailureratehigh
 
+      - alert: KnowledgeUploaderRagflowCallTelemetryCollectorUnavailable
+        expr: |
+          absent(
+            knowledge_uploader_operational_collector_component_last_success_timestamp_seconds{
+              job="knowledge-uploader-operations",
+              component="ragflow_call_telemetry"
+            }
+          )
+          or
+          label_replace(
+            absent(knowledge_uploader_operational_collector_interval_seconds{
+              job="knowledge-uploader-operations"
+            }),
+            "component", "ragflow_call_telemetry", "", ".*"
+          )
+          or
+          (
+            time()
+            - knowledge_uploader_operational_collector_component_last_success_timestamp_seconds{
+              job="knowledge-uploader-operations",
+              component="ragflow_call_telemetry"
+            }
+            > on(job, instance) group_left
+            clamp_min(
+              knowledge_uploader_operational_collector_interval_seconds{
+                job="knowledge-uploader-operations"
+              } * 2,
+              120
+            )
+          )
+          or
+          increase(
+            knowledge_uploader_operational_collector_component_errors_total{
+              job="knowledge-uploader-operations",
+              component="ragflow_call_telemetry"
+            }[5m]
+          ) > 0
+        for: 2m
+        labels:
+          severity: critical
+        annotations:
+          summary: RAGFlow call telemetry is missing, stale, or failing
+          runbook: ops/runbooks/observability.md#knowledgeuploaderragflowcalltelemetrycollectorunavailable
+
+      - alert: KnowledgeUploaderRagflowApiCallStale
+        expr: knowledge_uploader_ragflow_api_stale_started > 0
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: One or more RAGFlow API calls remain in started state after 15 minutes
+          runbook: ops/runbooks/observability.md#knowledgeuploaderragflowapicallstale
+
   - name: knowledge-uploader-data-protection
     rules:
       - alert: KnowledgeUploaderLinuxHostMetricsDown
@@ -355,12 +440,66 @@ groups:
         expr: |
           up{job="minio"} == 0
           or absent(up{job="minio"})
+          or (
+            up{job="minio"} == 1
+            unless on(job, instance)
+            minio_cluster_capacity_usable_free_bytes
+          )
+          or (
+            up{job="minio"} == 1
+            unless on(job, instance)
+            minio_cluster_capacity_usable_total_bytes
+          )
         for: 2m
         labels:
           severity: critical
         annotations:
           summary: MinIO physical capacity metrics are unavailable
           runbook: ops/runbooks/observability.md#knowledgeuploaderminiocapacitylow
+
+      - alert: KnowledgeUploaderMinioCapacityCollectorUnavailable
+        expr: |
+          absent(
+            knowledge_uploader_operational_collector_component_last_success_timestamp_seconds{
+              job="knowledge-uploader-operations",
+              component="minio_capacity"
+            }
+          )
+          or
+          label_replace(
+            absent(knowledge_uploader_operational_collector_interval_seconds{
+              job="knowledge-uploader-operations"
+            }),
+            "component", "minio_capacity", "", ".*"
+          )
+          or
+          (
+            time()
+            - knowledge_uploader_operational_collector_component_last_success_timestamp_seconds{
+              job="knowledge-uploader-operations",
+              component="minio_capacity"
+            }
+            > on(job, instance) group_left
+            clamp_min(
+              knowledge_uploader_operational_collector_interval_seconds{
+                job="knowledge-uploader-operations"
+              } * 2,
+              120
+            )
+          )
+          or
+          increase(
+            knowledge_uploader_operational_collector_component_errors_total{
+              job="knowledge-uploader-operations",
+              component="minio_capacity"
+            }[5m]
+          ) > 0
+        for: 2m
+        labels:
+          severity: critical
+        annotations:
+          summary: MinIO capacity snapshot collection is missing, stale, or failing
+          runbook: ops/runbooks/observability.md#knowledgeuploaderminiocapacitycollectorunavailable
 
       - alert: KnowledgeUploaderMinioCapacityLow
         expr: |
@@ -375,6 +514,7 @@ groups:
         annotations:
           summary: MinIO usable physical capacity is below 15 percent
           runbook: ops/runbooks/observability.md#knowledgeuploaderminiocapacitylow
+
       - alert: KnowledgeUploaderBackupMissing
         expr: absent(knowledge_uploader_backup_last_success_timestamp_seconds)
         for: 15m

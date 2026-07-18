@@ -201,6 +201,12 @@ def _source_inputs(root: Path) -> list[Path]:
     paths = [
         root / "backend/Dockerfile",
         root / "backend/requirements.txt",
+        root / "backend/app/core/jwt_validation.py",
+        root / "backend/app/core/strict_json.py",
+        root / "backend/app/core/minio_capacity_telemetry.py",
+        root / "backend/app/core/minio_endpoint.py",
+        root / "backend/scripts/minio_bootstrap.py",
+        root / "backend/scripts/minio_metrics_token_init.py",
         root / "frontend/Dockerfile",
         root / "frontend/package-lock.json",
     ]
@@ -1046,7 +1052,7 @@ def _write_valid_internal_evidence(
         ),
     }
     infrastructure = {
-        "evidence_contract_version": 3,
+        "evidence_contract_version": 5,
         "status": "development_passed",
         "generated_at": generated_at,
         "git_sha": TEST_SHA,
@@ -1077,14 +1083,77 @@ def _write_valid_internal_evidence(
                 "smtp_starttls",
             ],
         },
+        "minio_metrics_auth": {
+            "status": "passed",
+            "auth_mode": "jwt_bearer_file",
+            "initializer": {
+                "status": "passed",
+                "container_exit": "exited_0",
+                "logs": "empty",
+                "token_file": "strict_semantic_jwt_single_lf",
+                "mode": "0440",
+                "uid": 65534,
+                "gid": 65534,
+            },
+            "anonymous_access": {"status": "denied", "http_status": 403},
+            "atomic_publish": {
+                "status": "passed",
+                "concurrent_runs": 2,
+                "concurrent_successes": 2,
+                "term_exit_code": 1,
+                "term_cleanup": "passed",
+                "sigkill_exit_code": 137,
+                "sigkill_orphan_observed": True,
+                "post_sigkill_recovery": "passed",
+                "cleanup_after_no_initializer": True,
+                "final_temporary_file_count": 0,
+            },
+            "refresh": {
+                "status": "passed",
+                "semantics": "consumer_refresh_not_revocation",
+                "credential_changed": True,
+                "mtime_advanced": True,
+                "previous_jwt_http_status": 200,
+                "refreshed_jwt_http_status": 200,
+                "consumer_processes_unchanged": True,
+                "prometheus_health_before": "up",
+                "prometheus_health_after": "up",
+            },
+            "emergency_revocation": {
+                "status": "passed",
+                "method": "root_credential_rotation_and_minio_restart",
+                "previous_jwt_http_status_after_restart": 403,
+                "refreshed_jwt_http_status_after_restart": 403,
+                "replacement_jwt_http_status": 200,
+                "minio_recreated": True,
+                "bootstrap_reconciled": True,
+                "expected_minio_interruption": True,
+                "consumer_processes_unchanged": True,
+                "automatic_consumer_recovery": True,
+                "prometheus_health_after_recovery": "up",
+            },
+            "identity_reconciliation": {
+                "status": "passed",
+                "stale_direct_policy_removed": True,
+                "stale_group_membership_removed": True,
+                "intended_policy_attached": True,
+                "intended_bucket_operations": ["get", "put", "delete"],
+                "secondary_bucket_operations_denied": ["list", "get", "put"],
+                "admin_operations_denied": ["info", "user_list", "policy_list"],
+            },
+            "collector": {
+                "status": "passed",
+                "component": "minio_capacity",
+                "last_success_advanced": True,
+            },
+        },
         "prometheus_minio_tls": {
             "status": "passed",
             "job": "minio",
             "health": "up",
             "scrape_url": "https://minio:9000/minio/v2/metrics/cluster",
             "config_sha256": gate._sha256_path(
-                Path(__file__).parents[2]
-                / "ops/observability/prometheus.protected.yml"
+                Path(__file__).parents[2] / "ops/observability/prometheus.protected.yml"
             ),
             "ca_file": "/etc/prometheus/tls/ca.crt",
             "server_name": "minio",
@@ -1092,8 +1161,10 @@ def _write_valid_internal_evidence(
         },
         "rabbitmq_probe_run_id": str(run_id),
         "rabbitmq_evidence_sha256": gate._sha256_bytes(rabbitmq_payload),
+        "backend_image": "backend:test",
         "backend_image_revision": TEST_SHA,
         "backend_image_id": image_ids["backend"],
+        "frontend_image": "frontend:test",
         "frontend_image_revision": TEST_SHA,
         "frontend_image_id": image_ids["frontend"],
         "results": {name: "passed" for name in gate.REQUIRED_INFRASTRUCTURE_RESULTS},
@@ -1105,9 +1176,7 @@ def _write_valid_internal_evidence(
             service: "sha256:" + f"{index + 100:064x}"
             for index, service in enumerate(sorted(gate.REQUIRED_SERVICE_CONTAINERS), 1)
         },
-        "worker_queue_consumers": {
-            queue: 1 for queue in gate.REQUIRED_WORKER_QUEUES
-        },
+        "worker_queue_consumers": {queue: 1 for queue in gate.REQUIRED_WORKER_QUEUES},
         "business_probe": {
             "status": "passed",
             "email_verification_floor": "passed",
@@ -1348,7 +1417,33 @@ def test_authorization_and_deployment_handoff_keep_the_exact_main_artifact(
         json.dumps(binding),
         encoding="utf-8",
     )
-    external_path = bundle / "email-delivery.json"
+    evidence_snapshot_index = 0
+
+    def exact_evidence_snapshot() -> Path:
+        nonlocal evidence_snapshot_index
+        evidence_snapshot_index += 1
+        target = tmp_path / f"authorization-evidence-{evidence_snapshot_index}"
+        target.mkdir()
+        for name in module.REQUIRED_RELEASE_EVIDENCE:
+            (target / name).write_bytes((bundle / name).read_bytes())
+        return target
+
+    def authorize_current_bundle(*, output_path: Path) -> object:
+        evidence = exact_evidence_snapshot()
+        return module.authorize_release(
+            evidence_dir=evidence,
+            dgx_binding_path=evidence / "dgx-oci-consumption.json",
+            trust_summary_path=evidence / "release-workflow-trust.json",
+            output_path=output_path,
+            repository=TEST_REPOSITORY,
+            git_sha=TEST_SHA,
+            environment="staging",
+            now=NOW,
+        )
+
+    authorization_evidence = exact_evidence_snapshot()
+    external_path = authorization_evidence / "email-delivery.json"
+    bundle_external_path = bundle / "email-delivery.json"
     validated_payload = external_payloads["email-delivery.json"]
     replacement_payload = validated_payload + b"\n"
     original_email_validator = module.protected_release_gate._email_delivery_evidence_errors
@@ -1363,6 +1458,7 @@ def test_authorization_and_deployment_handoff_keep_the_exact_main_artifact(
         errors = original_email_validator(evidence, now=now)
         if not replaced_after_validation:
             external_path.write_bytes(replacement_payload)
+            bundle_external_path.write_bytes(replacement_payload)
             replaced_after_validation = True
         return errors
 
@@ -1374,9 +1470,9 @@ def test_authorization_and_deployment_handoff_keep_the_exact_main_artifact(
 
     authorization_path = bundle / "release-authorization.json"
     authorization = module.authorize_release(
-        evidence_dir=bundle,
-        dgx_binding_path=bundle / "dgx-oci-consumption.json",
-        trust_summary_path=trust_path,
+        evidence_dir=authorization_evidence,
+        dgx_binding_path=authorization_evidence / "dgx-oci-consumption.json",
+        trust_summary_path=authorization_evidence / "release-workflow-trust.json",
         output_path=authorization_path,
         repository=TEST_REPOSITORY,
         git_sha=TEST_SHA,
@@ -1386,8 +1482,7 @@ def test_authorization_and_deployment_handoff_keep_the_exact_main_artifact(
 
     authorization_payload = authorization_path.read_bytes()
     assert authorization_path.with_suffix(".json.sha256").read_text(encoding="utf-8") == (
-        f"{_digest(authorization_payload).removeprefix('sha256:')}  "
-        f"{authorization_path.name}\n"
+        f"{_digest(authorization_payload).removeprefix('sha256:')}  " f"{authorization_path.name}\n"
     )
     assert authorization["source_artifact"]["artifact_id"] == 901
     assert authorization["source_artifact"]["artifact_name"] == artifact["bundle_name"]
@@ -1413,6 +1508,7 @@ def test_authorization_and_deployment_handoff_keep_the_exact_main_artifact(
             now=NOW + timedelta(minutes=1),
         )
     external_path.write_bytes(validated_payload)
+    bundle_external_path.write_bytes(validated_payload)
     monkeypatch.setattr(
         module.protected_release_gate,
         "_email_delivery_evidence_errors",
@@ -1432,6 +1528,8 @@ def test_authorization_and_deployment_handoff_keep_the_exact_main_artifact(
         evidence_path = bundle / evidence_name
         original_payload = evidence_path.read_bytes()
         replacement = original_payload + b"\n"
+        internal_evidence = exact_evidence_snapshot()
+        internal_evidence_path = internal_evidence / evidence_name
 
         def replace_internal_after_validation(
             payloads: dict[str, bytes],
@@ -1441,6 +1539,7 @@ def test_authorization_and_deployment_handoff_keep_the_exact_main_artifact(
             contract_payloads: dict[str, bytes] | None = None,
             now: datetime | None = None,
             target_path: Path = evidence_path,
+            snapshot_path: Path = internal_evidence_path,
             target_payload: bytes = replacement,
         ) -> list[str]:
             assert contract_payloads is not None
@@ -1451,6 +1550,7 @@ def test_authorization_and_deployment_handoff_keep_the_exact_main_artifact(
                 contract_payloads=contract_payloads,
                 now=now,
             )
+            snapshot_path.write_bytes(target_payload)
             target_path.write_bytes(target_payload)
             return errors
 
@@ -1461,9 +1561,9 @@ def test_authorization_and_deployment_handoff_keep_the_exact_main_artifact(
         )
         internal_authorization_path = bundle / f"internal-snapshot-{index}.json"
         internal_authorization = module.authorize_release(
-            evidence_dir=bundle,
-            dgx_binding_path=bundle / "dgx-oci-consumption.json",
-            trust_summary_path=trust_path,
+            evidence_dir=internal_evidence,
+            dgx_binding_path=internal_evidence / "dgx-oci-consumption.json",
+            trust_summary_path=internal_evidence / "release-workflow-trust.json",
             output_path=internal_authorization_path,
             repository=TEST_REPOSITORY,
             git_sha=TEST_SHA,
@@ -1490,14 +1590,15 @@ def test_authorization_and_deployment_handoff_keep_the_exact_main_artifact(
         original_evidence_validator,
     )
     secret_marker = "LEAK-ME-EXTERNAL-EVIDENCE"
-    alertmanager_path = bundle / "alertmanager.yml"
+    invalid_evidence = exact_evidence_snapshot()
+    alertmanager_path = invalid_evidence / "alertmanager.yml"
     valid_alertmanager = alertmanager_path.read_bytes()
     alertmanager_path.write_bytes(f"route: [{secret_marker}\n".encode())
     with pytest.raises(module.ContractError) as captured:
         module.authorize_release(
-            evidence_dir=bundle,
-            dgx_binding_path=bundle / "dgx-oci-consumption.json",
-            trust_summary_path=trust_path,
+            evidence_dir=invalid_evidence,
+            dgx_binding_path=invalid_evidence / "dgx-oci-consumption.json",
+            trust_summary_path=invalid_evidence / "release-workflow-trust.json",
             output_path=bundle / "invalid-authorization.json",
             repository=TEST_REPOSITORY,
             git_sha=TEST_SHA,
@@ -1542,15 +1643,8 @@ def test_authorization_and_deployment_handoff_keep_the_exact_main_artifact(
     forged["collector_run_attempt"] = 2
     external_path.write_text(json.dumps(forged), encoding="utf-8")
     with pytest.raises(module.ContractError, match="authorization validation failed"):
-        module.authorize_release(
-            evidence_dir=bundle,
-            dgx_binding_path=bundle / "dgx-oci-consumption.json",
-            trust_summary_path=trust_path,
+        authorize_current_bundle(
             output_path=bundle / "forged-authorization.json",
-            repository=TEST_REPOSITORY,
-            git_sha=TEST_SHA,
-            environment="staging",
-            now=NOW,
         )
     external_path.write_bytes(external_payload)
     checked_projection = json.loads(external_payload)
@@ -1577,15 +1671,8 @@ def test_authorization_and_deployment_handoff_keep_the_exact_main_artifact(
     _rebind_external_projection(module, replaced_projection)
     external_path.write_text(json.dumps(replaced_projection), encoding="utf-8")
     with pytest.raises(module.ContractError, match="authorization validation failed"):
-        module.authorize_release(
-            evidence_dir=bundle,
-            dgx_binding_path=bundle / "dgx-oci-consumption.json",
-            trust_summary_path=trust_path,
+        authorize_current_bundle(
             output_path=bundle / "semantically-forged-authorization.json",
-            repository=TEST_REPOSITORY,
-            git_sha=TEST_SHA,
-            environment="staging",
-            now=NOW,
         )
     external_path.write_bytes(external_payload)
     wrong_keys_projection = json.loads(external_payload)
@@ -1593,15 +1680,8 @@ def test_authorization_and_deployment_handoff_keep_the_exact_main_artifact(
     _rebind_external_projection(module, wrong_keys_projection)
     external_path.write_text(json.dumps(wrong_keys_projection), encoding="utf-8")
     with pytest.raises(module.ContractError, match="authorization validation failed"):
-        module.authorize_release(
-            evidence_dir=bundle,
-            dgx_binding_path=bundle / "dgx-oci-consumption.json",
-            trust_summary_path=trust_path,
+        authorize_current_bundle(
             output_path=bundle / "wrong-keys-authorization.json",
-            repository=TEST_REPOSITORY,
-            git_sha=TEST_SHA,
-            environment="staging",
-            now=NOW,
         )
     external_path.write_bytes(external_payload)
 
@@ -1675,3 +1755,82 @@ def test_stable_reader_rejects_path_exchange(
     monkeypatch.setattr(module.os, "open", exchange_before_open)
     with pytest.raises(module.ContractError, match="changed before"):
         module._read_stable_regular_file(victim, "exchanged evidence")
+
+
+def _write_release_authorization_inventory(module: ModuleType, root: Path) -> None:
+    root.mkdir()
+    for name in module.REQUIRED_RELEASE_EVIDENCE:
+        (root / name).write_bytes(f"fixture:{name}\n".encode())
+
+
+def test_release_authorization_evidence_requires_exact_regular_inventory(
+    tmp_path: Path,
+) -> None:
+    module = _load_module()
+    evidence = tmp_path / "evidence"
+    _write_release_authorization_inventory(module, evidence)
+
+    assert set(module._snapshot_release_authorization_evidence(evidence)) == set(
+        module.REQUIRED_RELEASE_EVIDENCE
+    )
+
+    (evidence / "unexpected-token.txt").write_text(
+        "eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiJsZWFrIn0.c2lnbmF0dXJl",
+        encoding="utf-8",
+    )
+    with pytest.raises(module.ContractError, match="inventory mismatch"):
+        module._snapshot_release_authorization_evidence(evidence)
+    (evidence / "unexpected-token.txt").unlink()
+
+    (evidence / "unexpected-directory").mkdir()
+    with pytest.raises(module.ContractError, match="inventory mismatch"):
+        module._snapshot_release_authorization_evidence(evidence)
+
+
+def test_release_authorization_evidence_rejects_required_symlink(tmp_path: Path) -> None:
+    module = _load_module()
+    evidence = tmp_path / "evidence"
+    _write_release_authorization_inventory(module, evidence)
+    victim = evidence / sorted(module.REQUIRED_RELEASE_EVIDENCE)[0]
+    target = tmp_path / "target"
+    target.write_bytes(victim.read_bytes())
+    victim.unlink()
+    try:
+        victim.symlink_to(target)
+    except OSError:
+        pytest.skip("symlink creation is unavailable on this runner")
+
+    with pytest.raises(module.ContractError, match="inventory mismatch"):
+        module._snapshot_release_authorization_evidence(evidence)
+
+
+def test_authorize_scans_all_release_evidence_raw_bytes(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    module = _load_module()
+    evidence = tmp_path / "evidence"
+    _write_release_authorization_inventory(module, evidence)
+    observed: set[str] = set()
+
+    def inspect_every_payload(payloads: dict[str, bytes]) -> None:
+        observed.update(payloads)
+        raise RuntimeError("semantic credential sentinel")
+
+    monkeypatch.setattr(
+        module.protected_release_gate,
+        "reject_semantic_jwts",
+        inspect_every_payload,
+    )
+    with pytest.raises(module.ContractError, match="authorization validation failed"):
+        module.authorize_release(
+            evidence_dir=evidence,
+            dgx_binding_path=evidence / "dgx-oci-consumption.json",
+            trust_summary_path=evidence / "release-workflow-trust.json",
+            output_path=tmp_path / "authorization.json",
+            repository=TEST_REPOSITORY,
+            git_sha=TEST_SHA,
+            environment="staging",
+            now=NOW,
+        )
+    assert observed == set(module.REQUIRED_RELEASE_EVIDENCE)

@@ -47,6 +47,9 @@ scrape_configs:
           - rabbitmq:15692
 
   - job_name: minio
+    authorization:
+      type: Bearer
+      credentials_file: /run/secrets/minio-metrics/token
     scheme: https
     metrics_path: /minio/v2/metrics/cluster
     tls_config:

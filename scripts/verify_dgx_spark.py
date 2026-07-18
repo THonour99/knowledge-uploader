@@ -31,12 +31,48 @@ REQUIRED_RESULTS = (
     "smtp_starttls",
     "rabbitmq_topology",
     "minio_tls",
+    "minio_metrics_auth",
     "prometheus_minio_tls",
     "upload_review_ragflow",
     "ragflow_tls",
     "dlq_protocol",
     "dependency_fault_recovery",
     "cleanup",
+)
+INFRASTRUCTURE_EVIDENCE_KEYS = frozenset(
+    {
+        "evidence_contract_version",
+        "status",
+        "generated_at",
+        "git_sha",
+        "environment",
+        "run_id",
+        "compose_project",
+        "source_worktree_clean",
+        "architecture",
+        "docker_architecture",
+        "full_compose_e2e",
+        "resolved_compose_sha256",
+        "backend_image",
+        "backend_image_id",
+        "backend_image_revision",
+        "frontend_image",
+        "frontend_image_id",
+        "frontend_image_revision",
+        "service_container_ids",
+        "service_image_ids",
+        "worker_queue_consumers",
+        "business_probe",
+        "fault_recovery",
+        "prometheus_minio_tls",
+        "minio_metrics_auth",
+        "rabbitmq_probe_run_id",
+        "rabbitmq_evidence_sha256",
+        "tls",
+        "tls_certificate_sha256",
+        "cleanup_status",
+        "results",
+    }
 )
 REQUIRED_SERVICE_CONTAINERS = frozenset(
     {
@@ -264,8 +300,10 @@ def _load_compose_e2e_evidence(
     raw = json.loads(content.decode("utf-8"))
     if not isinstance(raw, dict):
         raise RuntimeError("Compose E2E evidence must be a JSON object")
+    if set(raw) != INFRASTRUCTURE_EVIDENCE_KEYS:
+        raise RuntimeError("Compose E2E evidence top-level schema mismatch")
     expected = {
-        "evidence_contract_version": 3,
+        "evidence_contract_version": 5,
         "status": "development_passed",
         "git_sha": git_sha,
         "environment": environment,
@@ -365,11 +403,11 @@ def _load_compose_e2e_evidence(
         or business_probe.get("mock_smtp_delivery") != "passed"
     ):
         raise RuntimeError("Compose E2E email verification behavior is incomplete")
-    _validate_v3_tls_and_fault_evidence(raw)
+    _validate_v5_evidence(raw)
     return raw
 
 
-def _validate_v3_tls_and_fault_evidence(raw: dict[str, object]) -> None:
+def _validate_v5_evidence(raw: dict[str, object]) -> None:
     run_id = str(raw.get("run_id"))
     tls = raw.get("tls")
     channels = tls.get("verified_channels") if isinstance(tls, dict) else None
@@ -378,8 +416,7 @@ def _validate_v3_tls_and_fault_evidence(raw: dict[str, object]) -> None:
         or tls.get("status") != "passed"
         or tls.get("certificate_bundle_sha256") != raw.get("tls_certificate_sha256")
         or not isinstance(channels, list)
-        or set(channels)
-        != {"gateway_https", "minio_https", "ragflow_https", "smtp_starttls"}
+        or set(channels) != {"gateway_https", "minio_https", "ragflow_https", "smtp_starttls"}
     ):
         raise RuntimeError("Compose E2E TLS evidence is incomplete")
     fault_recovery = raw.get("fault_recovery")
@@ -415,8 +452,7 @@ def _validate_v3_tls_and_fault_evidence(raw: dict[str, object]) -> None:
         not isinstance(prometheus, dict)
         or prometheus.get("status") != "passed"
         or prometheus.get("health") != "up"
-        or prometheus.get("scrape_url")
-        != "https://minio:9000/minio/v2/metrics/cluster"
+        or prometheus.get("scrape_url") != "https://minio:9000/minio/v2/metrics/cluster"
         or prometheus.get("ca_file") != "/etc/prometheus/tls/ca.crt"
         or prometheus.get("server_name") != "minio"
         or prometheus.get("certificate_verification") != "required"
@@ -424,6 +460,149 @@ def _validate_v3_tls_and_fault_evidence(raw: dict[str, object]) -> None:
         or SHA256_PATTERN.fullmatch(str(prometheus["config_sha256"])) is None
     ):
         raise RuntimeError("Compose E2E Prometheus MinIO TLS evidence is incomplete")
+    minio_auth = raw.get("minio_metrics_auth")
+    initializer = minio_auth.get("initializer") if isinstance(minio_auth, dict) else None
+    anonymous = minio_auth.get("anonymous_access") if isinstance(minio_auth, dict) else None
+    atomic = minio_auth.get("atomic_publish") if isinstance(minio_auth, dict) else None
+    refresh = minio_auth.get("refresh") if isinstance(minio_auth, dict) else None
+    emergency = minio_auth.get("emergency_revocation") if isinstance(minio_auth, dict) else None
+    identity = minio_auth.get("identity_reconciliation") if isinstance(minio_auth, dict) else None
+    collector = minio_auth.get("collector") if isinstance(minio_auth, dict) else None
+    if (
+        not isinstance(minio_auth, dict)
+        or set(minio_auth)
+        != {
+            "status",
+            "auth_mode",
+            "initializer",
+            "anonymous_access",
+            "atomic_publish",
+            "refresh",
+            "emergency_revocation",
+            "identity_reconciliation",
+            "collector",
+        }
+        or minio_auth.get("status") != "passed"
+        or minio_auth.get("auth_mode") != "jwt_bearer_file"
+        or not isinstance(initializer, dict)
+        or set(initializer)
+        != {
+            "status",
+            "container_exit",
+            "logs",
+            "token_file",
+            "mode",
+            "uid",
+            "gid",
+        }
+        or initializer.get("status") != "passed"
+        or initializer.get("container_exit") != "exited_0"
+        or initializer.get("logs") != "empty"
+        or initializer.get("token_file") != "strict_semantic_jwt_single_lf"
+        or initializer.get("mode") != "0440"
+        or initializer.get("uid") != 65534
+        or initializer.get("gid") != 65534
+        or not isinstance(anonymous, dict)
+        or set(anonymous) != {"status", "http_status"}
+        or anonymous.get("status") != "denied"
+        or anonymous.get("http_status") not in {401, 403}
+        or not isinstance(atomic, dict)
+        or set(atomic)
+        != {
+            "status",
+            "concurrent_runs",
+            "concurrent_successes",
+            "term_exit_code",
+            "term_cleanup",
+            "sigkill_exit_code",
+            "sigkill_orphan_observed",
+            "post_sigkill_recovery",
+            "cleanup_after_no_initializer",
+            "final_temporary_file_count",
+        }
+        or atomic.get("status") != "passed"
+        or atomic.get("concurrent_runs") != 2
+        or atomic.get("concurrent_successes") != 2
+        or atomic.get("term_exit_code") not in {1, 143}
+        or atomic.get("term_cleanup") != "passed"
+        or atomic.get("sigkill_exit_code") != 137
+        or atomic.get("sigkill_orphan_observed") is not True
+        or atomic.get("post_sigkill_recovery") != "passed"
+        or atomic.get("cleanup_after_no_initializer") is not True
+        or atomic.get("final_temporary_file_count") != 0
+        or not isinstance(refresh, dict)
+        or set(refresh)
+        != {
+            "status",
+            "semantics",
+            "credential_changed",
+            "mtime_advanced",
+            "previous_jwt_http_status",
+            "refreshed_jwt_http_status",
+            "consumer_processes_unchanged",
+            "prometheus_health_before",
+            "prometheus_health_after",
+        }
+        or refresh.get("status") != "passed"
+        or refresh.get("semantics") != "consumer_refresh_not_revocation"
+        or refresh.get("credential_changed") is not True
+        or refresh.get("mtime_advanced") is not True
+        or refresh.get("previous_jwt_http_status") != 200
+        or refresh.get("refreshed_jwt_http_status") != 200
+        or refresh.get("consumer_processes_unchanged") is not True
+        or refresh.get("prometheus_health_before") != "up"
+        or refresh.get("prometheus_health_after") != "up"
+        or not isinstance(emergency, dict)
+        or set(emergency)
+        != {
+            "status",
+            "method",
+            "previous_jwt_http_status_after_restart",
+            "refreshed_jwt_http_status_after_restart",
+            "replacement_jwt_http_status",
+            "minio_recreated",
+            "bootstrap_reconciled",
+            "expected_minio_interruption",
+            "consumer_processes_unchanged",
+            "automatic_consumer_recovery",
+            "prometheus_health_after_recovery",
+        }
+        or emergency.get("status") != "passed"
+        or emergency.get("method") != "root_credential_rotation_and_minio_restart"
+        or emergency.get("previous_jwt_http_status_after_restart") != 403
+        or emergency.get("refreshed_jwt_http_status_after_restart") != 403
+        or emergency.get("replacement_jwt_http_status") != 200
+        or emergency.get("minio_recreated") is not True
+        or emergency.get("bootstrap_reconciled") is not True
+        or emergency.get("expected_minio_interruption") is not True
+        or emergency.get("consumer_processes_unchanged") is not True
+        or emergency.get("automatic_consumer_recovery") is not True
+        or emergency.get("prometheus_health_after_recovery") != "up"
+        or not isinstance(identity, dict)
+        or set(identity)
+        != {
+            "status",
+            "stale_direct_policy_removed",
+            "stale_group_membership_removed",
+            "intended_policy_attached",
+            "intended_bucket_operations",
+            "secondary_bucket_operations_denied",
+            "admin_operations_denied",
+        }
+        or identity.get("status") != "passed"
+        or identity.get("stale_direct_policy_removed") is not True
+        or identity.get("stale_group_membership_removed") is not True
+        or identity.get("intended_policy_attached") is not True
+        or identity.get("intended_bucket_operations") != ["get", "put", "delete"]
+        or identity.get("secondary_bucket_operations_denied") != ["list", "get", "put"]
+        or identity.get("admin_operations_denied") != ["info", "user_list", "policy_list"]
+        or not isinstance(collector, dict)
+        or set(collector) != {"status", "component", "last_success_advanced"}
+        or collector.get("status") != "passed"
+        or collector.get("component") != "minio_capacity"
+        or collector.get("last_success_advanced") is not True
+    ):
+        raise RuntimeError("Compose E2E MinIO metrics auth evidence is incomplete")
 
 
 def _image_revision(image: str) -> str:
@@ -441,9 +620,10 @@ def _image_revision(image: str) -> str:
 
 def _resolve_image_id(image: str) -> str:
     image_id = run(["docker", "image", "inspect", "--format", "{{.Id}}", image]).lower()
-    if not image_id.startswith("sha256:") or SHA256_PATTERN.fullmatch(
-        image_id.removeprefix("sha256:")
-    ) is None:
+    if (
+        not image_id.startswith("sha256:")
+        or SHA256_PATTERN.fullmatch(image_id.removeprefix("sha256:")) is None
+    ):
         raise RuntimeError(f"Docker returned an invalid immutable image ID for {image}")
     return image_id
 

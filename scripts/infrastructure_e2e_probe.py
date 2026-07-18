@@ -760,7 +760,12 @@ class InfrastructureBusinessProbe:
         *,
         baseline_upload_count: int,
     ) -> dict[str, object]:
-        parsed = self._wait_for_file(state.employee, target.file_id, expected_status="parsed")
+        parsed = self._wait_for_file(
+            state.employee,
+            target.file_id,
+            expected_status="parsed",
+            allow_initial_failed=True,
+        )
         _require(parsed.get("ragflow_dataset_id") == self._dataset_id, "fault target changed")
         mock_state = self._mock_state()
         upload_count = _int_value(mock_state.get("upload_count"), "mock upload count")
@@ -1014,9 +1019,11 @@ class InfrastructureBusinessProbe:
         file_id: uuid.UUID,
         *,
         expected_status: str,
+        allow_initial_failed: bool = False,
     ) -> dict[str, object]:
         deadline = time.monotonic() + self._timeout_seconds
         last_status = "unknown"
+        recovery_started = False
         while time.monotonic() < deadline:
             file = _mapping(
                 self._client.json("GET", f"/api/files/{file_id}", token=actor.token),
@@ -1025,7 +1032,11 @@ class InfrastructureBusinessProbe:
             last_status = str(file.get("status", "unknown"))
             if last_status == expected_status:
                 return file
-            if last_status in {"failed", "analysis_failed", "ragflow_cleanup_failed"}:
+            if last_status != "failed":
+                recovery_started = True
+            if last_status in {"failed", "analysis_failed", "ragflow_cleanup_failed"} and not (
+                allow_initial_failed and last_status == "failed" and not recovery_started
+            ):
                 break
             time.sleep(0.5)
         raise InfrastructureProbeError(

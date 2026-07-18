@@ -7,6 +7,8 @@ services:
     platform: linux/arm64
   outbox-dispatcher:
     platform: linux/arm64
+  operational-metrics:
+    platform: linux/arm64
   worker-document:
     platform: linux/arm64
   worker-ai:
@@ -24,4 +26,8 @@ services:
   redis:
     platform: linux/arm64
   minio:
+    platform: linux/arm64
+  minio-bootstrap:
+    platform: linux/arm64
+  minio-metrics-token-init:
     platform: linux/arm64

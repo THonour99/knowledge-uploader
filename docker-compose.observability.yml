@@ -5,10 +5,6 @@ services:
       - -ec
       - rabbitmq-plugins enable --offline rabbitmq_prometheus && exec docker-entrypoint.sh rabbitmq-server
 
-  minio:
-    environment:
-      MINIO_PROMETHEUS_AUTH_TYPE: public
-
   prometheus:
     image: prom/prometheus:v3.12.0
     command:
@@ -21,8 +17,11 @@ services:
     volumes:
       - ${PROMETHEUS_CONFIG_FILE:-./ops/observability/prometheus.yml}:/etc/prometheus/prometheus.yml:ro
       - ./ops/observability/alerts.yml:/etc/prometheus/alerts.yml:ro
+      - minio-metrics-auth:/run/secrets/minio-metrics:ro
       - prometheus-data:/prometheus
     depends_on:
+      minio-metrics-token-init:
+        condition: service_completed_successfully
       backend-api:
         condition: service_healthy
       outbox-dispatcher:

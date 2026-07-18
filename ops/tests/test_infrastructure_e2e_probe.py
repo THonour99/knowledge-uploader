@@ -101,3 +101,83 @@ def test_remote_identity_uses_persisted_document_id_not_display_name() -> None:
     matching = probe._remote_documents_with_id(documents, document_id)
 
     assert matching == [documents[0]]
+
+
+def _status_probe(
+    probe_module: ModuleType,
+    statuses: list[str],
+) -> tuple[object, object]:
+    class Client:
+        def __init__(self) -> None:
+            self.statuses = list(statuses)
+            self.calls = 0
+
+        def json(self, _method: str, _path: str, *, token: str) -> object:
+            assert token == "employee-token"
+            self.calls += 1
+            return {"status": self.statuses.pop(0)}
+
+    probe = probe_module.InfrastructureBusinessProbe.__new__(
+        probe_module.InfrastructureBusinessProbe
+    )
+    client = Client()
+    probe._client = client
+    probe._timeout_seconds = 1
+    return probe, client
+
+
+def test_wait_for_file_allows_initial_failed_state_during_manual_retry(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    probe_module = _load_probe()
+    probe, client = _status_probe(probe_module, ["failed", "syncing", "parsed"])
+    monkeypatch.setattr(probe_module.time, "sleep", lambda _seconds: None)
+
+    result = probe._wait_for_file(
+        SimpleNamespace(token="employee-token"),
+        uuid.uuid4(),
+        expected_status="parsed",
+        allow_initial_failed=True,
+    )
+
+    assert result["status"] == "parsed"
+    assert client.calls == 3
+
+
+def test_wait_for_file_still_fails_fast_without_retry_context() -> None:
+    probe_module = _load_probe()
+    probe, client = _status_probe(probe_module, ["failed", "parsed"])
+
+    with pytest.raises(
+        probe_module.InfrastructureProbeError, match="last bounded state was failed"
+    ):
+        probe._wait_for_file(
+            SimpleNamespace(token="employee-token"),
+            uuid.uuid4(),
+            expected_status="parsed",
+        )
+
+    assert client.calls == 1
+
+
+def test_wait_for_file_rejects_failure_after_recovery_started(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    probe_module = _load_probe()
+    probe, client = _status_probe(
+        probe_module,
+        ["failed", "syncing", "failed", "parsed"],
+    )
+    monkeypatch.setattr(probe_module.time, "sleep", lambda _seconds: None)
+
+    with pytest.raises(
+        probe_module.InfrastructureProbeError, match="last bounded state was failed"
+    ):
+        probe._wait_for_file(
+            SimpleNamespace(token="employee-token"),
+            uuid.uuid4(),
+            expected_status="parsed",
+            allow_initial_failed=True,
+        )
+
+    assert client.calls == 3

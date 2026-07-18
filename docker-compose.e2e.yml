@@ -95,7 +95,7 @@ services:
 
   minio:
     environment:
-      MINIO_PROMETHEUS_AUTH_TYPE: public
+      MINIO_PROMETHEUS_AUTH_TYPE: jwt
     volumes:
       - "${E2E_CERT_DIR:?E2E_CERT_DIR is required}/minio.crt:/root/.minio/certs/public.crt:ro"
       - "${E2E_CERT_DIR:?E2E_CERT_DIR is required}/minio.key:/root/.minio/certs/private.key:ro"
@@ -103,11 +103,26 @@ services:
     healthcheck:
       test:
         - CMD-SHELL
-        - "curl --fail --silent --show-error --cacert /root/.minio/certs/CAs/e2e-ca.crt https://127.0.0.1:9000/minio/health/live >/dev/null"
+        - "curl --fail --silent --show-error --cacert /root/.minio/certs/CAs/e2e-ca.crt https://127.0.0.1:9000/minio/health/cluster >/dev/null"
       interval: 5s
       timeout: 5s
       retries: 20
       start_period: 5s
+
+  minio-bootstrap:
+    environment:
+      MINIO_CA_CERT_FILE: /e2e-certs/ca.crt
+      SSL_CERT_FILE: /e2e-certs/ca.crt
+    volumes:
+      - "${E2E_CERT_DIR:?E2E_CERT_DIR is required}/ca.crt:/e2e-certs/ca.crt:ro"
+
+  minio-metrics-token-init:
+    environment:
+      MINIO_CA_CERT_FILE: /e2e-certs/ca.crt
+      SSL_CERT_FILE: /e2e-certs/ca.crt
+    volumes:
+      - minio-metrics-auth:/run/secrets/minio-metrics
+      - "${E2E_CERT_DIR:?E2E_CERT_DIR is required}/ca.crt:/e2e-certs/ca.crt:ro"
 
   prometheus:
     image: "${PROMETHEUS_IMAGE:?PROMETHEUS_IMAGE is required}"
@@ -120,10 +135,13 @@ services:
       - ./ops/observability/prometheus.protected.yml:/etc/prometheus/prometheus.yml:ro
       - ./ops/observability/alerts.yml:/etc/prometheus/alerts.yml:ro
       - "${E2E_CERT_DIR:?E2E_CERT_DIR is required}/ca.crt:/etc/prometheus/tls/ca.crt:ro"
+      - minio-metrics-auth:/run/secrets/minio-metrics:ro
       - prometheus-e2e-data:/prometheus
     depends_on:
       minio:
         condition: service_healthy
+      minio-metrics-token-init:
+        condition: service_completed_successfully
     networks:
       - knowledge-uploader
     restart: "no"

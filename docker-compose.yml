@@ -6,6 +6,7 @@ x-backend-build: &backend-build
   target: "${BACKEND_BUILD_TARGET:-runtime}"
   args:
     PYTHON_IMAGE: "${PYTHON_IMAGE:-python:3.11-slim-bookworm}"
+    MINIO_MC_IMAGE: "${MINIO_MC_IMAGE:-minio/mc:RELEASE.2024-04-18T16-45-29Z@sha256:5a84109d6b29bab96c3122e4a7ba888fbf48d4cdc83bc8bf88e3a7ac67b970b8}"
     VCS_REF: "${VCS_REF:-unknown}"
 
 x-app-environment: &app-environment
@@ -94,6 +95,8 @@ x-backend-depends: &backend-depends
     condition: service_healthy
   minio:
     condition: service_healthy
+  minio-bootstrap:
+    condition: service_completed_successfully
   rabbitmq-topology:
     condition: service_completed_successfully
 
@@ -202,6 +205,12 @@ services:
 
   operational-metrics:
     <<: *backend-service
+    environment:
+      <<: *app-environment
+      # Deliberately inert: this service reads MinIO metrics only through the bearer file.
+      MINIO_ACCESS_KEY: "metrics-bearer-only-no-data-plane"
+      MINIO_SECRET_KEY: "metrics-bearer-only-no-data-plane"
+      MINIO_METRICS_BEARER_TOKEN_FILE: "/run/secrets/minio-metrics/token"
     command:
       - python
       - -m
@@ -210,6 +219,10 @@ services:
       <<: *backend-depends
       backend-api:
         condition: service_healthy
+      minio-metrics-token-init:
+        condition: service_completed_successfully
+    volumes:
+      - minio-metrics-auth:/run/secrets/minio-metrics:ro
     healthcheck:
       test: ["CMD-SHELL", "python -c \"import urllib.request; urllib.request.urlopen('http://127.0.0.1:9102/metrics', timeout=5).read()\""]
       interval: 30s
@@ -363,10 +376,11 @@ services:
       start_period: 10s
 
   minio:
-    image: minio/minio:RELEASE.2024-04-18T19-09-19Z
+    image: "${MINIO_SERVER_IMAGE:-minio/minio:RELEASE.2024-04-18T19-09-19Z@sha256:036a068d7d6b69400da6bc07a480bee1e241ef3c341c41d988ed11f520f85124}"
     environment:
-      MINIO_ROOT_USER: "${MINIO_ACCESS_KEY:-knowledge}"
-      MINIO_ROOT_PASSWORD: "${MINIO_SECRET_KEY:-knowledge_password}"
+      MINIO_ROOT_USER: "${MINIO_ROOT_USER:-knowledge-root}"
+      MINIO_ROOT_PASSWORD: "${MINIO_ROOT_PASSWORD:-knowledge_root_password}"
+      MINIO_PROMETHEUS_AUTH_TYPE: jwt
     command:
       - server
       - /data
@@ -378,11 +392,56 @@ services:
       - knowledge-uploader
     restart: unless-stopped
     healthcheck:
-      test: ["CMD-SHELL", "curl -f http://127.0.0.1:9000/minio/health/live || exit 1"]
+      test: ["CMD-SHELL", "curl -f http://127.0.0.1:9000/minio/health/cluster || exit 1"]
       interval: 30s
       timeout: 10s
       retries: 5
       start_period: 20s
+
+  minio-bootstrap:
+    image: "${BACKEND_IMAGE:-knowledge-uploader-backend:dev}"
+    entrypoint:
+      - python
+      - -m
+      - scripts.minio_bootstrap
+    environment:
+      MINIO_ENDPOINT: "${MINIO_ENDPOINT:-minio:9000}"
+      MINIO_ROOT_USER: "${MINIO_ROOT_USER:-knowledge-root}"
+      MINIO_ROOT_PASSWORD: "${MINIO_ROOT_PASSWORD:-knowledge_root_password}"
+      MINIO_ACCESS_KEY: "${MINIO_ACCESS_KEY:-knowledge}"
+      MINIO_SECRET_KEY: "${MINIO_SECRET_KEY:-knowledge_password}"
+      MINIO_BUCKET: "${MINIO_BUCKET:-knowledge-files}"
+      MINIO_SECURE: "${MINIO_SECURE:-false}"
+      MINIO_CA_CERT_FILE: "${MINIO_CA_CERT_FILE:-}"
+    depends_on:
+      minio:
+        condition: service_healthy
+    networks:
+      - knowledge-uploader
+    restart: "no"
+
+  minio-metrics-token-init:
+    image: "${BACKEND_IMAGE:-knowledge-uploader-backend:dev}"
+    entrypoint:
+      - python
+      - -m
+      - scripts.minio_metrics_token_init
+    environment:
+      MINIO_ENDPOINT: "${MINIO_ENDPOINT:-minio:9000}"
+      MINIO_ROOT_USER: "${MINIO_ROOT_USER:-knowledge-root}"
+      MINIO_ROOT_PASSWORD: "${MINIO_ROOT_PASSWORD:-knowledge_root_password}"
+      MINIO_SECURE: "${MINIO_SECURE:-false}"
+      MINIO_CA_CERT_FILE: "${MINIO_CA_CERT_FILE:-}"
+    depends_on:
+      minio:
+        condition: service_healthy
+      minio-bootstrap:
+        condition: service_completed_successfully
+    volumes:
+      - minio-metrics-auth:/run/secrets/minio-metrics
+    networks:
+      - knowledge-uploader
+    restart: "no"
 
 networks:
   knowledge-uploader:
@@ -393,3 +452,4 @@ volumes:
   rabbitmq-data:
   redis-data:
   minio-data:
+  minio-metrics-auth:

@@ -49,6 +49,12 @@ REQUIRED_INPUT_PATHS: Final = frozenset(
     {
         "backend/Dockerfile",
         "backend/requirements.txt",
+        "backend/app/core/jwt_validation.py",
+        "backend/app/core/strict_json.py",
+        "backend/app/core/minio_capacity_telemetry.py",
+        "backend/app/core/minio_endpoint.py",
+        "backend/scripts/minio_bootstrap.py",
+        "backend/scripts/minio_metrics_token_init.py",
         "frontend/Dockerfile",
         "frontend/package-lock.json",
         DR_RELEASE_POLICY_INPUT_PATH,
@@ -380,9 +386,9 @@ def _snapshot_file(
         flags |= getattr(os, "O_CLOEXEC", 0) | getattr(os, "O_NOFOLLOW", 0)
         descriptor = os.open(path, flags)
         opened = os.fstat(descriptor)
-        if (
-            not stat.S_ISREG(opened.st_mode)
-            or (before.st_dev, before.st_ino) != (opened.st_dev, opened.st_ino)
+        if not stat.S_ISREG(opened.st_mode) or (before.st_dev, before.st_ino) != (
+            opened.st_dev,
+            opened.st_ino,
         ):
             raise ContractError(f"{context} changed before it could be copied")
 
@@ -1335,9 +1341,8 @@ def bind_dgx_evidence(
             raise ContractError(f"{name} evidence identity mismatch")
     if str(dgx.get("architecture", "")).lower() not in {"arm64", "aarch64"}:
         raise ContractError("DGX evidence is not ARM64")
-    if (
-        dgx.get("compose_e2e_evidence_sha256")
-        != infrastructure_snapshot.sha256.removeprefix("sha256:")
+    if dgx.get("compose_e2e_evidence_sha256") != infrastructure_snapshot.sha256.removeprefix(
+        "sha256:"
     ):
         raise ContractError("DGX evidence is not bound to infrastructure E2E evidence")
     image_records: dict[str, object] = {}
@@ -1709,19 +1714,42 @@ def _snapshot_release_authorization_evidence(
     if evidence_dir.is_symlink() or not evidence_dir.is_dir():
         raise ContractError("release evidence directory is missing or unsafe")
     root = evidence_dir.resolve()
-    actual_names = {path.name for path in root.iterdir() if path.is_file()}
-    missing = REQUIRED_RELEASE_EVIDENCE - actual_names
-    if missing:
+    try:
+        before_entries = {entry.name: entry.lstat() for entry in root.iterdir()}
+    except OSError as error:
+        raise ContractError("cannot enumerate release authorization evidence") from error
+    missing = sorted(REQUIRED_RELEASE_EVIDENCE - set(before_entries))
+    extra = sorted(set(before_entries) - REQUIRED_RELEASE_EVIDENCE)
+    unsafe = sorted(
+        name for name, metadata in before_entries.items() if not stat.S_ISREG(metadata.st_mode)
+    )
+    if missing or extra or unsafe:
         raise ContractError(
-            f"release authorization evidence inventory is incomplete: {sorted(missing)}"
+            "release authorization evidence inventory mismatch: "
+            f"missing={missing}, extra={extra}, unsafe={unsafe}"
         )
-    return {
+    snapshots = {
         filename: _snapshot_bytes(
             root / filename,
             f"release authorization evidence {filename}",
         )
         for filename in sorted(REQUIRED_RELEASE_EVIDENCE)
     }
+    try:
+        after_entries = {entry.name: entry.lstat() for entry in root.iterdir()}
+    except OSError as error:
+        raise ContractError("cannot re-enumerate release authorization evidence") from error
+    before_identity = {
+        name: (value.st_dev, value.st_ino, value.st_size, value.st_mtime_ns)
+        for name, value in before_entries.items()
+    }
+    after_identity = {
+        name: (value.st_dev, value.st_ino, value.st_size, value.st_mtime_ns)
+        for name, value in after_entries.items()
+    }
+    if before_identity != after_identity:
+        raise ContractError("release authorization evidence changed while it was read")
+    return snapshots
 
 
 def _verify_dr_policy_provenance_binding(
@@ -1730,9 +1758,7 @@ def _verify_dr_policy_provenance_binding(
     policy_payload: bytes,
 ) -> None:
     policy_input_sha256: object | None = None
-    for index, raw in enumerate(
-        _sequence(metadata.get("inputs"), "release provenance.inputs")
-    ):
+    for index, raw in enumerate(_sequence(metadata.get("inputs"), "release provenance.inputs")):
         record = _mapping(raw, f"release provenance.inputs[{index}]")
         if record.get("path") == DR_RELEASE_POLICY_INPUT_PATH:
             policy_input_sha256 = record.get("sha256")
@@ -1767,13 +1793,16 @@ def authorize_release(
     ):
         raise ContractError("release authorization evidence path is outside the stable bundle")
     evidence_snapshots = _snapshot_release_authorization_evidence(evidence_dir)
-    evidence_payloads = {
-        name: snapshot.payload for name, snapshot in evidence_snapshots.items()
-    }
+    evidence_payloads = {name: snapshot.payload for name, snapshot in evidence_snapshots.items()}
     try:
+        protected_release_gate.reject_semantic_jwts(evidence_payloads)
         contract_payloads = protected_release_gate.snapshot_contract_payloads()
+        gate_evidence_payloads = {
+            name: evidence_payloads[name]
+            for name in protected_release_gate.REQUIRED_RELEASE_GATE_EVIDENCE
+        }
         evidence_errors = protected_release_gate.validate_evidence_payloads(
-            evidence_payloads,
+            gate_evidence_payloads,
             git_sha=sha,
             environment=environment,
             contract_payloads=contract_payloads,
@@ -1863,8 +1892,7 @@ def authorize_release(
     ) != artifact.get("provenance_name"):
         raise ContractError("trusted GitHub artifact names do not match OCI provenance")
     evidence_digests = {
-        name: evidence_snapshots[name].sha256
-        for name in sorted(REQUIRED_RELEASE_EVIDENCE)
+        name: evidence_snapshots[name].sha256 for name in sorted(REQUIRED_RELEASE_EVIDENCE)
     }
     image_authorizations: dict[str, object] = {}
     images = _mapping(metadata.get("images"), "release provenance.images")
@@ -2119,10 +2147,7 @@ def validate_deployment_handoff(
         authorization.get("workflow_trust_sha256"),
         "authorization.workflow_trust_sha256",
     )
-    if (
-        workflow_trust_sha256
-        != deployment_snapshots["release-workflow-trust.json"].sha256
-    ):
+    if workflow_trust_sha256 != deployment_snapshots["release-workflow-trust.json"].sha256:
         raise ContractError("deployment workflow trust checksum mismatch")
     provenance_snapshot = _parse_json_snapshot(
         deployment_snapshots[PROVENANCE_FILENAME],

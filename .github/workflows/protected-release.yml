@@ -52,6 +52,12 @@ jobs:
       REQUIRE_EMAIL_VERIFICATION: "true"
       SMTP_HOST: ${{ secrets.PROTECTED_SMTP_HOST }}
       SMTP_FROM: ${{ secrets.PROTECTED_SMTP_FROM }}
+      MINIO_ROOT_USER: ${{ secrets.PROTECTED_MINIO_ROOT_USER }}
+      MINIO_ROOT_PASSWORD: ${{ secrets.PROTECTED_MINIO_ROOT_PASSWORD }}
+      MINIO_ACCESS_KEY: ${{ secrets.PROTECTED_MINIO_ACCESS_KEY }}
+      MINIO_SECRET_KEY: ${{ secrets.PROTECTED_MINIO_SECRET_KEY }}
+      MINIO_TLS_DIR: /run/secrets/minio-tls
+      PROMETHEUS_CONFIG_FILE: ./ops/observability/prometheus.protected.yml
       RELEASE_ENVIRONMENT: ${{ inputs.environment }}
       MAIN_CI_RUN_ID: ${{ inputs.main_ci_run_id }}
       MAIN_CI_RUN_ATTEMPT: ${{ inputs.main_ci_run_attempt }}
@@ -196,9 +202,11 @@ jobs:
                   raise SystemExit(f"protected workflow trust is missing or unsafe: {name}")
 
           output = Path("artifacts")
-          if output.exists():
-              shutil.rmtree(output)
-          output.mkdir()
+          gate_output = Path("evidence/protected-gate")
+          for destination in (output, gate_output):
+              if destination.exists():
+                  shutil.rmtree(destination)
+              destination.mkdir()
           for name in sorted(dgx_required):
               shutil.copyfile(dgx_root / name, output / name)
           for name in sorted(external_required):
@@ -207,13 +215,27 @@ jobs:
               shutil.copyfile(main_provenance / name, output / name)
           for name in ("release-workflow-trust.json", "release-workflow-trust.json.sha256"):
               shutil.copyfile(protected_trust / name, output / name)
+          gate_required = {
+              "alertmanager-notification.json",
+              "alertmanager.yml",
+              "dr-release-policy.json",
+              "dr-release.json",
+              "email-delivery.json",
+              "promtool.json",
+              "rabbitmq-dlq-replay.json",
+              "infrastructure-e2e.json",
+              "dgx-spark-evidence.json",
+              "release-workflow-trust.json",
+          }
+          for name in sorted(gate_required):
+              shutil.copyfile(output / name, gate_output / name)
           PY
 
       - name: Run full protected release checker
         run: |
           python scripts/check_protected_release.py \
-            --evidence-dir artifacts \
-            --alertmanager-config artifacts/alertmanager.yml \
+            --evidence-dir evidence/protected-gate \
+            --alertmanager-config evidence/protected-gate/alertmanager.yml \
             --backend-api-host 127.0.0.1 \
             --git-sha "${GITHUB_SHA}" \
             --environment "${RELEASE_ENVIRONMENT}"

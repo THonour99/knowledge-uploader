@@ -284,8 +284,10 @@ def test_protected_workflow_runs_full_checker_with_complete_inventory() -> None:
     checker = str(steps[checker_name].get("run"))
     assert "python scripts/check_protected_release.py" in checker
     assert "--contract-only" not in checker
-    assert "--evidence-dir artifacts" in checker
-    assert "--alertmanager-config artifacts/alertmanager.yml" in checker
+    assert 'gate_output = Path("evidence/protected-gate")' in inventory
+    assert "gate_required = {" in inventory
+    assert "--evidence-dir evidence/protected-gate" in checker
+    assert "--alertmanager-config evidence/protected-gate/alertmanager.yml" in checker
     assert '--git-sha "${GITHUB_SHA}"' in checker
     assert '--environment "${RELEASE_ENVIRONMENT}"' in checker
     authorization = str(steps[authorization_name].get("run"))
@@ -300,6 +302,16 @@ def test_protected_workflow_requires_real_mail_configuration() -> None:
     assert environment.get("REQUIRE_EMAIL_VERIFICATION") == "true"
     assert environment.get("SMTP_HOST") == "${{ secrets.PROTECTED_SMTP_HOST }}"
     assert environment.get("SMTP_FROM") == "${{ secrets.PROTECTED_SMTP_FROM }}"
+    assert environment.get("MINIO_ROOT_USER") == ("${{ secrets.PROTECTED_MINIO_ROOT_USER }}")
+    assert environment.get("MINIO_ROOT_PASSWORD") == (
+        "${{ secrets.PROTECTED_MINIO_ROOT_PASSWORD }}"
+    )
+    assert environment.get("MINIO_ACCESS_KEY") == ("${{ secrets.PROTECTED_MINIO_ACCESS_KEY }}")
+    assert environment.get("MINIO_SECRET_KEY") == ("${{ secrets.PROTECTED_MINIO_SECRET_KEY }}")
+    assert environment.get("MINIO_TLS_DIR") == "/run/secrets/minio-tls"
+    assert (
+        environment.get("PROMETHEUS_CONFIG_FILE") == "./ops/observability/prometheus.protected.yml"
+    )
     _order, steps = _steps_by_name(job)
     dependency_install = str(steps["Install gate parser dependency"].get("run")).strip()
     assert dependency_install == (
@@ -434,7 +446,20 @@ def test_main_ci_builds_one_multiarch_oci_artifact_for_downstream_consumers() ->
     assert "python scripts/release_oci.py create" in seal
     assert "python scripts/release_oci.py verify" in seal
     assert "--require-archives" in seal
-    assert "--source-input ops/policies/dr-release-policy.json" in seal
+    for source_input in (
+        "backend/Dockerfile",
+        "backend/requirements.txt",
+        "backend/app/core/jwt_validation.py",
+        "backend/app/core/strict_json.py",
+        "backend/app/core/minio_capacity_telemetry.py",
+        "backend/app/core/minio_endpoint.py",
+        "backend/scripts/minio_bootstrap.py",
+        "backend/scripts/minio_metrics_token_init.py",
+        "frontend/Dockerfile",
+        "frontend/package-lock.json",
+        "ops/policies/dr-release-policy.json",
+    ):
+        assert f"--source-input {source_input}" in seal
     assert '--build-arg PYTHON_IMAGE="${PYTHON_RELEASE_IMAGE}"' in backend
     assert '--build-arg NODE_IMAGE="${NODE_RELEASE_IMAGE}"' in frontend
     assert '--build-arg NGINX_IMAGE="${NGINX_RELEASE_IMAGE}"' in frontend
@@ -461,10 +486,20 @@ def test_frontend_native_dependency_builder_uses_target_platform() -> None:
 
 
 def test_dgx_workflow_validates_protected_prometheus_mount_contract() -> None:
-    workflow = (ROOT / ".github/workflows/dgx-spark-device.yml").read_text(
-        encoding="utf-8"
-    )
+    workflow = (ROOT / ".github/workflows/dgx-spark-device.yml").read_text(encoding="utf-8")
+    job = _workflow_job()
+    environment = job.get("env")
+    assert isinstance(environment, dict)
 
-    assert "PROMETHEUS_CONFIG_FILE=./ops/observability/prometheus.protected.yml" in workflow
-    assert "PROMETHEUS_TLS_DIR=/run/secrets/prometheus-tls" in workflow
+    assert (
+        environment.get("PROMETHEUS_CONFIG_FILE") == "./ops/observability/prometheus.protected.yml"
+    )
+    assert environment.get("MINIO_TLS_DIR") == "/run/secrets/minio-tls"
+    assert environment.get("MINIO_ROOT_USER") == ("${{ secrets.PROTECTED_MINIO_ROOT_USER }}")
+    assert environment.get("MINIO_ROOT_PASSWORD") == (
+        "${{ secrets.PROTECTED_MINIO_ROOT_PASSWORD }}"
+    )
+    assert environment.get("MINIO_ACCESS_KEY") == ("${{ secrets.PROTECTED_MINIO_ACCESS_KEY }}")
+    assert environment.get("MINIO_SECRET_KEY") == ("${{ secrets.PROTECTED_MINIO_SECRET_KEY }}")
+    assert "PROMETHEUS_TLS_DIR" not in workflow
     assert "-f docker-compose.observability.protected.yml" in workflow

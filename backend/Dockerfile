@@ -1,5 +1,8 @@
 ARG PYTHON_IMAGE=python:3.11-slim-bookworm
+ARG MINIO_MC_IMAGE=minio/mc:RELEASE.2024-04-18T16-45-29Z@sha256:5a84109d6b29bab96c3122e4a7ba888fbf48d4cdc83bc8bf88e3a7ac67b970b8
 ARG VCS_REF=unknown
+
+FROM --platform=$TARGETPLATFORM ${MINIO_MC_IMAGE} AS minio-client
 
 FROM --platform=$BUILDPLATFORM ${PYTHON_IMAGE} AS requirements-source
 
@@ -48,6 +51,7 @@ ENV PATH=/usr/local/bin:$PATH
 WORKDIR /app
 
 COPY --from=target-dependencies /install/ /usr/local/
+COPY --from=minio-client /usr/bin/mc /usr/local/bin/mc
 COPY . /app
 
 EXPOSE 8000

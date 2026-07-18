@@ -61,7 +61,7 @@ def _evidence(*, generated_at: datetime | None = None) -> dict[str, object]:
         for dependency in ("rabbitmq", "redis", "minio", "ragflow")
     }
     return {
-        "evidence_contract_version": 3,
+        "evidence_contract_version": 5,
         "status": "development_passed",
         "generated_at": (generated_at or datetime.now(UTC)).isoformat(),
         "git_sha": TEST_GIT_SHA,
@@ -72,6 +72,7 @@ def _evidence(*, generated_at: datetime | None = None) -> dict[str, object]:
         "cleanup_status": "passed",
         "resolved_compose_sha256": "d" * 64,
         "architecture": "aarch64",
+        "docker_architecture": "arm64",
         "full_compose_e2e": "development_passed",
         "backend_image": "backend:test",
         "backend_image_revision": TEST_GIT_SHA,
@@ -80,6 +81,7 @@ def _evidence(*, generated_at: datetime | None = None) -> dict[str, object]:
         "frontend_image_revision": TEST_GIT_SHA,
         "frontend_image_id": TEST_FRONTEND_IMAGE_ID,
         "rabbitmq_probe_run_id": run_id,
+        "rabbitmq_evidence_sha256": "9" * 64,
         "tls_certificate_sha256": "e" * 64,
         "tls": {
             "status": "passed",
@@ -92,6 +94,70 @@ def _evidence(*, generated_at: datetime | None = None) -> dict[str, object]:
             ],
         },
         "fault_recovery": fault_recovery,
+        "minio_metrics_auth": {
+            "status": "passed",
+            "auth_mode": "jwt_bearer_file",
+            "initializer": {
+                "status": "passed",
+                "container_exit": "exited_0",
+                "logs": "empty",
+                "token_file": "strict_semantic_jwt_single_lf",
+                "mode": "0440",
+                "uid": 65534,
+                "gid": 65534,
+            },
+            "anonymous_access": {"status": "denied", "http_status": 403},
+            "atomic_publish": {
+                "status": "passed",
+                "concurrent_runs": 2,
+                "concurrent_successes": 2,
+                "term_exit_code": 1,
+                "term_cleanup": "passed",
+                "sigkill_exit_code": 137,
+                "sigkill_orphan_observed": True,
+                "post_sigkill_recovery": "passed",
+                "cleanup_after_no_initializer": True,
+                "final_temporary_file_count": 0,
+            },
+            "refresh": {
+                "status": "passed",
+                "semantics": "consumer_refresh_not_revocation",
+                "credential_changed": True,
+                "mtime_advanced": True,
+                "previous_jwt_http_status": 200,
+                "refreshed_jwt_http_status": 200,
+                "consumer_processes_unchanged": True,
+                "prometheus_health_before": "up",
+                "prometheus_health_after": "up",
+            },
+            "emergency_revocation": {
+                "status": "passed",
+                "method": "root_credential_rotation_and_minio_restart",
+                "previous_jwt_http_status_after_restart": 403,
+                "refreshed_jwt_http_status_after_restart": 403,
+                "replacement_jwt_http_status": 200,
+                "minio_recreated": True,
+                "bootstrap_reconciled": True,
+                "expected_minio_interruption": True,
+                "consumer_processes_unchanged": True,
+                "automatic_consumer_recovery": True,
+                "prometheus_health_after_recovery": "up",
+            },
+            "identity_reconciliation": {
+                "status": "passed",
+                "stale_direct_policy_removed": True,
+                "stale_group_membership_removed": True,
+                "intended_policy_attached": True,
+                "intended_bucket_operations": ["get", "put", "delete"],
+                "secondary_bucket_operations_denied": ["list", "get", "put"],
+                "admin_operations_denied": ["info", "user_list", "policy_list"],
+            },
+            "collector": {
+                "status": "passed",
+                "component": "minio_capacity",
+                "last_success_advanced": True,
+            },
+        },
         "prometheus_minio_tls": {
             "status": "passed",
             "job": "minio",
@@ -104,6 +170,10 @@ def _evidence(*, generated_at: datetime | None = None) -> dict[str, object]:
         },
         "service_container_ids": {
             service: f"{index:064x}" for index, service in enumerate(REQUIRED_SERVICES, 1)
+        },
+        "service_image_ids": {
+            service: "sha256:" + f"{index:064x}"
+            for index, service in enumerate(REQUIRED_SERVICES, 1)
         },
         "worker_queue_consumers": {
             "document_queue": 1,
@@ -127,6 +197,7 @@ def _evidence(*, generated_at: datetime | None = None) -> dict[str, object]:
             "smtp_starttls": "passed",
             "rabbitmq_topology": "passed",
             "minio_tls": "passed",
+            "minio_metrics_auth": "passed",
             "prometheus_minio_tls": "passed",
             "upload_review_ragflow": "passed",
             "ragflow_tls": "passed",
@@ -175,9 +246,7 @@ def test_verifier_rejects_images_built_from_another_revision(
             return "NVIDIA GB10, 999.0"
         if "{{.Id}}" in command:
             return (
-                TEST_BACKEND_IMAGE_ID
-                if command[-1] == "backend:test"
-                else TEST_FRONTEND_IMAGE_ID
+                TEST_BACKEND_IMAGE_ID if command[-1] == "backend:test" else TEST_FRONTEND_IMAGE_ID
             )
         if "{{.Architecture}}" in command:
             return "arm64"
@@ -269,9 +338,7 @@ def test_verifier_binds_device_proof_to_compose_run_and_image_content(
     assert proof.compose_e2e_evidence_sha256 == hashlib.sha256(original_payload).hexdigest()
     assert evidence_path.read_bytes() == replacement_payload
     tag_uses = [
-        command
-        for command in commands
-        if "backend:test" in command or "frontend:test" in command
+        command for command in commands if "backend:test" in command or "frontend:test" in command
     ]
     assert tag_uses == [
         ["docker", "image", "inspect", "--format", "{{.Id}}", "backend:test"],
@@ -280,8 +347,7 @@ def test_verifier_binds_device_proof_to_compose_run_and_image_content(
     image_commands = [
         command
         for command in commands
-        if command[:3] == ["docker", "image", "inspect"]
-        or command[:2] == ["docker", "run"]
+        if command[:3] == ["docker", "image", "inspect"] or command[:2] == ["docker", "run"]
     ]
     assert all(
         TEST_BACKEND_IMAGE_ID in command or TEST_FRONTEND_IMAGE_ID in command

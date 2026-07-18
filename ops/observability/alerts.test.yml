@@ -65,6 +65,7 @@ tests:
         exp_alerts:
           - exp_labels:
               component: email_redis
+              job: knowledge-uploader-operations
               severity: critical
             exp_annotations:
               summary: Redis-backed email delivery metrics are missing, stale, or failing
@@ -72,12 +73,43 @@ tests:
 
   - interval: 1m
     input_series:
+      - series: up{job="minio",instance="minio:9000"}
+        values: 1x5
+    alert_rule_test:
+      - eval_time: 3m
+        alertname: KnowledgeUploaderMinioMetricsDown
+        exp_alerts:
+          - exp_labels:
+              instance: minio:9000
+              job: minio
+              severity: critical
+            exp_annotations:
+              summary: MinIO physical capacity metrics are unavailable
+              runbook: ops/runbooks/observability.md#knowledgeuploaderminiocapacitylow
+
+  - interval: 1m
+    input_series:
+      - series: up{job="minio",instance="minio:9000"}
+        values: 1x5
+      - series: minio_cluster_capacity_usable_free_bytes{job="minio",instance="minio:9000"}
+        values: 40x5
+      - series: minio_cluster_capacity_usable_total_bytes{job="minio",instance="minio:9000"}
+        values: 100x5
+    alert_rule_test:
+      - eval_time: 3m
+        alertname: KnowledgeUploaderMinioMetricsDown
+        exp_alerts: []
+
+  - interval: 1m
+    input_series:
       - series: knowledge_uploader_backup_last_success_timestamp_seconds
         values: 10000x10
       - series: knowledge_uploader_restore_drill_last_success_timestamp_seconds
         values: 10000x10
-      - series: knowledge_uploader_operational_collector_last_success_timestamp_seconds
+      - series: knowledge_uploader_operational_collector_last_success_timestamp_seconds{job="knowledge-uploader-operations",instance="operations:9202"}
         values: 10000x10
+      - series: knowledge_uploader_operational_collector_last_success_timestamp_seconds{job="knowledge-uploader-api",instance="api:8000"}
+        values: 0x10
       - series: knowledge_uploader_email_delivery_last_result_timestamp_seconds{result="failure"}
         values: 10000x10
     alert_rule_test:
@@ -101,6 +133,8 @@ tests:
         alertname: KnowledgeUploaderOperationalCollectorTimestampInFuture
         exp_alerts:
           - exp_labels:
+              instance: operations:9202
+              job: knowledge-uploader-operations
               severity: critical
             exp_annotations:
               summary: Operational collector timestamp is more than five minutes in the future
@@ -132,9 +166,11 @@ tests:
     input_series:
       - series: knowledge_uploader_email_delivery_persisted_total{result="success"}
         values: 1x6
-      - series: knowledge_uploader_operational_collector_component_last_success_timestamp_seconds{component="email_redis"}
+      - series: knowledge_uploader_operational_collector_interval_seconds{job="knowledge-uploader-operations",instance="operations:9202"}
+        values: 30x6
+      - series: knowledge_uploader_operational_collector_component_last_success_timestamp_seconds{job="knowledge-uploader-operations",instance="operations:9202",component="email_redis"}
         values: 1x6
-      - series: knowledge_uploader_operational_collector_component_errors_total{component="email_redis"}
+      - series: knowledge_uploader_operational_collector_component_errors_total{job="knowledge-uploader-operations",instance="operations:9202",component="email_redis"}
         values: 0x6
     alert_rule_test:
       - eval_time: 4m
@@ -142,6 +178,8 @@ tests:
         exp_alerts:
           - exp_labels:
               component: email_redis
+              instance: operations:9202
+              job: knowledge-uploader-operations
               severity: critical
             exp_annotations:
               summary: Redis-backed email delivery metrics are missing, stale, or failing
@@ -149,9 +187,11 @@ tests:
 
   - interval: 1m
     input_series:
-      - series: knowledge_uploader_operational_collector_component_last_success_timestamp_seconds{component="email_redis"}
+      - series: knowledge_uploader_operational_collector_interval_seconds{job="knowledge-uploader-operations",instance="operations:9202"}
+        values: 30x6
+      - series: knowledge_uploader_operational_collector_component_last_success_timestamp_seconds{job="knowledge-uploader-operations",instance="operations:9202",component="email_redis"}
         values: 0 60 120 180 240 300
-      - series: knowledge_uploader_operational_collector_component_errors_total{component="email_redis"}
+      - series: knowledge_uploader_operational_collector_component_errors_total{job="knowledge-uploader-operations",instance="operations:9202",component="email_redis"}
         values: 0 0 1 2 3 4
     alert_rule_test:
       - eval_time: 4m
@@ -159,7 +199,354 @@ tests:
         exp_alerts:
           - exp_labels:
               component: email_redis
+              instance: operations:9202
+              job: knowledge-uploader-operations
               severity: critical
             exp_annotations:
               summary: Redis-backed email delivery metrics are missing, stale, or failing
               runbook: ops/runbooks/observability.md#knowledgeuploaderemailmetricscollectorunavailable
+
+
+  - interval: 1m
+    input_series: []
+    alert_rule_test:
+      - eval_time: 3m
+        alertname: KnowledgeUploaderRagflowCallTelemetryCollectorUnavailable
+        exp_alerts:
+          - exp_labels:
+              component: ragflow_call_telemetry
+              job: knowledge-uploader-operations
+              severity: critical
+            exp_annotations:
+              summary: RAGFlow call telemetry is missing, stale, or failing
+              runbook: ops/runbooks/observability.md#knowledgeuploaderragflowcalltelemetrycollectorunavailable
+      - eval_time: 3m
+        alertname: KnowledgeUploaderMinioCapacityCollectorUnavailable
+        exp_alerts:
+          - exp_labels:
+              component: minio_capacity
+              job: knowledge-uploader-operations
+              severity: critical
+            exp_annotations:
+              summary: MinIO capacity snapshot collection is missing, stale, or failing
+              runbook: ops/runbooks/observability.md#knowledgeuploaderminiocapacitycollectorunavailable
+
+  - interval: 1m
+    input_series:
+      - series: knowledge_uploader_ragflow_api_stale_started
+        values: 1x8
+    alert_rule_test:
+      - eval_time: 6m
+        alertname: KnowledgeUploaderRagflowApiCallStale
+        exp_alerts:
+          - exp_labels:
+              severity: warning
+            exp_annotations:
+              summary: One or more RAGFlow API calls remain in started state after 15 minutes
+              runbook: ops/runbooks/observability.md#knowledgeuploaderragflowapicallstale
+
+  - interval: 1m
+    input_series:
+      - series: knowledge_uploader_operational_collector_interval_seconds{job="knowledge-uploader-operations",instance="operations:9202"}
+        values: 30x6
+      - series: knowledge_uploader_operational_collector_component_last_success_timestamp_seconds{job="knowledge-uploader-operations",instance="operations:9202",component="minio_capacity"}
+        values: 0 60 120 180 240 300
+      - series: knowledge_uploader_operational_collector_component_errors_total{job="knowledge-uploader-operations",instance="operations:9202",component="minio_capacity"}
+        values: 0 0 1 2 3 4
+      - series: knowledge_uploader_operational_collector_component_last_success_timestamp_seconds{job="knowledge-uploader-operations",instance="operations:9202",component="ragflow_call_telemetry"}
+        values: 0 60 120 180 240 300
+      - series: knowledge_uploader_operational_collector_component_errors_total{job="knowledge-uploader-operations",instance="operations:9202",component="ragflow_call_telemetry"}
+        values: 0 0 1 2 3 4
+    alert_rule_test:
+      - eval_time: 4m
+        alertname: KnowledgeUploaderMinioCapacityCollectorUnavailable
+        exp_alerts:
+          - exp_labels:
+              component: minio_capacity
+              instance: operations:9202
+              job: knowledge-uploader-operations
+              severity: critical
+            exp_annotations:
+              summary: MinIO capacity snapshot collection is missing, stale, or failing
+              runbook: ops/runbooks/observability.md#knowledgeuploaderminiocapacitycollectorunavailable
+      - eval_time: 4m
+        alertname: KnowledgeUploaderRagflowCallTelemetryCollectorUnavailable
+        exp_alerts:
+          - exp_labels:
+              component: ragflow_call_telemetry
+              instance: operations:9202
+              job: knowledge-uploader-operations
+              severity: critical
+            exp_annotations:
+              summary: RAGFlow call telemetry is missing, stale, or failing
+              runbook: ops/runbooks/observability.md#knowledgeuploaderragflowcalltelemetrycollectorunavailable
+
+  - interval: 1m
+    input_series:
+      - series: knowledge_uploader_operational_collector_interval_seconds{job="knowledge-uploader-operations",instance="operations:9202"}
+        values: 30x6
+      - series: knowledge_uploader_operational_collector_component_last_success_timestamp_seconds{job="knowledge-uploader-operations",instance="operations:9202",component="minio_capacity"}
+        values: 0 60 120 180 240 300
+      - series: knowledge_uploader_operational_collector_component_errors_total{job="knowledge-uploader-operations",instance="operations:9202",component="minio_capacity"}
+        values: 0x6
+      - series: knowledge_uploader_operational_collector_component_last_success_timestamp_seconds{job="knowledge-uploader-operations",instance="operations:9202",component="ragflow_call_telemetry"}
+        values: 0 60 120 180 240 300
+      - series: knowledge_uploader_operational_collector_component_errors_total{job="knowledge-uploader-operations",instance="operations:9202",component="ragflow_call_telemetry"}
+        values: 0x6
+      - series: knowledge_uploader_ragflow_api_stale_started
+        values: 0x6
+    alert_rule_test:
+      - eval_time: 5m
+        alertname: KnowledgeUploaderMinioCapacityCollectorUnavailable
+        exp_alerts: []
+      - eval_time: 5m
+        alertname: KnowledgeUploaderRagflowCallTelemetryCollectorUnavailable
+        exp_alerts: []
+      - eval_time: 5m
+        alertname: KnowledgeUploaderRagflowApiCallStale
+        exp_alerts: []
+
+  # A missing cadence gauge is itself a collector contract failure, even if the latest database
+  # timestamp is current.
+  - interval: 1m
+    input_series:
+      - series: knowledge_uploader_operational_collector_last_success_timestamp_seconds{job="knowledge-uploader-operations",instance="operations:9202"}
+        values: 0 60 120 180
+      - series: knowledge_uploader_operational_collector_last_success_timestamp_seconds{job="knowledge-uploader-api",instance="api:8000"}
+        values: 0x4
+      - series: knowledge_uploader_operational_collector_interval_seconds{job="knowledge-uploader-api",instance="api:8000"}
+        values: 0x4
+    alert_rule_test:
+      - eval_time: 3m
+        alertname: KnowledgeUploaderOperationalCollectorStale
+        exp_alerts:
+          - exp_labels:
+              job: knowledge-uploader-operations
+              severity: critical
+            exp_annotations:
+              summary: Operational database metrics exceeded the configured collection cadence
+              runbook: ops/runbooks/observability.md#knowledgeuploaderoperationalcollectorstale
+
+  # 30s and 60s cadences share the 120s safety floor. A five-minute-old component is stale.
+  - interval: 1m
+    input_series:
+      - series: knowledge_uploader_operational_collector_interval_seconds{job="knowledge-uploader-operations",instance="operations:9202"}
+        values: 30x6
+      - series: knowledge_uploader_operational_collector_last_success_timestamp_seconds{job="knowledge-uploader-operations",instance="operations:9202"}
+        values: 0x6
+      - series: knowledge_uploader_operational_collector_component_last_success_timestamp_seconds{job="knowledge-uploader-operations",instance="operations:9202",component="minio_capacity"}
+        values: 0x6
+      - series: knowledge_uploader_operational_collector_component_errors_total{job="knowledge-uploader-operations",instance="operations:9202",component="minio_capacity"}
+        values: 0x6
+      - series: knowledge_uploader_operational_collector_interval_seconds{job="knowledge-uploader-api",instance="api:8000"}
+        values: 0x6
+      - series: knowledge_uploader_operational_collector_last_success_timestamp_seconds{job="knowledge-uploader-api",instance="api:8000"}
+        values: 0x6
+      - series: knowledge_uploader_operational_collector_component_last_success_timestamp_seconds{job="knowledge-uploader-api",instance="api:8000",component="minio_capacity"}
+        values: 0x6
+      - series: knowledge_uploader_operational_collector_component_errors_total{job="knowledge-uploader-api",instance="api:8000",component="minio_capacity"}
+        values: 0x6
+    alert_rule_test:
+      - eval_time: 5m
+        alertname: KnowledgeUploaderOperationalCollectorStale
+        exp_alerts:
+          - exp_labels:
+              instance: operations:9202
+              job: knowledge-uploader-operations
+              severity: critical
+            exp_annotations:
+              summary: Operational database metrics exceeded the configured collection cadence
+              runbook: ops/runbooks/observability.md#knowledgeuploaderoperationalcollectorstale
+      - eval_time: 5m
+        alertname: KnowledgeUploaderMinioCapacityCollectorUnavailable
+        exp_alerts:
+          - exp_labels:
+              component: minio_capacity
+              instance: operations:9202
+              job: knowledge-uploader-operations
+              severity: critical
+            exp_annotations:
+              summary: MinIO capacity snapshot collection is missing, stale, or failing
+              runbook: ops/runbooks/observability.md#knowledgeuploaderminiocapacitycollectorunavailable
+
+  - interval: 1m
+    input_series:
+      - series: knowledge_uploader_operational_collector_interval_seconds{job="knowledge-uploader-operations",instance="operations:9202"}
+        values: 60x6
+      - series: knowledge_uploader_operational_collector_component_last_success_timestamp_seconds{job="knowledge-uploader-operations",instance="operations:9202",component="ragflow_call_telemetry"}
+        values: 0x6
+      - series: knowledge_uploader_operational_collector_component_errors_total{job="knowledge-uploader-operations",instance="operations:9202",component="ragflow_call_telemetry"}
+        values: 0x6
+    alert_rule_test:
+      - eval_time: 5m
+        alertname: KnowledgeUploaderRagflowCallTelemetryCollectorUnavailable
+        exp_alerts:
+          - exp_labels:
+              component: ragflow_call_telemetry
+              instance: operations:9202
+              job: knowledge-uploader-operations
+              severity: critical
+            exp_annotations:
+              summary: RAGFlow call telemetry is missing, stale, or failing
+              runbook: ops/runbooks/observability.md#knowledgeuploaderragflowcalltelemetrycollectorunavailable
+
+  # A supported five-minute cadence remains healthy between successful collections; it only
+  # becomes stale after two configured periods plus the rule's for-duration.
+  - interval: 1m
+    input_series:
+      - series: knowledge_uploader_operational_collector_interval_seconds{job="knowledge-uploader-operations",instance="operations:9202"}
+        values: 300x10
+      - series: knowledge_uploader_operational_collector_last_success_timestamp_seconds{job="knowledge-uploader-operations",instance="operations:9202"}
+        values: 0 0 0 0 0 300 300 300 300 300
+      - series: knowledge_uploader_operational_collector_component_last_success_timestamp_seconds{job="knowledge-uploader-operations",instance="operations:9202",component="minio_capacity"}
+        values: 0 0 0 0 0 300 300 300 300 300
+      - series: knowledge_uploader_operational_collector_component_errors_total{job="knowledge-uploader-operations",instance="operations:9202",component="minio_capacity"}
+        values: 0x10
+      - series: knowledge_uploader_operational_collector_interval_seconds{job="knowledge-uploader-api",instance="api:8000"}
+        values: 0x10
+      - series: knowledge_uploader_operational_collector_last_success_timestamp_seconds{job="knowledge-uploader-api",instance="api:8000"}
+        values: 0x10
+      - series: knowledge_uploader_operational_collector_component_last_success_timestamp_seconds{job="knowledge-uploader-api",instance="api:8000",component="minio_capacity"}
+        values: 0x10
+      - series: knowledge_uploader_operational_collector_component_errors_total{job="knowledge-uploader-api",instance="api:8000",component="minio_capacity"}
+        values: 0x10
+    alert_rule_test:
+      - eval_time: 9m
+        alertname: KnowledgeUploaderOperationalCollectorStale
+        exp_alerts: []
+      - eval_time: 9m
+        alertname: KnowledgeUploaderMinioCapacityCollectorUnavailable
+        exp_alerts: []
+
+  - interval: 1m
+    input_series:
+      - series: knowledge_uploader_operational_collector_interval_seconds{job="knowledge-uploader-operations",instance="operations:9202"}
+        values: 300x15
+      - series: knowledge_uploader_operational_collector_component_last_success_timestamp_seconds{job="knowledge-uploader-operations",instance="operations:9202",component="minio_capacity"}
+        values: 0x15
+      - series: knowledge_uploader_operational_collector_component_errors_total{job="knowledge-uploader-operations",instance="operations:9202",component="minio_capacity"}
+        values: 0x15
+    alert_rule_test:
+      - eval_time: 14m
+        alertname: KnowledgeUploaderMinioCapacityCollectorUnavailable
+        exp_alerts:
+          - exp_labels:
+              component: minio_capacity
+              instance: operations:9202
+              job: knowledge-uploader-operations
+              severity: critical
+            exp_annotations:
+              summary: MinIO capacity snapshot collection is missing, stale, or failing
+              runbook: ops/runbooks/observability.md#knowledgeuploaderminiocapacitycollectorunavailable
+
+  # Errors alert independently of the stale threshold, including at the five-minute cadence.
+  - interval: 1m
+    input_series:
+      - series: knowledge_uploader_operational_collector_interval_seconds{job="knowledge-uploader-operations",instance="operations:9202"}
+        values: 300x6
+      - series: knowledge_uploader_operational_collector_component_last_success_timestamp_seconds{job="knowledge-uploader-operations",instance="operations:9202",component="minio_capacity"}
+        values: 0 60 120 180 240 300
+      - series: knowledge_uploader_operational_collector_component_errors_total{job="knowledge-uploader-operations",instance="operations:9202",component="minio_capacity"}
+        values: 0 0 1 1 1 1
+      - series: knowledge_uploader_operational_collector_interval_seconds{job="knowledge-uploader-api",instance="api:8000"}
+        values: 0x6
+      - series: knowledge_uploader_operational_collector_component_last_success_timestamp_seconds{job="knowledge-uploader-api",instance="api:8000",component="minio_capacity"}
+        values: 0x6
+      - series: knowledge_uploader_operational_collector_component_errors_total{job="knowledge-uploader-api",instance="api:8000",component="minio_capacity"}
+        values: 0x6
+    alert_rule_test:
+      - eval_time: 4m
+        alertname: KnowledgeUploaderMinioCapacityCollectorUnavailable
+        exp_alerts:
+          - exp_labels:
+              component: minio_capacity
+              instance: operations:9202
+              job: knowledge-uploader-operations
+              severity: critical
+            exp_annotations:
+              summary: MinIO capacity snapshot collection is missing, stale, or failing
+              runbook: ops/runbooks/observability.md#knowledgeuploaderminiocapacitycollectorunavailable
+
+  # Each component alert must fail closed when the shared cadence contract is absent, even while
+  # its own timestamp and error counter remain healthy.
+  - interval: 1m
+    input_series:
+      - series: knowledge_uploader_operational_collector_interval_seconds{job="knowledge-uploader-api",instance="api:8000"}
+        values: 0x5
+      - series: knowledge_uploader_operational_collector_component_last_success_timestamp_seconds{job="knowledge-uploader-operations",instance="operations:9202",component="email_redis"}
+        values: 0 60 120 180 240
+      - series: knowledge_uploader_operational_collector_component_errors_total{job="knowledge-uploader-operations",instance="operations:9202",component="email_redis"}
+        values: 0x5
+      - series: knowledge_uploader_operational_collector_component_last_success_timestamp_seconds{job="knowledge-uploader-operations",instance="operations:9202",component="ragflow_call_telemetry"}
+        values: 0 60 120 180 240
+      - series: knowledge_uploader_operational_collector_component_errors_total{job="knowledge-uploader-operations",instance="operations:9202",component="ragflow_call_telemetry"}
+        values: 0x5
+      - series: knowledge_uploader_operational_collector_component_last_success_timestamp_seconds{job="knowledge-uploader-operations",instance="operations:9202",component="minio_capacity"}
+        values: 0 60 120 180 240
+      - series: knowledge_uploader_operational_collector_component_errors_total{job="knowledge-uploader-operations",instance="operations:9202",component="minio_capacity"}
+        values: 0x5
+    alert_rule_test:
+      - eval_time: 3m
+        alertname: KnowledgeUploaderEmailMetricsCollectorUnavailable
+        exp_alerts:
+          - exp_labels:
+              component: email_redis
+              job: knowledge-uploader-operations
+              severity: critical
+            exp_annotations:
+              summary: Redis-backed email delivery metrics are missing, stale, or failing
+              runbook: ops/runbooks/observability.md#knowledgeuploaderemailmetricscollectorunavailable
+      - eval_time: 3m
+        alertname: KnowledgeUploaderRagflowCallTelemetryCollectorUnavailable
+        exp_alerts:
+          - exp_labels:
+              component: ragflow_call_telemetry
+              job: knowledge-uploader-operations
+              severity: critical
+            exp_annotations:
+              summary: RAGFlow call telemetry is missing, stale, or failing
+              runbook: ops/runbooks/observability.md#knowledgeuploaderragflowcalltelemetrycollectorunavailable
+      - eval_time: 3m
+        alertname: KnowledgeUploaderMinioCapacityCollectorUnavailable
+        exp_alerts:
+          - exp_labels:
+              component: minio_capacity
+              job: knowledge-uploader-operations
+              severity: critical
+            exp_annotations:
+              summary: MinIO capacity snapshot collection is missing, stale, or failing
+              runbook: ops/runbooks/observability.md#knowledgeuploaderminiocapacitycollectorunavailable
+
+  # Same-name gauges from the API process are not authoritative for collector clock health.
+  - interval: 1m
+    input_series:
+      - series: knowledge_uploader_operational_collector_interval_seconds{job="knowledge-uploader-operations",instance="operations:9202"}
+        values: 30x6
+      - series: knowledge_uploader_operational_collector_last_success_timestamp_seconds{job="knowledge-uploader-operations",instance="operations:9202"}
+        values: 0 60 120 180 240 300
+      - series: knowledge_uploader_operational_collector_last_success_timestamp_seconds{job="knowledge-uploader-api",instance="api:8000"}
+        values: 10000x6
+    alert_rule_test:
+      - eval_time: 4m
+        alertname: KnowledgeUploaderOperationalCollectorTimestampInFuture
+        exp_alerts: []
+
+  # API-process component errors and zero timestamps cannot trigger an operations alert.
+  - interval: 1m
+    input_series:
+      - series: knowledge_uploader_operational_collector_interval_seconds{job="knowledge-uploader-operations",instance="operations:9202"}
+        values: 30x6
+      - series: knowledge_uploader_operational_collector_component_last_success_timestamp_seconds{job="knowledge-uploader-operations",instance="operations:9202",component="minio_capacity"}
+        values: 0 60 120 180 240 300
+      - series: knowledge_uploader_operational_collector_component_errors_total{job="knowledge-uploader-operations",instance="operations:9202",component="minio_capacity"}
+        values: 0x6
+      - series: knowledge_uploader_operational_collector_interval_seconds{job="knowledge-uploader-api",instance="api:8000"}
+        values: 0x6
+      - series: knowledge_uploader_operational_collector_component_last_success_timestamp_seconds{job="knowledge-uploader-api",instance="api:8000",component="minio_capacity"}
+        values: 0x6
+      - series: knowledge_uploader_operational_collector_component_errors_total{job="knowledge-uploader-api",instance="api:8000",component="minio_capacity"}
+        values: 0 0 1 2 3 4
+    alert_rule_test:
+      - eval_time: 4m
+        alertname: KnowledgeUploaderMinioCapacityCollectorUnavailable
+        exp_alerts: []

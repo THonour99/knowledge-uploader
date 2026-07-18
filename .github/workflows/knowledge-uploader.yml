@@ -15,6 +15,7 @@ jobs:
     runs-on: ubuntu-24.04
     env:
       PYTHON_RELEASE_IMAGE: python:3.11-slim-bookworm@sha256:b18992999dbe963a45a8a4da40ac2b1975be1a776d939d098c647482bcad5cba
+      MINIO_MC_IMAGE: minio/mc:RELEASE.2024-04-18T16-45-29Z@sha256:5a84109d6b29bab96c3122e4a7ba888fbf48d4cdc83bc8bf88e3a7ac67b970b8
       NODE_RELEASE_IMAGE: node:20-alpine@sha256:fb4cd12c85ee03686f6af5362a0b0d56d50c58a04632e6c0fb8363f609372293
       NGINX_RELEASE_IMAGE: nginx:1.25-alpine@sha256:516475cc129da42866742567714ddc681e5eed7b9ee0b9e9c015e464b4221a00
       PROMETHEUS_VALIDATOR_IMAGE: prom/prometheus:v3.12.0@sha256:69f5241418838263316593f7274a304b095c40bcf22e57272865da91bd60a8ac
@@ -166,7 +167,7 @@ jobs:
       - name: Build backend linux/amd64 image
         run: |
           if [ -f backend/Dockerfile ]; then
-            docker buildx build --platform linux/amd64 --target runtime --build-arg PYTHON_IMAGE="${PYTHON_RELEASE_IMAGE}" --build-arg VCS_REF="${{ github.sha }}" -t knowledge-uploader-backend:ci-amd64 -f backend/Dockerfile backend --load
+            docker buildx build --platform linux/amd64 --target runtime --build-arg PYTHON_IMAGE="${PYTHON_RELEASE_IMAGE}" --build-arg MINIO_MC_IMAGE="minio/mc:RELEASE.2024-04-18T16-45-29Z@sha256:5a84109d6b29bab96c3122e4a7ba888fbf48d4cdc83bc8bf88e3a7ac67b970b8" --build-arg VCS_REF="${{ github.sha }}" -t knowledge-uploader-backend:ci-amd64 -f backend/Dockerfile backend --load
           else
             echo "Skipping backend image build until backend/Dockerfile is created."
           fi
@@ -175,7 +176,7 @@ jobs:
         if: ${{ !env.ACT }}
         run: |
           if [ -f backend/Dockerfile ]; then
-            docker buildx build --platform linux/arm64 --target runtime --build-arg PYTHON_IMAGE="${PYTHON_RELEASE_IMAGE}" --build-arg VCS_REF="${{ github.sha }}" -t knowledge-uploader-backend:ci-arm64 -f backend/Dockerfile backend --load
+            docker buildx build --platform linux/arm64 --target runtime --build-arg PYTHON_IMAGE="${PYTHON_RELEASE_IMAGE}" --build-arg MINIO_MC_IMAGE="minio/mc:RELEASE.2024-04-18T16-45-29Z@sha256:5a84109d6b29bab96c3122e4a7ba888fbf48d4cdc83bc8bf88e3a7ac67b970b8" --build-arg VCS_REF="${{ github.sha }}" -t knowledge-uploader-backend:ci-arm64 -f backend/Dockerfile backend --load
             docker run --rm --platform linux/arm64 knowledge-uploader-backend:ci-arm64 python -c "import platform, asyncpg, cryptography, prometheus_client, tiktoken; assert platform.machine() in {'aarch64', 'arm64'}, platform.machine()"
           else
             echo "Skipping backend image build until backend/Dockerfile is created."
@@ -209,6 +210,7 @@ jobs:
       contents: read
     env:
       PYTHON_RELEASE_IMAGE: python:3.11-slim-bookworm@sha256:b18992999dbe963a45a8a4da40ac2b1975be1a776d939d098c647482bcad5cba
+      MINIO_MC_IMAGE: minio/mc:RELEASE.2024-04-18T16-45-29Z@sha256:5a84109d6b29bab96c3122e4a7ba888fbf48d4cdc83bc8bf88e3a7ac67b970b8
       NODE_RELEASE_IMAGE: node:20-alpine@sha256:fb4cd12c85ee03686f6af5362a0b0d56d50c58a04632e6c0fb8363f609372293
       NGINX_RELEASE_IMAGE: nginx:1.25-alpine@sha256:516475cc129da42866742567714ddc681e5eed7b9ee0b9e9c015e464b4221a00
     steps:
@@ -234,6 +236,7 @@ jobs:
             --target runtime \
             --build-arg VCS_REF="${GITHUB_SHA}" \
             --build-arg PYTHON_IMAGE="${PYTHON_RELEASE_IMAGE}" \
+            --build-arg MINIO_MC_IMAGE="minio/mc:RELEASE.2024-04-18T16-45-29Z@sha256:5a84109d6b29bab96c3122e4a7ba888fbf48d4cdc83bc8bf88e3a7ac67b970b8" \
             --tag "knowledge-uploader-backend:release-${GITHUB_SHA}" \
             --provenance=mode=max \
             --sbom=true \
@@ -268,6 +271,12 @@ jobs:
             --frontend-archive release-oci/frontend.oci.tar \
             --source-input backend/Dockerfile \
             --source-input backend/requirements.txt \
+            --source-input backend/app/core/jwt_validation.py \
+            --source-input backend/app/core/strict_json.py \
+            --source-input backend/app/core/minio_capacity_telemetry.py \
+            --source-input backend/app/core/minio_endpoint.py \
+            --source-input backend/scripts/minio_bootstrap.py \
+            --source-input backend/scripts/minio_metrics_token_init.py \
             --source-input frontend/Dockerfile \
             --source-input frontend/package-lock.json \
             --source-input ops/policies/dr-release-policy.json \
@@ -314,6 +323,7 @@ jobs:
     runs-on: ubuntu-24.04
     env:
       PYTHON_RELEASE_IMAGE: python:3.11-slim-bookworm@sha256:b18992999dbe963a45a8a4da40ac2b1975be1a776d939d098c647482bcad5cba
+      MINIO_MC_IMAGE: minio/mc:RELEASE.2024-04-18T16-45-29Z@sha256:5a84109d6b29bab96c3122e4a7ba888fbf48d4cdc83bc8bf88e3a7ac67b970b8
       NODE_RELEASE_IMAGE: node:20-alpine@sha256:fb4cd12c85ee03686f6af5362a0b0d56d50c58a04632e6c0fb8363f609372293
       NGINX_RELEASE_IMAGE: nginx:1.25-alpine@sha256:516475cc129da42866742567714ddc681e5eed7b9ee0b9e9c015e464b4221a00
       PROMETHEUS_VALIDATOR_IMAGE: prom/prometheus:v3.12.0@sha256:69f5241418838263316593f7274a304b095c40bcf22e57272865da91bd60a8ac
@@ -387,7 +397,7 @@ jobs:
           npm run build --prefix frontend
 
       - name: Build backend linux/amd64 image
-        run: docker buildx build --platform linux/amd64 --target runtime --build-arg PYTHON_IMAGE="${PYTHON_RELEASE_IMAGE}" --build-arg VCS_REF="${{ github.sha }}" -f backend/Dockerfile backend --load
+        run: docker buildx build --platform linux/amd64 --target runtime --build-arg PYTHON_IMAGE="${PYTHON_RELEASE_IMAGE}" --build-arg MINIO_MC_IMAGE="minio/mc:RELEASE.2024-04-18T16-45-29Z@sha256:5a84109d6b29bab96c3122e4a7ba888fbf48d4cdc83bc8bf88e3a7ac67b970b8" --build-arg VCS_REF="${{ github.sha }}" -f backend/Dockerfile backend --load
 
       - name: Build frontend linux/amd64 image
         run: docker buildx build --platform linux/amd64 --build-arg NODE_IMAGE="${NODE_RELEASE_IMAGE}" --build-arg NGINX_IMAGE="${NGINX_RELEASE_IMAGE}" --build-arg VCS_REF="${{ github.sha }}" -f frontend/Dockerfile frontend --load

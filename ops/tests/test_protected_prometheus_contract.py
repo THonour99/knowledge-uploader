@@ -22,12 +22,7 @@ def _load_gate() -> ModuleType:
 
 
 def _protected_config() -> dict[str, object]:
-    path = (
-        Path(__file__).parents[2]
-        / "ops"
-        / "observability"
-        / "prometheus.protected.yml"
-    )
+    path = Path(__file__).parents[2] / "ops" / "observability" / "prometheus.protected.yml"
     value = yaml.safe_load(path.read_text(encoding="utf-8"))
     assert isinstance(value, dict)
     return value
@@ -74,3 +69,30 @@ def test_protected_minio_scrape_contract_rejects_tls_downgrade(
         tls_config[field] = value
 
     assert gate._protected_minio_scrape_errors(config)
+
+
+@pytest.mark.parametrize(
+    "authorization",
+    (
+        None,
+        {},
+        {"type": "Bearer"},
+        {"type": "Basic", "credentials_file": "/run/secrets/minio-metrics/token"},
+        {"type": "Bearer", "credentials_file": "/tmp/token"},
+        {"type": "Bearer", "credentials": "inline-secret"},
+    ),
+)
+def test_protected_minio_scrape_contract_rejects_missing_or_inline_auth(
+    authorization: object,
+) -> None:
+    gate = _load_gate()
+    config = copy.deepcopy(_protected_config())
+    minio = _minio_job(config)
+    if authorization is None:
+        minio.pop("authorization", None)
+    else:
+        minio["authorization"] = authorization
+
+    errors = gate._protected_minio_scrape_errors(config)
+
+    assert any("bearer credential file" in error for error in errors)

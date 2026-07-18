@@ -9,9 +9,7 @@ from cryptography import x509
 
 
 def _load_certificate_generator() -> ModuleType:
-    path = (
-        Path(__file__).parents[2] / "backend" / "scripts" / "generate_e2e_certificates.py"
-    )
+    path = Path(__file__).parents[2] / "backend" / "scripts" / "generate_e2e_certificates.py"
     spec = importlib.util.spec_from_file_location("generate_e2e_certificates_contract", path)
     if spec is None or spec.loader is None:
         raise RuntimeError("could not load E2E certificate generator")
@@ -32,9 +30,7 @@ def test_ephemeral_ca_issues_every_tls_service_certificate(tmp_path: Path) -> No
     assert len(str(metadata["certificate_bundle_sha256"])) == 64
     ca = x509.load_pem_x509_certificate((output / "ca.crt").read_bytes())
     ca_subject_key = ca.extensions.get_extension_for_class(x509.SubjectKeyIdentifier).value
-    ca_authority_key = ca.extensions.get_extension_for_class(
-        x509.AuthorityKeyIdentifier
-    ).value
+    ca_authority_key = ca.extensions.get_extension_for_class(x509.AuthorityKeyIdentifier).value
     assert ca_authority_key.key_identifier == ca_subject_key.digest
     expected_dns_names = {
         "gateway": "nginx",
@@ -106,6 +102,12 @@ def test_protected_prometheus_scrapes_minio_with_mounted_ca_and_hostname() -> No
     assert development_minio.get("scheme", "http") == "http"
     assert "tls_config" not in development_minio
     assert protected_minio["scheme"] == "https"
+    expected_authorization = {
+        "type": "Bearer",
+        "credentials_file": "/run/secrets/minio-metrics/token",
+    }
+    assert development_minio["authorization"] == expected_authorization
+    assert protected_minio["authorization"] == expected_authorization
     assert protected_minio["tls_config"] == {
         "ca_file": "/etc/prometheus/tls/ca.crt",
         "server_name": "minio",
@@ -126,22 +128,21 @@ def test_protected_prometheus_compose_requires_read_only_config_and_tls_director
         ":/etc/prometheus/prometheus.yml:ro"
     ) in volumes
     assert (
-        "${PROMETHEUS_TLS_DIR:?PROMETHEUS_TLS_DIR is required}"
-        ":/etc/prometheus/tls:ro"
+        "${MINIO_TLS_DIR:?MINIO_TLS_DIR is required}/ca.crt" ":/etc/prometheus/tls/ca.crt:ro"
     ) in volumes
+    assert "PROMETHEUS_TLS_DIR" not in str(volumes)
 
 
 def test_e2e_prometheus_runs_the_protected_config_with_ca_only_mount() -> None:
-    compose = (
-        Path(__file__).parents[2] / "docker-compose.e2e.yml"
-    ).read_text(encoding="utf-8")
+    compose = (Path(__file__).parents[2] / "docker-compose.e2e.yml").read_text(encoding="utf-8")
 
     assert (
-        "./ops/observability/prometheus.protected.yml"
-        ":/etc/prometheus/prometheus.yml:ro"
+        "./ops/observability/prometheus.protected.yml" ":/etc/prometheus/prometheus.yml:ro"
     ) in compose
     assert (
-        "${E2E_CERT_DIR:?E2E_CERT_DIR is required}/ca.crt"
-        ":/etc/prometheus/tls/ca.crt:ro"
+        "${E2E_CERT_DIR:?E2E_CERT_DIR is required}/ca.crt" ":/etc/prometheus/tls/ca.crt:ro"
     ) in compose
     assert "/etc/prometheus/tls/minio.key" not in compose
+    assert "minio-metrics-auth:/run/secrets/minio-metrics:ro" in compose
+    assert "MINIO_PROMETHEUS_AUTH_TYPE: jwt" in compose
+    assert "MINIO_PROMETHEUS_AUTH_TYPE: public" not in compose

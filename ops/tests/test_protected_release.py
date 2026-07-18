@@ -10,6 +10,15 @@ from types import ModuleType, SimpleNamespace
 import pytest
 
 TEST_GIT_SHA = "a" * 40
+MINIO_MC_IMAGE = (
+    "minio/mc:RELEASE.2024-04-18T16-45-29Z"
+    "@sha256:5a84109d6b29bab96c3122e4a7ba888fbf48d4cdc83bc8bf88e3a7ac67b970b8"
+)
+MINIO_MC_TAG_ONLY = "minio/mc:RELEASE.2024-04-18T16-45-29Z"
+BACKEND_MC_ARG = f"ARG MINIO_MC_IMAGE={MINIO_MC_IMAGE}".encode()
+OPS_MC_ARG = f"ARG MC_IMAGE={MINIO_MC_IMAGE}".encode()
+WORKFLOW_MC_ARG = f'--build-arg MINIO_MC_IMAGE="{MINIO_MC_IMAGE}"'.encode()
+WORKFLOW_MC_TAG_ONLY_ARG = f'--build-arg MINIO_MC_IMAGE="{MINIO_MC_TAG_ONLY}"'.encode()
 REQUIRED_SERVICES = (
     "nginx",
     "frontend",
@@ -248,6 +257,13 @@ def test_contract_does_not_accept_expected_strings_from_comments(tmp_path: Path)
         "# x-dead-letter-exchange x-dead-letter-routing-key .dlq\n",
         encoding="utf-8",
     )
+    source_root = gate.ROOT
+    for relative in gate.CONTRACT_INPUT_PATHS:
+        candidate = tmp_path / relative
+        if candidate.exists():
+            continue
+        candidate.parent.mkdir(parents=True, exist_ok=True)
+        candidate.write_bytes((source_root / relative).read_bytes())
     gate.ROOT = tmp_path
 
     errors = gate.check_contract()
@@ -324,6 +340,178 @@ def test_resolved_compose_environment_is_structural_not_comment_text(
     assert (
         gate._backend_api_environment(backend) == resolved["services"]["backend-api"]["environment"]
     )
+
+
+def _resolved_minio_services() -> dict[str, object]:
+    root_environment = {
+        "MINIO_ROOT_USER": "protected-root-user",
+        "MINIO_ROOT_PASSWORD": "protected-root-password-0123456789",
+    }
+    return {
+        "minio": {
+            "image": (
+                "minio/minio:RELEASE.2024-04-18T19-09-19Z"
+                "@sha256:036a068d7d6b69400da6bc07a480bee1e241ef3c341c41d988ed11f520f85124"
+            ),
+            "environment": dict(root_environment),
+        },
+        "minio-bootstrap": {
+            "environment": {
+                **root_environment,
+                "MINIO_ENDPOINT": "minio:9000",
+                "MINIO_ACCESS_KEY": "protected-data-user",
+                "MINIO_SECRET_KEY": "protected-data-password-0123456789",
+            }
+        },
+        "minio-metrics-token-init": {
+            "environment": {**root_environment, "MINIO_ENDPOINT": "minio:9000"}
+        },
+        "backend-api": {
+            "build": {
+                "args": {
+                    "MINIO_MC_IMAGE": (
+                        "minio/mc:RELEASE.2024-04-18T16-45-29Z"
+                        "@sha256:5a84109d6b29bab96c3122e4a7ba888fbf48d4cdc83bc8bf88e3a7ac67b970b8"
+                    )
+                }
+            },
+            "environment": {"MINIO_ACCESS_KEY": "protected-data-user"},
+        },
+    }
+
+
+def test_resolved_minio_root_contract_requires_nondefault_consistent_isolation() -> None:
+    gate = _load_gate()
+
+    assert gate._resolved_minio_root_errors(_resolved_minio_services()) == []
+
+
+@pytest.mark.parametrize(
+    ("surface", "value", "expected"),
+    (
+        (
+            "server",
+            "minio/minio:RELEASE.2024-04-18T19-09-19Z",
+            "server image is not the approved immutable digest",
+        ),
+        (
+            "server",
+            "minio/minio:RELEASE.2024-04-18T19-09-19Z@sha256:" + "f" * 64,
+            "server image is not the approved immutable digest",
+        ),
+        (
+            "mc",
+            "minio/mc:RELEASE.2024-04-18T16-45-29Z",
+            "backend mc image is not the approved immutable digest",
+        ),
+        (
+            "mc",
+            "minio/mc:RELEASE.2024-04-18T16-45-29Z@sha256:" + "f" * 64,
+            "backend mc image is not the approved immutable digest",
+        ),
+    ),
+)
+def test_resolved_minio_image_contract_rejects_tag_or_alternate_digest(
+    surface: str,
+    value: str,
+    expected: str,
+) -> None:
+    gate = _load_gate()
+    services = _resolved_minio_services()
+    if surface == "server":
+        minio = services["minio"]
+        assert isinstance(minio, dict)
+        minio["image"] = value
+    else:
+        backend = services["backend-api"]
+        assert isinstance(backend, dict)
+        build = backend["build"]
+        assert isinstance(build, dict)
+        args = build["args"]
+        assert isinstance(args, dict)
+        args["MINIO_MC_IMAGE"] = value
+
+    errors = gate._resolved_minio_root_errors(services)
+
+    assert any(expected in error for error in errors)
+
+
+@pytest.mark.parametrize(
+    ("service", "field", "value", "expected"),
+    (
+        (
+            "minio",
+            "MINIO_ROOT_USER",
+            "other-root",
+            "disagree across server and init services",
+        ),
+        (
+            "minio-bootstrap",
+            "MINIO_ROOT_PASSWORD",
+            "knowledge_root_password",
+            "disagree across server and init services",
+        ),
+        (
+            "minio",
+            "MINIO_ROOT_USER",
+            "knowledge-root",
+            "disagree across server and init services",
+        ),
+        (
+            "minio-bootstrap",
+            "MINIO_ACCESS_KEY",
+            "protected-root-user",
+            "root and data-plane credentials are not isolated",
+        ),
+    ),
+)
+def test_resolved_minio_root_contract_rejects_drift_or_reuse(
+    service: str,
+    field: str,
+    value: str,
+    expected: str,
+) -> None:
+    gate = _load_gate()
+    services = _resolved_minio_services()
+    target = services[service]
+    assert isinstance(target, dict)
+    environment = target["environment"]
+    assert isinstance(environment, dict)
+    environment[field] = value
+
+    errors = gate._resolved_minio_root_errors(services)
+
+    assert any(expected in error for error in errors)
+
+
+def test_resolved_minio_root_contract_rejects_default_pair() -> None:
+    gate = _load_gate()
+    services = _resolved_minio_services()
+    for name in ("minio", "minio-bootstrap", "minio-metrics-token-init"):
+        service = services[name]
+        assert isinstance(service, dict)
+        environment = service["environment"]
+        assert isinstance(environment, dict)
+        environment["MINIO_ROOT_USER"] = "knowledge-root"
+        environment["MINIO_ROOT_PASSWORD"] = "knowledge_root_password"
+
+    errors = gate._resolved_minio_root_errors(services)
+
+    assert any("known default" in error for error in errors)
+
+
+def test_resolved_minio_root_contract_rejects_root_escape() -> None:
+    gate = _load_gate()
+    services = _resolved_minio_services()
+    backend = services["backend-api"]
+    assert isinstance(backend, dict)
+    environment = backend["environment"]
+    assert isinstance(environment, dict)
+    environment["MINIO_ROOT_USER"] = "protected-root-user"
+
+    errors = gate._resolved_minio_root_errors(services)
+
+    assert any("escaped" in error for error in errors)
 
 
 def test_email_delivery_evidence_rejects_plaintext_or_missing_real_delivery() -> None:
@@ -417,6 +605,172 @@ def test_protected_gate_requires_full_git_identity() -> None:
     assert gate._is_release_git_sha("unknown") is False
 
 
+@pytest.mark.parametrize(
+    ("filename", "needle", "replacement"),
+    (
+        (
+            "docker-compose.yml",
+            b'image: "${MINIO_SERVER_IMAGE:-minio/minio:RELEASE.2024-04-18T19-09-19Z'
+            b'@sha256:036a068d7d6b69400da6bc07a480bee1e241ef3c341c41d988ed11f520f85124}"',
+            b'image: "${MINIO_SERVER_IMAGE:-minio/minio:RELEASE.2024-04-18T19-09-19Z}"',
+        ),
+        (
+            "docker-compose.yml",
+            b'MINIO_MC_IMAGE: "${MINIO_MC_IMAGE:-minio/mc:RELEASE.2024-04-18T16-45-29Z'
+            b'@sha256:5a84109d6b29bab96c3122e4a7ba888fbf48d4cdc83bc8bf88e3a7ac67b970b8}"',
+            b'MINIO_MC_IMAGE: "${MINIO_MC_IMAGE:-minio/mc:RELEASE.2024-04-18T16-45-29Z'
+            b'@sha256:ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff}"',
+        ),
+        (
+            "backend/Dockerfile",
+            BACKEND_MC_ARG,
+            f"ARG MINIO_MC_IMAGE={MINIO_MC_TAG_ONLY}".encode(),
+        ),
+        (
+            "ops/Dockerfile",
+            OPS_MC_ARG,
+            f"ARG MC_IMAGE={MINIO_MC_TAG_ONLY}@sha256:{'f' * 64}".encode(),
+        ),
+        (
+            ".github/workflows/knowledge-uploader.yml",
+            WORKFLOW_MC_ARG,
+            WORKFLOW_MC_TAG_ONLY_ARG,
+        ),
+        (
+            "backend/Dockerfile",
+            BACKEND_MC_ARG,
+            BACKEND_MC_ARG + f"\nARG MINIO_MC_IMAGE={MINIO_MC_TAG_ONLY}".encode(),
+        ),
+        (
+            "backend/Dockerfile",
+            BACKEND_MC_ARG,
+            b"# " + BACKEND_MC_ARG + f"\nARG MINIO_MC_IMAGE={MINIO_MC_TAG_ONLY}".encode(),
+        ),
+        (
+            "ops/Dockerfile",
+            OPS_MC_ARG,
+            OPS_MC_ARG + f"\nARG MC_IMAGE={MINIO_MC_TAG_ONLY}".encode(),
+        ),
+        (
+            "ops/Dockerfile",
+            OPS_MC_ARG,
+            b"# " + OPS_MC_ARG + f"\nARG MC_IMAGE={MINIO_MC_TAG_ONLY}".encode(),
+        ),
+        (
+            ".github/workflows/knowledge-uploader.yml",
+            WORKFLOW_MC_ARG,
+            WORKFLOW_MC_ARG + b" --build-arg=MINIO_MC_IMAGE=" + MINIO_MC_TAG_ONLY.encode(),
+        ),
+        (
+            "docker-compose.yml",
+            b"MINIO_PROMETHEUS_AUTH_TYPE: jwt",
+            b"MINIO_PROMETHEUS_AUTH_TYPE: public",
+        ),
+        (
+            "docker-compose.yml",
+            b"\n  minio-bootstrap:\n    image:",
+            b"\n  minio-bootstrap-disabled:\n    image:",
+        ),
+        (
+            "docker-compose.yml",
+            b"  MINIO_CA_CERT_FILE:",
+            b"  MINIO_METRICS_BEARER_TOKEN_FILE: /global/token\n  MINIO_CA_CERT_FILE:",
+        ),
+        (
+            "docker-compose.yml",
+            b'MINIO_ACCESS_KEY: "metrics-bearer-only-no-data-plane"',
+            b'MINIO_ACCESS_KEY: "knowledge"',
+        ),
+        (
+            "docker-compose.observability.protected.yml",
+            b"https://minio:9000/minio/health/cluster",
+            b"http://minio:9000/minio/health/cluster",
+        ),
+        (
+            "docker-compose.observability.protected.yml",
+            b"/ca.crt:/run/secrets/minio-ca/ca.crt:ro",
+            b"/missing.crt:/run/secrets/minio-ca/ca.crt:ro",
+        ),
+        (
+            "docker-compose.observability.protected.yml",
+            b"https://minio:9000/minio/health/cluster",
+            b"https://127.0.0.1:9000/minio/health/cluster",
+        ),
+        (
+            "docker-compose.observability.protected.yml",
+            b"curl --fail",
+            b"curl --insecure --fail",
+        ),
+    ),
+)
+def test_protected_contract_rejects_minio_auth_and_tls_downgrades(
+    filename: str,
+    needle: bytes,
+    replacement: bytes,
+) -> None:
+    gate = _load_gate()
+    contracts = dict(gate.snapshot_contract_payloads())
+    assert gate.check_contract(contracts) == []
+    assert needle in contracts[filename]
+    contracts[filename] = contracts[filename].replace(needle, replacement, 1)
+
+    assert gate.check_contract(contracts)
+
+
+@pytest.mark.parametrize("mutation", ("comment_decoy", "step_env"))
+def test_protected_contract_rejects_workflow_decoy_or_step_override(
+    mutation: str,
+) -> None:
+    gate = _load_gate()
+    contracts = dict(gate.snapshot_contract_payloads())
+    workflow = contracts[".github/workflows/knowledge-uploader.yml"]
+    if mutation == "comment_decoy":
+        workflow = workflow.replace(WORKFLOW_MC_ARG, WORKFLOW_MC_TAG_ONLY_ARG, 1)
+        build_line = b"            docker buildx build "
+        workflow = workflow.replace(
+            build_line,
+            b"            # " + WORKFLOW_MC_ARG + b"\n" + build_line,
+            1,
+        )
+    else:
+        marker = (
+            b"      - name: Build backend OCI layout once with SBOM and provenance\n"
+            b"        run: |"
+        )
+        replacement = (
+            b"      - name: Build backend OCI layout once with SBOM and provenance\n"
+            b"        env:\n"
+            b"          MINIO_MC_IMAGE: minio/mc:RELEASE.2024-04-18T16-45-29Z\n"
+            b"        run: |"
+        )
+        assert marker in workflow
+        workflow = workflow.replace(marker, replacement, 1)
+    contracts[".github/workflows/knowledge-uploader.yml"] = workflow
+
+    assert gate.check_contract(contracts)
+
+
+def test_release_evidence_scanner_rejects_semantic_jwt_but_not_dotted_noise() -> None:
+    gate = _load_gate()
+    semantic_jwt = b"eyJhbGciOiJIUzI1NiJ9." b"eyJzdWIiOiJtaW5pby1tZXRyaWNzIn0." b"eA"
+
+    def token(claims: dict[str, object]) -> bytes:
+        def segment(value: dict[str, object]) -> bytes:
+            payload = gate.json.dumps(value, separators=(",", ":")).encode("utf-8")
+            return gate.base64.urlsafe_b64encode(payload).rstrip(b"=")
+
+        return b".".join((segment({"alg": "HS256"}), segment(claims), b"eA"))
+
+    assert not gate._contains_semantic_jwt(b"foo.bar.baz")
+    assert gate._contains_semantic_jwt(semantic_jwt)
+    assert gate._contains_semantic_jwt(token({"aud": ["minio"]}))
+    assert not gate._contains_semantic_jwt(token({"exp": 9999999999}))
+    assert not gate._contains_semantic_jwt(token({"accessKey": 42}))
+    assert not gate._contains_semantic_jwt(token({"sub": ""}))
+    with pytest.raises(RuntimeError, match="bearer credential material"):
+        gate.reject_semantic_jwts({"infrastructure-e2e.json": semantic_jwt})
+
+
 def test_infrastructure_e2e_requires_run_compose_image_and_worker_identity() -> None:
     gate = _load_gate()
     run_id = str(uuid.uuid4())
@@ -481,10 +835,14 @@ def test_infrastructure_e2e_requires_run_compose_image_and_worker_identity() -> 
         )
 
     evidence = {
-        "evidence_contract_version": 3,
+        "evidence_contract_version": 5,
         "status": "development_passed",
+        "generated_at": "2026-07-17T00:00:00+00:00",
+        "git_sha": TEST_GIT_SHA,
+        "environment": "staging",
         "full_compose_e2e": "development_passed",
         "architecture": "aarch64",
+        "docker_architecture": "arm64",
         "run_id": run_id,
         "compose_project": "knowledge-uploader-dgx-test",
         "source_worktree_clean": True,
@@ -508,6 +866,70 @@ def test_infrastructure_e2e_requires_run_compose_image_and_worker_identity() -> 
                 "smtp_starttls",
             ],
         },
+        "minio_metrics_auth": {
+            "status": "passed",
+            "auth_mode": "jwt_bearer_file",
+            "initializer": {
+                "status": "passed",
+                "container_exit": "exited_0",
+                "logs": "empty",
+                "token_file": "strict_semantic_jwt_single_lf",
+                "mode": "0440",
+                "uid": 65534,
+                "gid": 65534,
+            },
+            "anonymous_access": {"status": "denied", "http_status": 403},
+            "atomic_publish": {
+                "status": "passed",
+                "concurrent_runs": 2,
+                "concurrent_successes": 2,
+                "term_exit_code": 1,
+                "term_cleanup": "passed",
+                "sigkill_exit_code": 137,
+                "sigkill_orphan_observed": True,
+                "post_sigkill_recovery": "passed",
+                "cleanup_after_no_initializer": True,
+                "final_temporary_file_count": 0,
+            },
+            "refresh": {
+                "status": "passed",
+                "semantics": "consumer_refresh_not_revocation",
+                "credential_changed": True,
+                "mtime_advanced": True,
+                "previous_jwt_http_status": 200,
+                "refreshed_jwt_http_status": 200,
+                "consumer_processes_unchanged": True,
+                "prometheus_health_before": "up",
+                "prometheus_health_after": "up",
+            },
+            "emergency_revocation": {
+                "status": "passed",
+                "method": "root_credential_rotation_and_minio_restart",
+                "previous_jwt_http_status_after_restart": 403,
+                "refreshed_jwt_http_status_after_restart": 403,
+                "replacement_jwt_http_status": 200,
+                "minio_recreated": True,
+                "bootstrap_reconciled": True,
+                "expected_minio_interruption": True,
+                "consumer_processes_unchanged": True,
+                "automatic_consumer_recovery": True,
+                "prometheus_health_after_recovery": "up",
+            },
+            "identity_reconciliation": {
+                "status": "passed",
+                "stale_direct_policy_removed": True,
+                "stale_group_membership_removed": True,
+                "intended_policy_attached": True,
+                "intended_bucket_operations": ["get", "put", "delete"],
+                "secondary_bucket_operations_denied": ["list", "get", "put"],
+                "admin_operations_denied": ["info", "user_list", "policy_list"],
+            },
+            "collector": {
+                "status": "passed",
+                "component": "minio_capacity",
+                "last_success_advanced": True,
+            },
+        },
         "prometheus_minio_tls": {
             "status": "passed",
             "job": "minio",
@@ -519,8 +941,11 @@ def test_infrastructure_e2e_requires_run_compose_image_and_worker_identity() -> 
             "certificate_verification": "required",
         },
         "rabbitmq_probe_run_id": run_id,
+        "rabbitmq_evidence_sha256": "9" * 64,
+        "backend_image": "backend:test",
         "backend_image_revision": TEST_GIT_SHA,
         "backend_image_id": "sha256:" + "c" * 64,
+        "frontend_image": "frontend:test",
         "frontend_image_revision": TEST_GIT_SHA,
         "frontend_image_id": "sha256:" + "d" * 64,
         "results": {
@@ -534,6 +959,7 @@ def test_infrastructure_e2e_requires_run_compose_image_and_worker_identity() -> 
             "workers": "passed",
             "rabbitmq_topology": "passed",
             "minio_tls": "passed",
+            "minio_metrics_auth": "passed",
             "prometheus_minio_tls": "passed",
             "ragflow_tls": "passed",
             "upload_review_ragflow": "passed",
@@ -563,6 +989,14 @@ def test_infrastructure_e2e_requires_run_compose_image_and_worker_identity() -> 
     }
 
     assert gate._infrastructure_e2e_errors(evidence, git_sha=TEST_GIT_SHA) == []
+
+    unexpected = json.loads(json.dumps(evidence))
+    unexpected["minio_token"] = "forbidden-field"
+    unexpected_errors = gate._infrastructure_e2e_errors(
+        unexpected,
+        git_sha=TEST_GIT_SHA,
+    )
+    assert any("top-level schema mismatch" in error for error in unexpected_errors)
 
     evidence["resolved_compose_sha256"] = "short"
     evidence["worker_queue_consumers"] = {"ragflow_queue": 1}
@@ -841,4 +1275,61 @@ def test_external_projection_rejects_unknown_checksum_and_run_mix() -> None:
             collector_run_id=506,
             collector_run_attempt=1,
             now=now,
+        )
+
+
+def _write_protected_gate_inventory(gate: ModuleType, root: Path) -> None:
+    root.mkdir()
+    for name in gate.REQUIRED_RELEASE_GATE_EVIDENCE:
+        (root / name).write_bytes(f"fixture:{name}\n".encode())
+
+
+def test_protected_gate_directory_requires_exact_regular_inventory(tmp_path: Path) -> None:
+    gate = _load_gate()
+    evidence = tmp_path / "protected-gate"
+    _write_protected_gate_inventory(gate, evidence)
+
+    assert set(
+        gate._snapshot_exact_evidence_directory(
+            evidence,
+            gate.REQUIRED_RELEASE_GATE_EVIDENCE,
+        )
+    ) == set(gate.REQUIRED_RELEASE_GATE_EVIDENCE)
+
+    (evidence / "unexpected-token.txt").write_text(
+        "eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiJsZWFrIn0.c2lnbmF0dXJl",
+        encoding="utf-8",
+    )
+    with pytest.raises(RuntimeError, match="inventory mismatch"):
+        gate._snapshot_exact_evidence_directory(
+            evidence,
+            gate.REQUIRED_RELEASE_GATE_EVIDENCE,
+        )
+    (evidence / "unexpected-token.txt").unlink()
+
+    (evidence / "unexpected-directory").mkdir()
+    with pytest.raises(RuntimeError, match="inventory mismatch"):
+        gate._snapshot_exact_evidence_directory(
+            evidence,
+            gate.REQUIRED_RELEASE_GATE_EVIDENCE,
+        )
+
+
+def test_protected_gate_directory_rejects_required_symlink(tmp_path: Path) -> None:
+    gate = _load_gate()
+    evidence = tmp_path / "protected-gate"
+    _write_protected_gate_inventory(gate, evidence)
+    victim = evidence / sorted(gate.REQUIRED_RELEASE_GATE_EVIDENCE)[0]
+    target = tmp_path / "target"
+    target.write_bytes(victim.read_bytes())
+    victim.unlink()
+    try:
+        victim.symlink_to(target)
+    except OSError:
+        pytest.skip("symlink creation is unavailable on this runner")
+
+    with pytest.raises(RuntimeError, match="inventory mismatch"):
+        gate._snapshot_exact_evidence_directory(
+            evidence,
+            gate.REQUIRED_RELEASE_GATE_EVIDENCE,
         )
