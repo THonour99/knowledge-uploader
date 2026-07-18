@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import importlib.util
 import json
+import shutil
 import sys
 import uuid
 from http import HTTPStatus
@@ -72,8 +73,17 @@ def stub_execute_runtime(
         if step == "candidate_worktree_add":
             candidate_root = Path(args[-2])
             candidate_root.mkdir(parents=True)
-            for compose_name in (runner.BASE_COMPOSE.name, runner.AI_COMPOSE.name):
-                (candidate_root / compose_name).write_text(compose_name, encoding="utf-8")
+            (candidate_root / runner.BASE_COMPOSE.name).write_text(
+                'services:\n  backend-api:\n    image: "${BACKEND_IMAGE:?required}"\n',
+                encoding="utf-8",
+            )
+            (candidate_root / runner.AI_COMPOSE.name).write_text(
+                'services:\n  mock-llm:\n    environment:\n'
+                '      AI_PROBE_LLM_API_KEY: "${AI_PROBE_LLM_API_KEY:?required}"\n',
+                encoding="utf-8",
+            )
+        if step == "candidate_worktree_remove":
+            shutil.rmtree(Path(args[-1]))
         if step == cleanup_failure_step:
             raise runner.AiMainchainE2EError(step)
         return runner.RunResult(stdout="", stderr="")
@@ -259,19 +269,61 @@ def test_compose_source_environment_is_removed_without_leaking_values(runner: Mo
         "COMPOSE_PROFILES": "rogue",
         "COMPOSE_ENV_FILES": "rogue.env",
         "compose_project_name": "rogue-project",
+        "compose_bake": "true",
+        "COMPOSE_REMOVE_ORPHANS": "true",
+        "GIT_DIR": "rogue-git-dir",
+        "git_work_tree": "rogue-worktree",
     }
     sanitized, removed = runner.sanitized_environment(source)
 
     assert sanitized == {"PATH": "kept"}
     assert removed == [
+        "COMPOSE_BAKE",
         "COMPOSE_ENV_FILES",
         "COMPOSE_FILE",
         "COMPOSE_PATH_SEPARATOR",
         "COMPOSE_PROFILES",
         "COMPOSE_PROJECT_NAME",
+        "COMPOSE_REMOVE_ORPHANS",
+        "GIT_DIR",
+        "GIT_WORK_TREE",
     ]
     assert "rogue.yml" not in json.dumps(removed)
+    assert "rogue-git-dir" not in json.dumps(removed)
 
+
+def test_all_detached_compose_interpolation_keys_are_removed_from_host_environment(
+    runner: ModuleType,
+    tmp_path: Path,
+) -> None:
+    candidate_root = tmp_path / "candidate"
+    candidate_root.mkdir()
+    (candidate_root / "docker-compose.yml").write_text(
+        'services:\n  api:\n    environment:\n'
+        '      RAGFLOW_API_KEY: "${RAGFLOW_API_KEY:-}"\n'
+        '      SMTP_PASSWORD: "${SMTP_PASSWORD:-}"\n',
+        encoding="utf-8",
+    )
+    (candidate_root / "docker-compose.ai-mainchain.yml").write_text(
+        'services:\n  api:\n    environment:\n'
+        '      LLM_API_KEY: "${LLM_API_KEY:?required}"\n',
+        encoding="utf-8",
+    )
+    keys = runner.compose_interpolation_keys(candidate_root)
+    sanitized, removed = runner.sanitized_environment(
+        {
+            "PATH": "kept",
+            "RAGFLOW_API_KEY": "ragflow-sentinel",
+            "smtp_password": "smtp-sentinel",
+            "LLM_API_KEY": "llm-sentinel",
+        },
+        additional_keys=keys,
+    )
+
+    assert keys == ("LLM_API_KEY", "RAGFLOW_API_KEY", "SMTP_PASSWORD")
+    assert sanitized == {"PATH": "kept"}
+    assert removed == ["LLM_API_KEY", "RAGFLOW_API_KEY", "SMTP_PASSWORD"]
+    assert "sentinel" not in json.dumps(removed)
 
 def test_candidate_revision_requires_exact_clean_head(
     runner: ModuleType,
@@ -448,6 +500,7 @@ def test_execute_runs_every_compose_phase_from_one_detached_snapshot(
     output = tmp_path / "detached-evidence.json"
     monkeypatch.setenv("COMPOSE_FILE", "rogue.yml")
     monkeypatch.setenv("COMPOSE_PROFILES", "rogue")
+    monkeypatch.setenv("GIT_DIR", "rogue-git-dir")
     monkeypatch.setattr(
         runner,
         "resolve_candidate_revision",
@@ -479,6 +532,7 @@ def test_execute_runs_every_compose_phase_from_one_detached_snapshot(
     )
     assert fingerprint_roots == [candidate_root, candidate_root]
     assert not candidate_root.exists()
+    assert not any(args[:3] == ["git", "worktree", "prune"] for _step, args in calls)
 
     evidence = json.loads(output.read_text(encoding="utf-8"))
     candidate = evidence["candidate"]
@@ -490,9 +544,18 @@ def test_execute_runs_every_compose_phase_from_one_detached_snapshot(
         "docker-compose.yml",
         "docker-compose.ai-mainchain.yml",
     ]
+    assert candidate["tool_environment_keys_removed"] == [
+        "COMPOSE_FILE",
+        "COMPOSE_PROFILES",
+        "GIT_DIR",
+    ]
     assert candidate["compose_environment_keys_removed"] == [
         "COMPOSE_FILE",
         "COMPOSE_PROFILES",
+    ]
+    assert candidate["compose_interpolation_keys_sanitized"] == [
+        "AI_PROBE_LLM_API_KEY",
+        "BACKEND_IMAGE",
     ]
 
 

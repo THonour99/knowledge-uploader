@@ -54,6 +54,7 @@ COMPOSE_SOURCE_ENVIRONMENT_KEYS = frozenset(
         "COMPOSE_PROJECT_NAME",
     }
 )
+COMPOSE_INTERPOLATION_PATTERN = re.compile(r"(?<!\$)\$\{([A-Za-z_][A-Za-z0-9_]*)")
 
 
 class AiMainchainE2EError(RuntimeError):
@@ -116,15 +117,39 @@ def compose_command(candidate_root: Path, project: str, *args: str) -> list[str]
     ]
 
 
-def sanitized_environment(source: dict[str, str]) -> tuple[dict[str, str], list[str]]:
+def sanitized_environment(
+    source: dict[str, str],
+    *,
+    additional_keys: Sequence[str] = (),
+) -> tuple[dict[str, str], list[str]]:
     environment = dict(source)
+    blocked_keys = COMPOSE_SOURCE_ENVIRONMENT_KEYS | {key.upper() for key in additional_keys}
+    blocked_prefixes = ("COMPOSE_", "GIT_")
     removed = sorted(
-        {key.upper() for key in environment if key.upper() in COMPOSE_SOURCE_ENVIRONMENT_KEYS}
+        {
+            key.upper()
+            for key in environment
+            if key.upper() in blocked_keys or key.upper().startswith(blocked_prefixes)
+        }
     )
     for key in tuple(environment):
-        if key.upper() in COMPOSE_SOURCE_ENVIRONMENT_KEYS:
+        normalized = key.upper()
+        if normalized in blocked_keys or normalized.startswith(blocked_prefixes):
             environment.pop(key)
     return environment, removed
+
+
+def compose_interpolation_keys(candidate_root: Path) -> tuple[str, ...]:
+    keys: set[str] = set()
+    try:
+        for compose_name in (BASE_COMPOSE.name, AI_COMPOSE.name):
+            source = (candidate_root / compose_name).read_text(encoding="utf-8")
+            keys.update(match.upper() for match in COMPOSE_INTERPOLATION_PATTERN.findall(source))
+    except OSError as exc:
+        raise AiMainchainE2EError("compose_environment_contract") from exc
+    if not keys:
+        raise AiMainchainE2EError("compose_environment_contract")
+    return tuple(sorted(keys))
 
 
 def free_host_port() -> int:
@@ -512,24 +537,19 @@ def remove_detached_worktree(
     environment: dict[str, str],
 ) -> None:
     try:
-        run_command(
-            ["git", "worktree", "remove", "--force", str(candidate_root)],
+        listed_before = run_command(
+            ["git", "worktree", "list", "--porcelain"],
             environment=environment,
-            step="candidate_worktree_remove",
-            timeout_seconds=300,
-        )
-    except AiMainchainE2EError:
-        pass
-
-    try:
-        if candidate_root.exists():
-            shutil.rmtree(candidate_root)
-        run_command(
-            ["git", "worktree", "prune", "--expire", "now"],
-            environment=environment,
-            step="candidate_worktree_prune",
+            step="candidate_worktree_cleanup_lookup",
             timeout_seconds=60,
         )
+        if candidate_root.exists() or worktree_registered(listed_before.stdout, candidate_root):
+            run_command(
+                ["git", "worktree", "remove", "--force", str(candidate_root)],
+                environment=environment,
+                step="candidate_worktree_remove",
+                timeout_seconds=300,
+            )
         listed = run_command(
             ["git", "worktree", "list", "--porcelain"],
             environment=environment,
@@ -538,7 +558,8 @@ def remove_detached_worktree(
         )
         if candidate_root.exists() or worktree_registered(listed.stdout, candidate_root):
             raise AiMainchainE2EError("candidate_worktree_cleanup_check")
-        shutil.rmtree(runtime_root)
+        if runtime_root.exists():
+            shutil.rmtree(runtime_root)
     except AiMainchainE2EError:
         raise
     except OSError as exc:
@@ -552,8 +573,8 @@ def execute(
 ) -> Path:
     if output_path is not None and output_path.exists():
         raise AiMainchainE2EError("evidence_output_exists")
-    base_environment, removed_compose_environment = sanitized_environment(dict(os.environ))
-    revision = resolve_candidate_revision(base_environment, requested_revision)
+    tool_environment, removed_tool_environment = sanitized_environment(dict(os.environ))
+    revision = resolve_candidate_revision(tool_environment, requested_revision)
     resolved_output = output_path or default_output_path(revision)
     if resolved_output.exists():
         raise AiMainchainE2EError("evidence_output_exists")
@@ -562,11 +583,11 @@ def execute(
     project = f"ku-ai-mainchain-{run_id.hex[:12]}"
     runtime_root = Path(tempfile.mkdtemp(prefix=f"{project}-"))
     candidate_root = runtime_root / "candidate"
-    environment = ephemeral_environment(
-        base_environment=base_environment,
-        run_id=run_id,
-        revision=revision,
-    )
+    environment = tool_environment
+    removed_compose_environment = [
+        key for key in removed_tool_environment if key.startswith("COMPOSE_")
+    ]
+    interpolation_keys: tuple[str, ...] = ()
     cleanup_required = False
     worktree_added = False
     cleanup_failures: list[AiMainchainE2EError] = []
@@ -580,26 +601,26 @@ def execute(
     try:
         run_command(
             ["git", "worktree", "add", "--detach", str(candidate_root), revision],
-            environment=base_environment,
+            environment=tool_environment,
             step="candidate_worktree_add",
             timeout_seconds=180,
         )
         worktree_added = True
         detached_revision = resolve_candidate_revision(
-            base_environment,
+            tool_environment,
             revision,
             repo_root=candidate_root,
             identity_step="detached_git_identity",
             status_step="detached_worktree",
         )
         expected_tree = resolve_tree_revision(
-            base_environment,
+            tool_environment,
             revision,
             repo_root=ROOT,
             step="expected_tree_identity",
         )
         candidate_tree = resolve_tree_revision(
-            base_environment,
+            tool_environment,
             detached_revision,
             repo_root=candidate_root,
             step="detached_tree_identity",
@@ -611,6 +632,19 @@ def execute(
             name: hashlib.sha256((candidate_root / name).read_bytes()).hexdigest()
             for name in (BASE_COMPOSE.name, AI_COMPOSE.name)
         }
+        interpolation_keys = compose_interpolation_keys(candidate_root)
+        runtime_base_environment, removed_interpolation_environment = sanitized_environment(
+            tool_environment,
+            additional_keys=interpolation_keys,
+        )
+        removed_compose_environment = sorted(
+            set(removed_compose_environment) | set(removed_interpolation_environment)
+        )
+        environment = ephemeral_environment(
+            base_environment=runtime_base_environment,
+            run_id=run_id,
+            revision=revision,
+        )
 
         cleanup_required = True
         run_command(
@@ -761,7 +795,7 @@ def execute(
         if worktree_added and candidate_root.is_dir():
             try:
                 final_revision = resolve_candidate_revision(
-                    base_environment,
+                    tool_environment,
                     revision,
                     repo_root=candidate_root,
                     identity_step="detached_git_identity_after",
@@ -769,7 +803,7 @@ def execute(
                 )
                 source_after = source_fingerprint(candidate_root)
                 final_tree = resolve_tree_revision(
-                    base_environment,
+                    tool_environment,
                     final_revision,
                     repo_root=candidate_root,
                     step="detached_tree_identity_after",
@@ -788,7 +822,7 @@ def execute(
             remove_detached_worktree(
                 candidate_root=candidate_root,
                 runtime_root=runtime_root,
-                environment=base_environment,
+                environment=tool_environment,
             )
         except AiMainchainE2EError as exc:
             cleanup_failures.append(exc)
@@ -808,7 +842,9 @@ def execute(
         "source_sha256": source_before,
         "compose_file_sha256": compose_sha256,
         "compose_files": [BASE_COMPOSE.name, AI_COMPOSE.name],
+        "tool_environment_keys_removed": removed_tool_environment,
         "compose_environment_keys_removed": removed_compose_environment,
+        "compose_interpolation_keys_sanitized": list(interpolation_keys),
         "generated_at": datetime.now(UTC).isoformat(),
         "compose_project_isolated": True,
         "database_name_suffix_guard": "_test",
