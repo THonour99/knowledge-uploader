@@ -24,6 +24,8 @@ from app.core.metrics import http_metrics_middleware, metrics_response
 from app.core.middlewares import request_id_middleware
 from app.core.responses import error_response
 from app.modules.ai.api import router as ai_router
+from app.modules.announcement.api import admin_router as announcement_admin_router
+from app.modules.announcement.api import router as announcement_router
 from app.modules.audit.api import router as audit_router
 from app.modules.auth.api import router as auth_router
 from app.modules.config.api import router as config_router
@@ -46,6 +48,8 @@ app = FastAPI(title="Knowledge Uploader", version="0.1.0")
 app.middleware("http")(request_id_middleware)
 app.middleware("http")(http_metrics_middleware)
 app.include_router(ai_router)
+app.include_router(announcement_router)
+app.include_router(announcement_admin_router)
 app.include_router(audit_router)
 app.include_router(auth_router)
 app.include_router(config_router)
