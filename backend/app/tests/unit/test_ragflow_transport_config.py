@@ -144,6 +144,7 @@ async def test_runtime_database_key_keeps_only_exact_pinned_https_endpoint(
             "ragflow.base_url": endpoint,
             "ragflow.api_key": "runtime-secret",
             "ragflow.sync_timeout_seconds": 45,
+            "ragflow.allowed_dataset_ids": ["runtime-dataset"],
         }[key]
 
     monkeypatch.setattr(ragflow_runtime, "get_config", get_config)
@@ -154,6 +155,7 @@ async def test_runtime_database_key_keeps_only_exact_pinned_https_endpoint(
     assert resolved.protected_environment is True
     assert resolved.base_url == endpoint
     assert resolved.tls_spki_pins == frozenset({bytes([1]) * 32})
+    assert resolved.allowed_dataset_ids == frozenset({"runtime-dataset"})
 
 
 @pytest.mark.parametrize(
@@ -179,6 +181,7 @@ async def test_runtime_database_key_fails_closed_without_protected_https_and_pin
             "ragflow.base_url": endpoint,
             "ragflow.api_key": "runtime-secret",
             "ragflow.sync_timeout_seconds": 45,
+            "ragflow.allowed_dataset_ids": ["runtime-dataset"],
         }[key]
 
     monkeypatch.setattr(ragflow_runtime, "get_config", get_config)

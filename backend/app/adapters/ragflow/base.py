@@ -5,6 +5,12 @@ from typing import Protocol
 
 
 @dataclass(frozen=True)
+class RagflowDataset:
+    dataset_id: str
+    name: str
+
+
+@dataclass(frozen=True)
 class RagflowUploadResult:
     document_id: str
     raw: dict[str, object]

@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from .base import RagflowDocumentStatus, RagflowUploadResult
+from .base import RagflowDataset, RagflowDocumentStatus, RagflowUploadResult
 
 
 class MockRagflowClient:
@@ -9,6 +9,9 @@ class MockRagflowClient:
 
     async def ping(self) -> bool:
         return True
+
+    async def list_datasets(self) -> list[RagflowDataset]:
+        return []
 
     async def upload_document(
         self,

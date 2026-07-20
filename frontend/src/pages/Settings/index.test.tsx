@@ -7,6 +7,8 @@ import { afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 import {
   type ConfigGroupResponse,
   type RagflowConnectionTestResult,
+  type RagflowDatasetDiscoveryResult,
+  discoverRagflowDatasets,
   getConfigs,
   testRagflowConnection,
   updateConfigs,
@@ -22,6 +24,7 @@ vi.mock("../../api/client", async () => {
   return {
     ...actual,
     getConfigs: vi.fn(),
+    discoverRagflowDatasets: vi.fn(),
     updateConfigs: vi.fn(),
     testRagflowConnection: vi.fn(),
   };
@@ -172,6 +175,15 @@ const mockRagflowGroup: ConfigGroupResponse = {
       updated_at: "2026-06-10T00:00:00Z",
     },
     {
+      key: "ragflow.allowed_dataset_ids",
+      value: [],
+      value_type: "list",
+      is_secret: false,
+      masked_value: null,
+      description: "允许同步的 RAGFlow Dataset ID 白名单",
+      updated_at: "2026-06-10T00:00:00Z",
+    },
+    {
       key: "ragflow.allow_high_risk_sync",
       value: false,
       value_type: "bool",
@@ -294,7 +306,7 @@ describe("SettingsPage", () => {
     expect(await screen.findByText("6/6")).toBeInTheDocument();
     expect(screen.getByText("配置已同步")).toBeInTheDocument();
     expect(screen.getAllByText("1 项").length).toBeGreaterThan(0);
-    expect(screen.getByText("无待处理项")).toBeInTheDocument();
+    expect(screen.getByText("需要管理员确认")).toBeInTheDocument();
 
     const summary = screen.getByRole("region", { name: "配置运行摘要" });
     expect(summary).toHaveTextContent("4 项配置");
@@ -601,5 +613,47 @@ describe("SettingsPage", () => {
 
     // Failure message / alert should be visible
     expect(await screen.findByText(/Connection refused/)).toBeInTheDocument();
+  });
+
+  it("discovers RAGFlow datasets and saves the selected runtime allowlist", async () => {
+    setupMocks();
+    const discoveryResult: RagflowDatasetDiscoveryResult = {
+      ok: true,
+      items: [
+        { dataset_id: "dataset-b", name: "业务知识库" },
+        { dataset_id: "dataset-a", name: "产品资料" },
+      ],
+      error: null,
+    };
+    vi.mocked(discoverRagflowDatasets).mockResolvedValue(discoveryResult);
+    vi.mocked(updateConfigs).mockResolvedValue(mockRagflowGroup);
+
+    renderWithProviders(<SettingsPage />);
+    fireEvent.click(await screen.findByRole("tab", { name: "RAGFlow" }));
+    fireEvent.click(await screen.findByRole("button", { name: /从 RAGFlow 加载 Dataset/ }));
+
+    await waitFor(() => {
+      const [payload] = vi.mocked(discoverRagflowDatasets).mock.calls[0];
+      expect(payload).toEqual({
+        base_url: "http://192.168.4.46:8092",
+        api_key: undefined,
+      });
+    });
+
+    const datasetSelect = await screen.findByRole("combobox", {
+      name: "允许同步的 Dataset",
+    });
+    fireEvent.mouseDown(datasetSelect);
+    fireEvent.click(await screen.findByText("业务知识库（dataset-b）"));
+    fireEvent.click(screen.getByRole("button", { name: /保存/ }));
+
+    await waitFor(() => {
+      expect(updateConfigs).toHaveBeenCalledWith(
+        "ragflow",
+        expect.objectContaining({
+          "ragflow.allowed_dataset_ids": ["dataset-b"],
+        }),
+      );
+    });
   });
 });

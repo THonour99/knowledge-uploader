@@ -88,9 +88,7 @@ async def test_http_ragflow_client_calls_document_lifecycle_endpoints() -> None:
                         "code": 0,
                         "data": {
                             "total": 1,
-                            "docs": [
-                                {"id": "doc-1", "name": "manual.txt", "run": "UNSTART"}
-                            ]
+                            "docs": [{"id": "doc-1", "name": "manual.txt", "run": "UNSTART"}],
                         },
                     },
                 )
@@ -357,3 +355,56 @@ async def test_http_ragflow_client_rejects_status_document_id_mismatch() -> None
                 dataset_id="dataset-1",
                 document_id="doc-expected",
             )
+
+
+async def test_http_ragflow_client_lists_and_sorts_datasets() -> None:
+    calls: list[httpx.Request] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        calls.append(request)
+        assert request.method == "GET"
+        assert request.url.path == "/api/v1/datasets"
+        assert request.url.params["page"] == "1"
+        assert request.url.params["page_size"] == "100"
+        return httpx.Response(
+            200,
+            json={
+                "code": 0,
+                "data": [
+                    {"id": "dataset-b", "name": "业务知识库"},
+                    {"id": "dataset-a", "name": "产品资料"},
+                ],
+                "total_datasets": 2,
+            },
+        )
+
+    async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as http_client:
+        client = HttpRagflowClient(
+            base_url="https://ragflow.internal",
+            api_key="sk-test-secret",
+            client=http_client,
+        )
+        datasets = await client.list_datasets()
+
+    assert [(item.dataset_id, item.name) for item in datasets] == [
+        ("dataset-b", "业务知识库"),
+        ("dataset-a", "产品资料"),
+    ]
+    assert len(calls) == 1
+
+
+async def test_http_ragflow_client_rejects_malformed_dataset_items() -> None:
+    def handler(_request: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            200,
+            json={"code": 0, "data": [{"id": "", "name": "broken"}]},
+        )
+
+    async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as http_client:
+        client = HttpRagflowClient(
+            base_url="https://ragflow.internal",
+            api_key="sk-test-secret",
+            client=http_client,
+        )
+        with pytest.raises(RagflowClientError, match="missing id"):
+            await client.list_datasets()

@@ -12,6 +12,7 @@ from app.core.ragflow_call_telemetry import (
 from .base import (
     RagflowClient,
     RagflowClientError,
+    RagflowDataset,
     RagflowDocumentNotFoundError,
     RagflowDocumentStatus,
     RagflowUploadResult,
@@ -22,6 +23,10 @@ T = TypeVar("T")
 
 class _ConnectionCheckClient(Protocol):
     async def check_connection(self) -> None: ...
+
+
+class _DatasetListingClient(Protocol):
+    async def list_datasets(self) -> list[RagflowDataset]: ...
 
 
 class InstrumentedRagflowClient:
@@ -52,6 +57,13 @@ class InstrumentedRagflowClient:
             return
         typed_client = cast(_ConnectionCheckClient, self._client)
         await self._call("ping", typed_client.check_connection)
+
+    async def list_datasets(self) -> list[RagflowDataset]:
+        listing_client = cast(_DatasetListingClient, self._client)
+        return await self._call(
+            "list_datasets",
+            listing_client.list_datasets,
+        )
 
     async def upload_document(
         self,

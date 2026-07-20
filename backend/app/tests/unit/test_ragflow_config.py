@@ -118,13 +118,24 @@ async def _create_token(client: AsyncClient, *, role: str) -> str:
 
 
 class _FakeProbeClient:
-    def __init__(self, *, raise_on_check: Exception | None = None) -> None:
+    def __init__(
+        self,
+        *,
+        raise_on_check: Exception | None = None,
+        datasets: list[tuple[str, str]] | None = None,
+    ) -> None:
         self._raise_on_check = raise_on_check
+        self._datasets = datasets or []
         self.constructed_with: dict[str, Any] = {}
 
     async def check_connection(self) -> None:
         if self._raise_on_check is not None:
             raise self._raise_on_check
+
+    async def list_datasets(self) -> list[Any]:
+        from app.adapters.ragflow.base import RagflowDataset
+
+        return [RagflowDataset(dataset_id=item[0], name=item[1]) for item in self._datasets]
 
 
 def _use_runtime_settings(
@@ -445,3 +456,70 @@ async def test_sync_task_build_ragflow_client_falls_back_to_settings(
     assert constructed_kwargs["base_url"] == settings.ragflow_base_url
     assert constructed_kwargs["api_key"] == settings.ragflow_api_key
     assert constructed_kwargs["timeout_seconds"] == settings.ragflow_request_timeout
+
+
+async def test_discover_datasets_uses_current_form_credentials_and_writes_audit(
+    api_client: AsyncClient,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import app.modules.ragflow.api as ragflow_api
+
+    captured: dict[str, Any] = {}
+
+    def _fake_client(**kwargs: Any) -> _FakeProbeClient:
+        captured.update(kwargs)
+        return _FakeProbeClient(datasets=[("dataset-b", "业务知识库"), ("dataset-a", "产品资料")])
+
+    monkeypatch.setattr(ragflow_api, "HttpRagflowClient", _fake_client)
+    monkeypatch.setattr(
+        ragflow_api,
+        "approved_ragflow_base_url",
+        lambda value, _settings: value,
+    )
+    monkeypatch.setattr(
+        ragflow_api,
+        "ragflow_tls_spki_pins_for_endpoint",
+        lambda _base_url, _raw_pins: frozenset(),
+    )
+    _use_runtime_settings(
+        monkeypatch,
+        ragflow_api,
+        base_url="http://stored-ragflow:9380",
+        api_key="sk-stored-secret",
+        timeout_seconds=45.0,
+    )
+
+    token = await _create_token(api_client, role="system_admin")
+    response = await api_client.post(
+        "/api/admin/ragflow/discover-datasets",
+        headers={"Authorization": f"Bearer {token}"},
+        json={
+            "base_url": "http://form-ragflow:9380",
+            "api_key": "sk-form-secret",
+        },
+    )
+
+    assert response.status_code == 200
+    assert response.json()["data"] == {
+        "ok": True,
+        "items": [
+            {"dataset_id": "dataset-b", "name": "业务知识库"},
+            {"dataset_id": "dataset-a", "name": "产品资料"},
+        ],
+        "error": None,
+    }
+    assert captured["base_url"] == "http://form-ragflow:9380"
+    assert captured["api_key"] == "sk-form-secret"
+    assert "sk-form-secret" not in response.text
+
+    from sqlalchemy import select
+
+    from app.core.database import AsyncSessionFactory
+    from app.modules.audit.models import AuditLog
+
+    async with AsyncSessionFactory() as session:
+        result = await session.execute(
+            select(AuditLog).where(AuditLog.action == "ragflow.dataset.discover")
+        )
+        audit = result.scalar_one()
+    assert audit.metadata_json == {"ok": True, "dataset_count": 2}

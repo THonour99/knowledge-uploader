@@ -10,7 +10,6 @@ from app.core import runtime_config
 from app.core.audit import record_admin_audit_log
 from app.core.config import approved_ragflow_base_url, get_settings
 from app.core.outbox import OutboxRepository
-from app.core.ragflow_runtime import normalized_dataset_ids
 from app.core.security import decrypt_secret, encrypt_secret
 from app.modules.user.schemas import AuthUserRecord
 
@@ -82,8 +81,6 @@ class ConfigService:
             if definition.immutable:
                 raise exceptions.immutable_config_key(key)
             validated[key] = self._validate_value(definition, items[key])
-        self._validate_ragflow_api_key_policy(validated)
-
         rows = {row.key: row for row in await self._repository.list_by_group(group)}
         changes: dict[str, object] = {}
         committed_runtime_values: dict[str, object | None] = {}
@@ -235,14 +232,12 @@ class ConfigService:
             return cleaned
         if not isinstance(value, list) or not all(isinstance(item, str) for item in value):
             raise exceptions.invalid_config_value(definition.key)
-        return [item.strip() for item in value if item.strip()]
-
-    def _validate_ragflow_api_key_policy(self, validated: dict[str, object]) -> None:
-        api_key_value = validated.get("ragflow.api_key")
-        if not isinstance(api_key_value, str) or not api_key_value.strip():
-            return
-        if not normalized_dataset_ids(get_settings().ragflow_allowed_dataset_ids):
-            raise exceptions.invalid_config_value("ragflow.api_key")
+        cleaned_items = [item.strip() for item in value if item.strip()]
+        if definition.key == "ragflow.allowed_dataset_ids":
+            if len(cleaned_items) > 500 or any(len(item) > 255 for item in cleaned_items):
+                raise exceptions.invalid_config_value(definition.key)
+            return list(dict.fromkeys(cleaned_items))
+        return cleaned_items
 
     def _require_admin(self, current_user: AuthUserRecord) -> None:
         if current_user.role not in ADMIN_ROLES:

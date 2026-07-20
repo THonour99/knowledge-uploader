@@ -174,11 +174,12 @@ scripts\dev-check.bat
 
 ```env
 RAGFLOW_BASE_URL=http://192.168.4.46:8092
-RAGFLOW_API_KEY=<后端环境变量中配置>
-RAGFLOW_ALLOWED_DATASET_IDS=<新建测试 Dataset id>
+RAGFLOW_API_KEY=<可选的启动回退，也可在系统设置中加密保存>
+RAGFLOW_ALLOWED_DATASET_IDS=<可选的启动回退 Dataset id>
 ```
 
-`RAGFLOW_API_KEY` 非空时，后端会强制要求 `RAGFLOW_ALLOWED_DATASET_IDS` 非空。管理员在 `/datasets` 中创建映射时也必须使用 allowlist 内的 Dataset id。
+Dataset 白名单优先使用系统设置中的 `ragflow.allowed_dataset_ids`；管理员可从 RAGFlow
+加载并选择 Dataset。有效白名单为空时系统禁止同步，环境变量仅作为尚未保存运行时配置时的回退。
 
 ## 常用命令
 

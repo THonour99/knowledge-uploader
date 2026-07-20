@@ -254,32 +254,40 @@ def test_deployed_base_url_rejects_placeholder_secrets_when_app_env_is_omitted()
         )
 
 
-def test_production_requires_ragflow_dataset_allowlist_when_key_is_configured() -> None:
-    with pytest.raises(ValidationError, match="RAGFLOW_ALLOWED_DATASET_IDS"):
-        Settings(
-            **_production_settings(
-                ragflow_api_key="test-ragflow-key",
-                ragflow_allowed_dataset_ids="",
-            )
-        )
-
-
-def test_development_requires_ragflow_dataset_allowlist_when_key_is_configured() -> None:
-    with pytest.raises(ValidationError, match="RAGFLOW_ALLOWED_DATASET_IDS"):
-        Settings(
-            app_env="development",
+def test_production_allows_runtime_ragflow_dataset_allowlist() -> None:
+    settings = Settings(
+        **_production_settings(
+            ragflow_base_url="https://ragflow.internal/api",
+            ragflow_tls_spki_pins=(
+                '{"https://ragflow.internal/api":'
+                '["sha256/AQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQE="]}'
+            ),
             ragflow_api_key="test-ragflow-key",
             ragflow_allowed_dataset_ids="",
         )
+    )
+
+    assert settings.ragflow_api_key == "test-ragflow-key"
 
 
-def test_ragflow_dataset_allowlist_must_have_normalized_values() -> None:
-    with pytest.raises(ValidationError, match="RAGFLOW_ALLOWED_DATASET_IDS"):
-        Settings(
-            app_env="development",
-            ragflow_api_key="test-ragflow-key",
-            ragflow_allowed_dataset_ids=", ,",
-        )
+def test_development_allows_runtime_ragflow_dataset_allowlist() -> None:
+    settings = Settings(
+        app_env="development",
+        ragflow_api_key="test-ragflow-key",
+        ragflow_allowed_dataset_ids="",
+    )
+
+    assert settings.ragflow_api_key == "test-ragflow-key"
+
+
+def test_environment_ragflow_dataset_allowlist_can_be_empty_after_normalization() -> None:
+    settings = Settings(
+        app_env="development",
+        ragflow_api_key="test-ragflow-key",
+        ragflow_allowed_dataset_ids=", ,",
+    )
+
+    assert settings.ragflow_allowed_dataset_ids == ", ,"
 
 
 def test_production_accepts_ragflow_dataset_allowlist() -> None:

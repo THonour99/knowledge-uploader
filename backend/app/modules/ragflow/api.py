@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import time
 from typing import Annotated, Literal, NoReturn
-from uuid import UUID
+from uuid import NAMESPACE_URL, UUID, uuid5
 
 import structlog
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
@@ -12,9 +12,15 @@ from app.adapters.ragflow.base import RagflowClientError
 from app.adapters.ragflow.http import HttpRagflowClient, redact_secret
 from app.adapters.ragflow.instrumented import InstrumentedRagflowClient
 from app.core.access_scope import ScopedAdminDep
+from app.core.audit import record_admin_audit_log
+from app.core.config import approved_ragflow_base_url, get_settings
 from app.core.database import get_session
 from app.core.deps import get_current_user
 from app.core.permissions import SystemAdminDep
+from app.core.ragflow_endpoint import (
+    ragflow_endpoint_identity,
+    ragflow_tls_spki_pins_for_endpoint,
+)
 from app.core.ragflow_runtime import resolve_ragflow_runtime_settings
 from app.core.responses import success_response
 from app.modules.user.schemas import AuthUserRecord
@@ -23,6 +29,9 @@ from .exceptions import RagflowTaskError
 from .repository import RagflowTaskRepository  # noqa: TID251 - same-module repository dependency
 from .schemas import (
     ManualSyncRequest,
+    RagflowDatasetDiscoveryRequest,
+    RagflowDatasetDiscoveryResponse,
+    RagflowDatasetOptionResponse,
     SyncTaskListResponse,
     SyncTaskLogResponse,
     SyncTaskResponse,
@@ -293,3 +302,72 @@ async def test_ragflow_connection(
         },
         request,
     )
+
+
+@router.post("/api/admin/ragflow/discover-datasets")
+async def discover_ragflow_datasets(
+    payload: RagflowDatasetDiscoveryRequest,
+    request: Request,
+    current_user: SystemAdminDep,
+    session: SessionDep,
+) -> dict[str, object]:
+    runtime_settings = await resolve_ragflow_runtime_settings()
+    settings = get_settings()
+    base_url_candidate = (
+        payload.base_url.strip()
+        if payload.base_url is not None and payload.base_url.strip()
+        else runtime_settings.base_url
+    )
+    api_key = (
+        payload.api_key.strip()
+        if payload.api_key is not None and payload.api_key.strip()
+        else runtime_settings.api_key
+    )
+
+    ok = True
+    error_summary: str | None = None
+    datasets: list[RagflowDatasetOptionResponse] = []
+    try:
+        base_url = approved_ragflow_base_url(base_url_candidate, settings)
+        tls_spki_pins = ragflow_tls_spki_pins_for_endpoint(
+            base_url,
+            settings.ragflow_tls_spki_pins,
+        )
+        if runtime_settings.protected_environment and (
+            ragflow_endpoint_identity(base_url)[0] != "https" or not tls_spki_pins
+        ):
+            raise ValueError("RAGFlow endpoint transport is not approved")
+        client = InstrumentedRagflowClient(
+            HttpRagflowClient(
+                base_url=base_url,
+                api_key=api_key,
+                timeout_seconds=runtime_settings.timeout_seconds,
+                protected_environment=runtime_settings.protected_environment,
+                tls_spki_pins=tls_spki_pins,
+            )
+        )
+        datasets = [
+            RagflowDatasetOptionResponse(dataset_id=item.dataset_id, name=item.name)
+            for item in await client.list_datasets()
+        ]
+    except (RagflowClientError, ValueError) as exc:
+        ok = False
+        error_summary = redact_secret(str(exc), api_key)
+
+    await record_admin_audit_log(
+        session,
+        actor_id=current_user.id,
+        action="ragflow.dataset.discover",
+        target_type="ragflow_config",
+        target_id=uuid5(NAMESPACE_URL, "ragflow-config:dataset-discovery"),
+        ip_address=_context_from(request).ip_address,
+        user_agent=_context_from(request).user_agent,
+        metadata_json={"ok": ok, "dataset_count": len(datasets)},
+    )
+    await session.commit()
+    response = RagflowDatasetDiscoveryResponse(
+        ok=ok,
+        items=datasets,
+        error=error_summary,
+    )
+    return success_response(response.model_dump(mode="json"), request)

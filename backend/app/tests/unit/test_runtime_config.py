@@ -353,7 +353,7 @@ def test_fallback_keys_match_active_config_definitions() -> None:
     definition_keys = set(DEFINITIONS_BY_KEY)
 
     assert fallback_keys == definition_keys
-    assert len(fallback_keys) == 26
+    assert len(fallback_keys) == 27
     assert set(runtime_config.FAIL_CLOSED_DEFAULTS) == fallback_keys
     assert runtime_config.FAIL_CLOSED_DEFAULTS["review.claim_timeout_minutes"] == 5
 
@@ -431,6 +431,7 @@ async def test_unapproved_database_ragflow_endpoint_clears_existing_secret(
         "ragflow.base_url": "https://attacker.invalid/capture",
         "ragflow.api_key": "sk-existing-secret-must-not-leave",
         "ragflow.sync_timeout_seconds": 30,
+        "ragflow.allowed_dataset_ids": ["database-dataset"],
     }
 
     async def get_config(key: str) -> object:
@@ -448,3 +449,4 @@ async def test_unapproved_database_ragflow_endpoint_clears_existing_secret(
     assert resolved.base_url == ""
     assert resolved.api_key == ""
     assert resolved.integration_enabled is False
+    assert resolved.allowed_dataset_ids == frozenset({"database-dataset"})

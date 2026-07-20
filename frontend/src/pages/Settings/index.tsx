@@ -36,6 +36,8 @@ import {
   type ConfigGroup,
   type ConfigItem,
   type RagflowConnectionTestResult,
+  type RagflowDatasetOption,
+  discoverRagflowDatasets,
   getConfigs,
   testRagflowConnection,
   updateConfigs,
@@ -82,6 +84,7 @@ const labelMap: Record<string, string> = {
   // ragflow
   "ragflow.base_url": "RAGFlow 服务地址",
   "ragflow.api_key": "RAGFlow API Key",
+  "ragflow.allowed_dataset_ids": "允许同步的 Dataset",
   "ragflow.sync_max_retries": "同步最大重试次数",
   "ragflow.sync_timeout_seconds": "同步超时时间（秒）",
   "ragflow.parse_poll_timeout_seconds": "解析轮询总时限（秒）",
@@ -395,7 +398,19 @@ function SettingsCommandStrip({
 
 // ── Generic config form field renderer ───────────────────────────────────────
 
-function ConfigField({ item }: { item: ConfigItem }) {
+interface ConfigFieldProps {
+  item: ConfigItem;
+  ragflowDatasets?: RagflowDatasetOption[];
+  ragflowDatasetsLoading?: boolean;
+  onDiscoverRagflowDatasets?: () => void;
+}
+
+function ConfigField({
+  item,
+  ragflowDatasets = [],
+  ragflowDatasetsLoading = false,
+  onDiscoverRagflowDatasets,
+}: ConfigFieldProps) {
   const label = getLabel(item);
 
   if (item.is_secret || item.value_type === "secret") {
@@ -428,6 +443,36 @@ function ConfigField({ item }: { item: ConfigItem }) {
     return (
       <Form.Item label={label} name={item.key}>
         <InputNumber className="settings-number-input" />
+      </Form.Item>
+    );
+  }
+
+  if (item.key === "ragflow.allowed_dataset_ids") {
+    return (
+      <Form.Item
+        label={label}
+        name={item.key}
+        help="仅允许已选 Dataset 接收文档；不选择时禁止所有 RAGFlow 同步。"
+        extra={
+          <Button
+            type="link"
+            size="small"
+            icon={<ReloadOutlined />}
+            loading={ragflowDatasetsLoading}
+            onClick={onDiscoverRagflowDatasets}
+          >
+            从 RAGFlow 加载 Dataset
+          </Button>
+        }
+      >
+        <Select
+          mode="tags"
+          placeholder="加载后选择，或手动粘贴 Dataset ID"
+          options={ragflowDatasets.map((dataset) => ({
+            label: `${dataset.name}（${dataset.dataset_id}）`,
+            value: dataset.dataset_id,
+          }))}
+        />
       </Form.Item>
     );
   }
@@ -734,6 +779,7 @@ function RagflowPanel() {
   const queryClient = useQueryClient();
   const [form] = Form.useForm<FormValues>();
   const [testResult, setTestResult] = useState<RagflowConnectionTestResult | null>(null);
+  const [ragflowDatasets, setRagflowDatasets] = useState<RagflowDatasetOption[]>([]);
   const formIntentIdentity = useRef<AuthSessionIdentity | null>(null);
 
   const group: ConfigGroup = "ragflow";
@@ -755,6 +801,7 @@ function RagflowPanel() {
       if (identity && !isCurrentAuthSessionIdentity(identity)) {
         formIntentIdentity.current = null;
         setTestResult(null);
+        setRagflowDatasets([]);
         form.resetFields();
       }
     });
@@ -785,6 +832,29 @@ function RagflowPanel() {
       setTestResult({ ok: false, latency_ms: null, error: err.message });
     },
   });
+  const discoverMutation = useMutation({
+    mutationFn: discoverRagflowDatasets,
+    onSuccess: (result) => {
+      if (!result.ok) {
+        void message.error(result.error ?? "加载 Dataset 失败");
+        return;
+      }
+      setRagflowDatasets(result.items);
+      void message.success(`已加载 ${result.items.length} 个 Dataset`);
+    },
+    onError: (error: Error) => {
+      void message.error(error.message);
+    },
+  });
+
+  function handleDiscoverDatasets() {
+    const baseUrl = form.getFieldValue("ragflow.base_url");
+    const apiKey = form.getFieldValue("ragflow.api_key");
+    discoverMutation.mutate({
+      base_url: typeof baseUrl === "string" && baseUrl.trim() ? baseUrl.trim() : undefined,
+      api_key: typeof apiKey === "string" && apiKey.trim() ? apiKey.trim() : undefined,
+    });
+  }
 
   function handleSave() {
     const requestIdentity = formIntentIdentity.current ?? captureAuthSessionIdentity();
@@ -842,7 +912,13 @@ function RagflowPanel() {
         >
           <div className="settings-form-grid">
             {items.map((item) => (
-              <ConfigField key={item.key} item={item} />
+              <ConfigField
+                key={item.key}
+                item={item}
+                ragflowDatasets={ragflowDatasets}
+                ragflowDatasetsLoading={discoverMutation.isPending}
+                onDiscoverRagflowDatasets={handleDiscoverDatasets}
+              />
             ))}
           </div>
           <Space wrap>

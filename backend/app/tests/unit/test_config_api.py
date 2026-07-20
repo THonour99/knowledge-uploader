@@ -44,6 +44,7 @@ EXPECTED_GROUP_KEYS: dict[str, set[str]] = {
     "ragflow": {
         "ragflow.base_url",
         "ragflow.api_key",
+        "ragflow.allowed_dataset_ids",
         "ragflow.sync_max_retries",
         "ragflow.parse_poll_timeout_seconds",
         "ragflow.sync_timeout_seconds",
@@ -444,7 +445,7 @@ async def test_dept_admin_cannot_update_configs(config_client: AsyncClient) -> N
     assert items["upload.max_file_size_mb"]["value"] == 50
 
 
-async def test_system_admin_cannot_set_ragflow_api_key_without_dataset_allowlist(
+async def test_system_admin_can_set_ragflow_api_key_before_runtime_dataset_allowlist(
     config_client: AsyncClient,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -469,9 +470,10 @@ async def test_system_admin_cannot_set_ragflow_api_key_without_dataset_allowlist
         json={"items": {"ragflow.api_key": "sk-runtime-secret-abcd"}},
     )
 
-    assert response.status_code == 400
-    assert response.json()["error_code"] == "VALIDATION_ERROR"
-    assert response.json()["message"] == "invalid config value for key: ragflow.api_key"
+    assert response.status_code == 200
+    items = _items_by_key(response.json()["data"])
+    assert items["ragflow.api_key"]["masked_value"] == "sk-****abcd"
+    assert items["ragflow.allowed_dataset_ids"]["value"] == []
 
 
 async def test_secret_config_masked_in_response_and_encrypted_in_db(

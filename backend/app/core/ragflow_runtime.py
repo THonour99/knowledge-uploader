@@ -33,8 +33,14 @@ class RagflowRuntimeSettings:
         return bool(self.api_key.strip())
 
 
-def normalized_dataset_ids(raw_value: str) -> frozenset[str]:
-    return frozenset(item.strip() for item in raw_value.split(",") if item.strip())
+def normalized_dataset_ids(raw_value: object) -> frozenset[str]:
+    if isinstance(raw_value, str):
+        values = raw_value.split(",")
+    elif isinstance(raw_value, list | tuple | set | frozenset):
+        values = [item for item in raw_value if isinstance(item, str)]
+    else:
+        return frozenset()
+    return frozenset(item.strip() for item in values if item.strip())
 
 
 def is_ragflow_dataset_allowed(
@@ -56,6 +62,7 @@ async def resolve_ragflow_runtime_settings(
     base_url_value = await get_config("ragflow.base_url")
     api_key_value = await get_config("ragflow.api_key")
     timeout_value = await get_config("ragflow.sync_timeout_seconds")
+    allowed_dataset_ids_value = await get_config("ragflow.allowed_dataset_ids")
 
     requested_base_url = (
         str(base_url_value).strip()
@@ -108,7 +115,7 @@ async def resolve_ragflow_runtime_settings(
         base_url=base_url,
         api_key=api_key,
         timeout_seconds=timeout_seconds,
-        allowed_dataset_ids=normalized_dataset_ids(resolved_settings.ragflow_allowed_dataset_ids),
+        allowed_dataset_ids=normalized_dataset_ids(allowed_dataset_ids_value),
         protected_environment=protected_environment,
         tls_spki_pins=tls_spki_pins,
     )

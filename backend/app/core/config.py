@@ -155,12 +155,6 @@ class Settings(BaseSettings):
         }
         if not set(ragflow_pins).issubset(approved_ragflow_identities):
             raise ValueError("RAGFLOW_TLS_SPKI_PINS endpoints must be approved RAGFlow URLs")
-        if self.ragflow_api_key.strip() and not _normalized_csv_values(
-            self.ragflow_allowed_dataset_ids
-        ):
-            msg = "RAGFLOW_ALLOWED_DATASET_IDS must be configured when RAGFlow is enabled"
-            raise ValueError(msg)
-
         smtp_configured = _validate_smtp_configuration(self)
         _validate_llm_seed_configuration(self)
         normalized_llm_allowed_base_urls(self.llm_allowed_base_urls)

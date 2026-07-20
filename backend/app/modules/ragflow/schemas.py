@@ -16,6 +16,24 @@ class ManualSyncRequest(BaseModel):
     reason: str | None = Field(default=None, max_length=1000)
 
 
+class RagflowDatasetDiscoveryRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    base_url: str | None = Field(default=None, max_length=500)
+    api_key: str | None = None
+
+
+class RagflowDatasetOptionResponse(BaseModel):
+    dataset_id: str
+    name: str
+
+
+class RagflowDatasetDiscoveryResponse(BaseModel):
+    ok: bool
+    items: list[RagflowDatasetOptionResponse] = Field(default_factory=list)
+    error: str | None = None
+
+
 class VersionSwitchReconcileRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
 

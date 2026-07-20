@@ -173,6 +173,13 @@ CONFIG_DEFINITIONS: tuple[ConfigDefinition, ...] = (
         is_secret=True,
     ),
     ConfigDefinition(
+        key="ragflow.allowed_dataset_ids",
+        group="ragflow",
+        value_type="list",
+        default=[],
+        description="允许同步的 RAGFlow Dataset ID 白名单 空列表时禁止同步",
+    ),
+    ConfigDefinition(
         key="ragflow.sync_max_retries",
         group="ragflow",
         value_type="int",

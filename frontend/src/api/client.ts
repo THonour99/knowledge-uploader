@@ -1757,6 +1757,22 @@ export interface RagflowConnectionTestResult {
   error: string | null;
 }
 
+export interface RagflowDatasetOption {
+  dataset_id: string;
+  name: string;
+}
+
+export interface RagflowDatasetDiscoveryPayload {
+  base_url?: string;
+  api_key?: string;
+}
+
+export interface RagflowDatasetDiscoveryResult {
+  ok: boolean;
+  items: RagflowDatasetOption[];
+  error: string | null;
+}
+
 // ── System config API functions ──────────────────────────────────────────────
 
 export async function getConfigs(group: ConfigGroup): Promise<ConfigGroupResponse> {
@@ -1784,6 +1800,16 @@ export async function testRagflowConnection(): Promise<RagflowConnectionTestResu
   const response = await apiClient.post<
     ApiEnvelope<RagflowConnectionTestResult> | RagflowConnectionTestResult
   >("/admin/ragflow/test-connection");
+
+  return unwrapResponse(response.data);
+}
+
+export async function discoverRagflowDatasets(
+  payload: RagflowDatasetDiscoveryPayload,
+): Promise<RagflowDatasetDiscoveryResult> {
+  const response = await apiClient.post<
+    ApiEnvelope<RagflowDatasetDiscoveryResult> | RagflowDatasetDiscoveryResult
+  >("/admin/ragflow/discover-datasets", payload);
 
   return unwrapResponse(response.data);
 }

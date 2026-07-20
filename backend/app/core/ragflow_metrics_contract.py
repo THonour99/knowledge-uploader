@@ -3,6 +3,7 @@ from __future__ import annotations
 RAGFLOW_OPERATIONS = frozenset(
     {
         "ping",
+        "list_datasets",
         "upload_document",
         "find_document_by_name",
         "update_document_metadata",

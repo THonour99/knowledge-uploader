@@ -91,7 +91,9 @@ Authorization: Bearer <access_token>
 | `PATCH` | `/api/datasets/{mapping_id}` | 系统管理员 | 更新 Dataset 映射 |
 | `DELETE` | `/api/datasets/{mapping_id}` | 系统管理员 | 删除 Dataset 映射 |
 
-`RAGFLOW_API_KEY` 非空时，Dataset id 必须在 `RAGFLOW_ALLOWED_DATASET_IDS` 中。联调只能创建新的测试 Dataset 映射，不操作原有知识库。
+Dataset id 必须在运行时配置 `ragflow.allowed_dataset_ids` 中；该列表为空时禁止所有同步。
+`RAGFLOW_ALLOWED_DATASET_IDS` 仅作为尚未保存运行时列表时的启动回退。系统管理员可调用
+`POST /api/admin/ragflow/discover-datasets` 加载远端 Dataset，再在系统设置中选择并保存。
 
 ## 审核
 

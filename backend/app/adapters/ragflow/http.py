@@ -7,6 +7,7 @@ from httpx._types import QueryParamTypes, RequestFiles
 
 from .base import (
     RagflowClientError,
+    RagflowDataset,
     RagflowDocumentNotFoundError,
     RagflowDocumentStatus,
     RagflowSubmissionOutcomeUnknownError,
@@ -21,6 +22,8 @@ from .safe_transport import (
 )
 
 DEFAULT_TIMEOUT_SECONDS = 30.0
+RAGFLOW_DATASET_PAGE_SIZE = 100
+RAGFLOW_DATASET_MAX_PAGES = 100
 RAGFLOW_RECONCILIATION_PAGE_SIZE = 100
 RAGFLOW_RECONCILIATION_MAX_PAGES = 1000
 
@@ -58,6 +61,53 @@ class HttpRagflowClient:
             "GET",
             "/api/v1/datasets",
             params={"page": 1, "page_size": 1},
+        )
+
+    async def list_datasets(self) -> list[RagflowDataset]:
+        datasets_by_id: dict[str, RagflowDataset] = {}
+        seen_pages: set[tuple[str, ...]] = set()
+        datasets_seen = 0
+        exhausted = False
+        for page in range(1, RAGFLOW_DATASET_MAX_PAGES + 1):
+            payload = await self._request(
+                "GET",
+                "/api/v1/datasets",
+                params={"page": page, "page_size": RAGFLOW_DATASET_PAGE_SIZE},
+            )
+            data = payload.get("data")
+            if not isinstance(data, list):
+                raise self._client_error("RAGFlow dataset response has invalid shape")
+            page_items: list[RagflowDataset] = []
+            for item in data:
+                if not isinstance(item, dict):
+                    raise self._client_error("RAGFlow dataset response has invalid item")
+                dataset_id = item.get("id")
+                name = item.get("name")
+                if not isinstance(dataset_id, str) or not dataset_id.strip():
+                    raise self._client_error("RAGFlow dataset response missing id")
+                if not isinstance(name, str) or not name.strip():
+                    raise self._client_error("RAGFlow dataset response missing name")
+                dataset = RagflowDataset(dataset_id=dataset_id.strip(), name=name.strip())
+                page_items.append(dataset)
+                datasets_by_id[dataset.dataset_id] = dataset
+            if not page_items:
+                exhausted = True
+                break
+            signature = tuple(item.dataset_id for item in page_items)
+            if signature in seen_pages:
+                raise self._client_error("RAGFlow dataset pagination did not advance")
+            seen_pages.add(signature)
+            datasets_seen += len(page_items)
+            total = self._extract_dataset_total(payload)
+            if len(page_items) < RAGFLOW_DATASET_PAGE_SIZE or (
+                total is not None and datasets_seen >= total
+            ):
+                exhausted = True
+                break
+        if not exhausted:
+            raise self._client_error("RAGFlow dataset pagination limit exceeded")
+        return sorted(
+            datasets_by_id.values(), key=lambda item: (item.name.lower(), item.dataset_id)
         )
 
     async def upload_document(
@@ -259,6 +309,14 @@ class HttpRagflowClient:
 
     def _headers(self) -> dict[str, str]:
         return {"Authorization": f"Bearer {self._api_key}"}
+
+    def _extract_dataset_total(self, payload: dict[str, object]) -> int | None:
+        total = payload.get("total_datasets")
+        if isinstance(total, int) and total >= 0:
+            return total
+        if isinstance(total, str) and total.isdigit():
+            return int(total)
+        return None
 
     def _parse_response(
         self,
