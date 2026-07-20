@@ -1,4 +1,5 @@
 import {
+  Alert,
   App as AntdApp,
   Button,
   Card,
@@ -30,10 +31,13 @@ import {
   type CategoryPayload,
   type DatasetMapping,
   type DatasetMappingPayload,
+  type RagflowDatasetOption,
   type RagflowConnectionTestResult,
   createCategory,
   createDatasetMapping,
   disableDatasetMapping,
+  discoverRagflowDatasets,
+  getConfigs,
   listCategories,
   listDatasetMappings,
   testRagflowConnection,
@@ -87,6 +91,8 @@ const defaultDatasetValues: DatasetFormValues = {
   ragflow_dataset_name: "",
   enabled: true,
 };
+
+const RAGFLOW_ALLOWED_DATASET_IDS_KEY = "ragflow.allowed_dataset_ids";
 
 const statusOptions = [
   { label: "状态：全部", value: "all" },
@@ -218,6 +224,18 @@ export default function DatasetConfigPage() {
     queryKey: ["dataset-mappings"],
     queryFn: listDatasetMappings,
   });
+  const ragflowConfigQuery = useQuery({
+    queryKey: ["configs", "ragflow"],
+    queryFn: () => getConfigs("ragflow"),
+    enabled: datasetModalOpen,
+    staleTime: 30_000,
+  });
+  const ragflowDatasetsQuery = useQuery({
+    queryKey: ["ragflow-datasets", "mapping-options"],
+    queryFn: () => discoverRagflowDatasets({}),
+    enabled: datasetModalOpen,
+    staleTime: 30_000,
+  });
 
   const categories = categoriesQuery.data?.items ?? [];
   const datasets = datasetsQuery.data?.items ?? [];
@@ -226,6 +244,54 @@ export default function DatasetConfigPage() {
     label: `${category.name} (${category.code})`,
     value: category.id,
   }));
+  const allowedDatasetIds = useMemo(() => {
+    const configuredValue = ragflowConfigQuery.data?.items.find(
+      (item) => item.key === RAGFLOW_ALLOWED_DATASET_IDS_KEY,
+    )?.value;
+
+    if (!Array.isArray(configuredValue)) {
+      return [];
+    }
+
+    return configuredValue.filter(
+      (datasetId): datasetId is string =>
+        typeof datasetId === "string" && datasetId.trim().length > 0,
+    );
+  }, [ragflowConfigQuery.data]);
+  const ragflowDatasetById = useMemo(() => {
+    const datasetsById = new Map<string, RagflowDatasetOption>();
+    if (ragflowDatasetsQuery.data?.ok) {
+      for (const dataset of ragflowDatasetsQuery.data.items) {
+        datasetsById.set(dataset.dataset_id, dataset);
+      }
+    }
+    return datasetsById;
+  }, [ragflowDatasetsQuery.data]);
+  const ragflowDatasetOptions = useMemo(
+    () =>
+      allowedDatasetIds.flatMap((datasetId) => {
+        const dataset = ragflowDatasetById.get(datasetId);
+        return dataset
+          ? [
+              {
+                label: `${dataset.name}（${dataset.dataset_id}）`,
+                value: dataset.dataset_id,
+              },
+            ]
+          : [];
+      }),
+    [allowedDatasetIds, ragflowDatasetById],
+  );
+  const ragflowDatasetsLoading =
+    ragflowConfigQuery.isLoading ||
+    ragflowDatasetsQuery.isLoading ||
+    ragflowDatasetsQuery.isFetching;
+  const ragflowDatasetLoadError =
+    (ragflowConfigQuery.error instanceof Error ? ragflowConfigQuery.error.message : null) ??
+    (ragflowDatasetsQuery.error instanceof Error ? ragflowDatasetsQuery.error.message : null) ??
+    (ragflowDatasetsQuery.data && !ragflowDatasetsQuery.data.ok
+      ? (ragflowDatasetsQuery.data.error ?? "RAGFlow Dataset 加载失败")
+      : null);
 
   const rows = useMemo<DatasetConfigRow[]>(() => {
     return categories.map((category) => {
@@ -366,6 +432,10 @@ export default function DatasetConfigPage() {
     setEditingDataset(mapping);
     datasetForm.setFieldsValue(toDatasetFormValues(mapping));
     setDatasetModalOpen(true);
+  };
+
+  const refreshRagflowDatasets = async () => {
+    await Promise.all([ragflowConfigQuery.refetch(), ragflowDatasetsQuery.refetch()]);
   };
 
   const resetFilters = () => {
@@ -744,6 +814,31 @@ export default function DatasetConfigPage() {
             <small>映射</small>
           </span>
         </section>
+        {ragflowDatasetLoadError ? (
+          <Alert
+            type="error"
+            showIcon
+            message="RAGFlow Dataset 加载失败"
+            description={ragflowDatasetLoadError}
+            style={{ marginBottom: 16 }}
+          />
+        ) : !ragflowDatasetsLoading && allowedDatasetIds.length === 0 ? (
+          <Alert
+            type="warning"
+            showIcon
+            message="尚未配置允许同步的 Dataset"
+            description="请先到“系统设置 → RAGFlow”加载并保存允许同步的 Dataset。"
+            style={{ marginBottom: 16 }}
+          />
+        ) : !ragflowDatasetsLoading && ragflowDatasetOptions.length === 0 ? (
+          <Alert
+            type="warning"
+            showIcon
+            message="未找到可用的 RAGFlow Dataset"
+            description="允许列表中的 Dataset 可能已被删除或当前 API Key 无权访问，请刷新后重试。"
+            style={{ marginBottom: 16 }}
+          />
+        ) : null}
         <Form<DatasetFormValues>
           form={datasetForm}
           layout="vertical"
@@ -770,22 +865,40 @@ export default function DatasetConfigPage() {
               optionFilterProp="label"
             />
           </Form.Item>
-          <div className="form-grid form-grid--two">
-            <Form.Item
-              label="RAGFlow Dataset ID"
-              name="ragflow_dataset_id"
-              rules={[{ required: true, message: "请输入 Dataset ID" }]}
-            >
-              <Input maxLength={128} />
-            </Form.Item>
-            <Form.Item
-              label="RAGFlow Dataset 名称"
-              name="ragflow_dataset_name"
-              rules={[{ required: true, message: "请输入 Dataset 名称" }]}
-            >
-              <Input maxLength={128} />
-            </Form.Item>
-          </div>
+          <Form.Item
+            label="RAGFlow Dataset"
+            name="ragflow_dataset_id"
+            rules={[{ required: true, message: "请选择 RAGFlow Dataset" }]}
+            extra={
+              <Button
+                type="link"
+                size="small"
+                icon={<ReloadOutlined />}
+                loading={ragflowDatasetsLoading}
+                onClick={() => void refreshRagflowDatasets()}
+              >
+                刷新 Dataset
+              </Button>
+            }
+          >
+            <Select
+              showSearch
+              optionFilterProp="label"
+              loading={ragflowDatasetsLoading}
+              options={ragflowDatasetOptions}
+              placeholder="选择系统已允许同步的 Dataset"
+              notFoundContent={ragflowDatasetsLoading ? "正在加载 Dataset…" : "没有可选 Dataset"}
+              onChange={(datasetId: string) => {
+                datasetForm.setFieldValue(
+                  "ragflow_dataset_name",
+                  ragflowDatasetById.get(datasetId)?.name ?? "",
+                );
+              }}
+            />
+          </Form.Item>
+          <Form.Item name="ragflow_dataset_name" hidden>
+            <input type="hidden" />
+          </Form.Item>
           <Form.Item label="启用状态" name="enabled" valuePropName="checked">
             <Switch />
           </Form.Item>

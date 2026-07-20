@@ -1,12 +1,17 @@
 import type { CSSProperties, ReactNode } from "react";
 import { App as AntdApp, ConfigProvider } from "antd";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { fireEvent, render, screen } from "@testing-library/react";
-import { afterEach, beforeAll, describe, expect, it, vi } from "vitest";
+import { fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 
 import {
   type CategoryListResponse,
+  type ConfigGroupResponse,
   type DatasetMappingListResponse,
+  type RagflowDatasetDiscoveryResult,
+  createDatasetMapping,
+  discoverRagflowDatasets,
+  getConfigs,
   listCategories,
   listDatasetMappings,
   testRagflowConnection,
@@ -27,6 +32,8 @@ vi.mock("../../api/client", async () => {
     createDatasetMapping: vi.fn(),
     updateDatasetMapping: vi.fn(),
     disableDatasetMapping: vi.fn(),
+    discoverRagflowDatasets: vi.fn(),
+    getConfigs: vi.fn(),
     testRagflowConnection: vi.fn(),
   };
 });
@@ -75,6 +82,30 @@ const mappings: DatasetMappingListResponse = {
   total: 1,
 };
 
+const ragflowConfig: ConfigGroupResponse = {
+  group: "ragflow",
+  items: [
+    {
+      key: "ragflow.allowed_dataset_ids",
+      value: ["ds-policy"],
+      value_type: "list",
+      is_secret: false,
+      masked_value: null,
+      description: "允许同步的 RAGFlow Dataset",
+      updated_at: "2026-06-01T00:00:00Z",
+    },
+  ],
+};
+
+const discoveredRagflowDatasets: RagflowDatasetDiscoveryResult = {
+  ok: true,
+  items: [
+    { dataset_id: "ds-policy", name: "制度知识库" },
+    { dataset_id: "ds-hidden", name: "未允许知识库" },
+  ],
+  error: null,
+};
+
 beforeAll(() => {
   Object.defineProperty(window, "matchMedia", {
     writable: true,
@@ -116,6 +147,14 @@ function renderWithProviders(node: ReactNode) {
     </ConfigProvider>,
   );
 }
+
+beforeEach(() => {
+  vi.mocked(listCategories).mockResolvedValue(categories);
+  vi.mocked(listDatasetMappings).mockResolvedValue(mappings);
+  vi.mocked(getConfigs).mockResolvedValue(ragflowConfig);
+  vi.mocked(discoverRagflowDatasets).mockResolvedValue(discoveredRagflowDatasets);
+  vi.mocked(createDatasetMapping).mockResolvedValue(mappings.items[0]);
+});
 
 afterEach(() => {
   vi.clearAllMocks();
@@ -168,21 +207,61 @@ describe("DatasetConfigPage", () => {
     expect(screen.queryByRole("button", { name: /批量操作/ })).not.toBeInTheDocument();
   });
 
-  it("renders Dataset mapping modal summary", async () => {
-    vi.mocked(listCategories).mockResolvedValue(categories);
-    vi.mocked(listDatasetMappings).mockResolvedValue(mappings);
-
+  it("selects an allowed RAGFlow Dataset and fills its ID and name", async () => {
     renderWithProviders(<DatasetConfigPage />);
 
     expect(await screen.findByText("制度文档")).toBeInTheDocument();
-    fireEvent.click(screen.getByRole("button", { name: /新增映射/ }));
+    fireEvent.click(screen.getByRole("button", { name: "绑定" }));
 
     expect(await screen.findByText("新增 Dataset 映射")).toBeInTheDocument();
     const mappingSummary = screen.getByRole("region", { name: "Dataset 映射摘要" });
     expect(mappingSummary).toHaveTextContent("新 Dataset 映射");
     expect(mappingSummary).toHaveTextContent("启用映射");
+    expect(screen.queryByLabelText("RAGFlow Dataset ID")).not.toBeInTheDocument();
+    expect(screen.queryByLabelText("RAGFlow Dataset 名称")).not.toBeInTheDocument();
+
+    fireEvent.change(screen.getByLabelText("映射名称"), {
+      target: { value: "产品资料知识库" },
+    });
+    const datasetSelect = await screen.findByRole("combobox", { name: "RAGFlow Dataset" });
+    fireEvent.mouseDown(datasetSelect);
+
+    fireEvent.click(await screen.findByText("制度知识库（ds-policy）"));
+    expect(screen.queryByText("未允许知识库（ds-hidden）")).not.toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "OK" }));
+
+    await waitFor(() => {
+      expect(createDatasetMapping).toHaveBeenCalledWith({
+        name: "产品资料知识库",
+        category_id: "cat-2",
+        ragflow_dataset_id: "ds-policy",
+        ragflow_dataset_name: "制度知识库",
+        enabled: true,
+      });
+    });
+    expect(discoverRagflowDatasets).toHaveBeenCalledWith({});
   });
 
+  it("shows a recoverable error when RAGFlow Dataset discovery fails", async () => {
+    vi.mocked(discoverRagflowDatasets).mockResolvedValue({
+      ok: false,
+      items: [],
+      error: "RAGFlow 服务暂时不可用",
+    });
+
+    renderWithProviders(<DatasetConfigPage />);
+
+    expect(await screen.findByText("制度文档")).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "绑定" }));
+
+    expect(await screen.findByText("RAGFlow Dataset 加载失败")).toBeInTheDocument();
+    expect(screen.getByText("RAGFlow 服务暂时不可用")).toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole("button", { name: /刷新 Dataset/ }));
+    await waitFor(() => {
+      expect(discoverRagflowDatasets).toHaveBeenCalledTimes(2);
+    });
+  });
   it("tests the RAGFlow connection from the Dataset panel", async () => {
     vi.mocked(listCategories).mockResolvedValue(categories);
     vi.mocked(listDatasetMappings).mockResolvedValue(mappings);
