@@ -7,10 +7,26 @@ import { afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 
 import { getMe, getSystemHealth, getSystemReadiness, listNotifications } from "../api/client";
 import type * as ApiClientModule from "../api/client";
+import type * as AnnouncementApiModule from "../api/announcements";
 import { hasAssignedDepartment, useAuthStore } from "../store/auth.store";
 import { useUiStore } from "../store/ui.store";
 import { themeCssVariables } from "../theme/tokens";
 import { AppShell } from "./AppShell";
+
+vi.mock("../api/announcements", async () => {
+  const actual = await vi.importActual<typeof AnnouncementApiModule>("../api/announcements");
+  return {
+    ...actual,
+    listAnnouncements: vi.fn().mockResolvedValue({
+      items: [],
+      total: 0,
+      unread_count: 0,
+      page: 1,
+      page_size: 20,
+    }),
+    markAnnouncementRead: vi.fn().mockResolvedValue(undefined),
+  };
+});
 
 vi.mock("../api/client", async () => {
   const actual = await vi.importActual<typeof ApiClientModule>("../api/client");

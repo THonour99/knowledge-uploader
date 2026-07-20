@@ -1,0 +1,22 @@
+.announcement-pinned-bar {
+  min-height: 40px;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 6px var(--ku-spacing-page);
+  border-bottom: 1px solid #fde68a;
+  background: var(--ku-color-warning-light);
+  color: var(--ku-text-primary);
+}
+.announcement-pinned-bar > button:first-of-type {
+  flex: 1;
+  overflow: hidden;
+  cursor: pointer;
+  border: 0;
+  background: transparent;
+  color: inherit;
+  font-weight: 600;
+  text-align: left;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}

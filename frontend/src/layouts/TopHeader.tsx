@@ -38,6 +38,7 @@ import {
   markNotificationRead,
   type NotificationItem,
 } from "../api/client";
+import { AnnouncementCenter } from "../components/AnnouncementCenter";
 import { StatusTag } from "../components/StatusTag";
 import { appNavigationRoutes, utilityNavigation } from "../router/routes";
 import {
@@ -71,9 +72,15 @@ const GLOBAL_SEARCH_ALIASES: Record<string, string[]> = {
   "/task-logs": ["任务", "队列", "同步任务", "解析任务"],
   "/categories": ["分类", "知识分类", "目录"],
   "/tags": ["标签", "关键词"],
+  "/announcements": ["公告", "站内公告", "消息"],
+  "/announcement-management": ["公告管理", "发布公告", "Markdown"],
 };
 
 function getHeaderTitle(pathname: string): string {
+  if (pathname.startsWith("/announcements/")) {
+    return "公告详情";
+  }
+
   if (pathname.startsWith("/files/")) {
     return utilityNavigation.fileDetail.label;
   }
@@ -434,6 +441,7 @@ export function TopHeader() {
         </Typography.Text>
       </div>
       <Space size={12} className="top-header__actions">
+        <AnnouncementCenter />
         <Badge count={unreadCount} size="small" overflowCount={99}>
           <Button
             type="text"

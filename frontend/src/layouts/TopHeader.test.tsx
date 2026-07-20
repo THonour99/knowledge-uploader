@@ -15,6 +15,7 @@ import {
   type NotificationListResponse,
 } from "../api/client";
 import type * as ApiClientModule from "../api/client";
+import type * as AnnouncementApiModule from "../api/announcements";
 import { SessionSupersededError } from "../sessionIdentity";
 import { useAuthStore } from "../store/auth.store";
 import { themeCssVariables } from "../theme/tokens";
@@ -38,6 +39,21 @@ function createDeferred<T>(): Deferred<T> {
   });
   return { promise, resolve, reject };
 }
+
+vi.mock("../api/announcements", async () => {
+  const actual = await vi.importActual<typeof AnnouncementApiModule>("../api/announcements");
+  return {
+    ...actual,
+    listAnnouncements: vi.fn().mockResolvedValue({
+      items: [],
+      total: 0,
+      unread_count: 0,
+      page: 1,
+      page_size: 20,
+    }),
+    markAnnouncementRead: vi.fn().mockResolvedValue(undefined),
+  };
+});
 
 vi.mock("../api/client", async () => {
   const actual = await vi.importActual<typeof ApiClientModule>("../api/client");

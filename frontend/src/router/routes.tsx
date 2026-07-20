@@ -21,11 +21,15 @@ import {
   SettingOutlined,
   TagsOutlined,
   TeamOutlined,
+  SoundOutlined,
 } from "@ant-design/icons";
 
 import { type Role, Roles, useAuthStore } from "../store/auth.store";
 
 const AiConfigPage = lazy(() => import("../pages/AiConfig"));
+const AnnouncementDetailPage = lazy(() => import("../pages/AnnouncementDetail"));
+const AnnouncementManagementPage = lazy(() => import("../pages/AnnouncementManagement"));
+const AnnouncementsPage = lazy(() => import("../pages/Announcements"));
 const AuditLogsPage = lazy(() => import("../pages/AuditLogs"));
 const CategoriesPage = lazy(() => import("../pages/Categories"));
 const DashboardPage = lazy(() => import("../pages/Dashboard"));
@@ -101,6 +105,21 @@ export const appRoutes: AppRoute[] = [
     element: <RoleDashboardEntry />,
     roles: [Roles.EMPLOYEE, Roles.DEPT_ADMIN, Roles.SYSTEM_ADMIN],
     nav: { label: "工作台首页", icon: <DashboardOutlined />, group: "工作台" },
+  },
+  {
+    path: "/announcements",
+    element: routeElement(AnnouncementsPage),
+    nav: { label: "公告中心", icon: <SoundOutlined />, group: "工作台" },
+  },
+  {
+    path: "/announcements/:id",
+    element: routeElement(AnnouncementDetailPage),
+  },
+  {
+    path: "/announcement-management",
+    element: routeElement(AnnouncementManagementPage),
+    roles: [Roles.SYSTEM_ADMIN],
+    nav: { label: "公告管理", icon: <SoundOutlined />, group: "系统" },
   },
   {
     path: "/upload",

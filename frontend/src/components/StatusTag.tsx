@@ -13,7 +13,8 @@ export type StatusKind =
   | "expiry"
   | "version"
   | "capacity"
-  | "health";
+  | "health"
+  | "announcement";
 type StatusTone = keyof typeof statusTagColors;
 
 const statusKindLabels: Record<StatusKind, string> = {
@@ -27,6 +28,7 @@ const statusKindLabels: Record<StatusKind, string> = {
   version: "版本切换状态",
   capacity: "物理容量快照状态",
   health: "健康状态",
+  announcement: "公告状态",
 };
 
 export interface StatusTagProps {
@@ -132,6 +134,13 @@ const statusMap: Record<StatusKind, Record<string, StatusMeta>> = {
     stale: { label: "快照已过期", color: "warning" },
     unavailable: { label: "暂无可信快照", color: "default" },
     unsupported_dimension: { label: "维度不支持", color: "default" },
+  },
+  announcement: {
+    draft: { label: "草稿", color: "default" },
+    scheduled: { label: "待发布", color: "queued" },
+    published: { label: "已发布", color: "success" },
+    expired: { label: "已到期", color: "warning" },
+    withdrawn: { label: "已撤回", color: "danger" },
   },
   health: {
     ok: { label: "正常", color: "success" },

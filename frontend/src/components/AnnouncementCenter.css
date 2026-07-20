@@ -1,0 +1,29 @@
+.announcement-center__toolbar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  margin-bottom: 12px;
+}
+.announcement-center__item {
+  padding: 0 !important;
+  border-radius: var(--ku-radius-control);
+}
+.announcement-center__item--unread {
+  background: var(--ku-color-primary-light);
+}
+.announcement-center__item button {
+  display: flex;
+  width: 100%;
+  appearance: none;
+  cursor: pointer;
+  border: 0;
+  background: transparent;
+  padding: 14px 12px;
+  text-align: left;
+  flex-direction: column;
+  gap: 4px;
+}
+.announcement-center__all {
+  margin-top: 16px;
+}

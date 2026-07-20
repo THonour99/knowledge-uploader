@@ -7,6 +7,7 @@ import { getMe, type UserProfile } from "../api/client";
 import { type CurrentUser, useAuthStore } from "../store/auth.store";
 import { layout } from "../theme/tokens";
 import { useUiStore } from "../store/ui.store";
+import { AnnouncementPinnedBar } from "../components/AnnouncementPinnedBar";
 import { Sidebar } from "./Sidebar";
 import { TopHeader } from "./TopHeader";
 
@@ -104,6 +105,7 @@ export function AppShell() {
         <Layout.Header className="app-shell__header">
           <TopHeader />
         </Layout.Header>
+        <AnnouncementPinnedBar />
         <Layout.Content className="app-shell__content">
           <Outlet />
         </Layout.Content>
