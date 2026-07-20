@@ -384,6 +384,16 @@ fail closed，而不是落入成功桶。
 | `PUT` | `/api/admin/configs/{group}` | 运行时配置 |
 | `PUT` | `/api/admin/users/{user_id}/managed-departments` | 用户与部门治理 |
 
+## 9.1 系统公告契约
+
+公告使用独立的 `announcements`、`announcement_departments`、`announcement_roles` 与 `announcement_reads` 表，不写入 `notifications`。数据库生命周期仅保存 `draft/released/withdrawn`，API 按带时区的 `visible_from` 与 `expires_at` 派生 `scheduled/published/expired`。发布后正文、受众与时效不可直接修改，纠错必须撤回并复制为新草稿。
+
+用户接口：`GET /api/announcements`、`GET /api/announcements/{id}`、`POST /api/announcements/{id}/read`。目标用户可以在历史中查看已到期公告；草稿、待发布、已撤回及越域详情统一不可见。
+
+系统管理员接口：`GET/POST /api/admin/announcements`、`GET/PATCH/DELETE /api/admin/announcements/{id}`、`POST /api/admin/announcements/{id}/publish|withdraw|clone`、`GET /api/admin/announcements/{id}/stats`。写操作携带 `row_version`，版本冲突或非法生命周期返回 409；管理端所有读写均审计，审计不得保存 Markdown 正文。
+
+受众按当前活跃用户身份动态计算。部门受众匹配主部门成员，以及代管目标部门的部门管理员；阅读统计只返回当前有效目标人数、已读人数、未读人数和阅读率。
+
 ## 10. 兼容与演进
 
 新增必填字段先以服务端兼容窗口发布，再升级前端，最后收紧；但安全门禁和明确同步决定不得长期双语义。API breaking change 记录版本与迁移截止日期，不能靠前端猜测可空字段含义。
